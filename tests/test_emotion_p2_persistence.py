@@ -37,13 +37,11 @@ class TestPathsConstants:
 
     def test_emotion_state_file_defined(self):
         import src.utils.paths as _paths
-        from pathlib import Path
         assert isinstance(_paths.EMOTION_STATE_FILE, Path)
         assert _paths.EMOTION_STATE_FILE.name == "emotion_state.json"
 
     def test_emotion_history_file_defined(self):
         import src.utils.paths as _paths
-        from pathlib import Path
         assert isinstance(_paths.EMOTION_HISTORY_FILE, Path)
         assert _paths.EMOTION_HISTORY_FILE.name == "emotion_history.jsonl"
 

@@ -39,7 +39,7 @@ def _clean_env(monkeypatch):
 def _mock_screenshot():
     """Mock _take_screenshot pour retourner un faux path."""
     async def fake_ss():
-        import tempfile, os
+        import tempfile
         path = os.path.join(tempfile.gettempdir(), "test_ncu_ss.png")
         # Créer un mini PNG valide (1x1 pixel)
         import struct, zlib

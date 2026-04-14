@@ -1188,8 +1188,6 @@ class ToolRegistry:
                 {"name": "web_search", "args": {"query": "python async"}}
             ])
         """
-        import asyncio
-        
         if not tool_calls:
             return []
         

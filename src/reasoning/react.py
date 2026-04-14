@@ -56,7 +56,6 @@ from .prompt_builder import (
 
 def _generate_project_slug(query: str) -> str:
     """Génère un slug court à partir de la requête utilisateur pour nommer le dossier projet."""
-    import unicodedata
     _NOISE = {
         "creer", "cree", "créer", "crée", "moi", "un", "une", "le", "la", "les",
         "de", "du", "des", "pour", "ma", "mon", "mes", "et", "il", "me", "faut",

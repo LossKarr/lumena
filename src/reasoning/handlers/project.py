@@ -2202,6 +2202,7 @@ async def create_project_handler(
 
     async def _process_one_and_write(f: Dict[str, str], global_idx: int, current_model: Optional[str]) -> bool:
         """Génère + écrit un fichier. Retourne True si succès."""
+        _fmax: Optional[int] = getattr(llm, "max_output_tokens", None) or 16384
         # Garde: skip fichiers binaires (sécurité pour mode resume)
         _ext = ("." + f["path"].rsplit(".", 1)[-1].lower()) if "." in f["path"] else ""
         if _ext in _BINARY_EXTENSIONS:

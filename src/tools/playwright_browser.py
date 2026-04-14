@@ -1086,7 +1086,7 @@ class PlaywrightBrowser:
         try:
             if not filename:
                 filename = f"page_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            pdf_dir = SCREENSHOTS_DIR
+            pdf_dir = self._screenshots_dir
             pdf_dir.mkdir(parents=True, exist_ok=True)
             filepath = pdf_dir / filename
             await self._page.pdf(path=str(filepath))
