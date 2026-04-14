@@ -102,7 +102,4 @@ tiktoken>=0.7.0
 # Twitter/X integration
 tweepy>=4.14.0
 
-# Optionnel - Market Sentinel (IBKR)
-# ib_insync>=0.9.86  # Interactive Brokers API
-
 # Pour fine-tuning local voir requirements-finetuning.txt

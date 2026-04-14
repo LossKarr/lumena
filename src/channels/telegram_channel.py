@@ -488,16 +488,16 @@ class TelegramChannel(BaseChannel):
             updater = getattr(self._app, "updater", None)
             if updater:
                 try:
-                    await updater.stop()
-                except Exception:
+                    await asyncio.wait_for(updater.stop(), timeout=5)
+                except (Exception, asyncio.CancelledError):
                     pass  # updater stop best-effort
             try:
-                await self._app.stop()
-            except Exception:
+                await asyncio.wait_for(self._app.stop(), timeout=3)
+            except (Exception, asyncio.CancelledError):
                 pass  # app stop best-effort
             try:
-                await self._app.shutdown()
-            except Exception:
+                await asyncio.wait_for(self._app.shutdown(), timeout=3)
+            except (Exception, asyncio.CancelledError):
                 pass  # app shutdown best-effort
         self._app = None
         self.is_running = False

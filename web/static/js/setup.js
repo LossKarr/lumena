@@ -1672,7 +1672,7 @@ const _SUMMARY_GROUPS = [
   { label: 'Voix',            icon: 'mic',           test: k => k.startsWith('LUMENA_TTS_') || k.startsWith('LUMENA_STT_') || k.startsWith('LUMENA_VOICE_') },
   { label: 'Personnalité',    icon: 'sparkles',      test: k => k === 'LUMENA_DEFAULT_MOOD' || k === 'LUMENA_USE_EMOJIS' || k === 'LUMENA_EMOJI_FREQUENCY' || k.startsWith('LUMENA_IDENTITY_') || k.startsWith('LUMENA_TRAIT_') },
   { label: 'Autonomie',       icon: 'zap',           test: k => k.startsWith('LUMENA_AUTONOMY_') || k.startsWith('LUMENA_ARCHIVE_') || k === 'LUMENA_OPS_MEMORY_PURGE_ENABLED' || k.startsWith('LUMENA_SANDBOX_') },
-  { label: 'Intégrations',    icon: 'plug',          test: k => ['DISCORD_TOKEN','DISCORD_MAIN_CHANNEL_ID','GITHUB_TOKEN','NOTION_API_KEY','BRAVE_SEARCH_API_KEY','SPOTIFY_CLIENT_ID','SPOTIFY_CLIENT_SECRET','TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_FROM_NUMBER','LUMENA_ALERT_TO_NUMBER','LUMENA_EMAIL','LUMENA_EMAIL_PASSWORD','LUMENA_USER_EMAIL','IBKR_HOST','IBKR_PORT','IBKR_CLIENT_ID','STRIPE_API_KEY','STRIPE_MODE'].includes(k) },
+  { label: 'Intégrations',    icon: 'plug',          test: k => ['DISCORD_TOKEN','DISCORD_MAIN_CHANNEL_ID','GITHUB_TOKEN','NOTION_API_KEY','BRAVE_SEARCH_API_KEY','SPOTIFY_CLIENT_ID','SPOTIFY_CLIENT_SECRET','TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_FROM_NUMBER','LUMENA_ALERT_TO_NUMBER','LUMENA_EMAIL','LUMENA_EMAIL_PASSWORD','LUMENA_USER_EMAIL','STRIPE_API_KEY','STRIPE_MODE'].includes(k) },
   { label: 'Locale',          icon: 'globe',         test: k => ['LUMENA_LANGUAGE','LUMENA_TIMEZONE','LUMENA_WORKSPACE_PATH'].includes(k) },
   { label: 'Avancé',          icon: 'settings',      test: k => k.startsWith('LUMENA_REACT_') || k.startsWith('LUMENA_TASK_') || k.startsWith('LUMENA_MAX_') },
 ];
@@ -1901,10 +1901,7 @@ function _prettyLabel(key) {
     'WHATSAPP_VERIFY_TOKEN':            'WhatsApp Verify Token',
     'WHATSAPP_APP_SECRET':              'WhatsApp App Secret',
     'WHATSAPP_OWNER_PHONE':             'WhatsApp Numéro propriétaire',
-    // IBKR
-    'IBKR_HOST':                        'IBKR Host',
-    'IBKR_PORT':                        'IBKR Port',
-    'IBKR_CLIENT_ID':                   'IBKR Client ID',
+
     // Sandbox
     'LUMENA_SANDBOX_MODE':              'Mode sandbox',
     'LUMENA_SANDBOX_MEMORY':            'Mémoire Docker',

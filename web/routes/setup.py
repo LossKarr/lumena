@@ -768,25 +768,6 @@ async def setup_schema():
                                  "des webhooks. Clique simplement sur \"Accès accordé\".",
                 "guide_url": "https://dashboard.stripe.com/apikeys",
             },
-            {
-                "key": "IBKR_HOST",
-                "name": "IBKR (Interactive Brokers)",
-                "icon": "trending-up",
-                "desc": "Connexion à Interactive Brokers pour le trading automatisé et le suivi de portfolio",
-                "collapsed": True,
-                "fields": [
-                    {"key": "IBKR_HOST", "label": "Host TWS/Gateway", "type": "text",
-                     "default": "127.0.0.1",
-                     "hint": "Adresse du TWS ou IB Gateway. Par défaut 127.0.0.1 (local)."},
-                    {"key": "IBKR_PORT", "label": "Port TWS/Gateway", "type": "number",
-                     "default": "4002",
-                     "hint": "4001 = TWS live, 4002 = TWS paper, 7496 = Gateway live, 7497 = Gateway paper."},
-                    {"key": "IBKR_CLIENT_ID", "label": "Client ID", "type": "number",
-                     "default": "1",
-                     "hint": "ID unique de la connexion. Utilise 1 sauf si plusieurs bots se connectent."},
-                ],
-                "guide_url": "https://www.interactivebrokers.com/en/trading/tws.php",
-            },
         ],
         "fields": [],
     })
@@ -899,8 +880,7 @@ async def setup_complete(request: Request, _: None = Depends(deps.verify_admin_t
         "TWITTER_BEARER_TOKEN", "TWITTER_API_KEY", "TWITTER_API_SECRET",
         "TWITTER_ACCESS_TOKEN", "TWITTER_ACCESS_TOKEN_SECRET",
     })
-    # Allow IBKR keys from the integrations step
-    allowed.update({"IBKR_HOST", "IBKR_PORT", "IBKR_CLIENT_ID"})
+
     # Allow WhatsApp keys from the whatsapp step
     allowed.update({
         "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID",

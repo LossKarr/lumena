@@ -403,20 +403,6 @@ class TestP4SchemaAdditions:
         assert "LUMENA_SANDBOX_MEMORY" in sandbox_keys
 
     @pytest.mark.asyncio
-    async def test_integrations_step_has_ibkr(self):
-        from web.routes.setup import setup_schema
-        result = await setup_schema()
-        integs = next((s for s in result["steps"] if s["id"] == "integrations"), None)
-        assert integs is not None
-        ibkr = next((i for i in integs["integrations"] if i["key"] == "IBKR_HOST"), None)
-        assert ibkr is not None, "IBKR intégration manquante"
-        assert ibkr.get("collapsed") is True
-        ibkr_field_keys = [f["key"] for f in ibkr["fields"]]
-        assert "IBKR_HOST" in ibkr_field_keys
-        assert "IBKR_PORT" in ibkr_field_keys
-        assert "IBKR_CLIENT_ID" in ibkr_field_keys
-
-    @pytest.mark.asyncio
     async def test_setup_complete_allows_twitter_keys(self, mock_setup):
         from web.routes.setup import setup_complete
         from unittest.mock import AsyncMock, MagicMock
@@ -435,27 +421,6 @@ class TestP4SchemaAdditions:
             result = await setup_complete(request)
         assert result["success"] is True
         assert "TWITTER_BEARER_TOKEN" in result["updated"]
-
-    @pytest.mark.asyncio
-    async def test_setup_complete_allows_ibkr_keys(self, mock_setup):
-        from web.routes.setup import setup_complete
-        from unittest.mock import AsyncMock, MagicMock
-        request = AsyncMock()
-        request.client = MagicMock()
-        request.client.host = "127.0.0.1"
-        request.json = AsyncMock(return_value={
-            "preview": False,
-            "config": {
-                "IBKR_HOST": "127.0.0.1",
-                "IBKR_PORT": "4002",
-                "IBKR_CLIENT_ID": "1",
-            },
-        })
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("LUMENA_SETUP_COMPLETE", None)
-            result = await setup_complete(request)
-        assert result["success"] is True
-        assert "IBKR_HOST" in result["updated"]
 
     @pytest.mark.asyncio
     async def test_setup_complete_allows_trait_keys(self, mock_setup):
