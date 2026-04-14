@@ -71,7 +71,7 @@ jobs:
         run: |
           python -c "from src.core import LumenaCore; print('core OK')"
           python -c "from src.reasoning.react import ReActLoop; print('react OK')"
-          python -c "from src.llm.multi_provider import get_multi_provider; print('llm OK')"
+          python -c "from src.llm.multi_provider import MultiProviderLLM; print('llm OK')"
           python -c "from web.server import app; print('web OK')"
 
   docker:

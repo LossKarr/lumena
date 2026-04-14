@@ -71,6 +71,7 @@ mammoth>=1.8.0             # DOCX→HTML conversion sémantique
 
 # Web Search
 ddgs>=0.1.0                 # Recherche web gratuite via DuckDuckGo (nouveau package)
+beautifulsoup4>=4.12.0      # HTML parsing (web_crawler, perception)
 # duckduckgo-search>=6.0.0   # Ancien package (fallback si ddgs absent)
 
 # Spotify
@@ -82,6 +83,7 @@ stripe>=8.0.0               # Stripe API (produits, prix, paiements, abonnements
 # Web Server
 fastapi>=0.100.0
 uvicorn>=0.24.0
+python-multipart>=0.0.6    # FastAPI file upload (UploadFile)
 filelock>=3.12.0
 
 # Optionnel - Agent framework
