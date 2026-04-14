@@ -1,0 +1,14 @@
+# Fine-tuning local — installe automatiquement par INSTALL.bat si GPU NVIDIA detecte
+# ATTENTION : necessite CUDA >= 12.1 et PyTorch >= 2.4.0
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch>=2.4.0
+unsloth>=2026.3.1
+trl>=0.18.2,<=0.24.0
+peft>=0.14.0
+transformers>=4.47.0
+datasets>=2.21.0
+bitsandbytes>=0.43.0
+accelerate>=0.33.0
+huggingface_hub>=0.21.0
+# llama-cpp-python est installe automatiquement par l'endpoint /install-deps
+# avec les wheels CUDA precompiles (pas besoin de compilateur C++)

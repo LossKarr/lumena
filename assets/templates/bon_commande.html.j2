@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #222; font-size: 12px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; margin-bottom: 20px; }
+  h1 { color: #1a1a2e; font-size: 24px; margin: 0 0 6px; }
+  .label { color: #888; font-size: 10px; text-transform: uppercase; }
+  .block { background: #f8f8fa; padding: 12px 16px; border-radius: 6px; margin-bottom: 14px; }
+  .block h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+  th { background: #1a1a2e; color: white; padding: 8px 10px; font-size: 10px; text-transform: uppercase; }
+  td { padding: 8px 10px; border-bottom: 1px solid #eee; font-size: 11px; }
+  .totals { margin-left: auto; width: 250px; }
+  .totals .grand { background: #1a1a2e; color: white; font-weight: bold; }
+  .conditions { border-top: 1px solid #ddd; margin-top: 20px; padding-top: 12px; font-size: 11px; color: #555; }
+  .signature { display: flex; justify-content: space-between; margin-top: 30px; }
+  .sig-block { width: 40%; border-top: 1px solid #222; padding-top: 8px; text-align: center; font-size: 11px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>BON DE COMMANDE</h1>
+      {% if numero %}<p class="label">N° {{ numero }}</p>{% endif %}
+      {% if date %}<p class="label">Date : {{ date }}</p>{% endif %}
+    </div>
+  </div>
+
+  <div style="display:flex;gap:20px;">
+    <div class="block" style="flex:1">
+      <h3>Fournisseur</h3>
+      <strong>{{ fournisseur.name|default('') }}</strong><br>
+      {{ fournisseur.address|default('') }}<br>{{ fournisseur.city|default('') }}
+    </div>
+    <div class="block" style="flex:1">
+      <h3>Acheteur</h3>
+      <strong>{{ acheteur.name|default('') }}</strong><br>
+      {{ acheteur.address|default('') }}<br>{{ acheteur.city|default('') }}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Réf.</th><th>Désignation</th><th>Qté</th><th>P.U. HT ({{ currency|default('€') }})</th><th>Total HT</th></tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(total=0) %}
+      {% for item in items %}
+      {% set ht = (item.qty|default(1)|float) * (item.unit_price|default(0)|float) %}
+      {% set ns.total = ns.total + ht %}
+      <tr>
+        <td>{{ item.ref|default('') }}</td>
+        <td>{{ item.description }}</td>
+        <td>{{ item.qty|default(1) }}</td>
+        <td style="text-align:right">{{ "%.2f"|format(item.unit_price|default(0)|float) }}</td>
+        <td style="text-align:right">{{ "%.2f"|format(ht) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <table class="totals">
+    <tr class="grand"><td>TOTAL HT</td><td style="text-align:right">{{ "%.2f"|format(ns.total) }} {{ currency|default('€') }}</td></tr>
+  </table>
+
+  {% if conditions_livraison %}
+  <div class="conditions">
+    <strong>Conditions de livraison :</strong> {{ conditions_livraison }}
+  </div>
+  {% endif %}
+
+  <div class="signature">
+    <div class="sig-block">Fournisseur<br><br><br>Signature + Cachet</div>
+    <div class="sig-block">Acheteur<br><br><br>Signature + Cachet</div>
+  </div>
+</body>
+</html>

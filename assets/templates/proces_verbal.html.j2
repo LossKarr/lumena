@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2.5cm; }
+  body { font-family: 'Georgia', serif; color: #222; font-size: 12px; line-height: 1.7; }
+  h1 { text-align: center; font-size: 20px; color: #1a1a2e; margin-bottom: 6px; }
+  .subtitle { text-align: center; font-size: 13px; color: #555; margin-bottom: 30px; }
+  .info-block { background: #f8f8fa; padding: 12px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 11px; }
+  .article { margin-bottom: 14px; }
+  .article h2 { font-size: 13px; color: #1a1a2e; margin: 0 0 4px; }
+  .resolution { margin: 10px 0; padding: 10px 14px; background: #22c55e11; border-left: 3px solid #22c55e; border-radius: 0 6px 6px 0; }
+  .resolution .label { font-size: 10px; color: #888; text-transform: uppercase; }
+  .vote { font-size: 11px; color: #555; margin-top: 4px; }
+  .signature { display: flex; justify-content: space-between; margin-top: 30px; }
+  .sig-block { width: 40%; border-top: 1px solid #222; padding-top: 8px; text-align: center; font-size: 11px; }
+  .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #aaa; }
+</style>
+</head>
+<body>
+  <h1>PROCÈS-VERBAL</h1>
+  <p class="subtitle">{{ assemblee_type|default("Assemblée Générale") }}</p>
+
+  <div class="info-block">
+    <strong>{{ societe }}</strong><br>
+    Date : {{ date }}<br>
+    Lieu : {{ lieu|default('Non précisé') }}<br>
+    {% if president %}Président de séance : {{ president }}<br>{% endif %}
+    {% if secretaire %}Secrétaire : {{ secretaire }}{% endif %}
+  </div>
+
+  {% if participants %}
+  <div class="article">
+    <h2>Participants</h2>
+    <ul>
+      {% for p in participants %}
+      <li>{{ p.name|default(p) }}{% if p.role %} — {{ p.role }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if ordre_du_jour %}
+  <div class="article">
+    <h2>Ordre du jour</h2>
+    <ol>
+      {% for point in ordre_du_jour %}<li>{{ point }}</li>{% endfor %}
+    </ol>
+  </div>
+  {% endif %}
+
+  <div class="article">
+    <h2>Résolutions</h2>
+    {% for res in resolutions|default([]) %}
+    <div class="resolution">
+      <div class="label">Résolution {{ loop.index }}</div>
+      <p><strong>{{ res.titre|default(res.text|default(res)) }}</strong></p>
+      {% if res.details %}<p>{{ res.details }}</p>{% endif %}
+      {% if res.vote %}
+      <div class="vote">
+        Vote : {{ res.vote }}
+        {% if res.pour is defined %} (Pour : {{ res.pour }}, Contre : {{ res.contre|default(0) }}, Abstention : {{ res.abstention|default(0) }}){% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <p>La séance est levée à {{ heure_fin|default('___h___') }}.</p>
+  <p>Le présent procès-verbal a été dressé et signé par le président et le secrétaire de séance.</p>
+
+  <div class="signature">
+    <div class="sig-block">{{ president|default('Le Président') }}<br><br>Signature</div>
+    <div class="sig-block">{{ secretaire|default('Le Secrétaire') }}<br><br>Signature</div>
+  </div>
+
+  <div class="footer">Document généré par Lumena</div>
+</body>
+</html>

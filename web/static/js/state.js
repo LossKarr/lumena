@@ -1,0 +1,39 @@
+/* ============================================================
+   GLOBAL STATE — Lumena Control Panel
+   ============================================================ */
+const API_BASE='';
+let ADMIN_TOKEN='';
+let useAgent=localStorage.getItem('lumena_agent_mode')==='true';
+let isLoading=false;
+let _lastSentMessage='';
+let _thinkingTimer=null;
+let _thinkingStart=0;
+let _lastEventTs=0;
+let allTools=[];
+let allModels=[];
+let selectedModel=null;
+let traceEventSource=null;
+let traceConnected=false;
+let traceLastEventTs=0;
+let statusRefreshTimer=null;
+let panelRefreshTimer=null;
+let statusRequestInFlight=false;
+let statusPollRecommendedMs=3000;
+let liveRefreshLoopsStarted=false;
+let pendingFileEdits=[];
+let pendingEditSessionId=null;
+let pendingUndoAvailable=false;
+let navCollapsed=false;
+let focusMode=false;
+let chatHasMessages=false;
+let activeTasks=new Map();
+let taskPollTimers=new Map();
+let allSessions=[];
+let traceStats={total:0,errors:0,tools:0,durations:[]};
+let traceFilterMode='all';
+let lastStatusData=null;
+let healthOk=false;
+let activityCounts={tools:0,thoughts:0,edits:0,obs:0,actions:0,errors:0};
+let activityStartTime=0;
+let activityElapsedTimer=null;
+let _refreshTasksTimer=null;

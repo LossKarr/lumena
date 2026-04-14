@@ -1,0 +1,15 @@
+@echo off
+chcp 65001 >nul 2>&1
+setlocal EnableExtensions EnableDelayedExpansion
+title LUMENA — Mode Full
+
+REM === Autonomie complete ===
+set "LUMENA_AUTONOMY_EXECUTE_ACTIONS=1"
+set "LUMENA_AUTONOMY_MAX_ACTIONS_PER_HOUR=12"
+set "LUMENA_AUTONOMY_ACTION_TIMEOUT_SEC=180"
+set "LUMENA_AUTONOMY_PROGRESSIVE_MODE=1"
+set "LUMENA_AUTONOMY_ALLOWED_ACTIONS=EXPLORE_WEB,LEARN_SOMETHING,REFLECT,WRITE_DIARY,CHECK_NEWS"
+set "LUMENA_MARKETS_ENABLED=0"
+
+REM === Delegation au launcher principal ===
+call "%~dp0START.bat"

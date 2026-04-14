@@ -1,0 +1,1072 @@
+"""
+🌟 LUMENA - Système de Tools Automatique (Inspiré Moltbot)
+
+Système unifié où les outils sont TOUJOURS disponibles.
+Le LLM décide lui-même quand les utiliser grâce au system prompt.
+"""
+
+from typing import Dict, Any, List, Optional, Callable, Awaitable, Union
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+import asyncio
+import json
+import re
+import subprocess
+import os
+import fnmatch
+import ast
+from loguru import logger
+
+
+@dataclass
+class ToolDefinition:
+    """Définition d'un outil disponible pour le LLM."""
+    name: str
+    description: str
+    parameters: Dict[str, Any]
+    handler: Callable[..., Awaitable[str]]
+    category: str = "general"
+    requires_confirmation: bool = False  # Pour les actions dangereuses
+
+
+@dataclass
+class ToolCall:
+    """Un appel d'outil par le LLM."""
+    name: str
+    arguments: Dict[str, Any]
+    call_id: str = ""
+    
+    
+@dataclass
+class ToolResult:
+    """Résultat d'exécution d'un outil."""
+    success: bool
+    output: str
+    call_id: str = ""
+    error: Optional[str] = None
+
+
+class LumenaToolSystem:
+    """
+    Système de tools automatique pour LUMENA.
+    
+    Comme Moltbot, les outils sont toujours disponibles et le LLM
+    décide lui-même quand les utiliser. Pas besoin de préfixe "!".
+    """
+    
+    def __init__(self, lumena_root: Optional[Path] = None):
+        self.tools: Dict[str, ToolDefinition] = {}
+        self.lumena_root = lumena_root or Path(__file__).parent.parent.parent
+        self._pending_results: List[ToolResult] = []
+        self._register_all_tools()
+        
+    def _register_all_tools(self):
+        """Enregistre tous les outils disponibles."""
+        
+        # === OUTILS DE BASE ===
+        self._register_tool(
+            name="web_search",
+            description="Recherche sur internet et retourne les résultats. Utilise pour météo, actualités, informations récentes.",
+            parameters={
+                "query": {"type": "string", "description": "La requête de recherche"}
+            },
+            handler=self._web_search_handler,
+            category="web"
+        )
+        
+        self._register_tool(
+            name="web_fetch",
+            description="Récupère et extrait le contenu d'une page web (convertit en texte lisible).",
+            parameters={
+                "url": {"type": "string", "description": "L'URL à récupérer"}
+            },
+            handler=self._web_fetch_handler,
+            category="web"
+        )
+        
+        self._register_tool(
+            name="get_time",
+            description="Obtient la date et l'heure actuelles.",
+            parameters={},
+            handler=self._get_time_handler,
+            category="system"
+        )
+        
+        # === OUTILS FICHIERS ===
+        self._register_tool(
+            name="read_file",
+            description="Lit le contenu d'un fichier.",
+            parameters={
+                "path": {"type": "string", "description": "Chemin du fichier à lire"}
+            },
+            handler=self._read_file_handler,
+            category="files"
+        )
+        
+        self._register_tool(
+            name="write_file",
+            description="Écrit du contenu dans un fichier.",
+            parameters={
+                "path": {"type": "string", "description": "Chemin du fichier"},
+                "content": {"type": "string", "description": "Contenu à écrire"}
+            },
+            handler=self._write_file_handler,
+            category="files",
+            requires_confirmation=True
+        )
+        
+        self._register_tool(
+            name="list_directory",
+            description="Liste les fichiers et dossiers d'un répertoire.",
+            parameters={
+                "path": {"type": "string", "description": "Chemin du répertoire (défaut: répertoire courant)", "default": "."}
+            },
+            handler=self._list_directory_handler,
+            category="files"
+        )
+        
+        # === OUTILS COMMANDES ===
+        self._register_tool(
+            name="run_command",
+            description="Exécute une commande shell/terminal et retourne le résultat.",
+            parameters={
+                "command": {"type": "string", "description": "Commande à exécuter"}
+            },
+            handler=self._run_command_handler,
+            category="system",
+            requires_confirmation=True
+        )
+        
+        # === OUTILS MÉMOIRE ===
+        self._register_tool(
+            name="memory_search",
+            description="Recherche dans les souvenirs de LUMENA (mémoire sémantique).",
+            parameters={
+                "query": {"type": "string", "description": "Ce que tu cherches dans ta mémoire"}
+            },
+            handler=self._memory_search_handler,
+            category="memory"
+        )
+        
+        self._register_tool(
+            name="memory_add",
+            description="Ajoute un fait ou souvenir important à ta mémoire permanente.",
+            parameters={
+                "content": {"type": "string", "description": "Le fait ou souvenir à mémoriser"},
+                "category": {"type": "string", "description": "Catégorie: fact, preference, conversation, skill", "default": "fact"}
+            },
+            handler=self._memory_add_handler,
+            category="memory"
+        )
+        
+        # === OUTILS AUTO-AMÉLIORATION ===
+        self._register_tool(
+            name="read_own_code",
+            description="Lit un fichier du code source de LUMENA (pour s'améliorer).",
+            parameters={
+                "file_path": {"type": "string", "description": "Chemin relatif (ex: src/core.py)"}
+            },
+            handler=self._read_own_code_handler,
+            category="self_improvement"
+        )
+        
+        self._register_tool(
+            name="create_skill",
+            description="Crée un nouveau skill (capacité) pour LUMENA.",
+            parameters={
+                "name": {"type": "string", "description": "Nom du skill (snake_case)"},
+                "content": {"type": "string", "description": "Contenu du fichier skill en markdown"}
+            },
+            handler=self._create_skill_handler,
+            category="self_improvement"
+        )
+        
+        self._register_tool(
+            name="list_skills",
+            description="Liste tous les skills disponibles.",
+            parameters={},
+            handler=self._list_skills_handler,
+            category="self_improvement"
+        )
+        
+        # === OUTILS AVANCÉS (Phase 1 Upgrade) ===
+        self._register_tool(
+            name="grep_search",
+            description="Recherche un pattern (texte ou regex) dans les fichiers. Retourne les lignes correspondantes.",
+            parameters={
+                "pattern": {"type": "string", "description": "Pattern à rechercher (texte ou regex)"},
+                "path": {"type": "string", "description": "Fichier ou dossier où chercher"},
+                "ignore_case": {"type": "boolean", "description": "Ignorer la casse", "default": False},
+                "is_regex": {"type": "boolean", "description": "Traiter le pattern comme regex", "default": False},
+                "max_results": {"type": "integer", "description": "Nombre max de résultats", "default": 50}
+            },
+            handler=self._grep_search_handler,
+            category="files"
+        )
+        
+        self._register_tool(
+            name="find_files",
+            description="Trouve des fichiers par pattern glob (ex: *.py, **/*.md). Retourne la liste des chemins.",
+            parameters={
+                "pattern": {"type": "string", "description": "Pattern glob (ex: *.py, **/*.txt)"},
+                "directory": {"type": "string", "description": "Dossier de recherche", "default": "."},
+                "extensions": {"type": "string", "description": "Extensions à inclure, séparées par virgule (ex: py,js,md)", "default": ""},
+                "max_depth": {"type": "integer", "description": "Profondeur max de recherche", "default": 10}
+            },
+            handler=self._find_files_handler,
+            category="files"
+        )
+        
+        self._register_tool(
+            name="edit_file",
+            description="Édite un fichier en remplaçant du texte. Recherche et remplace précisément.",
+            parameters={
+                "path": {"type": "string", "description": "Chemin du fichier à éditer"},
+                "search": {"type": "string", "description": "Texte exact à rechercher"},
+                "replace": {"type": "string", "description": "Texte de remplacement"},
+                "allow_multiple": {"type": "boolean", "description": "Permet plusieurs remplacements", "default": False}
+            },
+            handler=self._edit_file_handler,
+            category="files",
+            requires_confirmation=True
+        )
+        
+        self._register_tool(
+            name="view_file_outline",
+            description="Affiche la structure d'un fichier Python (classes, fonctions, méthodes).",
+            parameters={
+                "path": {"type": "string", "description": "Chemin du fichier Python"}
+            },
+            handler=self._view_file_outline_handler,
+            category="files"
+        )
+        
+        # === OUTILS BROWSER (Phase 3 Upgrade) ===
+        self._register_tool(
+            name="browser_navigate",
+            description="Ouvre une URL dans le navigateur. Retourne le titre et statut.",
+            parameters={
+                "url": {"type": "string", "description": "URL à visiter"}
+            },
+            handler=self._browser_navigate_handler,
+            category="browser"
+        )
+        
+        self._register_tool(
+            name="browser_click",
+            description="Clique sur un élément de la page (sélecteur CSS ou XPath).",
+            parameters={
+                "selector": {"type": "string", "description": "Sélecteur CSS ou XPath de l'élément"}
+            },
+            handler=self._browser_click_handler,
+            category="browser"
+        )
+        
+        self._register_tool(
+            name="browser_type",
+            description="Tape du texte dans un champ de la page.",
+            parameters={
+                "selector": {"type": "string", "description": "Sélecteur du champ"},
+                "text": {"type": "string", "description": "Texte à taper"}
+            },
+            handler=self._browser_type_handler,
+            category="browser"
+        )
+        
+        self._register_tool(
+            name="browser_screenshot",
+            description="Prend une capture d'écran de la page.",
+            parameters={
+                "filename": {"type": "string", "description": "Nom du fichier (optionnel)", "default": ""}
+            },
+            handler=self._browser_screenshot_handler,
+            category="browser"
+        )
+        
+        self._register_tool(
+            name="browser_get_text",
+            description="Récupère le texte d'une page ou d'un élément.",
+            parameters={
+                "selector": {"type": "string", "description": "Sélecteur CSS (défaut: body)", "default": "body"}
+            },
+            handler=self._browser_get_text_handler,
+            category="browser"
+        )
+        
+        logger.info(f"🛠️ {len(self.tools)} outils enregistrés dans le Tool System")
+    
+    def _register_tool(
+        self,
+        name: str,
+        description: str,
+        parameters: Dict[str, Any],
+        handler: Callable[..., Awaitable[str]],
+        category: str = "general",
+        requires_confirmation: bool = False
+    ):
+        """Enregistre un nouvel outil."""
+        self.tools[name] = ToolDefinition(
+            name=name,
+            description=description,
+            parameters=parameters,
+            handler=handler,
+            category=category,
+            requires_confirmation=requires_confirmation
+        )
+    
+    def get_tools_for_provider(self, provider: str) -> List[Dict[str, Any]]:
+        """
+        Retourne les définitions d'outils formatées pour un provider spécifique.
+        
+        Chaque provider a un format différent pour les function calls.
+        """
+        tools_list = []
+        
+        for tool in self.tools.values():
+            # Format pour Gemini (Google)
+            if provider == "google":
+                tools_list.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            name: {
+                                "type": param.get("type", "string"),
+                                "description": param.get("description", "")
+                            }
+                            for name, param in tool.parameters.items()
+                        },
+                        "required": [
+                            name for name, param in tool.parameters.items()
+                            if "default" not in param
+                        ]
+                    }
+                })
+            
+            # Format pour OpenAI
+            elif provider == "openai":
+                tools_list.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                name: {
+                                    "type": param.get("type", "string"),
+                                    "description": param.get("description", "")
+                                }
+                                for name, param in tool.parameters.items()
+                            },
+                            "required": [
+                                name for name, param in tool.parameters.items()
+                                if "default" not in param
+                            ]
+                        }
+                    }
+                })
+            
+            # Format pour Anthropic (Claude)
+            elif provider == "anthropic":
+                tools_list.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            name: {
+                                "type": param.get("type", "string"),
+                                "description": param.get("description", "")
+                            }
+                            for name, param in tool.parameters.items()
+                        },
+                        "required": [
+                            name for name, param in tool.parameters.items()
+                            if "default" not in param
+                        ]
+                    }
+                })
+            
+            # Format générique (pour Ollama etc.)
+            else:
+                tools_list.append({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters
+                })
+        
+        return tools_list
+    
+    def get_tools_prompt_section(self) -> str:
+        """
+        Génère la section du system prompt qui décrit les outils.
+        
+        Inspiré de Moltbot: le prompt explique QUAND et COMMENT utiliser les outils.
+        """
+        lines = [
+            "## 🛠️ Outils Disponibles",
+            "",
+            "Tu as accès aux outils suivants. **UTILISE-LES OBLIGATOIREMENT** quand c'est pertinent.",
+            "",
+            "### ⚠️ RÈGLE CRITIQUE - FORMAT D'APPEL:",
+            "Pour appeler un outil, tu DOIS utiliser CE FORMAT EXACT:",
+            "```",
+            "[TOOL:nom_outil] {\"argument\": \"valeur\"}",
+            "```",
+            "",
+            "### Exemples concrets:",
+            "- Météo → `[TOOL:web_search] {\"query\": \"météo Lille week-end\"}`",
+            "- Créer fichier → `[TOOL:write_file] {\"path\": \"test.md\", \"content\": \"# Mon fichier\"}`",
+            "- Chercher souvenir → `[TOOL:memory_search] {\"query\": \"ce que je sais sur Charles\"}`",
+            "- Date/heure → `[TOOL:get_time] {}`",
+            "",
+            "### Quand utiliser les outils:",
+            "- **web_search**: Météo, actualités, recherches internet → OBLIGATOIRE pour infos récentes",
+            "- **web_fetch**: Lire le contenu d'une page web",
+            "- **write_file**: Créer ou modifier un fichier",
+            "- **read_file**: Lire un fichier existant",
+            "- **memory_search**: Chercher dans tes souvenirs",
+            "- **memory_add**: Mémoriser une information importante",
+            "- **get_time**: Obtenir la date et l'heure",
+            "- **run_command**: Exécuter une commande système",
+            "",
+            "### Liste complète des outils:",
+        ]
+        
+        for tool in self.tools.values():
+            params_str = ", ".join([f'"{k}": "{v.get("type", "string")}"' for k, v in tool.parameters.items()])
+            lines.append(f"- **{tool.name}**: {tool.description}")
+            if params_str:
+                lines.append(f"  Format: `[TOOL:{tool.name}] {{{params_str}}}`")
+        
+        lines.extend([
+            "",
+            "### ⚡ Style d'utilisation:",
+            "- **NE DIS JAMAIS** 'je vais chercher' ou 'je m'en occupe' - APPELLE L'OUTIL DIRECTEMENT",
+            "- **NE FABRIQUE PAS** d'informations - utilise web_search pour les données réelles",
+            "- Un outil par ligne, puis continue ta réponse après le résultat",
+        ])
+        
+        return "\n".join(lines)
+    
+    async def execute_tool(self, tool_call: ToolCall) -> ToolResult:
+        """Exécute un appel d'outil et retourne le résultat."""
+        if tool_call.name not in self.tools:
+            return ToolResult(
+                success=False,
+                output="",
+                call_id=tool_call.call_id,
+                error=f"Outil '{tool_call.name}' non trouvé"
+            )
+        
+        tool = self.tools[tool_call.name]
+        
+        try:
+            logger.debug(f"🔧 Exécution outil: {tool_call.name}({tool_call.arguments})")
+            result = await tool.handler(**tool_call.arguments)
+            return ToolResult(
+                success=True,
+                output=result,
+                call_id=tool_call.call_id
+            )
+        except Exception as e:
+            logger.error(f"❌ Erreur outil {tool_call.name}: {e}")
+            return ToolResult(
+                success=False,
+                output="",
+                call_id=tool_call.call_id,
+                error=str(e)
+            )
+    
+    def parse_tool_calls_from_text(self, text: str) -> List[ToolCall]:
+        """
+        Parse les appels d'outils depuis une réponse textuelle.
+        
+        Pour les modèles qui n'ont pas de function calling natif (ex: Qwen local),
+        on parse le texte pour détecter les intentions d'utiliser des outils.
+        
+        Formats supportés:
+        - `tool_name(arg1="value1", arg2="value2")`
+        - `[TOOL:tool_name] {"arg1": "value1"}`
+        - Action: tool_name avec arg1="value1"
+        """
+        tool_calls = []
+        
+        # Pattern 1: tool_name(args)
+        pattern1 = r'(\w+)\s*\(\s*([^)]*)\s*\)'
+        for match in re.finditer(pattern1, text):
+            name = match.group(1)
+            if name in self.tools:
+                args_str = match.group(2)
+                args = self._parse_args_string(args_str)
+                tool_calls.append(ToolCall(name=name, arguments=args))
+        
+        # Pattern 2: [TOOL:name] {json}
+        pattern2 = r'\[TOOL:(\w+)\]\s*(\{[^}]+\})'
+        for match in re.finditer(pattern2, text):
+            name = match.group(1)
+            if name in self.tools:
+                try:
+                    args = json.loads(match.group(2))
+                    tool_calls.append(ToolCall(name=name, arguments=args))
+                except json.JSONDecodeError:
+                    pass
+        
+        # Pattern 3: Action: tool_name avec arg=value
+        pattern3 = r'Action:\s*(\w+)\s+avec\s+(.+)'
+        for match in re.finditer(pattern3, text, re.IGNORECASE):
+            name = match.group(1)
+            if name in self.tools:
+                args_str = match.group(2)
+                args = self._parse_args_string(args_str)
+                tool_calls.append(ToolCall(name=name, arguments=args))
+        
+        return tool_calls
+    
+    def _parse_args_string(self, args_str: str) -> Dict[str, Any]:
+        """Parse une chaîne d'arguments en dict."""
+        args = {}
+        # Pattern: key="value" ou key=value
+        pattern = r'(\w+)\s*=\s*["\']?([^"\'=,]+)["\']?'
+        for match in re.finditer(pattern, args_str):
+            args[match.group(1)] = match.group(2).strip()
+        return args
+    
+    # ==================== HANDLERS D'OUTILS ====================
+    
+    async def _web_search_handler(self, query: str) -> str:
+        """Recherche web via DuckDuckGo."""
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddg:
+                results = list(ddg.text(query, max_results=5))
+                if not results:
+                    return f"Aucun résultat pour '{query}'"
+                
+                formatted = [f"📚 Résultats pour '{query}':\n"]
+                for i, r in enumerate(results, 1):
+                    formatted.append(f"{i}. **{r.get('title', 'Sans titre')}**")
+                    formatted.append(f"   {r.get('body', 'Pas de description')[:200]}...")
+                    formatted.append(f"   🔗 {r.get('href', '')}")
+                    formatted.append("")
+                
+                return "\n".join(formatted)
+        except ImportError:
+            # Fallback: ouvrir dans le navigateur
+            import webbrowser
+            webbrowser.open(f"https://www.google.com/search?q={query}")
+            return f"Recherche Google ouverte pour: {query}"
+        except Exception as e:
+            return f"Erreur recherche: {e}"
+    
+    async def _web_fetch_handler(self, url: str) -> str:
+        """Récupère le contenu d'une URL."""
+        try:
+            import httpx
+            from bs4 import BeautifulSoup
+            
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                })
+                response.raise_for_status()
+                
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Supprimer les scripts et styles
+                for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                    tag.decompose()
+                
+                # Extraire le texte
+                text = soup.get_text(separator='\n', strip=True)
+                
+                # Limiter la longueur
+                if len(text) > 5000:
+                    text = text[:5000] + "\n\n[... contenu tronqué ...]"
+                
+                title = soup.title.string if soup.title else url
+                return f"📄 **{title}**\n\n{text}"
+                
+        except Exception as e:
+            return f"Erreur récupération {url}: {e}"
+    
+    async def _get_time_handler(self) -> str:
+        """Retourne la date/heure actuelle."""
+        now = datetime.now()
+        return f"📅 {now.strftime('%A %d %B %Y, %H:%M:%S')}"
+    
+    async def _read_file_handler(self, path: str) -> str:
+        """Lit un fichier."""
+        try:
+            file_path = Path(path)
+            if not file_path.exists():
+                return f"❌ Fichier non trouvé: {path}"
+            
+            content = file_path.read_text(encoding='utf-8', errors='replace')
+            if len(content) > 10000:
+                content = content[:10000] + "\n\n[... tronqué ...]"
+            
+            return f"📄 Contenu de {path}:\n```\n{content}\n```"
+        except Exception as e:
+            return f"❌ Erreur lecture: {e}"
+    
+    async def _write_file_handler(self, path: str, content: str) -> str:
+        """Écrit dans un fichier."""
+        try:
+            file_path = Path(path)
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(content, encoding='utf-8')
+            return f"✅ Fichier écrit: {path} ({len(content)} caractères)"
+        except Exception as e:
+            return f"❌ Erreur écriture: {e}"
+    
+    async def _list_directory_handler(self, path: str = ".") -> str:
+        """Liste le contenu d'un répertoire."""
+        try:
+            dir_path = Path(path)
+            if not dir_path.exists():
+                return f"❌ Répertoire non trouvé: {path}"
+            if not dir_path.is_dir():
+                return f"❌ N'est pas un répertoire: {path}"
+            
+            items = []
+            for item in sorted(dir_path.iterdir()):
+                prefix = "📁" if item.is_dir() else "📄"
+                items.append(f"{prefix} {item.name}")
+            
+            return f"📂 Contenu de {path}:\n" + "\n".join(items[:50])
+        except Exception as e:
+            return f"❌ Erreur: {e}"
+    
+    async def _run_command_handler(self, command: str) -> str:
+        """Exécute une commande shell."""
+        try:
+            # Sécurité: bloquer les commandes destructrices
+            dangerous = ['rm -rf', 'format', 'del /f', 'mkfs', ':(){', 'shutdown']
+            if any(d in command.lower() for d in dangerous):
+                return "⛔ Commande bloquée pour raison de sécurité"
+            
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(self.lumena_root)
+            )
+            
+            output = result.stdout if result.stdout else ""
+            if result.stderr:
+                output += f"\n[STDERR] {result.stderr}"
+            
+            if len(output) > 5000:
+                output = output[:5000] + "\n[... tronqué ...]"
+            
+            return f"💻 Commande: {command}\n```\n{output}\n```" if output else f"✅ Commande exécutée: {command}"
+        except subprocess.TimeoutExpired:
+            return f"⏰ Timeout (>60s): {command}"
+        except Exception as e:
+            return f"❌ Erreur: {e}"
+    
+    async def _memory_search_handler(self, query: str) -> str:
+        """Recherche dans la mémoire."""
+        try:
+            from ..memory.chromadb_store import LumenaMemory
+            memory = LumenaMemory()
+            results = memory.recall(query, limit=5)
+            
+            if not results:
+                return f"Aucun souvenir trouvé pour: {query}"
+            
+            formatted = [f"🧠 Souvenirs relatifs à '{query}':\n"]
+            for r in results:
+                content = r.content[:200] if hasattr(r, 'content') else str(r)[:200]
+                formatted.append(f"- {content}")
+            
+            return "\n".join(formatted)
+        except Exception as e:
+            return f"Erreur mémoire: {e}"
+    
+    async def _memory_add_handler(self, content: str, category: str = "fact") -> str:
+        """Ajoute à la mémoire."""
+        try:
+            from ..memory.chromadb_store import LumenaMemory
+            memory = LumenaMemory()
+            memory.add(content, memory_type=category)
+            return f"✅ Mémorisé ({category}): {content[:100]}..."
+        except Exception as e:
+            return f"Erreur mémorisation: {e}"
+    
+    async def _read_own_code_handler(self, file_path: str) -> str:
+        """Lit un fichier du code source de LUMENA."""
+        try:
+            # Sécurité: vérifier que c'est dans le dossier LUMENA
+            full_path = self.lumena_root / file_path
+            
+            if not full_path.resolve().is_relative_to(self.lumena_root.resolve()):
+                return "⛔ Accès refusé: chemin hors du projet LUMENA"
+            
+            if not full_path.exists():
+                return f"❌ Fichier non trouvé: {file_path}"
+            
+            content = full_path.read_text(encoding='utf-8', errors='replace')
+            if len(content) > 15000:
+                content = content[:15000] + "\n\n[... tronqué ...]"
+            
+            return f"📄 {file_path}:\n```\n{content}\n```"
+        except Exception as e:
+            return f"❌ Erreur: {e}"
+    
+    async def _create_skill_handler(self, name: str, content: str) -> str:
+        """Crée un nouveau skill."""
+        try:
+            skills_dir = self.lumena_root / "skills"
+            skills_dir.mkdir(exist_ok=True)
+            
+            skill_file = skills_dir / f"{name}.md"
+            
+            if skill_file.exists():
+                return f"⚠️ Le skill '{name}' existe déjà"
+            
+            skill_file.write_text(content, encoding='utf-8')
+            return f"✅ Skill créé: skills/{name}.md"
+        except Exception as e:
+            return f"❌ Erreur création skill: {e}"
+    
+    async def _list_skills_handler(self) -> str:
+        """Liste les skills disponibles."""
+        try:
+            skills_dir = self.lumena_root / "skills"
+            if not skills_dir.exists():
+                return "Aucun skill trouvé"
+            
+            skills = [f.stem for f in skills_dir.glob("*.md")]
+            return f"📚 Skills disponibles ({len(skills)}):\n" + "\n".join(f"- {s}" for s in skills)
+        except Exception as e:
+            return f"Erreur: {e}"
+    
+    # ==================== HANDLERS OUTILS AVANCÉS (Phase 1) ====================
+    
+    async def _grep_search_handler(
+        self,
+        pattern: str,
+        path: str,
+        ignore_case: bool = False,
+        is_regex: bool = False,
+        max_results: int = 50
+    ) -> str:
+        """Recherche un pattern dans les fichiers."""
+        try:
+            target = Path(path)
+            if not target.exists():
+                return f"❌ Chemin non trouvé: {path}"
+            
+            results = []
+            flags = re.IGNORECASE if ignore_case else 0
+            
+            # Compile le pattern
+            if is_regex:
+                try:
+                    regex = re.compile(pattern, flags)
+                except re.error as e:
+                    return f"❌ Regex invalide: {e}"
+            else:
+                # Escape pour recherche texte simple
+                escaped = re.escape(pattern)
+                regex = re.compile(escaped, flags)
+            
+            # Si c'est un fichier, cherche dedans
+            if target.is_file():
+                files_to_search = [target]
+            else:
+                # Si c'est un dossier, cherche récursivement
+                files_to_search = list(target.rglob("*"))
+            
+            for file_path in files_to_search:
+                if not file_path.is_file():
+                    continue
+                
+                # Skip les fichiers binaires et gros fichiers
+                try:
+                    if file_path.stat().st_size > 1_000_000:  # 1MB max
+                        continue
+                    
+                    content = file_path.read_text(encoding='utf-8', errors='ignore')
+                    
+                    for i, line in enumerate(content.split('\n'), 1):
+                        if regex.search(line):
+                            rel_path = file_path.relative_to(self.lumena_root) if file_path.is_relative_to(self.lumena_root) else file_path
+                            results.append(f"{rel_path}:{i}: {line.strip()[:100]}")
+                            
+                            if len(results) >= max_results:
+                                break
+                except:
+                    continue
+                
+                if len(results) >= max_results:
+                    break
+            
+            if not results:
+                return f"🔍 Aucun résultat pour '{pattern}' dans {path}"
+            
+            header = f"🔍 {len(results)} résultats pour '{pattern}':\n\n"
+            return header + "\n".join(results[:max_results])
+            
+        except Exception as e:
+            return f"❌ Erreur grep: {e}"
+    
+    async def _find_files_handler(
+        self,
+        pattern: str,
+        directory: str = ".",
+        extensions: str = "",
+        max_depth: int = 10
+    ) -> str:
+        """Trouve des fichiers par pattern glob."""
+        try:
+            base_dir = Path(directory)
+            if not base_dir.exists():
+                return f"❌ Dossier non trouvé: {directory}"
+            if not base_dir.is_dir():
+                return f"❌ N'est pas un dossier: {directory}"
+            
+            # Parse les extensions
+            ext_list = [e.strip().lstrip('.') for e in extensions.split(',') if e.strip()] if extensions else []
+            
+            results = []
+            
+            # Utilise rglob pour le pattern
+            try:
+                matches = list(base_dir.rglob(pattern))
+            except:
+                # Fallback: cherche tous les fichiers et filtre
+                matches = list(base_dir.rglob("*"))
+                matches = [m for m in matches if fnmatch.fnmatch(m.name, pattern)]
+            
+            for match in matches:
+                # Vérifie la profondeur
+                try:
+                    depth = len(match.relative_to(base_dir).parts)
+                    if depth > max_depth:
+                        continue
+                except:
+                    continue
+                
+                # Filtre par extension si spécifié
+                if ext_list and match.is_file():
+                    if match.suffix.lstrip('.').lower() not in [e.lower() for e in ext_list]:
+                        continue
+                
+                # Calcule le chemin relatif
+                try:
+                    rel_path = match.relative_to(self.lumena_root)
+                except:
+                    rel_path = match
+                
+                prefix = "📁" if match.is_dir() else "📄"
+                size = ""
+                if match.is_file():
+                    size_bytes = match.stat().st_size
+                    if size_bytes > 1024 * 1024:
+                        size = f" ({size_bytes / 1024 / 1024:.1f}MB)"
+                    elif size_bytes > 1024:
+                        size = f" ({size_bytes / 1024:.1f}KB)"
+                    else:
+                        size = f" ({size_bytes}B)"
+                
+                results.append(f"{prefix} {rel_path}{size}")
+                
+                if len(results) >= 50:
+                    break
+            
+            if not results:
+                return f"🔍 Aucun fichier trouvé pour '{pattern}' dans {directory}"
+            
+            return f"📂 {len(results)} fichiers trouvés pour '{pattern}':\n\n" + "\n".join(results)
+            
+        except Exception as e:
+            return f"❌ Erreur find: {e}"
+    
+    async def _edit_file_handler(
+        self,
+        path: str,
+        search: str,
+        replace: str,
+        allow_multiple: bool = False
+    ) -> str:
+        """Édite un fichier en remplaçant du texte."""
+        try:
+            file_path = Path(path)
+            if not file_path.exists():
+                return f"❌ Fichier non trouvé: {path}"
+            if not file_path.is_file():
+                return f"❌ N'est pas un fichier: {path}"
+            
+            # Lit le contenu
+            content = file_path.read_text(encoding='utf-8')
+            
+            # Compte les occurrences
+            count = content.count(search)
+            
+            if count == 0:
+                return f"❌ Texte non trouvé dans {path}:\n```\n{search[:200]}\n```"
+            
+            if count > 1 and not allow_multiple:
+                return f"⚠️ {count} occurrences trouvées. Utilisez allow_multiple=true pour toutes les remplacer, ou soyez plus précis."
+            
+            # Effectue le remplacement
+            if allow_multiple:
+                new_content = content.replace(search, replace)
+                replaced_count = count
+            else:
+                new_content = content.replace(search, replace, 1)
+                replaced_count = 1
+            
+            # Sauvegarde
+            file_path.write_text(new_content, encoding='utf-8')
+            
+            return f"✅ {replaced_count} remplacement(s) effectué(s) dans {path}"
+            
+        except Exception as e:
+            return f"❌ Erreur edit: {e}"
+    
+    async def _view_file_outline_handler(self, path: str) -> str:
+        """Affiche la structure d'un fichier Python (classes, fonctions)."""
+        try:
+            file_path = Path(path)
+            if not file_path.exists():
+                return f"❌ Fichier non trouvé: {path}"
+            if not file_path.suffix == '.py':
+                return f"⚠️ Seuls les fichiers Python sont supportés (reçu: {file_path.suffix})"
+            
+            content = file_path.read_text(encoding='utf-8')
+            
+            try:
+                tree = ast.parse(content)
+            except SyntaxError as e:
+                return f"❌ Erreur de syntaxe Python: {e}"
+            
+            outline = []
+            
+            # Parcours uniquement les éléments top-level
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef):
+                    # Classe
+                    methods = []
+                    for item in node.body:
+                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            prefix = "async " if isinstance(item, ast.AsyncFunctionDef) else ""
+                            methods.append(f"    - {prefix}def {item.name}() [L{item.lineno}]")
+                    
+                    outline.append(f"\n📦 class {node.name}: [L{node.lineno}]")
+                    outline.extend(methods)
+                    
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # Fonction top-level
+                    prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
+                    outline.append(f"\n⚡ {prefix}def {node.name}() [L{node.lineno}]")
+            
+            if not outline:
+                return f"📄 {path}: Aucune classe ou fonction trouvée"
+            
+            header = f"📄 Structure de {path}:\n"
+            return header + "\n".join(outline)
+            
+        except Exception as e:
+            return f"❌ Erreur outline: {e}"
+    
+    # ==================== HANDLERS BROWSER (Phase 3) ====================
+    
+    def _get_browser(self):
+        """Récupère ou crée l'instance du navigateur Playwright."""
+        try:
+            from .playwright_browser import get_playwright_browser
+            return get_playwright_browser(headless=True)
+        except ImportError:
+            return None
+    
+    async def _browser_navigate_handler(self, url: str) -> str:
+        """Navigue vers une URL."""
+        browser = self._get_browser()
+        if not browser:
+            return "❌ Playwright non disponible"
+        
+        if not browser.is_available:
+            return "❌ Playwright non installé. Installez avec: pip install playwright && playwright install chromium"
+        
+        result = await browser.navigate(url)
+        
+        if result.get("success"):
+            return f"🌐 Navigation réussie:\n- URL: {result.get('url')}\n- Titre: {result.get('title')}\n- Status: {result.get('status')}"
+        else:
+            return f"❌ Erreur navigation: {result.get('error')}"
+    
+    async def _browser_click_handler(self, selector: str) -> str:
+        """Clique sur un élément."""
+        browser = self._get_browser()
+        if not browser:
+            return "❌ Playwright non disponible"
+        
+        result = await browser.click(selector)
+        
+        if result.get("success"):
+            return f"✅ Cliqué sur: {selector}"
+        else:
+            return f"❌ Erreur clic: {result.get('error')}"
+    
+    async def _browser_type_handler(self, selector: str, text: str) -> str:
+        """Tape du texte dans un champ."""
+        browser = self._get_browser()
+        if not browser:
+            return "❌ Playwright non disponible"
+        
+        result = await browser.type_text(selector, text)
+        
+        if result.get("success"):
+            return f"✅ Texte tapé: {len(text)} caractères dans {selector}"
+        else:
+            return f"❌ Erreur frappe: {result.get('error')}"
+    
+    async def _browser_screenshot_handler(self, filename: str = "") -> str:
+        """Prend une capture d'écran."""
+        browser = self._get_browser()
+        if not browser:
+            return "❌ Playwright non disponible"
+        
+        result = await browser.screenshot(filename if filename else None)
+        
+        if result.get("success"):
+            return f"📸 Screenshot sauvegardé: {result.get('path')}"
+        else:
+            return f"❌ Erreur screenshot: {result.get('error')}"
+    
+    async def _browser_get_text_handler(self, selector: str = "body") -> str:
+        """Récupère le texte d'une page."""
+        browser = self._get_browser()
+        if not browser:
+            return "❌ Playwright non disponible"
+        
+        result = await browser.get_text(selector)
+        
+        if result.get("success"):
+            text = result.get("text", "")
+            if len(text) > 3000:
+                text = text[:3000] + "\n[... tronqué ...]"
+            return f"📄 Texte ({result.get('length')} chars):\n{text}"
+        else:
+            return f"❌ Erreur get_text: {result.get('error')}"
+
+
+# Instance globale
+_tool_system: Optional[LumenaToolSystem] = None
+
+def get_tool_system() -> LumenaToolSystem:
+    """Retourne l'instance globale du système de tools."""
+    global _tool_system
+    if _tool_system is None:
+        _tool_system = LumenaToolSystem()
+    return _tool_system

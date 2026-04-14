@@ -1,0 +1,35 @@
+# ============================================================
+# LUMENA — docker-compose (développement & production)
+# ============================================================
+# Démarrage :  docker-compose up -d
+# Logs       :  docker-compose logs -f lumena
+# Arrêt      :  docker-compose down
+# ============================================================
+
+services:
+  lumena:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lumena
+    restart: unless-stopped
+    ports:
+      - "${LUMENA_PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      # Données persistantes (mémoire, journaux, config)
+      - ./data:/app/data
+      # Workspace utilisateur (projets générés par Lumena)
+      - ./workspace:/app/workspace
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

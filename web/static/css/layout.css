@@ -1,0 +1,191 @@
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+
+/* Skip link (a11y) */
+.skip-link{position:absolute;left:-9999px;top:0;z-index:10000;padding:8px 16px;background:var(--accent);color:#fff;border-radius:0 0 8px 0;font-weight:600;text-decoration:none;font-size:14px}
+.skip-link:focus{left:0}
+
+/* Screen-reader only */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* Visible focus rings */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm)}
+body{
+  font:400 13.5px/1.55 var(--font-body);
+  letter-spacing:-0.01em;
+  background:
+    radial-gradient(1200px 900px at 15% -10%,#162031 0%,transparent 55%) fixed,
+    radial-gradient(900px 700px at 80% 10%,#251f1a 0%,transparent 60%) fixed,
+    linear-gradient(160deg,var(--bg) 0%,var(--bg-accent) 100%) fixed;
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+button,input,textarea,select{font:inherit;color:inherit}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.2)}
+
+/* ============================================================
+   SHELL GRID LAYOUT
+   ============================================================ */
+.shell{
+  height:100vh;
+  display:grid;
+  grid-template-columns:var(--shell-nav-width) minmax(0,1fr);
+  grid-template-rows:var(--shell-topbar-height) 1fr;
+  grid-template-areas:"nav topbar" "nav content";
+  gap:0;
+  overflow:hidden;
+  transition:grid-template-columns .2s var(--ease-out);
+}
+@supports(height:100dvh){.shell{height:100dvh}}
+.shell--nav-collapsed{grid-template-columns:var(--shell-nav-rail) minmax(0,1fr)}
+.shell--focus{grid-template-columns:0px minmax(0,1fr)}
+.shell--focus .topbar{display:none}
+.shell--focus .shell-nav{display:none}
+
+/* ============================================================
+   TOPBAR – glassmorphism
+   ============================================================ */
+.topbar{
+  grid-area:topbar;
+  position:sticky;top:0;z-index:40;
+  display:flex;align-items:center;
+  padding:0 24px;
+  min-height:var(--shell-topbar-height);
+  border-bottom:1px solid color-mix(in srgb,var(--border) 74%,transparent);
+  background:color-mix(in srgb,var(--bg) 82%,transparent);
+  backdrop-filter:blur(12px) saturate(1.6);
+  -webkit-backdrop-filter:blur(12px) saturate(1.6);
+}
+.topbar-inner{display:flex;align-items:center;gap:16px;width:100%;min-height:var(--shell-topbar-height)}
+.topbar-breadcrumb{display:flex;align-items:center;gap:8px;min-width:0;font-size:13px;flex:1}
+.topbar-breadcrumb-sep{color:var(--muted)}
+.topbar-breadcrumb-current{color:var(--text-strong);font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.topbar-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
+
+/* Search pill */
+.search-pill{
+  display:flex;align-items:center;gap:8px;
+  padding:6px 14px;height:32px;
+  border:1px solid var(--border);border-radius:var(--radius-full);
+  background:var(--card-highlight);color:var(--muted);font-size:12px;
+  cursor:pointer;min-width:180px;
+  transition:border-color .15s,background .15s;
+}
+.search-pill:hover{border-color:var(--border-strong);background:var(--bg-hover)}
+.search-pill kbd{font-family:var(--mono);font-size:11px;opacity:.6}
+
+/* Theme orb */
+.theme-orb{
+  width:28px;height:28px;border-radius:50%;border:1px solid var(--border);
+  background:var(--card);cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:14px;transition:border-color .15s,transform .15s;
+}
+.theme-orb:hover{border-color:var(--accent);transform:scale(1.1)}
+
+/* ============================================================
+   SIDEBAR NAV
+   ============================================================ */
+.shell-nav{
+  grid-area:nav;
+  display:flex;flex-direction:column;
+  background:var(--panel);
+  border-right:1px solid var(--border);
+  backdrop-filter:blur(20px);
+  overflow-y:auto;overflow-x:hidden;
+  transition:width .2s var(--ease-out);
+}
+
+/* Logo */
+.nav-logo{
+  display:flex;align-items:center;gap:10px;
+  padding:14px 20px;border-bottom:1px solid var(--border);
+  flex-shrink:0;
+}
+.nav-logo-icon{display:flex;align-items:center;color:var(--accent)}
+.nav-logo-icon svg{width:24px;height:24px;stroke-width:2}
+.nav-logo-text{font-weight:700;font-size:18px;color:var(--accent)}
+.nav-logo-badge{
+  font-size:9px;text-transform:uppercase;letter-spacing:1px;
+  color:var(--muted);background:rgba(255,255,255,0.05);
+  padding:2px 6px;border-radius:var(--radius-sm);margin-left:auto;
+}
+.shell--nav-collapsed .nav-logo-text,
+.shell--nav-collapsed .nav-logo-badge{display:none}
+
+/* Status panel */
+.nav-status{
+  padding:12px 16px;border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.nav-status-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.stat-card{
+  background:rgba(0,0,0,0.2);border:1px solid var(--border);
+  border-radius:var(--radius-md);padding:8px 10px;
+}
+.stat-label{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted)}
+.stat-value{font-size:16px;font-weight:600;color:var(--accent);margin-top:1px}
+.stat-value.ok{color:var(--ok)}.stat-value.warn{color:var(--warn)}.stat-value.danger{color:var(--danger)}
+.shell--nav-collapsed .nav-status{display:none}
+
+/* Nav sections */
+.nav-sections{flex:1;padding:8px;overflow-y:auto}
+.nav-section{margin-bottom:4px}
+.nav-section-title{
+  font-size:10px;text-transform:uppercase;letter-spacing:1px;
+  color:var(--muted);padding:10px 12px 4px;
+  display:flex;align-items:center;justify-content:space-between;
+  cursor:pointer;user-select:none;
+}
+.nav-section-title .chevron{font-size:10px;transition:transform .2s;opacity:.5}
+.nav-section.collapsed .chevron{transform:rotate(-90deg)}
+.nav-section.collapsed .nav-section-items{display:none}
+.shell--nav-collapsed .nav-section-title span:not(.chevron){display:none}
+
+.nav-item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 12px;border-radius:var(--radius-md);
+  cursor:pointer;transition:all .15s ease;
+  border:1px solid transparent;margin-bottom:1px;
+  font-size:13.5px;white-space:nowrap;
+}
+.nav-item:hover{background:rgba(255,255,255,0.04);border-color:var(--border)}
+.nav-item.active{background:var(--accent-subtle);border-color:rgba(245,159,74,0.3)}
+.nav-item.active .nav-item-icon{color:var(--accent)}
+.nav-item-icon{width:18px;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--muted)}
+.nav-item-icon svg{width:16px;height:16px;stroke-width:1.75}
+.nav-item-label{flex:1;overflow:hidden;text-overflow:ellipsis}
+.nav-item .badge{
+  margin-left:auto;background:var(--accent);color:var(--bg);
+  font-size:10px;font-weight:600;padding:1px 6px;border-radius:var(--radius-full);
+}
+.shell--nav-collapsed .nav-item-label,
+.shell--nav-collapsed .nav-item .badge{display:none}
+.shell--nav-collapsed .nav-item{justify-content:center;padding:10px}
+
+/* Collapse toggle */
+.nav-collapse-toggle{
+  display:flex;align-items:center;justify-content:center;
+  width:36px;height:36px;border-radius:var(--radius-md);
+  border:1px solid var(--border);background:transparent;
+  color:var(--muted);cursor:pointer;transition:all .15s;
+  margin:12px auto;flex-shrink:0;
+}
+.nav-collapse-toggle:hover{background:var(--bg-hover);color:var(--text)}
+
+/* Mood */
+.nav-mood{
+  padding:12px 16px;border-top:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;flex-shrink:0;
+}
+.nav-mood-emoji{font-size:22px}
+.nav-mood-label{font-size:11px;color:var(--muted)}
+.nav-mood-value{font-size:13px;font-weight:500;color:var(--text)}
+.shell--nav-collapsed .nav-mood-label,
+.shell--nav-collapsed .nav-mood-value{display:none}

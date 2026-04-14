@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2.5cm 3cm; }
+  body { font-family: 'Georgia', serif; color: #222; font-size: 12px; line-height: 1.8; }
+  .expediteur { margin-bottom: 40px; }
+  .expediteur strong { font-size: 14px; }
+  .destinataire { text-align: right; margin-bottom: 30px; }
+  .lieu-date { text-align: right; margin-bottom: 20px; color: #555; }
+  .objet { margin: 20px 0; font-weight: bold; border-bottom: 1px solid #ddd; padding-bottom: 6px; }
+  .corps { text-align: justify; margin: 20px 0; }
+  .formule { margin-top: 30px; }
+  .signature { margin-top: 50px; text-align: right; }
+</style>
+</head>
+<body>
+  <div class="expediteur">
+    <strong>{{ expediteur.name|default('') }}</strong><br>
+    {{ expediteur.address|default('') }}<br>
+    {{ expediteur.city|default('') }}
+    {% if expediteur.phone %}<br>Tél. : {{ expediteur.phone }}{% endif %}
+    {% if expediteur.email %}<br>{{ expediteur.email }}{% endif %}
+  </div>
+
+  <div class="destinataire">
+    <strong>{{ destinataire.name|default('') }}</strong><br>
+    {{ destinataire.address|default('') }}<br>
+    {{ destinataire.city|default('') }}
+  </div>
+
+  <div class="lieu-date">
+    {{ lieu|default('') }}{{ ', le ' if lieu and date else '' }}{{ date|default('') }}
+  </div>
+
+  <div class="objet">
+    Objet : {{ objet }}
+  </div>
+
+  <div class="corps">
+    <p>{{ formule_appel|default('Madame, Monsieur') }},</p>
+    {% for paragraphe in corps if corps is iterable and corps is not string %}
+    <p>{{ paragraphe }}</p>
+    {% else %}
+    <p>{{ corps }}</p>
+    {% endfor %}
+  </div>
+
+  <div class="formule">
+    <p>{{ formule_politesse|default('Je vous prie d\'agréer, ' ~ (formule_appel|default('Madame, Monsieur')) ~ ', l\'expression de mes salutations distinguées.') }}</p>
+  </div>
+
+  <div class="signature">
+    {{ expediteur.name|default('') }}<br>
+    <em>Signature</em>
+  </div>
+</body>
+</html>

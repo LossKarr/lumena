@@ -1,0 +1,14 @@
+{
+  "name": "lumena-web",
+  "private": true,
+  "version": "2.1.0",
+  "description": "Lumena Control Panel — frontend build",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

@@ -1,0 +1,88 @@
+name: CI — Lumena
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-timeout
+
+      - name: Run tests
+        run: python -m pytest tests/ --timeout=15 --tb=short -q
+
+  lint:
+    name: Lint & import check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y portaudio19-dev libsndfile1-dev
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Ruff check (dangerous errors — blocks CI)
+        run: ruff check src/ web/ tests/ --select F821,F811,E722 --ignore E501,E402
+
+      - name: Ruff check (all E,F,W — advisory only)
+        run: ruff check src/ web/ tests/ --select E,F,W --ignore E501,E402 --exit-zero
+
+      - name: Verify core imports
+        run: |
+          python -c "from src.core import LumenaCore; print('core OK')"
+          python -c "from src.reasoning.react import ReActLoop; print('react OK')"
+          python -c "from src.llm.multi_provider import get_multi_provider; print('llm OK')"
+          python -c "from web.server import app; print('web OK')"
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [test, lint]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t lumena:ci --target runtime .

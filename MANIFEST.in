@@ -1,0 +1,7 @@
+recursive-include assets/templates *
+recursive-include skills *.md *.yaml *.json
+recursive-include web/static *
+include web/index.html
+include .env.example
+include LICENSE
+include README.md

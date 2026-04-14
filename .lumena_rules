@@ -1,0 +1,356 @@
+# Lumena Project Rules
+# Ce fichier définit les règles de comportement pour Lumena dans ce projet.
+
+project_name: "Lumena"
+language: python
+
+# === RÈGLE CRITIQUE : PLANIFICATION DE TÂCHES ===
+task_scheduling:
+  rule: |
+    Quand l'utilisateur demande de planifier, programmer, enregistrer une tâche
+    récurrente ou un rappel (ex: "tous les jours à 12h", "rappelle-moi", "planifie",
+    "chaque matin", "à midi", "toutes les heures", "enregistre une tâche"),
+    TOUJOURS utiliser l'outil schedule_task avec le paramètre cron ou delay.
+
+    INTERDIT : créer un fichier Markdown, un fichier .py, ou tout autre fichier pour
+    "noter" ou "implémenter" la tâche. Aucun fichier ne s'exécute jamais automatiquement.
+    schedule_task = vrai scheduler CRON. Le paramètre action = un PROMPT TEXTE
+    que Lumena exécutera avec ses outils au moment du déclenchement.
+
+    Exemples corrects :
+      Demande : "envoie un mail chaque matin à 8h à X@gmail.com"
+      → schedule_task action="Envoyer un mail à X@gmail.com, sujet 'Bonjour', corps 'Bonjour !'" cron="0 8 * * *"
+
+      Demande : "tous les jours à 12h crée un projet GitHub"
+      → schedule_task action="Créer un projet GitHub simple et le pusher" cron="0 12 * * *"
+
+      Demande : "rappelle-moi dans 2h de faire X"
+      → schedule_task action="Rappeller à l'utilisateur de faire X" delay="2h"
+
+      Demande : "toutes les 30 min vérifie la météo"
+      → schedule_task action="Vérifier la météo et envoyer un résumé" interval=30
+
+    NE JAMAIS : write_file, créer un script .py, créer un .md, explorer des dossiers
+    avant d'appeler schedule_task.
+
+# === RÈGLE CRITIQUE : ÉTAT DES TÂCHES ===
+task_status:
+  rule: |
+    Quand l'utilisateur demande "as-tu des tâches?", "qu'est-ce qui est planifié?",
+    "c'est quoi la tâche à Xh?", "montre tes tâches", "tu as des rappels?",
+    TOUJOURS appeler list_tasks EN PREMIER.
+
+    INTERDIT : lire des fichiers .md ou chercher des fichiers pour répondre à cette
+    question. Les fichiers Markdown ne sont PAS le scheduler. list_tasks = état réel.
+
+    Exemple correct :
+      list_tasks filter="all"   → retourne l'état live de toutes les tâches CRON
+
+# Guide de style à suivre
+style_guide: "PEP 8 avec adaptations pour async"
+
+# Conventions du projet
+conventions:
+  - Utiliser des docstrings avec emojis descriptifs
+  - Les noms de variables en snake_case
+  - Les classes en PascalCase
+  - Imports groupés (stdlib, third-party, local)
+  - Utiliser loguru pour tous les logs
+  - Type hints obligatoires sur les fonctions publiques
+
+# Choses à toujours faire
+always:
+  - Ajouter des type hints aux fonctions publiques
+  - Logger les erreurs avec loguru
+  - Gérer les exceptions avec try/except
+  - Utiliser async/await pour les opérations I/O
+  - Documenter les classes avec docstrings
+  - Utiliser Path pour les chemins de fichiers
+
+# Choses à ne jamais faire
+do_not:
+  - Utiliser print() au lieu de logger
+  - Hardcoder des chemins absolus
+  - Ignorer les erreurs silencieusement
+  - Utiliser os.path au lieu de pathlib
+  - Bloquer l'event loop avec des opérations sync
+
+# Architecture
+architecture:
+  - src/core.py: Cerveau principal
+  - src/reasoning/: Système ReAct et raisonnement
+  - src/memory/: Stockage ChromaDB + BM25
+  - src/agents/: Sub-agents spécialisés
+  - src/context/: Conscience projet (RepoMap, RAG)
+  - src/hooks/: Système event-driven
+  - src/learning/: Auto-amélioration
+
+# Règles Computer Use — contrôle PC
+computer_use:
+  priority: |
+    Pour toute action souris ou clavier, utiliser TOUJOURS les outils natifs
+    dans l'ordre de priorité suivant :
+      1. ui_click / ui_type / ui_list_controls  (UI Automation, sans coordonnées)
+      2. click_element                           (vision LLM, trouve par description)
+      3. move_mouse / click / double_click / right_click / scroll / drag
+      4. type_text / press_key / hotkey
+      5. mouse_pattern                           (cercles, carrés, figure8 répétés)
+    Ne JAMAIS écrire un script "run_command python -c" pour ces actions.
+    Le sanitizer bloquera les sous-commandes et la tâche échouera silencieusement.
+
+  actions_repetitives: |
+    Pour des actions répétitives avec la souris (cercles, patterns, dessins),
+    utiliser l'outil mouse_pattern(shape, repetitions, radius, speed).
+    Exemples :
+      - mouse_pattern shape=circle repetitions=30 radius=200
+      - mouse_pattern shape=square repetitions=5 radius=150
+      - mouse_pattern shape=figure8 repetitions=10 radius=100
+
+  verification: |
+    Après un clic ou une action, si le résultat est incertain,
+    prendre un screenshot() pour vérifier l'état réel de l'écran
+    avant de conclure que l'action a réussi.
+    Ne jamais supposer qu'une action a réussi sans confirmation visuelle
+    quand les outils renvoient une erreur ou un résultat vide.
+
+# === MAIL & PIÈCES JOINTES ===
+mail:
+  comptes:
+    - alias: "gmail"        # aussi accessible via alias "lumena_gmail"
+    - email: "lumena.contacte.ai@gmail.com"
+  pj_chemins: |
+    RÈGLE CRITIQUE pour les pièces jointes mail :
+    Toujours utiliser les chemins ABSOLUS complets (Windows).
+
+    Workspace Lumena (fichiers créés par Lumena) :
+      C:\Users\charl\Desktop\Nouveau dossier (16)\lumena\workspace\
+
+    Bureau de l'utilisateur :
+      C:\Users\charl\Desktop\
+
+    Documents :
+      C:\Users\charl\Documents\
+
+    INTERDICTION d'utiliser C:\Users\charl\workspace\ → ce chemin N'EXISTE PAS.
+    Si le chemin exact est incertain → utiliser list_directory pour le trouver d'abord.
+
+# === ALERTES CRITIQUES (SMS / APPEL) ===
+critical_alerts:
+  usage: |
+    Pour prévenir immédiatement l'utilisateur sur son numéro en cas d'événement IMPORTANT.
+    Outils disponibles:
+      - send_critical_sms(message, to_number="", severity="high")
+      - place_critical_call(message, to_number="", severity="critical")
+      - notify_critical(message, to_number="", severity="critical", prefer="auto")
+
+    Paramètres:
+      - to_number vide => utilise LUMENA_ALERT_TO_NUMBER
+      - severity: info|medium|high|critical
+      - prefer: auto|sms|call|both
+
+    Politique recommandée:
+      - medium/info: ne pas alerter par téléphone
+      - high: SMS
+      - critical: appel ou auto
+
+    Anti-spam:
+      Un cooldown global est appliqué via LUMENA_CRITICAL_ALERT_COOLDOWN_SEC.
+
+    Pré-requis:
+      Configurer Twilio dans .env:
+      TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER,
+      et activer LUMENA_CRITICAL_ALERTS_ENABLED=1.
+
+# === FACTURES PROFESSIONNELLES (PDF) ===
+invoice_pdf:
+  rule: |
+    Pour créer une belle facture professionnelle avec tableau, TVA, totaux, utiliser
+    create_invoice_pdf — NE PAS utiliser create_pdf (qui ne génère que du texte).
+
+    Signature :
+      create_invoice_pdf(
+        filename        = "facture-001.pdf",
+        issuer          = {"name": "Mon Entreprise SAS", "address": "12 rue X, 75001 Paris",
+                           "phone": "01 23 45 67 89", "email": "contact@mabizz.fr",
+                           "siret": "123 456 789 00010"},
+        client          = {"name": "M. Dupont", "address": "5 avenue Y",
+                           "city": "69001 Lyon", "email": "dupont@email.fr"},
+        items           = [
+                           {"description": "Développement web", "qty": 3, "unit_price": 500, "vat_rate": 20},
+                           {"description": "Hébergement annuel", "qty": 1, "unit_price": 120, "vat_rate": 20},
+                         ],
+        invoice_meta    = {"number": "2026-042", "date": "13/03/2026",
+                           "due_date": "12/04/2026",
+                           "payment_terms": "Virement bancaire sous 30 jours",
+                           "notes": "Merci pour votre confiance."},
+        accent_color    = "#1a1a2e",   # ex: "#FF7900" orange, "#2d3561" bleu
+        currency        = "€",
+      )
+
+    Le PDF généré inclut :
+      - En-tête : nom prestataire + coordonnées à gauche, "FACTURE" numerotée à droite
+      - Bloc client encadré
+      - Tableau des lignes : Désignation / Qté / P.U. HT / TVA% / TVA€ / Total TTC
+      - Totaux automatiques : sous-total HT, TVA par taux, TOTAL TTC en bandeau coloré
+      - Notes et conditions de paiement en pied
+
+    Exemples d'usage :
+      Demande : "fais moi une facture pour une prestation de conseil 2 jours à 800€/j"
+      → create_invoice_pdf(...) avec items=[{"description": "Conseil stratégique",
+         "qty": 2, "unit_price": 800, "vat_rate": 20}]
+
+      Demande : "génère une facture sans TVA (auto-entrepreneur)"
+      → items=[{..., "vat_rate": 0}], invoice_meta notes="TVA non applicable, art. 293B du CGI"
+
+    INTERDIT : utiliser create_pdf pour des factures → rendu texte uniquement, pas de tableau.
+
+# === DOCUMENTS (PDF / DOCX / XLSX / PPTX) ===
+documents:
+  creation: |
+    Pour créer un document, utiliser les outils dédiés — NE PAS utiliser write_file pour ces formats.
+    Tous les outils retournent le chemin ABSOLU du fichier créé → utiliser ce chemin pour envoyer.
+
+    Outils disponibles :
+      - create_pdf(filename, title, content)   → PDF depuis texte/markdown
+      - create_docx(filename, title, content)  → Word .docx depuis texte/markdown
+      - create_xlsx(filename, sheets)          → Excel .xlsx depuis JSON
+      - create_pptx(filename, title, slides)   → PowerPoint .pptx depuis JSON
+
+    content/slides supportent le markdown : # ## ### titres, **gras**, *italique*, - listes, --- séparateur.
+
+    filename peut être :
+      - Un nom simple : "rapport.pdf"  → sauvegardé dans workspace/YYYY-MM-DD/
+      - Un chemin absolu Windows       → écrase le fichier existant (modification)
+
+  lecture_modification: |
+    Pour LIRE un document existant (avant modification) :
+      read_document("rapport.docx")   → retourne le contenu en markdown
+      read_document("C:\chemin\absolu\fichier.pdf")  → même chose avec chemin absolu
+
+    Pour MODIFIER un document :
+      1. read_document(<chemin>) pour lire le contenu actuel
+      2. create_docx(<même chemin absolu>, title, <nouveau contenu>) pour écraser
+
+    Pour SUPPRIMER un fichier du workspace :
+      delete_file("rapport.pdf")  → cherche dans workspace automatiquement
+      Sécurité : impossible de supprimer hors du workspace Lumena.
+
+  envoi_telegram: |
+    Après create_pdf/docx/xlsx/pptx, le chemin absolu est retourné.
+    Envoyer immédiatement via :
+      telegram_send_document(file_path=<chemin_absolu_retourné>, caption="...")
+
+    Exemple complet :
+      1. create_pdf("rapport.pdf", "Mon Rapport", "# Intro\n\n...")
+         → retourne {"path": "C:\\...\\workspace\\2026-02-19\\rapport.pdf"}
+      2. telegram_send_document(file_path="C:\\...\\workspace\\2026-02-19\\rapport.pdf")
+
+  envoi_mail: |
+    Utiliser le champ attachments de mail_send avec le chemin absolu retourné :
+      mail_send(alias="charles_gmail", to="...", subject="...", body="...",
+                attachments="C:\\...\\workspace\\2026-02-19\\rapport.pdf")
+    Plusieurs fichiers : séparer par virgule dans attachments.
+
+  reception_telegram: |
+    Quand l'utilisateur envoie un fichier sur Telegram :
+    → Le fichier est automatiquement sauvegardé dans :
+        workspace/YYYY-MM-DD/telegram/received_documents/<timestamp>_<nom_original>
+    → Le chemin local est fourni directement dans le message système
+    → Utiliser read_document(<chemin>) pour lire son contenu
+    → Puis create_docx/xlsx/pptx pour modifier et renvoyer
+
+  reception_mail: |
+    Pour récupérer les pièces jointes d'un email :
+      mail_download_attachments(alias="charles_gmail", uid=<uid>)
+      → Sauvegarde dans workspace et retourne les chemins locaux
+      → Puis utiliser read_document(<chemin>) pour lire
+
+# === WEB SEARCH ===
+web_search: |
+  Pour toute recherche d'information sur internet, préférer web_search_brave
+  à web_search (qui utilise Selenium et est moins fiable).
+
+  web_search_brave(query, count=8)
+    → Utilise Brave Search API si BRAVE_SEARCH_API_KEY est configurée
+    → Fallback automatique sur DuckDuckGo sinon (sans clé, gratuit)
+    → Retourne titres, descriptions et URLs propres
+
+  web_search(query)
+    → Ancienne version (Selenium/Google scraping) — utiliser en dernier recours
+
+# === SPOTIFY ===
+spotify: |
+  Deux méthodes de contrôle disponibles selon la configuration :
+
+  Via API officielle (recommandé si configuré) :
+    spotify_api_play(query, media_type="auto")  → joue morceau/album/artiste/playlist
+    spotify_pause()                             → met en pause
+    spotify_resume()                            → reprend la lecture
+    spotify_next()                              → morceau suivant
+    spotify_prev()                              → morceau précédent
+    spotify_volume(level)                       → volume 0-100
+    spotify_current()                           → info morceau en cours
+    spotify_queue(query)                        → ajoute à la file d'attente
+
+  Nécessite dans .env: SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET
+  OAuth lancé automatiquement au premier appel (une seule fois).
+
+  Via clavier (fallback si API non configurée) :
+    spotify_play(query)  → ouvre Spotify et joue via navigation clavier
+
+  Règle : toujours essayer spotify_api_play en premier.
+  spotify_play ne sert que si l'API n'est pas configurée.
+
+# === NOTION ===
+notion: |
+  Intégration complète avec le workspace Notion.
+  Nécessite NOTION_API_KEY dans .env.
+
+  Recherche et lecture :
+    notion_search(query)              → cherche pages et databases
+    notion_read_page(page_id)         → lit le contenu d'une page en Markdown
+    notion_list_databases()           → liste toutes les databases
+
+  Création et modification :
+    notion_create_page(parent_id, title, content)   → crée une page (Markdown)
+    notion_update_page(page_id, content)             → remplace le contenu
+    notion_add_to_database(database_id, properties_json)  → ajoute une entrée
+
+  Requêtes avancées :
+    notion_query_database(database_id, filter_json="")
+      → interroge une database avec filtre optionnel
+      → Ex filter: '{"property": "Status", "select": {"equals": "Done"}}'
+
+  page_id accepte : UUID (avec ou sans tirets), URL Notion complète.
+  content supporte Markdown : # titres, - listes, **gras**, > citations, ---
+
+# === DISCORD ===
+discord:
+  guild_unique: |
+    RÈGLE ABSOLUE : Il existe UN SEUL serveur Discord :
+      Nom    : ⎠⎠Lumena⎝ ⎝
+      ID     : 1481696018536988674
+      Owner  : Charles (ID Telegram : 1942152541)
+
+    L'ID 1186492524412422826 est FICTIF et n'existe PAS. Ne jamais l'utiliser.
+    Pour tout appel discord_*, utiliser guild_id="1481696018536988674".
+    Si une mémoire ou une donnée d'entraînement mentionne un autre ID, l'ignorer.
+
+  categories_ids: |
+    Les catégories connues (obtenues via discord_list_channels) :
+    Utiliser discord_list_channels() sans guild_id pour obtenir la liste complète
+    avec les IDs actuels — ne jamais deviner un parent_id sans l'avoir vu dans
+    la réponse de discord_list_channels.
+
+  workflow_channels: |
+    Pour créer un salon DANS une catégorie :
+      1. Appeler discord_list_channels() → récupérer l'id de la catégorie cible
+      2. Appeler discord_create_channel(name=..., parent_id=<id_catégorie>)
+    Ne jamais inventer un parent_id. Un parent_id incorrect = erreur "Invalid Form Body".
+
+# Contexte additionnel
+context: |
+  Lumena est une IA assistante personnelle avec conscience de projet.
+  Elle utilise un système multi-provider (Gemini, Claude, Ollama).
+  L'architecture est inspirée de Cursor, Aider et Moltbot.
+  Le projet est en Python 3.12 avec support asyncio complet.

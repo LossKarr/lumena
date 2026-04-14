@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #222; font-size: 12px; line-height: 1.6; }
+  .header { background: {{ accent|default('#1a1a2e') }}; color: white; padding: 20px 24px; border-radius: 8px; margin-bottom: 20px; }
+  .header h1 { margin: 0; font-size: 22px; }
+  .header .dept { opacity: 0.8; font-size: 11px; margin-top: 4px; }
+  .section { margin-bottom: 18px; }
+  .section h2 { font-size: 14px; color: {{ accent|default('#1a1a2e') }}; margin: 0 0 8px; border-bottom: 1px solid {{ accent|default('#1a1a2e') }}33; padding-bottom: 4px; }
+  .missions li, .competences li { margin-bottom: 4px; }
+  .tag { display: inline-block; background: {{ accent|default('#1a1a2e') }}11; color: {{ accent|default('#1a1a2e') }}; border: 1px solid {{ accent|default('#1a1a2e') }}33; padding: 2px 8px; border-radius: 4px; font-size: 10px; margin: 2px; }
+  .conditions-block { background: #f8f8fa; padding: 12px 16px; border-radius: 6px; }
+  .footer { text-align: center; font-size: 10px; color: #aaa; margin-top: 20px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>{{ titre_poste }}</h1>
+    {% if departement %}<div class="dept">{{ departement }}</div>{% endif %}
+  </div>
+
+  {% if description %}
+  <div class="section">
+    <h2>Description du poste</h2>
+    <p>{{ description }}</p>
+  </div>
+  {% endif %}
+
+  <div class="section">
+    <h2>Missions principales</h2>
+    <ul class="missions">
+      {% for m in missions|default([]) %}
+      <li>{{ m }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="section">
+    <h2>Compétences requises</h2>
+    <div>
+      {% for c in competences|default([]) %}
+      <span class="tag">{{ c }}</span>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if qualifications %}
+  <div class="section">
+    <h2>Qualifications</h2>
+    <ul>
+      {% for q in qualifications %}<li>{{ q }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if conditions %}
+  <div class="section">
+    <h2>Conditions</h2>
+    <div class="conditions-block">
+      {% if conditions is mapping %}
+      {% for key, val in conditions.items() %}
+      <p><strong>{{ key }} :</strong> {{ val }}</p>
+      {% endfor %}
+      {% else %}
+      <p>{{ conditions }}</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="footer">Fiche de poste — {{ titre_poste }} — Document généré par Lumena</div>
+</body>
+</html>

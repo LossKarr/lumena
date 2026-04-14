@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 1.5cm 2cm; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #222; font-size: 11px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; border-bottom: 2px solid #1a1a2e; padding-bottom: 10px; margin-bottom: 16px; }
+  .header h2 { color: #1a1a2e; margin: 0; font-size: 16px; }
+  .info-grid { display: flex; gap: 16px; margin-bottom: 16px; }
+  .info-block { flex: 1; background: #f8f8fa; padding: 10px 14px; border-radius: 6px; }
+  .info-block h4 { margin: 0 0 4px; font-size: 10px; color: #888; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+  th { background: #1a1a2e; color: white; padding: 7px 10px; font-size: 9px; text-transform: uppercase; text-align: left; }
+  td { padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 10px; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .td-right { text-align: right; }
+  .totals-bar { display: flex; justify-content: space-between; margin-top: 12px; padding: 10px 14px; background: #f8f8fa; border-radius: 6px; }
+  .total-item { text-align: center; }
+  .total-item .label { font-size: 9px; color: #888; text-transform: uppercase; }
+  .total-item .value { font-size: 16px; font-weight: bold; color: #1a1a2e; }
+  .total-item.net .value { color: #22c55e; }
+  .footer { margin-top: 16px; font-size: 9px; color: #888; border-top: 1px solid #eee; padding-top: 8px; }
+  .mention { font-size: 8px; color: #aaa; text-align: center; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h2>BULLETIN DE PAIE</h2>
+      <span style="font-size:10px;color:#555">Période : {{ periode }}</span>
+    </div>
+    <div style="text-align:right">
+      <strong>{{ employeur.name|default('') }}</strong><br>
+      <span style="font-size:10px">{{ employeur.address|default('') }}</span><br>
+      {% if employeur.siret %}<span style="font-size:9px;color:#888">SIRET : {{ employeur.siret }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="info-grid">
+    <div class="info-block">
+      <h4>Salarié</h4>
+      <strong>{{ salarie.name|default('') }}</strong><br>
+      {% if salarie.poste %}{{ salarie.poste }}<br>{% endif %}
+      {% if salarie.matricule %}Matricule : {{ salarie.matricule }}<br>{% endif %}
+      {% if salarie.convention %}Convention : {{ salarie.convention }}{% endif %}
+    </div>
+    <div class="info-block">
+      <h4>Informations</h4>
+      {% if salarie.date_entree %}Date d'entrée : {{ salarie.date_entree }}<br>{% endif %}
+      {% if salarie.qualification %}Qualification : {{ salarie.qualification }}<br>{% endif %}
+      {% if salarie.temps_travail %}Temps de travail : {{ salarie.temps_travail }}{% endif %}
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>Libellé</th><th>Base</th><th>Taux salarial</th><th>Part salariale</th><th>Taux patronal</th><th>Part patronale</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Salaire brut</strong></td>
+        <td class="td-right">{{ "%.2f"|format(brut|float) }} €</td>
+        <td></td><td></td><td></td><td></td>
+      </tr>
+      {% for cot in cotisations|default([]) %}
+      <tr>
+        <td>{{ cot.libelle }}</td>
+        <td class="td-right">{{ "%.2f"|format(cot.base|default(brut)|float) }} €</td>
+        <td class="td-right">{{ cot.taux_salarial|default('') }}{% if cot.taux_salarial %}%{% endif %}</td>
+        <td class="td-right">{% if cot.part_salariale is defined %}{{ "%.2f"|format(cot.part_salariale|float) }} €{% endif %}</td>
+        <td class="td-right">{{ cot.taux_patronal|default('') }}{% if cot.taux_patronal %}%{% endif %}</td>
+        <td class="td-right">{% if cot.part_patronale is defined %}{{ "%.2f"|format(cot.part_patronale|float) }} €{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="totals-bar">
+    <div class="total-item">
+      <div class="label">Brut</div>
+      <div class="value">{{ "%.2f"|format(brut|float) }} €</div>
+    </div>
+    <div class="total-item">
+      <div class="label">Net imposable</div>
+      <div class="value">{{ "%.2f"|format(net_imposable|float) }} €</div>
+    </div>
+    <div class="total-item net">
+      <div class="label">Net à payer</div>
+      <div class="value">{{ "%.2f"|format(net_paye|float) }} €</div>
+    </div>
+  </div>
+
+  <div class="footer">
+    {% if mode_paiement %}<strong>Mode de paiement :</strong> {{ mode_paiement }}<br>{% endif %}
+    {% if date_paiement %}<strong>Date de paiement :</strong> {{ date_paiement }}{% endif %}
+  </div>
+
+  <div class="mention">
+    Dans votre intérêt, conservez ce bulletin de paie sans limitation de durée.
+  </div>
+</body>
+</html>

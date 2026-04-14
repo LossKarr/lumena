@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2.5cm; }
+  body { font-family: 'Georgia', serif; color: #222; font-size: 12px; line-height: 1.7; }
+  h1 { text-align: center; font-size: 20px; color: #1a1a2e; margin-bottom: 30px; border-bottom: 2px solid #1a1a2e; padding-bottom: 10px; }
+  .parties { display: flex; justify-content: space-between; margin-bottom: 24px; }
+  .partie { width: 45%; background: #f8f8fa; padding: 14px; border-radius: 6px; }
+  .partie h3 { margin: 0 0 8px; font-size: 11px; color: #888; text-transform: uppercase; }
+  .article { margin-bottom: 16px; }
+  .article h2 { font-size: 13px; color: #1a1a2e; margin: 0 0 6px; }
+  .article p { margin: 0; }
+  .signature { display: flex; justify-content: space-between; margin-top: 40px; }
+  .sig-block { width: 40%; border-top: 1px solid #222; padding-top: 8px; text-align: center; font-size: 11px; color: #888; }
+  .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #aaa; }
+</style>
+</head>
+<body>
+  <h1>CONTRAT DE PRESTATION DE SERVICES</h1>
+
+  <p><strong>Entre les soussignés :</strong></p>
+
+  <div class="parties">
+    <div class="partie">
+      <h3>Le prestataire</h3>
+      <strong>{{ prestataire.name|default('') }}</strong><br>
+      {{ prestataire.address|default('') }}<br>
+      {{ prestataire.city|default('') }}
+      {% if prestataire.siret %}<br>SIRET : {{ prestataire.siret }}{% endif %}
+    </div>
+    <div class="partie">
+      <h3>Le client</h3>
+      <strong>{{ client.name|default('') }}</strong><br>
+      {{ client.address|default('') }}<br>
+      {{ client.city|default('') }}
+    </div>
+  </div>
+
+  <div class="article">
+    <h2>Article 1 — Objet</h2>
+    <p>Le présent contrat a pour objet la prestation suivante : <strong>{{ objet }}</strong>.</p>
+  </div>
+
+  <div class="article">
+    <h2>Article 2 — Durée</h2>
+    <p>La prestation débute le <strong>{{ date_debut }}</strong> pour une durée de <strong>{{ duree }}</strong>.</p>
+  </div>
+
+  <div class="article">
+    <h2>Article 3 — Rémunération</h2>
+    <p>Le montant de la prestation est fixé à <strong>{{ montant }}</strong>, payable selon les conditions convenues entre les parties.</p>
+  </div>
+
+  {% for clause in clauses|default([]) %}
+  <div class="article">
+    <h2>Article {{ loop.index + 3 }} — {{ clause.titre|default('Clause ' ~ (loop.index + 3)) }}</h2>
+    <p>{{ clause.contenu }}</p>
+  </div>
+  {% endfor %}
+
+  <p style="margin-top:30px">Fait en deux exemplaires originaux,</p>
+  <p>Le {{ date|default('___/___/______') }}, à {{ lieu|default('_______________') }}.</p>
+
+  <div class="signature">
+    <div class="sig-block">Le Prestataire<br><br><br>Signature</div>
+    <div class="sig-block">Le Client<br><br><br>Signature</div>
+  </div>
+
+  <div class="footer">Document généré par Lumena</div>
+</body>
+</html>

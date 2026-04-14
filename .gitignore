@@ -1,0 +1,70 @@
+# Environnement et secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Donnees locales (runtime utilisateur)
+data/
+workspace/
+backups/
+
+# Docs internes
+docs/
+docs-plan/
+
+# Runtime Lumena
+.lumena/logs/
+
+# Logs
+*.log
+logs/
+
+# Linters cache
+.mypy_cache/
+.ruff_cache/
+
+# Fichiers temporaires
+.tmp_*
+
+# Pytest
+.pytest_cache/
+.pytest_basetemp/
+.pytest_tmp*/
+htmlcov/
+.coverage
+
+# Models locaux
+models/
+
+# Fichiers internes / artefacts racine
+_test_out.txt
+HEARTBEAT.md
+QUI_SUIS_JE.md
+"Plan- meilleur code agent au monde.md"
+*.lock.tmp
+data/env_backups/

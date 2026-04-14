@@ -1,0 +1,1235 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="dark" data-theme-mode="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lumena Control</title>
+<meta name="color-scheme" content="dark light">
+<script>(function(){var t=localStorage.getItem('lumena_theme');if(t){document.documentElement.setAttribute('data-theme-mode',t)}})();</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/tokens.css?v=3">
+<link rel="stylesheet" href="/static/css/layout.css?v=3">
+<link rel="stylesheet" href="/static/css/chat.css?v=3">
+<link rel="stylesheet" href="/static/css/components.css?v=3">
+<link rel="stylesheet" href="/static/css/thinking.css?v=3">
+<link rel="stylesheet" href="/static/css/setup.css?v=7">
+<link rel="stylesheet" href="/static/css/product-docs.css?v=1">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<a href="#panel-chat" class="skip-link">Aller au contenu</a>
+
+<!-- ============================================================
+     SETUP WIZARD (first-launch, hidden by default)
+     ============================================================ -->
+<div id="setup-wizard-overlay" class="setup-wizard-overlay" hidden role="dialog" aria-modal="true" aria-label="Assistant de configuration Lumena">
+  <div class="setup-wizard">
+    <div class="setup-progress" id="setup-dots"></div>
+    <div id="setup-step-container"></div>
+  </div>
+</div>
+
+<!-- ============================================================
+     STARTUP SCREEN
+     ============================================================ -->
+<div id="startup-screen" class="startup-screen">
+  <div class="startup-container">
+    <div style="margin-bottom:28px">
+      <div style="font-size:48px;color:var(--accent);display:flex;justify-content:center"><i data-lucide="sparkles" style="width:48px;height:48px"></i></div>
+      <h1 style="font-size:32px;color:var(--accent);margin:12px 0 6px">LUMENA</h1>
+      <p style="color:var(--muted);font-size:14px">Assistant IA Personnel</p>
+    </div>
+    <div style="text-align:left;margin-bottom:20px">
+      <h2 style="font-size:15px;margin-bottom:12px;color:var(--text)"><i data-lucide="brain"></i> Choisir le Cerveau</h2>
+      <div id="startup-models" class="startup-models">
+        <div style="text-align:center;padding:20px;color:var(--muted)">Chargement des modeles...</div>
+      </div>
+    </div>
+    <button id="startup-btn" class="startup-btn" data-action="startLumena" disabled>Demarrer Lumena</button>
+    <p style="color:var(--muted);font-size:11px;margin-top:14px">Lumena v1.0.0 Beta — Control Panel</p>
+  </div>
+</div>
+
+<!-- ============================================================
+     MAIN APP SHELL
+     ============================================================ -->
+<div class="shell" id="app-shell" style="display:none">
+
+  <!-- Focus mode exit -->
+  <button class="focus-exit" data-action="toggleFocus" title="Quitter le focus"><i data-lucide="x"></i></button>
+
+  <!-- ==================== SIDEBAR ==================== -->
+  <aside class="shell-nav" id="shell-nav" role="navigation" aria-label="Navigation principale">
+    <div class="nav-logo">
+      <span class="nav-logo-icon"><i data-lucide="sparkles"></i></span>
+      <span class="nav-logo-text">Lumena</span>
+      <span class="nav-logo-badge">CONTROL</span>
+    </div>
+
+    <div class="nav-status" id="nav-status">
+      <div class="nav-status-grid">
+        <div class="stat-card"><div class="stat-label">Outils</div><div class="stat-value" id="stat-tools">—</div></div>
+        <div class="stat-card"><div class="stat-label">Memoires</div><div class="stat-value ok" id="stat-memories">—</div></div>
+        <div class="stat-card"><div class="stat-label">Skills</div><div class="stat-value" id="stat-skills">—</div></div>
+        <div class="stat-card"><div class="stat-label">Symboles</div><div class="stat-value" id="stat-symbols">—</div></div>
+      </div>
+      <div style="margin-top:8px">
+        <div class="stat-label" style="margin-bottom:4px">Skills actifs</div>
+        <div id="skills-active-list" style="display:flex;flex-wrap:wrap;gap:4px">
+          <span class="pill">Aucun</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="nav-sections" id="nav-sections">
+      <!-- Chat -->
+      <div class="nav-section">
+        <div class="nav-item active" data-panel="chat">
+          <span class="nav-item-icon"><i data-lucide="message-circle"></i></span>
+          <span class="nav-item-label">Chat</span>
+        </div>
+        <div class="nav-item" data-panel="workspaces">
+          <span class="nav-item-icon"><i data-lucide="folder-open"></i></span>
+          <span class="nav-item-label">Projets</span>
+        </div>
+      </div>
+
+      <!-- Control -->
+      <div class="nav-section">
+        <div class="nav-section-title" data-action="toggleSection">
+          <span>Control</span><span class="chevron">▾</span>
+        </div>
+        <div class="nav-section-items">
+          <div class="nav-item" data-panel="overview">
+            <span class="nav-item-icon"><i data-lucide="layout-dashboard"></i></span>
+            <span class="nav-item-label">Overview</span>
+          </div>
+          <div class="nav-item" data-panel="repomap">
+            <span class="nav-item-icon"><i data-lucide="map"></i></span>
+            <span class="nav-item-label">Repo Map</span>
+            <span class="badge" id="badge-files">—</span>
+          </div>
+          <div class="nav-item" data-panel="search">
+            <span class="nav-item-icon"><i data-lucide="search"></i></span>
+            <span class="nav-item-label">Code Search</span>
+          </div>
+          <div class="nav-item" data-panel="memory">
+            <span class="nav-item-icon"><i data-lucide="brain"></i></span>
+            <span class="nav-item-label">Memoire</span>
+          </div>
+          <div class="nav-item" data-panel="journal">
+            <span class="nav-item-icon"><i data-lucide="book-open"></i></span>
+            <span class="nav-item-label">Journal</span>
+            <span class="badge" id="badge-journal" style="background:var(--muted)">0</span>
+          </div>
+          <div class="nav-item" data-panel="facts">
+            <span class="nav-item-icon"><i data-lucide="id-card"></i></span>
+            <span class="nav-item-label">Identite</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agent -->
+      <div class="nav-section">
+        <div class="nav-section-title" data-action="toggleSection">
+          <span>Agent</span><span class="chevron">▾</span>
+        </div>
+        <div class="nav-section-items">
+          <div class="nav-item" data-panel="tools">
+            <span class="nav-item-icon"><i data-lucide="wrench"></i></span>
+            <span class="nav-item-label">Outils</span>
+            <span class="badge" id="badge-tools">—</span>
+          </div>
+          <div class="nav-item" data-panel="rules">
+            <span class="nav-item-icon"><i data-lucide="scroll-text"></i></span>
+            <span class="nav-item-label">Regles</span>
+          </div>
+          <div class="nav-item" data-panel="instincts">
+            <span class="nav-item-icon"><i data-lucide="zap"></i></span>
+            <span class="nav-item-label">Instincts</span>
+          </div>
+          <div class="nav-item" data-panel="tasks">
+            <span class="nav-item-icon"><i data-lucide="clipboard-list"></i></span>
+            <span class="nav-item-label">Taches</span>
+            <span class="badge" id="badge-tasks" style="background:var(--muted)">0</span>
+          </div>
+          <div class="nav-item" data-panel="sessions">
+            <span class="nav-item-icon"><i data-lucide="layers"></i></span>
+            <span class="nav-item-label">Sessions</span>
+          </div>
+          <div class="nav-item" data-panel="todos">
+            <span class="nav-item-icon"><i data-lucide="list-checks"></i></span>
+            <span class="nav-item-label">Todos</span>
+            <span class="badge" id="badge-todos" style="background:var(--muted)">0</span>
+          </div>
+          <div class="nav-item" data-panel="training">
+            <span class="nav-item-icon"><i data-lucide="graduation-cap"></i></span>
+            <span class="nav-item-label">Apprentissage</span>
+          </div>
+          <div class="nav-item" data-panel="finetuning">
+            <span class="nav-item-icon"><i data-lucide="cpu"></i></span>
+            <span class="nav-item-label">Fine-tuning</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- System -->
+      <div class="nav-section">
+        <div class="nav-section-title" data-action="toggleSection">
+          <span>Systeme</span><span class="chevron">▾</span>
+        </div>
+        <div class="nav-section-items">
+          <div class="nav-item" data-panel="emotions">
+            <span class="nav-item-icon"><i data-lucide="heart-pulse"></i></span>
+            <span class="nav-item-label">Emotions</span>
+          </div>
+          <div class="nav-item" data-panel="voice">
+            <span class="nav-item-icon"><i data-lucide="mic"></i></span>
+            <span class="nav-item-label">Voix</span>
+            <span class="badge" id="badge-voice" style="background:var(--danger)">OFF</span>
+          </div>
+          <div class="nav-item" data-panel="hooks">
+            <span class="nav-item-icon"><i data-lucide="link"></i></span>
+            <span class="nav-item-label">Hooks</span>
+          </div>
+          <div class="nav-item" data-panel="trace">
+            <span class="nav-item-icon"><i data-lucide="radio"></i></span>
+            <span class="nav-item-label">Live Trace</span>
+          </div>
+          <div class="nav-item" data-panel="console">
+            <span class="nav-item-icon"><i data-lucide="monitor"></i></span>
+            <span class="nav-item-label">Console</span>
+          </div>
+          <div class="nav-item" data-panel="logs">
+            <span class="nav-item-icon"><i data-lucide="file-text"></i></span>
+            <span class="nav-item-label">Logs</span>
+          </div>
+          <div class="nav-item" data-panel="alerts">
+            <span class="nav-item-icon"><i data-lucide="bell-ring"></i></span>
+            <span class="nav-item-label">Alertes</span>
+            <span class="badge" id="badge-alerts" style="background:var(--muted)">0</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Infra -->
+      <div class="nav-section">
+        <div class="nav-section-title" data-action="toggleSection">
+          <span>Infra</span><span class="chevron">▾</span>
+        </div>
+        <div class="nav-section-items">
+          <div class="nav-item" data-panel="infra-telegram">
+            <span class="nav-item-icon"><i data-lucide="send"></i></span>
+            <span class="nav-item-label">Telegram</span>
+            <span class="badge" id="stat-telegram" style="background:var(--muted)">—</span>
+          </div>
+          <div class="nav-item" data-panel="infra-whatsapp">
+            <span class="nav-item-icon"><i data-lucide="message-circle"></i></span>
+            <span class="nav-item-label">WhatsApp</span>
+            <span class="badge" id="stat-whatsapp" style="background:var(--muted)">—</span>
+          </div>
+          <div class="nav-item" data-panel="infra-autonomy">
+            <span class="nav-item-icon"><i data-lucide="bot"></i></span>
+            <span class="nav-item-label">Autonomie</span>
+            <span class="badge" id="stat-autonomy" style="background:var(--muted)">—</span>
+          </div>
+          <div class="nav-item" data-panel="providers">
+            <span class="nav-item-icon"><i data-lucide="zap"></i></span>
+            <span class="nav-item-label">Providers LLM</span>
+          </div>
+          <div class="nav-item" data-panel="config">
+            <span class="nav-item-icon"><i data-lucide="settings"></i></span>
+            <span class="nav-item-label">Configuration</span>
+          </div>
+          <div class="nav-item" data-panel="docs">
+            <span class="nav-item-icon"><i data-lucide="file-text"></i></span>
+            <span class="nav-item-label">Fichiers</span>
+          </div>
+          <div class="nav-item" data-panel="product-docs">
+            <span class="nav-item-icon"><i data-lucide="book-open-check"></i></span>
+            <span class="nav-item-label">Documentation</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stripe -->
+      <div class="nav-section">
+        <div class="nav-section-title" data-action="toggleSection">
+          <span>Stripe</span><span class="chevron">▾</span>
+        </div>
+        <div class="nav-section-items">
+          <div class="nav-item" data-panel="stripe-overview">
+            <span class="nav-item-icon"><i data-lucide="credit-card"></i></span>
+            <span class="nav-item-label">Vue d'ensemble</span>
+            <span class="badge" id="stat-stripe-balance" style="background:var(--muted)">—</span>
+          </div>
+          <div class="nav-item" data-panel="stripe-payments">
+            <span class="nav-item-icon"><i data-lucide="receipt"></i></span>
+            <span class="nav-item-label">Paiements</span>
+          </div>
+          <div class="nav-item" data-panel="stripe-subscriptions">
+            <span class="nav-item-icon"><i data-lucide="repeat"></i></span>
+            <span class="nav-item-label">Abonnements</span>
+          </div>
+          <div class="nav-item" data-panel="stripe-products">
+            <span class="nav-item-icon"><i data-lucide="package"></i></span>
+            <span class="nav-item-label">Produits</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button class="nav-collapse-toggle" data-action="toggleNavCollapse" title="Replier/Deplier"><i data-lucide="chevron-left"></i></button>
+
+    <div class="nav-mood" id="nav-mood">
+      <span class="nav-mood-emoji" id="mood-emoji">😊</span>
+      <div>
+        <div class="nav-mood-label">Humeur</div>
+        <div class="nav-mood-value" id="mood-value">neutral</div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ==================== TOPBAR ==================== -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button class="btn-icon mobile-toggle" data-action="toggleMobileNav"><i data-lucide="menu"></i></button>
+      <div class="topbar-breadcrumb">
+        <span style="color:var(--accent)"><i data-lucide="sparkles"></i></span>
+        <span class="topbar-breadcrumb-sep">›</span>
+        <span class="topbar-breadcrumb-current" id="topbar-title">Chat</span>
+      </div>
+      <div class="topbar-actions">
+        <div style="display:flex;align-items:center;gap:6px;margin-right:4px" id="health-indicator">
+          <div class="status-dot" id="health-dot"></div>
+          <span style="font-size:11px;color:var(--muted)" id="health-text">...</span>
+        </div>
+        <div class="search-pill" data-action="openCommandPalette">
+          <span><i data-lucide="search"></i></span>
+          <span>Recherche rapide...</span>
+          <kbd>Ctrl+K</kbd>
+        </div>
+
+        <!-- Model selector -->
+        <div id="model-selector-wrap">
+          <button class="btn" id="model-btn" data-action="toggleModelDropdown">
+            <span><i data-lucide="cpu"></i></span>
+            <span id="current-model-name">Chargement...</span>
+            <span style="font-size:10px;opacity:.6">▾</span>
+          </button>
+        </div>
+
+        <button class="btn" id="agent-toggle" data-action="toggleAgent"><i data-lucide="plug"></i> Agent OFF</button>
+        <button class="btn" id="shutdown-btn" data-action="_shutdownLumena" title="Arreter Lumena proprement" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:4px 10px;font-size:11px"><i data-lucide="power"></i></button>
+        <div class="theme-orb" data-action="toggleTheme" title="Changer le theme" id="theme-orb" role="button" aria-label="Basculer theme clair/sombre"><i data-lucide="moon"></i></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ==================== CONTENT ==================== -->
+  <div class="content" role="main" aria-label="Contenu principal">
+
+    <!-- ======= CHAT ======= -->
+    <div class="panel active" id="panel-chat">
+      <div class="chat-wrap">
+        <div class="chat-main">
+          <div class="chat-thread" id="chat-thread" aria-live="polite" aria-relevant="additions">
+            <div class="chat-welcome" id="chat-welcome">
+              <div class="chat-welcome-avatar"><i data-lucide="sparkles" style="width:40px;height:40px"></i></div>
+              <h2>Lumena</h2>
+              <div class="chat-welcome-badge">● Prete a discuter</div>
+              <p style="color:var(--muted);font-size:14px;max-width:400px">
+                Assistante IA personnelle avec <strong id="welcome-tools">—</strong> outils,
+                memoire persistante et mode agent autonome.
+              </p>
+              <div class="chat-welcome-suggestions">
+                <button data-action="quickSend" data-arg="Analyse le projet"><i data-lucide="layout-dashboard"></i> Analyse le projet</button>
+                <button data-action="quickSend" data-arg="Cherche dans ma memoire"><i data-lucide="brain"></i> Memoire</button>
+                <button data-action="quickSend" data-arg="Anime le Discord"><i data-lucide="gamepad-2"></i> Discord</button>
+                <button data-action="quickSend" data-arg="Cree un site web"><i data-lucide="globe"></i> Site web</button>
+              </div>
+            </div>
+          </div>
+          <div class="chat-compose">
+            <div id="task-progress-wrap" style="display:none">
+              <div class="task-progress-header">
+                <span class="task-progress-title"><i data-lucide="clipboard-list"></i> Plan d'execution</span>
+                <span id="task-progress-count" style="color:var(--muted);font-size:11px"></span>
+              </div>
+              <div class="task-progress-bar-bg"><div class="task-progress-bar-fill" id="task-progress-fill" style="width:0%"></div></div>
+              <div class="task-progress-list" id="task-progress-list"></div>
+            </div>
+            <div class="compose-box" id="compose-box">
+              <div class="compose-drop-zone" id="compose-drop-zone" role="region" aria-label="Zone de depot de fichiers">Deposer fichiers ici</div>
+              <div style="display:flex;flex-direction:column;flex:1;gap:4px">
+                <div class="compose-attachments" id="compose-attachments" style="display:none"></div>
+                <label for="message-input" class="sr-only">Message</label>
+                <textarea class="compose-textarea" id="message-input" placeholder="Ecris ton message..." rows="1"></textarea>
+              </div>
+              <div class="compose-toolbar">
+                <span class="char-counter" id="char-counter"></span>
+                <button class="btn-icon" id="btn-export-md" title="Exporter en Markdown"><i data-lucide="download"></i></button>
+                <button class="btn-icon" id="btn-clear-chat" title="Effacer le chat"><i data-lucide="trash-2"></i></button>
+                <button class="btn-icon" id="btn-attach-file" title="Joindre fichier"><i data-lucide="paperclip"></i></button>
+                <input type="file" id="file-upload-input" multiple style="display:none" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.html,.css,.json,.xml,.csv,.doc,.docx">
+                <button class="btn-icon" id="btn-toggle-focus" title="Mode focus"><i data-lucide="maximize"></i></button>
+                <button class="btn-send" id="send-btn" title="Envoyer"><i data-lucide="arrow-up"></i></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button class="activity-toggle-tab" id="activity-toggle-tab" data-action="toggleSidebar" title="Activite en direct" style="display:none"><i data-lucide="zap" style="width:16px;height:16px"></i></button>
+        <div class="chat-sidebar" id="chat-sidebar">
+          <div class="chat-sidebar-header">
+            <span style="font-weight:600;font-size:14px" id="sidebar-title"><i data-lucide="zap"></i> Activite en direct</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <div class="status-dot" id="activity-dot"></div>
+              <button class="btn-icon" data-action="closeSidebar" title="Masquer"><i data-lucide="x"></i></button>
+            </div>
+          </div>
+          <div class="chat-sidebar-content" id="sidebar-content">
+            <div class="activity-stats" id="activity-stats">
+              <div class="activity-stat"><div class="activity-stat-val" id="act-tools">0</div><div class="activity-stat-lbl">Outils</div></div>
+              <div class="activity-stat"><div class="activity-stat-val" id="act-thoughts">0</div><div class="activity-stat-lbl">Pensees</div></div>
+              <div class="activity-stat"><div class="activity-stat-val" id="act-edits">0</div><div class="activity-stat-lbl">Edits</div></div>
+              <div class="activity-stat"><div class="activity-stat-val" id="act-obs">0</div><div class="activity-stat-lbl">Obs</div></div>
+              <div class="activity-stat"><div class="activity-stat-val" id="act-elapsed">0s</div><div class="activity-stat-lbl">Temps</div></div>
+            </div>
+            <div class="activity-feed" id="activity-feed"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= OVERVIEW ======= -->
+    <div class="panel" id="panel-overview">
+      <div class="grid-4" id="overview-cards">
+        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="tools">
+          <div class="card-title"><i data-lucide="wrench"></i> Outils</div>
+          <div style="font-size:28px;font-weight:700;color:var(--accent)" id="ov-tools">—</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">handlers V2</div>
+        </div>
+        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="memory">
+          <div class="card-title"><i data-lucide="brain"></i> Memoires</div>
+          <div style="font-size:28px;font-weight:700;color:var(--ok)" id="ov-memories">—</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">dans ChromaDB</div>
+        </div>
+        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="instincts">
+          <div class="card-title"><i data-lucide="zap"></i> Skills</div>
+          <div style="font-size:28px;font-weight:700;color:var(--warn)" id="ov-skills">—</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px">charges</div>
+        </div>
+        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="emotions">
+          <div class="card-title"><i data-lucide="heart-pulse"></i> Humeur</div>
+          <div style="font-size:28px;font-weight:700;color:var(--accent)" id="ov-mood">—</div>
+          <div style="font-size:12px;color:var(--muted);margin-top:4px" id="ov-energy">—</div>
+        </div>
+      </div>
+      <div class="grid-3" style="margin-top:16px">
+        <div class="card">
+          <div class="card-title"><i data-lucide="radio"></i> Connexions</div>
+          <div class="card-content" id="ov-connections">Chargement...</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="clock"></i> Status Systeme</div>
+          <div class="card-content" id="ov-modules">Chargement...</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="cpu"></i> Modele actif</div>
+          <div class="card-content" id="ov-model">Chargement...</div>
+        </div>
+      </div>
+      <div class="grid-2" style="margin-top:16px">
+        <div class="card">
+          <div class="card-title"><i data-lucide="gauge"></i> Ressources</div>
+          <div class="card-content" id="ov-resources">Chargement...</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="clipboard-list"></i> Taches</div>
+          <div class="card-content" id="ov-tasks">Aucune</div>
+        </div>
+      </div>
+      <div class="grid-3" style="margin-top:16px">
+        <div class="card">
+          <div class="card-title"><i data-lucide="trending-up"></i> Pipeline</div>
+          <div class="card-content" id="ov-pipeline">Chargement...</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="bar-chart-3"></i> SLO</div>
+          <div class="card-content" id="ov-slo">Chargement...</div>
+        </div>
+      </div>
+      <div class="grid-2" style="margin-top:16px">
+        <div class="card">
+          <div class="card-title"><i data-lucide="bot"></i> Daemon & Autonomie</div>
+          <div class="card-content" id="ov-daemon">Chargement...</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="clock"></i> Taches Planifiees (Scheduler)</div>
+          <div class="card-content" id="ov-scheduler" style="max-height:320px;overflow-y:auto">Chargement...</div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="radio"></i> Activite Recente (Trace Live)</span>
+          <span class="badge" id="ov-trace-count" style="background:var(--accent)">0</span>
+        </div>
+        <div class="card-content" id="ov-trace-feed" style="max-height:260px;overflow-y:auto">
+          <div style="color:var(--muted)">En attente d'evenements...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= REPO MAP ======= -->
+    <div class="panel" id="panel-repomap">
+      <div class="grid-2">
+        <div class="card"><div class="card-title"><i data-lucide="bar-chart-3"></i> Statistiques</div><div class="card-content" id="repomap-stats">Chargement...</div></div>
+        <div class="card"><div class="card-title"><i data-lucide="folder"></i> Langages</div><div class="card-content" id="repomap-languages"></div></div>
+      </div>
+      <div class="card"><div class="card-title"><i data-lucide="map"></i> Structure</div><div class="code-block" id="repomap-content">Chargement...</div></div>
+    </div>
+
+    <!-- ======= SEARCH ======= -->
+    <div class="panel" id="panel-search">
+      <div class="search-box">
+        <input type="text" class="input" id="code-search-input" placeholder="Recherche semantique dans le code...">
+        <button class="btn primary" data-action="searchCode">Rechercher</button>
+      </div>
+      <div class="list" id="search-results"></div>
+    </div>
+
+    <!-- ======= MEMORY ======= -->
+    <div class="panel" id="panel-memory">
+      <div class="search-box">
+        <input type="text" class="input" id="memory-search-input" placeholder="Rechercher dans la memoire...">
+        <button class="btn primary" data-action="searchMemory">Rechercher</button>
+      </div>
+      <div id="memory-results"></div>
+    </div>
+
+    <!-- ======= RULES ======= -->
+    <div class="panel" id="panel-rules">
+      <div class="card"><div class="card-title"><i data-lucide="clipboard-list"></i> Informations Projet</div><div class="card-content" id="rules-info"></div></div>
+      <div class="grid-3" id="rules-grid">
+        <div class="card"><div class="card-title"><i data-lucide="ruler"></i> Conventions</div><ul class="rule-list" id="rules-conventions"></ul></div>
+        <div class="card"><div class="card-title"><i data-lucide="check-circle"></i> Always</div><ul class="rule-list" id="rules-always"></ul></div>
+        <div class="card"><div class="card-title"><i data-lucide="ban"></i> Never</div><ul class="rule-list" id="rules-never"></ul></div>
+      </div>
+    </div>
+
+    <!-- ======= INSTINCTS ======= -->
+    <div class="panel" id="panel-instincts">
+      <div class="card"><div class="card-title"><i data-lucide="zap"></i> Instincts Appris</div><div class="card-content">Lumena apprend de ses interactions et memorise les patterns de succes.</div></div>
+      <div id="instincts-list"></div>
+    </div>
+
+    <!-- ======= TOOLS ======= -->
+    <div class="panel" id="panel-tools">
+      <div class="search-box">
+        <input type="text" class="input" id="tools-search" placeholder="Rechercher un outil..." oninput="filterTools()">
+      </div>
+      <div class="grid-auto" id="tools-grid"></div>
+    </div>
+
+    <!-- ======= EMOTIONS ======= -->
+    <div class="panel" id="panel-emotions">
+      <div class="card"><div class="card-title"><i data-lucide="heart-pulse"></i> Etat Emotionnel</div><div class="card-content" id="emotions-display">Chargement...</div></div>
+    </div>
+
+    <!-- ======= VOICE ======= -->
+    <div class="panel" id="panel-voice">
+      <div class="card">
+        <div class="card-title"><i data-lucide="mic"></i> Controle Vocal</div>
+        <div class="card-content">
+          <p>Activez l'ecoute continue pour parler a Lumena.</p>
+          <p style="margin-top:8px;font-size:12px;color:var(--muted)">Dites <strong>"Lumena"</strong> pour activer, puis enoncez votre commande.</p>
+          <div style="margin-top:20px;display:flex;align-items:center;gap:16px">
+            <button class="btn primary" id="voice-toggle-btn" data-action="toggleVoiceAssistant" style="padding:12px 24px;font-weight:600">Demarrer l'ecoute</button>
+            <div style="display:flex;align-items:center;gap:8px;color:var(--muted)">
+              <div class="status-dot" id="voice-dot"></div>
+              <span id="voice-status-text">Desactive</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= HOOKS ======= -->
+    <div class="panel" id="panel-hooks">
+      <div class="card"><div class="card-title"><i data-lucide="link"></i> Hooks Systeme</div><div class="card-content">Les hooks reagissent aux evenements systeme.</div></div>
+      <div class="list" id="hooks-list"></div>
+    </div>
+
+    <!-- ======= TRACE ======= -->
+    <div class="panel" id="panel-trace">
+      <div class="grid-3">
+        <div class="card">
+          <div class="card-title"><i data-lucide="radio"></i> Connexion SSE</div>
+          <div class="card-content">
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="status-dot" id="trace-dot"></div>
+              <span id="trace-conn-text">Deconnecte</span>
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-top:8px" id="trace-last-event">Dernier evenement: —</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="bar-chart-3"></i> Compteurs</div>
+          <div class="card-content">
+            <div style="display:flex;gap:16px">
+              <div><div class="stat-label">Total</div><div style="font-size:20px;font-weight:600;color:var(--accent)" id="trace-count-total">0</div></div>
+              <div><div class="stat-label">Erreurs</div><div style="font-size:20px;font-weight:600;color:var(--danger)" id="trace-count-errors">0</div></div>
+              <div><div class="stat-label">Outils</div><div style="font-size:20px;font-weight:600;color:var(--ok)" id="trace-count-tools">0</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="timer"></i> Performance</div>
+          <div class="card-content">
+            <div style="display:flex;gap:16px">
+              <div><div class="stat-label">Moyenne</div><div style="font-size:20px;font-weight:600;color:var(--accent)" id="trace-avg-ms">—</div></div>
+              <div><div class="stat-label">Max</div><div style="font-size:20px;font-weight:600;color:var(--warn)" id="trace-max-ms">—</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="tabs" id="trace-filter-tabs">
+          <button class="tab active" data-action="filterTrace" data-arg="all">Tout</button>
+          <button class="tab" data-action="filterTrace" data-arg="error">Erreurs</button>
+          <button class="tab" data-action="filterTrace" data-arg="tool">Outils</button>
+          <button class="tab" data-action="filterTrace" data-arg="llm">LLM</button>
+        </div>
+        <button class="btn" data-action="clearTraceList"><i data-lucide="trash-2"></i> Clear</button>
+      </div>
+      <div class="list" id="trace-list"></div>
+    </div>
+
+    <!-- ======= CONSOLE ======= -->
+    <div class="panel" id="panel-console">
+      <div class="card" style="flex:1;display:flex;flex-direction:column">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="monitor"></i> Console Lumena</span>
+          <button class="btn" data-action="clearConsole"><i data-lucide="trash-2"></i> Clear</button>
+        </div>
+        <div id="console-output" class="code-block" style="flex:1;max-height:calc(100vh - 240px)">
+<span style="color:var(--ok)"><i data-lucide="sparkles"></i> Lumena v1.0.0 - Beta 2026 Console</span>
+<span style="color:var(--muted)">[INFO] Serveur demarre sur http://localhost:8080</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= TASKS ======= -->
+    <div class="panel" id="panel-tasks">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="clipboard-list"></i> Orchestrateur de Taches</span>
+          <button class="btn primary" data-action="showNewTaskForm">+ Nouvelle tache</button>
+        </div>
+        <div class="card-content">
+          <p style="color:var(--muted);font-size:13px">Envoyez des taches longues sans bloquer le chat. L'agent les execute en arriere-plan.</p>
+        </div>
+      </div>
+      <div id="new-task-form" style="display:none">
+        <div class="card">
+          <div class="card-title">Creer une tache</div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <input type="text" class="input" id="task-description" placeholder="Description / message de la tache...">
+            <div style="display:flex;gap:8px">
+              <button class="btn primary" data-action="createTask">Lancer</button>
+              <button class="btn" data-action="hideNewTaskForm">Annuler</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="tasks-list" class="list"></div>
+      <div class="card" style="margin-top:20px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="settings"></i> Activite Daemon</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadDaemonActivity">Rafraichir</button>
+        </div>
+        <div class="card-content" style="padding-bottom:0">
+          <p style="color:var(--muted);font-size:12px;margin-bottom:8px">Derniere execution de chaque tache autonome interne de Lumena.</p>
+        </div>
+      </div>
+      <div id="daemon-list" class="list"></div>
+    </div>
+
+    <!-- ======= JOURNAL ======= -->
+    <div class="panel" id="panel-journal">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="book-open"></i> Journal d'activite</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="journal-type-filter" class="input" style="height:30px;font-size:12px;padding:0 8px;min-width:130px" onchange="loadJournal()">
+              <option value="">Tous les types</option>
+              <option value="action">Actions</option>
+              <option value="thought">Pensees</option>
+              <option value="learning">Apprentissages</option>
+              <option value="error">Erreurs</option>
+            </select>
+            <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadJournal">Rafraichir</button>
+          </div>
+        </div>
+        <div class="card-content" style="padding-bottom:0"><p style="color:var(--muted);font-size:12px">Actions, pensees et evenements enregistres par Lumena en temps reel.</p></div>
+      </div>
+      <div id="journal-list" class="list" style="max-height:75vh;overflow-y:auto"></div>
+    </div>
+
+    <!-- ======= FACTS / IDENTITE ======= -->
+    <div class="panel" id="panel-facts">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="fingerprint"></i> Profil utilisateur</span>
+          <span id="facts-essential-badge" class="pill" style="font-size:11px;font-weight:600"></span>
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin:0 0 12px">Informations essentielles que Lumena apprend au fil des conversations.</p>
+        <div id="facts-essential"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="users"></i> Contacts connus</span>
+          <span id="facts-contacts-badge" class="pill" style="font-size:11px;font-weight:600"></span>
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin:0 0 12px">Personnes avec qui Lumena a interagi. Se met a jour automatiquement.</p>
+        <div id="facts-contacts"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="sparkles"></i> Faits appris</span>
+          <button class="btn primary" style="font-size:12px;padding:5px 12px" data-action="_showAddFact"><i data-lucide="plus" style="width:14px;height:14px"></i> Ajouter</button>
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin:0 0 12px">Centres d'interet, contacts, preferences detectes automatiquement.</p>
+        <div id="facts-content"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-title"><i data-lucide="lightbulb"></i> Insights & Reflexions</div>
+        <div id="insights-content"></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-title"><i data-lucide="heart-pulse"></i> Heartbeat</div>
+        <div id="heartbeat-content"></div>
+      </div>
+    </div>
+
+    <!-- ======= PROVIDERS LLM ======= -->
+    <div class="panel" id="panel-providers">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="zap"></i> Providers LLM</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadProviders">Rafraichir</button>
+        </div>
+        <div class="card-content" style="padding-bottom:0"><p style="color:var(--muted);font-size:12px">Sante, latence et taux de succes des LLM connectes.</p></div>
+      </div>
+      <div id="providers-list" class="list"></div>
+    </div>
+
+    <!-- ======= ALERTES ======= -->
+    <div class="panel" id="panel-alerts">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="bell-ring"></i> Alertes critiques</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadAlerts">Rafraichir</button>
+        </div>
+        <div class="card-content" style="padding-bottom:0"><p style="color:var(--muted);font-size:12px">Historique des alertes critiques et incidents daemon.</p></div>
+      </div>
+      <div id="alerts-list" class="list" style="max-height:75vh;overflow-y:auto"></div>
+    </div>
+
+    <!-- ======= APPRENTISSAGE / TRAINING ======= -->
+    <div class="panel" id="panel-training">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="graduation-cap"></i> Datasets d'apprentissage</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadTraining">Rafraichir</button>
+        </div>
+        <div class="card-content" style="padding-bottom:0"><p style="color:var(--muted);font-size:12px">Donnees de conversation de Lumena, pretes pour le fine-tuning local.</p>
+          <button class="btn accent" style="margin:8px 0;font-size:12px" data-action="switchPanel" data-arg="finetuning"><i data-lucide="cpu" style="width:14px;height:14px;vertical-align:-2px"></i> Lancer le Fine-tuning &rarr;</button>
+        </div>
+      </div>
+      <div id="training-list" class="list"></div>
+    </div>
+
+    <!-- ======= FINE-TUNING ======= -->
+    <div class="panel" id="panel-finetuning">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="cpu"></i> Fine-tuning Local</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadFinetuning">Rafraichir</button>
+        </div>
+      </div>
+
+      <!-- Section 1: Hardware Status -->
+      <div id="ft-hardware" class="ft-hardware-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:12px 0">
+        <div class="card" id="ft-gpu-card"><div class="card-content"><p style="color:var(--muted);font-size:12px">Detection GPU...</p></div></div>
+        <div class="card" id="ft-deps-card"><div class="card-content"><p style="color:var(--muted);font-size:12px">Verification deps...</p></div></div>
+        <div class="card" id="ft-data-card"><div class="card-content"><p style="color:var(--muted);font-size:12px">Analyse dataset...</p></div></div>
+      </div>
+      <div id="ft-alert-banner" style="display:none;padding:10px 16px;border-radius:var(--radius);margin-bottom:12px;font-size:13px"></div>
+
+      <!-- Section 2: Configuration -->
+      <div class="card" id="ft-config-section">
+        <div class="card-title"><i data-lucide="settings"></i> Configuration du Job</div>
+        <div class="card-content">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Modele de base</label>
+              <div id="ft-model-select" class="ft-custom-select">
+                <div class="ft-select-trigger"><span class="ft-select-text">Chargement...</span><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+                <div class="ft-select-dropdown"></div>
+              </div>
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Nom du modele fine-tune</label>
+              <input id="ft-output-name" class="input" style="width:100%;height:36px" placeholder="lumena-qwen3-8b-v1">
+            </div>
+          </div>
+
+          <!-- Simple params -->
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+            <div>
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Epochs</label>
+              <input id="ft-epochs" type="number" class="input" style="width:100%;height:36px" value="3" min="1" max="10">
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Quantization sortie</label>
+              <select id="ft-quant" class="input" style="width:100%;height:36px">
+                <option value="Q2_K">Q2_K (plus leger)</option>
+                <option value="Q4_K_M" selected>Q4_K_M (recommande)</option>
+                <option value="Q5_K_M">Q5_K_M (meilleure qualite)</option>
+                <option value="Q8_0">Q8_0 (quasi lossless)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">HuggingFace Token</label>
+              <input id="ft-hf-token" type="password" class="input" style="width:100%;height:36px" placeholder="Optionnel (modeles gates)">
+            </div>
+          </div>
+
+          <div style="margin-bottom:12px">
+            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">System Prompt</label>
+            <textarea id="ft-system-prompt" class="input" style="width:100%;height:60px;resize:vertical" placeholder="Tu es Lumena, mon assistant IA personnel."></textarea>
+          </div>
+
+          <!-- Advanced params -->
+          <details style="margin-bottom:12px">
+            <summary style="cursor:pointer;font-size:13px;color:var(--accent);margin-bottom:8px">Parametres avances</summary>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">LoRA r</label>
+                <select id="ft-lora-r" class="input" style="width:100%;height:32px"><option>8</option><option selected>16</option><option>32</option><option>64</option></select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">LoRA alpha</label>
+                <input id="ft-lora-alpha" type="number" class="input" style="width:100%;height:32px" value="32" min="1" max="128">
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Learning rate</label>
+                <input id="ft-lr" type="number" class="input" style="width:100%;height:32px" value="0.0002" step="0.00001" min="0.000001" max="0.01">
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Max seq length</label>
+                <select id="ft-seq-len" class="input" style="width:100%;height:32px"><option>512</option><option>1024</option><option selected>2048</option><option>4096</option></select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Batch size</label>
+                <select id="ft-batch" class="input" style="width:100%;height:32px"><option>1</option><option selected>2</option><option>4</option><option>8</option></select>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Grad accumulation</label>
+                <select id="ft-grad-acc" class="input" style="width:100%;height:32px"><option>1</option><option>2</option><option selected>4</option><option>8</option><option>16</option></select>
+              </div>
+            </div>
+          </details>
+
+          <!-- Expert params -->
+          <details style="margin-bottom:12px">
+            <summary style="cursor:pointer;font-size:13px;color:var(--muted);margin-bottom:8px">Parametres expert</summary>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+              <div>
+                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">LoRA dropout</label>
+                <input id="ft-lora-dropout" type="number" class="input" style="width:100%;height:32px" value="0.0" step="0.05" min="0" max="0.5">
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;padding-top:18px">
+                <input id="ft-4bit" type="checkbox" checked><label for="ft-4bit" style="font-size:11px;color:var(--muted)">Load in 4-bit</label>
+              </div>
+              <div style="display:flex;align-items:center;gap:6px;padding-top:18px">
+                <input id="ft-unsloth" type="checkbox" checked><label for="ft-unsloth" style="font-size:11px;color:var(--muted)">Use Unsloth</label>
+              </div>
+            </div>
+          </details>
+
+          <button id="ft-start-btn" class="btn accent" style="width:100%;height:40px;font-size:14px" data-action="_startFinetuning" disabled>
+            <i data-lucide="play" style="width:16px;height:16px;vertical-align:-3px"></i> Lancer le Fine-tuning
+          </button>
+        </div>
+      </div>
+
+      <!-- Section 3: Progress -->
+      <div class="card" id="ft-progress-section" style="display:none;margin-top:12px">
+        <div class="card-title"><i data-lucide="activity"></i> Progression</div>
+        <div class="card-content">
+          <div style="background:var(--border);border-radius:var(--radius);height:24px;overflow:hidden;margin-bottom:12px">
+            <div id="ft-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width 0.5s;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">0%</div>
+          </div>
+          <div id="ft-phase-timeline" class="ft-phase-timeline" style="margin-bottom:12px"></div>
+          <div id="ft-log" style="background:rgba(0,0,0,0.2);border-radius:var(--radius);padding:10px;font-family:var(--mono);font-size:11px;max-height:200px;overflow-y:auto;line-height:1.6"></div>
+          <button id="ft-cancel-btn" class="btn" style="margin-top:10px;background:var(--danger);color:#fff" data-action="_cancelFinetuning">Annuler</button>
+        </div>
+      </div>
+
+      <!-- Section 4: My Models -->
+      <div class="card" style="margin-top:12px">
+        <div class="card-title"><i data-lucide="box"></i> Mes Modeles Fine-tunes</div>
+        <div id="ft-models-list" class="card-content"><p style="color:var(--muted);font-size:12px">Aucun modele fine-tune pour l'instant.</p></div>
+      </div>
+    </div>
+
+    <!-- ======= LOGS ======= -->
+    <div class="panel" id="panel-logs">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="file-text"></i> Logs systeme</span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" id="logs-filter" class="input" style="height:28px;font-size:12px;padding:0 8px;width:160px" placeholder="Filtrer..." oninput="renderLogs()">
+            <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadLogsRecent">Rafraichir</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);padding:6px 0" id="logs-meta"></div>
+      </div>
+      <div id="logs-content" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px;font-family:var(--mono);font-size:11px;line-height:1.6;max-height:75vh;overflow-y:auto;margin-top:8px;white-space:pre-wrap;word-break:break-all"></div>
+    </div>
+
+    <!-- ======= SESSIONS ======= -->
+    <div class="panel" id="panel-sessions">
+      <div class="card">
+        <div class="card-title"><i data-lucide="layers"></i> Sessions & Conversations</div>
+        <div class="card-content">
+          <p style="color:var(--muted);font-size:13px">Consultez les taches et l'etat de vos conversations. L'API expose les sessions par ID de conversation.</p>
+        </div>
+      </div>
+      <div id="sessions-list" class="list"></div>
+      <div id="session-detail" style="display:none">
+        <div class="card">
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span id="session-detail-title">Session</span>
+            <button class="btn" data-action="closeSessionDetail">Retour</button>
+          </div>
+          <div id="session-messages" style="max-height:60vh;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= INFRA TELEGRAM ======= -->
+    <div class="panel" id="panel-infra-telegram">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><i data-lucide="send"></i> Etat Telegram</div>
+          <div class="card-content">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+              <div class="status-dot" id="tg-dot" style="width:12px;height:12px"></div>
+              <span style="font-size:16px;font-weight:600" id="tg-status-text">Chargement...</span>
+            </div>
+            <div id="tg-details" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="bar-chart-3"></i> Statistiques Telegram</div>
+          <div class="card-content" id="tg-stats">
+            <div style="color:var(--muted)">Les statistiques s'affichent quand le bot est actif.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= INFRA WHATSAPP ======= -->
+    <div class="panel" id="panel-infra-whatsapp">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><i data-lucide="message-circle"></i> Etat WhatsApp</div>
+          <div class="card-content">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+              <div class="status-dot" id="wa-dot" style="width:12px;height:12px"></div>
+              <span style="font-size:16px;font-weight:600" id="wa-status-text">Chargement...</span>
+            </div>
+            <div id="wa-details" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="bar-chart-3"></i> Statistiques WhatsApp</div>
+          <div class="card-content" id="wa-stats">
+            <div style="color:var(--muted)">Les statistiques s'affichent quand le canal est actif.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= INFRA AUTONOMY ======= -->
+    <div class="panel" id="panel-infra-autonomy">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title"><i data-lucide="bot"></i> Etat Daemon</div>
+          <div class="card-content">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+              <div class="status-dot" id="auto-dot" style="width:12px;height:12px"></div>
+              <span style="font-size:16px;font-weight:600" id="auto-status-text">Chargement...</span>
+            </div>
+            <div id="auto-details" style="display:flex;flex-direction:column;gap:8px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><i data-lucide="settings"></i> Configuration</div>
+          <div class="card-content" id="auto-config">
+            <div style="color:var(--muted)">Les parametres s'affichent quand le daemon est actif.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= CONFIGURATION ======= -->
+    <div class="panel" id="panel-config">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="settings"></i> Configuration Lumena</span>
+          <div style="display:flex;gap:8px">
+            <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadConfig">Rafraichir</button>
+            <button class="btn primary" style="font-size:11px;padding:4px 14px" data-action="saveConfig"><i data-lucide="save"></i> Sauvegarder</button>
+          </div>
+        </div>
+        <div class="card-content" style="padding-bottom:0">
+          <p style="color:var(--muted);font-size:12px">Modifiez les paramètres du .env en temps réel. Les clés API ne sont pas exposées.</p>
+          <div id="config-save-msg" style="display:none;margin-top:8px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
+        </div>
+      </div>
+      <div id="config-groups" style="display:flex;flex-direction:column;gap:12px;margin-top:12px"></div>
+    </div>
+
+    <!-- ======= FICHIERS (lumena_rules / README / HEARTBEAT) ======= -->
+    <div class="panel" id="panel-docs">
+      <div class="card" style="margin-bottom:12px;flex-shrink:0">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="file-text"></i> Fichiers de configuration</span>
+          <button class="btn primary" style="font-size:11px;padding:4px 14px" data-action="saveDoc"><i data-lucide="save"></i> Sauvegarder</button>
+        </div>
+        <div class="card-content">
+          <p style="color:var(--muted);font-size:12px">Modifiez directement les fichiers de pilotage de Lumena. Les changements sont pris en compte au prochain redémarrage du daemon.</p>
+          <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+            <button class="btn" id="doc-tab-lumena_rules" data-action="switchDoc" data-arg="lumena_rules" style="font-size:11px"><i data-lucide="scroll-text"></i> .lumena_rules</button>
+            <button class="btn" id="doc-tab-readme" data-action="switchDoc" data-arg="readme" style="font-size:11px"><i data-lucide="book-open"></i> README.md</button>
+            <button class="btn" id="doc-tab-heartbeat" data-action="switchDoc" data-arg="heartbeat" style="font-size:11px"><i data-lucide="heart-pulse"></i> HEARTBEAT.md</button>
+          </div>
+          <div id="doc-save-msg" style="display:none;margin-top:8px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
+        </div>
+      </div>
+      <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0">
+        <div class="card-content" style="padding:0;display:flex;flex-direction:column;flex:1;min-height:0">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0">
+            <span id="doc-filename" style="font-size:12px;color:var(--muted);font-family:var(--font-mono)">.lumena_rules</span>
+            <span id="doc-size" style="font-size:11px;color:var(--muted)"></span>
+          </div>
+          <textarea id="doc-editor"
+            style="flex:1;width:100%;min-height:0;height:calc(100vh - 280px);background:var(--surface);color:var(--text);border:none;outline:none;padding:14px;font-family:var(--font-mono);font-size:12px;line-height:1.6;resize:none;box-sizing:border-box"
+            spellcheck="false"
+            placeholder="Chargement..."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= PRODUCT DOCUMENTATION ======= -->
+    <div class="panel" id="panel-product-docs">
+      <div class="doc-layout">
+        <nav class="doc-sidebar" id="doc-sidebar">
+          <div class="doc-sidebar-header">
+            <i data-lucide="book-open-check"></i>
+            <span>Documentation</span>
+          </div>
+          <div class="doc-sidebar-nav" id="doc-nav"></div>
+          <div class="doc-sidebar-footer">
+            Lumena v1.0.0 - Beta 2026
+          </div>
+        </nav>
+        <main class="doc-main" id="doc-main">
+          <div class="doc-loading">Chargement de la documentation...</div>
+        </main>
+      </div>
+    </div>
+
+    <!-- ======= STRIPE OVERVIEW ======= -->
+    <div class="panel" id="panel-stripe-overview">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px">
+        <div class="card" style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Disponible</div>
+          <div id="stripe-balance-available" style="font-size:24px;font-weight:700;color:var(--ok)">—</div>
+          <div style="font-size:10px;color:var(--muted)" id="stripe-balance-currency"></div>
+        </div>
+        <div class="card" style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">En attente</div>
+          <div id="stripe-balance-pending" style="font-size:24px;font-weight:700;color:var(--warn)">—</div>
+        </div>
+        <div class="card" style="text-align:center">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Ce mois-ci</div>
+          <div id="stripe-month-revenue" style="font-size:24px;font-weight:700;color:var(--accent)">—</div>
+          <div id="stripe-month-count" style="font-size:10px;color:var(--muted)"></div>
+        </div>
+        <div class="card" style="text-align:center;cursor:pointer" data-action="toggleStripeQuickLink">
+          <div style="font-size:28px;color:var(--accent)"><i data-lucide="plus-circle" style="width:28px;height:28px"></i></div>
+          <div style="font-size:12px;font-weight:600;margin-top:4px">Créer un lien</div>
+        </div>
+      </div>
+
+      <!-- Formulaire lien rapide -->
+      <div class="card hidden" id="stripe-quick-link-form" style="margin-bottom:16px">
+        <div class="card-title"><i data-lucide="link"></i> Nouveau lien de paiement</div>
+        <div class="card-content" style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end">
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Montant (€)</label>
+            <input id="stripe-ql-amount" type="number" min="0.5" step="0.01" placeholder="12.50"
+              style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Description</label>
+            <input id="stripe-ql-desc" type="text" placeholder="Consultation, Abonnement..."
+              style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);font-size:13px;box-sizing:border-box">
+          </div>
+          <button class="btn primary" data-action="stripeCreateQuickLink" style="white-space:nowrap"><i data-lucide="zap"></i> Générer</button>
+        </div>
+        <div id="stripe-ql-result" style="margin-top:10px;display:none"></div>
+      </div>
+
+      <!-- Derniers paiements -->
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="clock"></i> Derniers paiements</span>
+          <button class="btn" style="font-size:11px;padding:3px 10px" data-action="loadStripeOverview"><i data-lucide="refresh-cw"></i></button>
+        </div>
+        <div class="card-content" style="padding:0">
+          <div id="stripe-recent-payments"><div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Chargement...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= STRIPE PAYMENTS ======= -->
+    <div class="panel" id="panel-stripe-payments">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="receipt"></i> Tous les paiements</span>
+          <button class="btn" style="font-size:11px;padding:3px 10px" data-action="loadStripePayments"><i data-lucide="refresh-cw"></i></button>
+        </div>
+        <div class="card-content" style="padding:0">
+          <div id="stripe-payments-list"><div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Chargement...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= STRIPE SUBSCRIPTIONS ======= -->
+    <div class="panel" id="panel-stripe-subscriptions">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="repeat"></i> Abonnements</span>
+          <button class="btn" style="font-size:11px;padding:3px 10px" data-action="loadStripeSubscriptions"><i data-lucide="refresh-cw"></i></button>
+        </div>
+        <div class="card-content" style="padding:0">
+          <div id="stripe-subscriptions-list"><div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Chargement...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= STRIPE PRODUCTS ======= -->
+    <div class="panel" id="panel-stripe-products">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="package"></i> Produits &amp; Prix</span>
+          <button class="btn" style="font-size:11px;padding:3px 10px" data-action="loadStripeProducts"><i data-lucide="refresh-cw"></i></button>
+        </div>
+        <div class="card-content" style="padding:0">
+          <div id="stripe-products-list"><div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">Chargement...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= TODOS =======-->
+    <div class="panel" id="panel-todos">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="list-checks"></i> Todo List Lumena</span>
+          <span style="color:var(--muted);font-size:12px" id="todo-stats"></span>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <input type="text" class="input" id="todo-input" placeholder="Nouvelle tache..." style="flex:1" onkeydown="if(event.key==='Enter')addTodo()">
+          <button class="btn primary" data-action="addTodo">+ Ajouter</button>
+        </div>
+      </div>
+      <div id="todo-list" class="list" style="margin-top:8px"></div>
+    </div>
+
+    <!-- ======= WORKSPACES ======= -->
+    <div class="panel" id="panel-workspaces">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="folder-open"></i> Projets CodeAgent</span>
+          <button class="btn" style="font-size:12px" data-action="loadWorkspaces">↺ Actualiser</button>
+        </div>
+        <p style="color:var(--muted);font-size:13px;margin-top:6px">Tous les projets créés par Lumena. Vous pouvez les ouvrir, continuer ou supprimer.</p>
+      </div>
+      <div id="workspaces-list" style="margin-top:8px"></div>
+    </div>
+
+  </div><!-- /content -->
+</div><!-- /shell -->
+
+<!-- ============================================================
+     COMMAND PALETTE
+     ============================================================ -->
+<div class="cmd-palette-overlay" id="cmd-palette-overlay" data-action="closeCommandPalette" data-self-only="true">
+  <div class="cmd-palette">
+    <input type="text" id="cmd-input" placeholder="Taper une commande ou recherche..." oninput="filterCommands()">
+    <div class="cmd-palette-results" id="cmd-results"></div>
+  </div>
+</div>
+
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
+<script src="/static/js/state.js?v=3"></script>
+<script src="/static/js/bindings.js?v=1"></script>
+<script>
+// Helpers pour les data-action convertis depuis onclick inline
+window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
+window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
+</script>
+<script type="module" src="/static/js/main.js?v=3"></script>
+<script type="module">
+import { initSetupWizard } from '/static/js/setup.js?v=18';
+document.addEventListener('DOMContentLoaded', () => initSetupWizard());
+</script>
+
+<!-- ======= MODEL PICKER MODAL ======= -->
+<div id="model-picker-modal" class="mpicker-overlay" data-action="closeModelPicker" data-self-only="true">
+  <div class="mpicker-dialog" role="dialog" aria-modal="true" aria-label="Choisir un modèle">
+    <!-- Header -->
+    <div class="mpicker-header">
+      <div class="mpicker-header-left">
+        <i data-lucide="cpu" style="width:18px;height:18px;color:var(--accent)"></i>
+        <span class="mpicker-title">Choisir un modèle</span>
+      </div>
+      <div class="mpicker-search-wrap">
+        <i data-lucide="search" style="width:14px;height:14px;color:var(--muted);flex-shrink:0"></i>
+        <input id="model-picker-search" class="mpicker-search" type="text"
+               placeholder="Rechercher..." oninput="filterModelSearch(this.value)"
+               autocomplete="off" spellcheck="false">
+      </div>
+      <button class="mpicker-close" data-action="closeModelPicker" aria-label="Fermer">
+        <i data-lucide="x" style="width:16px;height:16px"></i>
+      </button>
+    </div>
+    <!-- Provider filter pills -->
+    <div class="mpicker-filters" id="model-picker-filters"></div>
+    <!-- Models body -->
+    <div class="mpicker-body" id="model-picker-body">
+      <div style="padding:40px;text-align:center;color:var(--muted)">Chargement...</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2.5cm; }
+  body { font-family: 'Georgia', serif; color: #222; font-size: 12px; line-height: 1.7; }
+  h1 { text-align: center; font-size: 22px; color: #8b0000; margin-bottom: 6px; }
+  .subtitle { text-align: center; font-size: 12px; color: #888; margin-bottom: 30px; }
+  .article { margin-bottom: 16px; }
+  .article h2 { font-size: 13px; color: #1a1a2e; margin: 0 0 6px; }
+  .parties-list { margin: 10px 0 20px; padding-left: 20px; }
+  .signature { display: flex; justify-content: space-between; margin-top: 40px; }
+  .sig-block { width: 40%; border-top: 1px solid #222; padding-top: 8px; text-align: center; font-size: 11px; }
+  .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #aaa; }
+  .confidentiel { background: #8b000011; border: 1px solid #8b000033; padding: 10px 16px; border-radius: 6px; text-align: center; margin-bottom: 20px; color: #8b0000; font-weight: bold; }
+</style>
+</head>
+<body>
+  <div class="confidentiel">CONFIDENTIEL</div>
+  <h1>ACCORD DE NON-DIVULGATION</h1>
+  <p class="subtitle">(Non-Disclosure Agreement — NDA)</p>
+
+  <div class="article">
+    <h2>Entre les parties :</h2>
+    <ul class="parties-list">
+      {% for partie in parties %}
+      <li><strong>{{ partie.name|default(partie) }}</strong>{% if partie.address %}, {{ partie.address }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+    <p>Ci-après désignées individuellement « la Partie » et collectivement « les Parties ».</p>
+  </div>
+
+  <div class="article">
+    <h2>Article 1 — Objet</h2>
+    <p>Les Parties conviennent de protéger les informations confidentielles échangées dans le cadre de {{ objet|default('leurs relations professionnelles') }}.</p>
+  </div>
+
+  <div class="article">
+    <h2>Article 2 — Informations confidentielles</h2>
+    <p>Sont considérées comme confidentielles toutes informations, données, documents, savoir-faire, techniques, stratégies, et tout autre élément divulgué par l'une des Parties à l'autre, sous quelque forme que ce soit.</p>
+  </div>
+
+  <div class="article">
+    <h2>Article 3 — Durée de confidentialité</h2>
+    <p>Les obligations de confidentialité restent en vigueur pendant une durée de <strong>{{ duree_confidentialite|default('2 ans') }}</strong> à compter de la signature du présent accord.</p>
+  </div>
+
+  <div class="article">
+    <h2>Article 4 — Obligations</h2>
+    <p>Chaque Partie s'engage à :</p>
+    <ul>
+      <li>Ne pas divulguer les informations confidentielles à des tiers sans accord préalable écrit</li>
+      <li>Protéger les informations avec la même diligence que pour ses propres informations</li>
+      <li>N'utiliser les informations que dans le cadre défini à l'Article 1</li>
+      <li>Limiter l'accès aux seules personnes ayant besoin d'en connaître</li>
+    </ul>
+  </div>
+
+  <div class="article">
+    <h2>Article 5 — Juridiction</h2>
+    <p>Tout litige sera soumis à la compétence exclusive des tribunaux de <strong>{{ juridiction|default('Paris') }}</strong>.</p>
+  </div>
+
+  <p style="margin-top:30px">Fait en {{ parties|length }} exemplaires, le {{ date|default('___/___/______') }}.</p>
+
+  <div class="signature">
+    {% for partie in parties %}
+    <div class="sig-block">{{ partie.name|default(partie) }}<br><br><br>Signature</div>
+    {% endfor %}
+  </div>
+
+  <div class="footer">Document généré par Lumena</div>
+</body>
+</html>

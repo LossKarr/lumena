@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2.5cm; }
+  body { font-family: 'Georgia', serif; color: #222; font-size: 12px; line-height: 1.8; }
+  .header { margin-bottom: 30px; }
+  .header strong { font-size: 14px; }
+  .destinataire { text-align: right; margin-bottom: 20px; }
+  .objet { font-weight: bold; margin: 20px 0; padding: 10px 14px; background: #fff5f5; border-left: 3px solid #cc0000; }
+  .corps { text-align: justify; }
+  .niveau-badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase; }
+  .niveau-1 { background: #fef3c7; color: #92400e; }
+  .niveau-2 { background: #fed7aa; color: #c2410c; }
+  .niveau-3 { background: #fecaca; color: #991b1b; }
+  .montant { font-size: 18px; font-weight: bold; color: #cc0000; text-align: center; margin: 16px 0; padding: 14px; background: #fff5f5; border-radius: 6px; }
+  .signature { margin-top: 40px; text-align: right; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <strong>{{ creancier.name|default('') }}</strong><br>
+    {{ creancier.address|default('') }}<br>
+    {{ creancier.city|default('') }}
+  </div>
+
+  <div class="destinataire">
+    <strong>{{ debiteur.name|default('') }}</strong><br>
+    {{ debiteur.address|default('') }}<br>
+    {{ debiteur.city|default('') }}
+  </div>
+
+  <p style="text-align:right;color:#555">{{ lieu|default('') }}{{ ', le ' if lieu else '' }}{{ date|default('') }}</p>
+
+  {% set niveau_int = niveau|default(1)|int %}
+  <div class="objet">
+    Objet :
+    {% if niveau_int == 1 %}
+    <span class="niveau-badge niveau-1">1ère relance</span> Rappel de paiement — Facture {{ facture_ref|default('') }}
+    {% elif niveau_int == 2 %}
+    <span class="niveau-badge niveau-2">2ème relance</span> Relance impayé — Facture {{ facture_ref|default('') }}
+    {% else %}
+    <span class="niveau-badge niveau-3">Mise en demeure</span> Mise en demeure de payer — Facture {{ facture_ref|default('') }}
+    {% endif %}
+  </div>
+
+  <div class="corps">
+    {% if niveau_int == 1 %}
+    <p>{{ formule_appel|default('Madame, Monsieur') }},</p>
+    <p>Sauf erreur de notre part, nous constatons que la facture <strong>n° {{ facture_ref }}</strong> d'un montant de :</p>
+    <div class="montant">{{ montant }} {{ currency|default('€') }}</div>
+    <p>Arrivée à échéance le <strong>{{ date_echeance }}</strong>, reste à ce jour impayée.</p>
+    <p>Il s'agit probablement d'un oubli. Nous vous prions de bien vouloir procéder au règlement dans les meilleurs délais.</p>
+
+    {% elif niveau_int == 2 %}
+    <p>{{ formule_appel|default('Madame, Monsieur') }},</p>
+    <p>Malgré notre précédent courrier, nous constatons que la facture <strong>n° {{ facture_ref }}</strong> d'un montant de :</p>
+    <div class="montant">{{ montant }} {{ currency|default('€') }}</div>
+    <p>Échue le <strong>{{ date_echeance }}</strong>, demeure impayée.</p>
+    <p>Nous vous mettons en demeure de procéder au règlement de cette somme sous <strong>8 jours</strong> à compter de la réception de ce courrier, faute de quoi nous serons contraints d'engager les procédures de recouvrement.</p>
+
+    {% else %}
+    <p>{{ formule_appel|default('Madame, Monsieur') }},</p>
+    <p><strong>MISE EN DEMEURE</strong></p>
+    <p>Par la présente, nous vous mettons formellement en demeure de régler la facture <strong>n° {{ facture_ref }}</strong> d'un montant de :</p>
+    <div class="montant">{{ montant }} {{ currency|default('€') }}</div>
+    <p>Échue le <strong>{{ date_echeance }}</strong> et restée impayée malgré nos relances.</p>
+    <p>À défaut de règlement intégral dans un délai de <strong>8 jours</strong>, nous nous réservons le droit de saisir les juridictions compétentes et d'appliquer les pénalités de retard prévues par la loi.</p>
+    {% endif %}
+
+    <p>Veuillez agréer, {{ formule_appel|default('Madame, Monsieur') }}, l'expression de nos salutations distinguées.</p>
+  </div>
+
+  <div class="signature">
+    {{ creancier.name|default('') }}<br><br><em>Signature</em>
+  </div>
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #222; font-size: 12px; line-height: 1.6; }
+  .cover { text-align: center; margin-bottom: 40px; padding: 30px; background: linear-gradient(135deg, {{ accent|default('#1a1a2e') }}, {{ accent|default('#1a1a2e') }}99); color: white; border-radius: 10px; }
+  .cover h1 { margin: 0; font-size: 26px; }
+  .cover .subtitle { opacity: 0.85; font-size: 14px; margin-top: 8px; }
+  .section { margin-bottom: 24px; }
+  .section h2 { color: {{ accent|default('#1a1a2e') }}; font-size: 16px; border-bottom: 2px solid {{ accent|default('#1a1a2e') }}33; padding-bottom: 6px; }
+  .kpi-grid { display: flex; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+  .kpi { background: #f8f8fa; border-radius: 8px; padding: 14px 18px; flex: 1; min-width: 160px; text-align: center; }
+  .kpi .value { font-size: 22px; font-weight: bold; color: {{ accent|default('#1a1a2e') }}; }
+  .kpi .label { font-size: 10px; color: #888; text-transform: uppercase; margin-top: 4px; }
+  .chart-img { text-align: center; margin: 16px 0; }
+  .chart-img img { max-width: 100%; border-radius: 8px; border: 1px solid #eee; }
+  .chart-img figcaption { font-size: 10px; color: #888; margin-top: 4px; }
+  .footer { text-align: center; font-size: 10px; color: #aaa; margin-top: 30px; border-top: 1px solid #eee; padding-top: 10px; }
+</style>
+</head>
+<body>
+  <div class="cover">
+    <h1>Rapport d'activité</h1>
+    <div class="subtitle">{{ societe|default('') }} — {{ periode|default('') }}</div>
+  </div>
+
+  {% if kpis %}
+  <div class="kpi-grid">
+    {% for kpi in kpis %}
+    <div class="kpi">
+      <div class="value">{{ kpi.value }}</div>
+      <div class="label">{{ kpi.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% for section in sections|default([]) %}
+  <div class="section">
+    <h2>{{ section.title }}</h2>
+    <p>{{ section.content }}</p>
+  </div>
+  {% endfor %}
+
+  {% for chart_path in graphiques_paths|default([]) %}
+  <figure class="chart-img">
+    <img src="{{ chart_path }}" alt="Graphique">
+  </figure>
+  {% endfor %}
+
+  <div class="footer">
+    Rapport généré par Lumena — {{ societe|default('') }}
+  </div>
+</body>
+</html>

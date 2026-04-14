@@ -1,0 +1,47 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 512) rotate(90) scale(520)">
+      <stop offset="0" stop-color="#151A31"/>
+      <stop offset="0.62" stop-color="#0C1020"/>
+      <stop offset="1" stop-color="#070A14"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 454) rotate(90) scale(274)">
+      <stop offset="0" stop-color="#FF9C7A" stop-opacity="0.72"/>
+      <stop offset="0.55" stop-color="#FF6A67" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#FF6A67" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="body" x1="350" y1="270" x2="690" y2="734" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF8071"/>
+      <stop offset="0.58" stop-color="#F46567"/>
+      <stop offset="1" stop-color="#D84F60"/>
+    </linearGradient>
+    <linearGradient id="limb" x1="310" y1="430" x2="710" y2="760" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFB07B"/>
+      <stop offset="1" stop-color="#E16B53"/>
+    </linearGradient>
+    <filter id="softGlow" x="184" y="152" width="656" height="720" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+      <feGaussianBlur stdDeviation="28" result="effect1_foregroundBlur"/>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="168" fill="url(#bg)"/>
+  <circle cx="512" cy="462" r="286" fill="url(#halo)"/>
+
+  <g filter="url(#softGlow)">
+    <path d="M431 270C411 246 396 225 389 204C383 184 391 170 411 170C431 170 447 183 459 209C468 228 473 253 477 286" stroke="#FF7B66" stroke-width="22" stroke-linecap="round"/>
+    <path d="M593 270C613 246 628 225 635 204C641 184 633 170 613 170C593 170 577 183 565 209C556 228 551 253 547 286" stroke="#FF7B66" stroke-width="22" stroke-linecap="round"/>
+    <ellipse cx="512" cy="520" rx="178" ry="198" fill="url(#body)"/>
+    <ellipse cx="400" cy="706" rx="58" ry="48" fill="url(#limb)"/>
+    <ellipse cx="624" cy="706" rx="58" ry="48" fill="url(#limb)"/>
+    <ellipse cx="336" cy="526" rx="36" ry="56" fill="url(#limb)"/>
+    <ellipse cx="688" cy="526" rx="36" ry="56" fill="url(#limb)"/>
+    <circle cx="454" cy="478" r="28" fill="#0A1020"/>
+    <circle cx="570" cy="478" r="28" fill="#0A1020"/>
+    <circle cx="447" cy="470" r="8" fill="#9FFFF1"/>
+    <circle cx="563" cy="470" r="8" fill="#9FFFF1"/>
+    <path d="M469 584C481 611 500 624 526 624C548 624 565 612 579 588" stroke="#FFD6CC" stroke-width="16" stroke-linecap="round"/>
+    <path d="M394 388C425 342 473 316 520 316C563 316 603 337 633 376" stroke="#FFD7CC" stroke-opacity="0.34" stroke-width="18" stroke-linecap="round"/>
+  </g>
+</svg>

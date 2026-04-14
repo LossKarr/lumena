@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lumena"
+version = "1.0.0"
+description = "Autonomous AI assistant with persistent memory, ReAct reasoning, and multi-channel support"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10,<3.13"
+authors = [
+    {name = "LossKarr", email = "losskarr@proton.me"},
+]
+keywords = ["ai", "agent", "autonomous", "react", "llm", "computer-use", "local-first"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+[project.urls]
+Homepage = "https://github.com/Losskarr/lumena"
+Repository = "https://github.com/Losskarr/lumena"
+Issues = "https://github.com/Losskarr/lumena/issues"
+
+[project.scripts]
+lumena = "lumena_ultime:main"
+lumena-daemon = "run_daemon:main"
+lumena-telegram = "run_telegram:main"
+lumena-whatsapp = "run_whatsapp:main"
+lumena-twitter = "run_twitter:main"
+
+[tool.setuptools]
+packages = {find = {where = ["."], include = ["src*", "web*", "scripts*"]}}
+include-package-data = true
+
+[tool.setuptools.package-data]
+"web" = ["static/**/*", "index.html"]
+
+[tool.setuptools.data-files]
+"assets/templates" = ["assets/templates/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 15
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+select = ["E", "F", "W"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true

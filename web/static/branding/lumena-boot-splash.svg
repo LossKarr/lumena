@@ -1,0 +1,57 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(800 450) rotate(90) scale(520 980)">
+      <stop offset="0" stop-color="#131A33"/>
+      <stop offset="0.52" stop-color="#091021"/>
+      <stop offset="1" stop-color="#04070F"/>
+    </radialGradient>
+    <radialGradient id="coreGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(800 344) rotate(90) scale(206)">
+      <stop offset="0" stop-color="#FFC09F" stop-opacity="0.88"/>
+      <stop offset="0.36" stop-color="#FF7D74" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#FF7D74" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="body" x1="664" y1="208" x2="938" y2="570" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF8372"/>
+      <stop offset="0.58" stop-color="#F36566"/>
+      <stop offset="1" stop-color="#D65260"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="552" y1="264" x2="1050" y2="628" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF9E79"/>
+      <stop offset="0.52" stop-color="#F26A67"/>
+      <stop offset="1" stop-color="#80F1E6"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <circle cx="284" cy="180" r="2" fill="#9FFFF1" fill-opacity="0.6"/>
+  <circle cx="1280" cy="226" r="2" fill="#FFE7D8" fill-opacity="0.7"/>
+  <circle cx="1364" cy="648" r="2" fill="#FF8B76" fill-opacity="0.5"/>
+  <circle cx="210" cy="702" r="2" fill="#9FFFF1" fill-opacity="0.32"/>
+
+  <circle cx="800" cy="344" r="220" fill="url(#coreGlow)"/>
+  <ellipse cx="800" cy="454" rx="354" ry="92" fill="#F56767" fill-opacity="0.06"/>
+
+  <ellipse cx="800" cy="390" rx="264" ry="264" stroke="url(#ring)" stroke-opacity="0.28" stroke-width="2"/>
+  <ellipse cx="800" cy="390" rx="300" ry="300" stroke="url(#ring)" stroke-opacity="0.14" stroke-width="2"/>
+  <ellipse cx="800" cy="390" rx="336" ry="336" stroke="#80F1E6" stroke-opacity="0.08" stroke-width="2"/>
+
+  <g>
+    <path d="M708 218C693 201 682 186 677 170C672 155 678 144 692 144C708 144 719 154 728 172C735 187 741 205 744 228" stroke="#FF7D67" stroke-width="16" stroke-linecap="round"/>
+    <path d="M892 218C907 201 918 186 923 170C928 155 922 144 908 144C892 144 881 154 872 172C865 187 859 205 856 228" stroke="#FF7D67" stroke-width="16" stroke-linecap="round"/>
+    <ellipse cx="800" cy="386" rx="146" ry="164" fill="url(#body)"/>
+    <ellipse cx="710" cy="544" rx="46" ry="38" fill="#EB765C"/>
+    <ellipse cx="890" cy="544" rx="46" ry="38" fill="#EB765C"/>
+    <ellipse cx="650" cy="392" rx="28" ry="46" fill="#EB765C"/>
+    <ellipse cx="950" cy="392" rx="28" ry="46" fill="#EB765C"/>
+    <circle cx="752" cy="352" r="22" fill="#091021"/>
+    <circle cx="848" cy="352" r="22" fill="#091021"/>
+    <circle cx="746" cy="346" r="7" fill="#9FFFF1"/>
+    <circle cx="842" cy="346" r="7" fill="#9FFFF1"/>
+    <path d="M765 448C776 468 792 479 812 479C830 479 844 470 856 451" stroke="#FFD8CB" stroke-width="11" stroke-linecap="round"/>
+  </g>
+
+  <text x="800" y="698" text-anchor="middle" fill="#FFF1E8" font-size="118" font-weight="800" font-family="Segoe UI, Arial, sans-serif" letter-spacing="-4">Lumena</text>
+  <text x="800" y="750" text-anchor="middle" fill="#B8B9C5" font-size="28" font-weight="600" font-family="Segoe UI, Arial, sans-serif" letter-spacing="8">BOOTING A LIVING LOCAL ASSISTANT</text>
+  <rect x="600" y="790" width="400" height="10" rx="5" fill="rgba(255,255,255,0.12)"/>
+  <rect x="600" y="790" width="282" height="10" rx="5" fill="url(#ring)"/>
+</svg>

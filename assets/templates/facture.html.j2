@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #1a1a2e; font-size: 12px; line-height: 1.5; }
+  .header { display: flex; justify-content: space-between; margin-bottom: 30px; }
+  .header-left h1 { color: {{ accent|default('#1a1a2e') }}; font-size: 28px; margin: 0; }
+  .header-right { text-align: right; }
+  .label { color: #888; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
+  .block { background: #f8f8fa; border-radius: 6px; padding: 14px 18px; margin-bottom: 16px; }
+  .block h3 { margin: 0 0 6px; font-size: 11px; color: #888; text-transform: uppercase; }
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+  th { background: {{ accent|default('#1a1a2e') }}; color: white; padding: 10px 12px; font-size: 10px; text-align: left; text-transform: uppercase; }
+  td { padding: 10px 12px; border-bottom: 1px solid #eee; font-size: 11px; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .totals { margin-left: auto; width: 300px; }
+  .totals td { padding: 6px 12px; }
+  .totals .grand { background: {{ accent|default('#1a1a2e') }}; color: white; font-weight: bold; font-size: 14px; }
+  .footer { margin-top: 30px; padding-top: 14px; border-top: 1px solid #ddd; font-size: 10px; color: #888; }
+  .due { background: {{ accent|default('#1a1a2e') }}11; border-left: 3px solid {{ accent|default('#1a1a2e') }}; padding: 10px 16px; margin: 16px 0; font-size: 11px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <h1>FACTURE</h1>
+      {% if numero %}<p class="label">N° {{ numero }}</p>{% endif %}
+      {% if date %}<p class="label">Date : {{ date }}</p>{% endif %}
+    </div>
+    <div class="header-right">
+      <strong>{{ issuer.name|default('') }}</strong><br>
+      {{ issuer.address|default('') }}<br>
+      {{ issuer.city|default('') }}<br>
+      {% if issuer.email %}{{ issuer.email }}<br>{% endif %}
+      {% if issuer.phone %}{{ issuer.phone }}<br>{% endif %}
+      {% if issuer.siret %}<span class="label">SIRET : {{ issuer.siret }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>Facturer à</h3>
+    <strong>{{ client.name|default('') }}</strong><br>
+    {{ client.address|default('') }}<br>
+    {{ client.city|default('') }}
+    {% if client.email %}<br>{{ client.email }}{% endif %}
+    {% if client.phone %}<br>{{ client.phone }}{% endif %}
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Désignation</th><th>Qté</th><th>P.U. HT ({{ currency|default('€') }})</th>
+        <th>TVA</th><th>TVA ({{ currency|default('€') }})</th><th>Total TTC ({{ currency|default('€') }})</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% set ns = namespace(total_ht=0, total_vat=0) %}
+      {% for item in items %}
+      {% set ht = (item.qty|default(1)|float) * (item.unit_price|default(0)|float) %}
+      {% set vat = ht * (item.vat_rate|default(20)|float) / 100 %}
+      {% set ns.total_ht = ns.total_ht + ht %}
+      {% set ns.total_vat = ns.total_vat + vat %}
+      <tr>
+        <td>{{ item.description }}</td>
+        <td>{{ item.qty|default(1) }}{{ ' ' + item.unit if item.unit else '' }}</td>
+        <td style="text-align:right">{{ "%.2f"|format(item.unit_price|default(0)|float) }}</td>
+        <td>{{ item.vat_rate|default(20) }}%</td>
+        <td style="text-align:right">{{ "%.2f"|format(vat) }}</td>
+        <td style="text-align:right">{{ "%.2f"|format(ht + vat) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <table class="totals">
+    <tr><td>Sous-total HT</td><td style="text-align:right">{{ "%.2f"|format(ns.total_ht) }} {{ currency|default('€') }}</td></tr>
+    <tr><td>Total TVA</td><td style="text-align:right">{{ "%.2f"|format(ns.total_vat) }} {{ currency|default('€') }}</td></tr>
+    <tr class="grand"><td>TOTAL TTC</td><td style="text-align:right">{{ "%.2f"|format(ns.total_ht + ns.total_vat) }} {{ currency|default('€') }}</td></tr>
+  </table>
+
+  {% if due_date %}
+  <div class="due">
+    📅 Échéance : <strong>{{ due_date }}</strong>
+  </div>
+  {% endif %}
+
+  {% if payment_terms %}
+  <div class="footer">
+    <strong>Conditions de paiement :</strong> {{ payment_terms }}
+  </div>
+  {% endif %}
+
+  {% if notes %}
+  <div class="footer">
+    <strong>Notes :</strong> {{ notes }}
+  </div>
+  {% endif %}
+</body>
+</html>

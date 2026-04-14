@@ -1,0 +1,45 @@
+# Git & IDE
+.git
+.gitignore
+.vscode
+.idea
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Données locales (montées en volume, pas copiées)
+data/
+workspace/
+models/
+
+# Backups & fichiers temporaires
+backups/
+backup lumena/
+Backup/
+_*.txt
+_*.py
+*.log
+
+# Documentation & plans non nécessaires au runtime
+PLAN_*.md
+AUDIT_*.md
+docs/
+logicial AI/
+lumi-3d-world/
+unity_pack/
+assets/
+learning_reports/
+
+# Tests (non inclus dans l'image prod)
+tests/
+benchmarks/
+scripts/
+
+# Node modules (rebuild dans le stage frontend)
+web/node_modules/

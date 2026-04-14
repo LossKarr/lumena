@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{PROJECT_TITLE}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <header id="main-header">
+    <div class="container header-inner">
+      <a href="#" class="logo" onclick="navigateTo('page-accueil'); return false;">{{PROJECT_TITLE}}</a>
+      <nav class="main-nav" id="mainNav">
+        <a href="#" data-page="page-accueil" class="active" onclick="navigateTo('page-accueil'); return false;">Accueil</a>
+        <a href="#" data-page="page-login" onclick="navigateTo('page-login'); return false;">Connexion</a>
+        <a href="#" data-page="page-contact" onclick="navigateTo('page-contact'); return false;">Contact</a>
+      </nav>
+      <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu"><i class="fas fa-bars"></i></button>
+    </div>
+  </header>
+
+  <div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobileMenu()"></div>
+
+  <!-- PAGE ACCUEIL -->
+  <section id="page-accueil" class="active">
+    <div class="hero">
+      <div class="container hero-content">
+        <h1 class="fade-in">{{PROJECT_TITLE}}</h1>
+        <p class="hero-subtitle fade-in" data-delay="100">Application fullstack prête à l'emploi</p>
+        <div class="hero-cta fade-in" data-delay="200">
+          <a href="#" class="btn-primary" onclick="navigateTo('page-login'); return false;">Se connecter <i class="fas fa-arrow-right"></i></a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PAGE LOGIN -->
+  <section id="page-login" style="display:none;">
+    <div class="container section-padding">
+      <div class="auth-card fade-in">
+        <h2>Connexion</h2>
+        <form onsubmit="handleLogin(event)">
+          <div class="form-group">
+            <label for="login-email">Email</label>
+            <input type="email" id="login-email" required placeholder="admin@example.com">
+          </div>
+          <div class="form-group">
+            <label for="login-password">Mot de passe</label>
+            <input type="password" id="login-password" required placeholder="••••••••">
+          </div>
+          <button type="submit" class="btn-primary" style="width:100%">Se connecter</button>
+        </form>
+        <p class="auth-link">Pas de compte ? <a href="#" onclick="navigateTo('page-register'); return false;">S'inscrire</a></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- PAGE REGISTER -->
+  <section id="page-register" style="display:none;">
+    <div class="container section-padding">
+      <div class="auth-card fade-in">
+        <h2>Inscription</h2>
+        <form onsubmit="handleRegister(event)">
+          <div class="form-group">
+            <label for="reg-name">Nom</label>
+            <input type="text" id="reg-name" required placeholder="Votre nom">
+          </div>
+          <div class="form-group">
+            <label for="reg-email">Email</label>
+            <input type="email" id="reg-email" required placeholder="votre@email.com">
+          </div>
+          <div class="form-group">
+            <label for="reg-password">Mot de passe</label>
+            <input type="password" id="reg-password" required minlength="8" placeholder="8 caractères minimum">
+          </div>
+          <button type="submit" class="btn-primary" style="width:100%">Créer mon compte</button>
+        </form>
+        <p class="auth-link">Déjà un compte ? <a href="#" onclick="navigateTo('page-login'); return false;">Se connecter</a></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- PAGE ADMIN -->
+  <section id="page-admin" style="display:none;">
+    <div class="admin-layout">
+      <aside class="admin-sidebar">
+        <div class="sidebar-header">
+          <h3><i class="fas fa-shield-halved"></i> Admin</h3>
+        </div>
+        <nav class="sidebar-nav">
+          <a href="#" class="active" onclick="showAdminTab('dashboard'); return false;"><i class="fas fa-chart-line"></i> Dashboard</a>
+          <a href="#" onclick="showAdminTab('users'); return false;"><i class="fas fa-users"></i> Utilisateurs</a>
+          <a href="#" onclick="showAdminTab('settings'); return false;"><i class="fas fa-cog"></i> Paramètres</a>
+          <a href="#" onclick="navigateTo('page-accueil'); return false;"><i class="fas fa-sign-out-alt"></i> Déconnexion</a>
+        </nav>
+      </aside>
+      <div class="admin-content">
+        <!-- Onglet Dashboard -->
+        <div id="admin-tab-dashboard" class="admin-tab active" style="opacity:1;transform:none;">
+          <h2>Tableau de bord</h2>
+          <div class="kpi-grid">
+            <div class="kpi-card"><div class="kpi-value">1,247</div><div class="kpi-label">Utilisateurs</div></div>
+            <div class="kpi-card"><div class="kpi-value">€24,580</div><div class="kpi-label">Revenus</div></div>
+            <div class="kpi-card"><div class="kpi-value">89%</div><div class="kpi-label">Satisfaction</div></div>
+            <div class="kpi-card"><div class="kpi-value">342</div><div class="kpi-label">Commandes</div></div>
+          </div>
+        </div>
+        <!-- Onglet Users -->
+        <div id="admin-tab-users" class="admin-tab" style="display:none;opacity:1;transform:none;">
+          <h2>Utilisateurs</h2>
+          <table class="admin-table"><thead><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Statut</th></tr></thead>
+          <tbody>
+            <tr><td>Marie Dupont</td><td>marie@example.com</td><td>Admin</td><td><span class="badge badge-success">Actif</span></td></tr>
+            <tr><td>Jean Martin</td><td>jean@example.com</td><td>Éditeur</td><td><span class="badge badge-success">Actif</span></td></tr>
+            <tr><td>Sophie Bernard</td><td>sophie@example.com</td><td>Utilisateur</td><td><span class="badge badge-warning">En attente</span></td></tr>
+            <tr><td>Pierre Leroy</td><td>pierre@example.com</td><td>Utilisateur</td><td><span class="badge badge-success">Actif</span></td></tr>
+            <tr><td>Claire Moreau</td><td>claire@example.com</td><td>Éditeur</td><td><span class="badge badge-danger">Suspendu</span></td></tr>
+          </tbody></table>
+        </div>
+        <!-- Onglet Settings -->
+        <div id="admin-tab-settings" class="admin-tab" style="display:none;opacity:1;transform:none;">
+          <h2>Paramètres</h2>
+          <form class="settings-form" onsubmit="event.preventDefault(); alert('Paramètres sauvegardés !');">
+            <div class="form-group"><label>Nom du site</label><input type="text" value="{{PROJECT_TITLE}}"></div>
+            <div class="form-group"><label>Email admin</label><input type="email" value="admin@example.com"></div>
+            <button type="submit" class="btn-primary">Sauvegarder</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PAGE CONTACT -->
+  <section id="page-contact" style="display:none;">
+    <div class="container section-padding">
+      <h2 class="section-title fade-in">Contact</h2>
+      <form class="contact-form fade-in" data-delay="100" onsubmit="handleContactForm(event)">
+        <div class="form-group"><label for="name">Nom</label><input type="text" id="name" required placeholder="Votre nom"></div>
+        <div class="form-group"><label for="email">Email</label><input type="email" id="email" required placeholder="votre@email.com"></div>
+        <div class="form-group"><label for="message">Message</label><textarea id="message" rows="5" required placeholder="Votre message..."></textarea></div>
+        <button type="submit" class="btn-primary">Envoyer <i class="fas fa-paper-plane"></i></button>
+      </form>
+    </div>
+  </section>
+
+  <footer>
+    <div class="container footer-inner"><p>&copy; {{YEAR}} {{PROJECT_TITLE}}. Tous droits réservés.</p></div>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

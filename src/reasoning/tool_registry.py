@@ -1,0 +1,1268 @@
+"""
+ToolRegistry — Registre central des outils pour LUMENA.
+
+Extrait de react.py pour ameliorer la lisibilite et la maintenabilite.
+"""
+
+from typing import Dict, Any, List, Optional
+from pathlib import Path
+from loguru import logger
+import asyncio
+import json
+import os
+import re
+import unicodedata
+import difflib
+from time import perf_counter
+
+from .react_config import (
+    IS_WINDOWS, OS_NAME,
+    WorkspaceFileGuardrails, Observation,
+    TELEMETRY_AVAILABLE, publish_trace,
+    current_trace_context, get_file_edits_store,
+    compute_workspace_relative, get_current_runtime_context,
+)
+
+
+class _FallbackToolSearch:
+    """Keyword search fallback si chromadb n'est pas installé."""
+
+    def __init__(self, tools):
+        self._tools = tools
+
+    def query(self, query_texts, n_results=5):
+        query_lower = query_texts[0].lower()
+        keywords = query_lower.split()
+        scored = []
+        for name, tool in self._tools.items():
+            desc = tool.get("description", "").lower()
+            score = sum(1 for kw in keywords if kw in name or kw in desc)
+            if score > 0:
+                scored.append((score, name, tool.get("description", "")[:120]))
+        scored.sort(key=lambda x: -x[0])
+        results = scored[:n_results]
+        return {
+            "documents": [[desc for _, _, desc in results]],
+            "metadatas": [[{"name": n} for _, n, _ in results]],
+        }
+
+
+class ToolRegistry:
+    """
+    Registre des outils disponibles pour LUMENA.
+    """
+    
+    def __init__(
+        self,
+        lumena=None,
+        lumena_root: Optional[Path] = None,
+        ide_context: Optional[Dict[str, Any]] = None,
+    ):
+        self.tools: Dict[str, Dict[str, Any]] = {}
+        self.lumena = lumena  # Reference a LumenaCore pour acces a memory, etc.
+        self.lumena_root = (lumena_root or Path(__file__).parent.parent.parent).resolve()
+        self.default_workspace_root = self._resolve_default_workspace_root()
+        self.default_workspace_root.mkdir(parents=True, exist_ok=True)
+        self.ide_context = self._normalize_ide_context(ide_context or {})
+        self.runtime_root = self._get_effective_root()
+        # BUGFIX: utiliser lumena_root (lumena/) comme racine des guardrails, pas runtime_root
+        # (lumena/workspace/). Sinon lumena_root / "workspace" = lumena/workspace/workspace/
+        # ce qui provoque le bug du double-workspace dans write_file et list_directory.
+        self.file_guardrails = WorkspaceFileGuardrails(self.lumena_root)
+        self._mail_hub_instance = None
+        self._critical_alert_hub_instance = None
+        self._web_crawler_instance = None
+        self._document_hub_instance = None
+        self._search_hub_instance = None
+        self._spotify_hub_instance = None
+        self._notion_hub_instance = None
+        self._opened_apps_history: List[str] = []
+        # Cache d'observations intra-session : évite les appels redondants (même outil + mêmes args)
+        self._observation_cache: Dict[str, str] = {}
+        self._OBS_CACHE_MAX = 200  # LRU simple — évite la fuite mémoire sur daemon 24/7
+        self._CACHEABLE_TOOLS = {
+            "list_directory", "get_time", "read_file",
+            "memory_search", "memory_stats", "memory_get", "read_journal",
+            "list_journal_dates", "search_journal",
+            "view_outline", "get_agents_status", "get_my_capabilities",
+            # OSINT (lecture seule, résultats stables en session)
+            "ip_info", "osint_scan", "domain_recon", "email_check",
+            "whois_lookup", "ssl_check", "subdomain_enum", "http_headers_check",
+            "threat_check", "port_scan", "reverse_dns", "tech_detect", "wayback_check",
+        }
+        # Cache de description des outils (rebuild coûteux sur 241 tools, invalidé sur register())
+        self._tools_desc_cache: Optional[str] = None
+        # Cache de signatures handlers — pre-populé dans _load_v2_handlers() pour éviter
+        # inspect.signature() dans la boucle hot execute() : (has_var_keyword, valid_params)
+        self._sig_cache: Dict[str, tuple] = {}
+        # [Phase 7] Legacy handlers supprimés — V2 est la seule source de tools
+
+        # Phase 4.3: Mapping tool_name → module_category pour filtrage contextuel
+        self._tool_modules: Dict[str, str] = {}
+        # Filtre optionnel : si défini, seuls ces outils apparaissent dans get_tools_description()
+        # et sont exécutables. Utilisé par think_and_act_silent pour alléger le prompt.
+        self._allowed_tools: Optional[set] = None
+        # True quand _allowed_tools a été défini par l'appelant (pas le filtre contextuel)
+        self._caller_set_allowed: bool = False
+        # P0: Modules handlers dont l'import ou l'exécution du getter a échoué
+        self._failed_modules: List[str] = []
+
+        # ── Phase 7: Chargement handlers fragmentés V2 (obligatoire) ─────
+        self._load_v2_handlers()
+
+    # ── Phase 7 + P0: chargement résilient des handlers V2 ────────────────
+    def _load_v2_handlers(self) -> None:
+        """Charge tous les handlers V2 — résilient aux imports/getters cassés."""
+        # ── INFRA CRITIQUE — si ça échoue, Lumena ne peut pas démarrer ──
+        try:
+            from .handlers.context import HandlerContext
+            from .handlers.registry_v2 import HandlerRegistryV2
+        except Exception as exc:
+            logger.critical(f"[FATAL] Handler infrastructure import failed: {exc}")
+            raise RuntimeError(f"Impossible de charger l'infra handlers: {exc}") from exc
+
+        # ── MODULES HANDLERS — chargement individuel, skip on failure ──
+        _HANDLER_MODULES = [
+            (".handlers.files",          "get_file_handler_defs",          "files"),
+            (".handlers.system",         "get_system_handler_defs",        "system"),
+            (".handlers.web",            "get_web_handler_defs",           "web"),
+            (".handlers.memory",         "get_memory_handler_defs",        "memory"),
+            (".handlers.browser",        "get_browser_handler_defs",       "browser"),
+            (".handlers.computer_use",   "get_computer_use_handler_defs",  "computer_use"),
+            (".handlers.skills",         "get_skills_handler_defs",        "skills"),
+            (".handlers.agents",         "get_agents_handler_defs",        "agents"),
+            (".handlers.mail",           "get_mail_handler_defs",          "mail"),
+            (".handlers.documents",      "get_documents_handler_defs",     "documents"),
+            (".handlers.spotify",        "get_spotify_handler_defs",       "spotify"),
+            (".handlers.notion",         "get_notion_handler_defs",        "notion"),
+            (".handlers.project",        "get_project_handler_defs",       "project"),
+            (".handlers.git",            "get_git_handler_defs",           "git"),
+            (".handlers.github",         "get_github_handler_defs",        "github"),
+            (".handlers.autonomy",       "get_autonomy_handler_defs",      "autonomy"),
+            (".handlers.security",       "get_security_handler_defs",      "security"),
+            (".handlers.custom",         "get_custom_tool_handler_defs",   "custom"),
+            (".handlers.heartbeat_self", "get_heartbeat_self_handler_defs","autonomy"),
+            (".handlers.discord_admin",  "get_discord_admin_handler_defs", "discord"),
+            (".handlers.perception",     "get_perception_handler_defs",    "documents"),
+            (".handlers.osint",          "get_osint_handler_defs",         "security"),
+            (".handlers.network",        "get_network_handler_defs",       "network"),
+            (".handlers.http_api",       "get_http_api_handler_defs",      "web"),
+            (".handlers.plans",          "get_plans_handler_defs",         "autonomy"),
+            (".handlers.website",        "get_website_handler_defs",       "website"),
+            (".handlers.lsp",            "get_lsp_handler_defs",           "lsp"),
+            (".handlers.codebase",       "get_codebase_handler_defs",      "codebase"),
+            (".handlers.ide",            "get_ide_handler_defs",           "ide"),
+            (".handlers.config_manager", "get_config_manager_handler_defs","system"),
+            (".handlers.twitter",        "get_twitter_handler_defs",       "social"),
+            (".handlers.stripe_api",     "get_stripe_api_handler_defs",    "stripe"),
+            (".handlers.n8n",            "get_n8n_handler_defs",           "automation"),
+            (".handlers.remotion",       "get_video_handler_defs",         "video"),
+        ]
+
+        import importlib
+        _loaded_getters: Dict[str, tuple] = {}  # getter_name → (callable, category)
+
+        for mod_path, getter_name, category in _HANDLER_MODULES:
+            try:
+                mod = importlib.import_module(mod_path, package=__package__)
+                getter = getattr(mod, getter_name)
+                _loaded_getters[getter_name] = (getter, category)
+            except Exception as exc:
+                self._failed_modules.append(mod_path)
+                logger.error(f"[Handler] Skip {mod_path}.{getter_name}: {exc}")
+
+        if self._failed_modules:
+            logger.warning(
+                f"[Phase7] {len(self._failed_modules)}/{len(_HANDLER_MODULES)} "
+                f"handler modules failed to import: {self._failed_modules}"
+            )
+
+        # ── Playwright conditionnel (préserve la logique existante) ──
+        _pw_available = False
+        try:
+            from ..tools.playwright_browser import PLAYWRIGHT_AVAILABLE
+            _pw_available = PLAYWRIGHT_AVAILABLE
+        except Exception:
+            pass
+
+        # ── Construction du module_map ──
+        ctx = HandlerContext.from_tool_registry(self)
+        v2 = HandlerRegistryV2()
+
+        _module_map = []
+        for getter_name, (getter, category) in _loaded_getters.items():
+            if category == "browser" and not _pw_available:
+                logger.info("🌐 Playwright non disponible — outils browser masqués du prompt")
+                continue
+            _module_map.append((getter, category))
+
+        # ── Enregistrement (catch Exception — un getter crashant ne tue pas le loading) ──
+        for getter, module_cat in _module_map:
+            try:
+                defs = getter()
+                v2.register_many(defs)
+                for hdef in defs:
+                    self._tool_modules[hdef.name] = module_cat
+            except ValueError:
+                # Doublon attendu (screenshot dans system + computer_use)
+                for hdef in defs:
+                    if not v2.has(hdef.name):
+                        v2.register(hdef)
+                    self._tool_modules[hdef.name] = module_cat
+            except Exception as exc:
+                # Getter importé OK mais exécution échoue (AttributeError, TypeError, etc.)
+                self._failed_modules.append(f"{getter.__module__}.{getter.__name__}")
+                logger.error(f"[Handler] Getter {getter.__name__} crashed: {exc}")
+
+        # ── Legacy dict ──
+        legacy_v2 = v2.to_legacy_tools_dict(ctx)
+        self.tools.update(legacy_v2)
+
+        # ── Pre-populer le cache de signatures (évite inspect.signature() dans execute() hot-path) ──
+        import inspect as _inspect_sig
+        for _tname, _tdef in self.tools.items():
+            _h = _tdef.get("handler")
+            if _h is None:
+                self._sig_cache[_tname] = (True, None)
+                continue
+            try:
+                _sig = _inspect_sig.signature(_h)
+                _hv = any(
+                    p.kind == _inspect_sig.Parameter.VAR_KEYWORD
+                    for p in _sig.parameters.values()
+                )
+                _vp = None if _hv else frozenset(_sig.parameters.keys())
+                self._sig_cache[_tname] = (_hv, _vp)
+            except Exception:
+                self._sig_cache[_tname] = (True, None)
+
+        # ── parallel_tools wrapper ──
+        if "parallel_tools" in self.tools:
+            from .handlers.system import parallel_tools_handler as _pt_handler
+            _self_execute = self.execute
+
+            async def _parallel_tools_wrapper(**kw):
+                filtered = {}
+                if "tool_calls" in kw:
+                    filtered["tool_calls"] = kw["tool_calls"]
+                elif len(kw) == 1:
+                    only_key = next(iter(kw))
+                    val = kw[only_key]
+                    if isinstance(val, list):
+                        logger.warning(f"parallel_tools: arg '{only_key}' interprété comme tool_calls")
+                        filtered["tool_calls"] = val
+                if "tool_calls" not in filtered and kw:
+                    _bad_args = [k for k in kw.keys() if k != "execute_fn"]
+                    logger.warning(f"parallel_tools: args directs détectés ({_bad_args}) — format tool_calls requis")
+                    from .handlers.contracts import HandlerResult as _HR
+                    return _HR.fail(
+                        f"Erreur: parallel_tools attend tool_calls=[{{\"name\": \"outil\", \"args\": {{...}}}}]. "
+                        f"Tu as envoyé des args directs ({_bad_args}). "
+                        f"Appelle l'outil directement (ex: ACTION: discord_send) au lieu de parallel_tools."
+                    ).to_legacy_str()
+                filtered["execute_fn"] = _self_execute
+                result = await _pt_handler(ctx, **filtered)
+                return result.to_legacy_str()
+
+            self.tools["parallel_tools"]["handler"] = _parallel_tools_wrapper
+
+        self._v2_registry = v2
+        self._v2_context = ctx
+
+        logger.info(
+            f"loaded: {v2.count} handlers "
+            f"({len(legacy_v2)} tools registered)"
+            + (f" ({len(self._failed_modules)} modules skipped)" if self._failed_modules else "")
+        )
+
+        # ── P1.5: discover_tools — recherche sémantique d'outils (ChromaDB) ──
+        self._tool_collection = None  # ChromaDB collection, lazy init
+
+        async def _discover_tools_handler(query: str, max_results: int = 5) -> str:
+            """Recherche sémantique dans TOUS les outils disponibles par description."""
+            if self._tool_collection is None:
+                self._init_tool_index()
+
+            results = self._tool_collection.query(
+                query_texts=[query],
+                n_results=min(max_results, 10),
+            )
+
+            if not results["documents"] or not results["documents"][0]:
+                return "Aucun outil trouvé pour cette recherche."
+
+            found = []
+            for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+                name = meta["name"]
+                found.append(f"- {name}: {doc[:120]}")
+                if self._allowed_tools is not None:
+                    self._allowed_tools.add(name)
+                    self._tools_desc_cache = None
+
+            return f"{len(found)} outils trouvés et ajoutés:\n" + "\n".join(found)
+
+        self.tools["discover_tools"] = {
+            "name": "discover_tools",
+            "description": "Recherche sémantique dans tous les outils disponibles. "
+                           "Utilise cet outil quand tu as besoin d'une capability non listée.",
+            "parameters": {
+                "query": {"type": "string", "description": "Description de ce que tu veux faire"},
+                "max_results": {"type": "integer", "description": "Nombre max de résultats (défaut: 5)"},
+            },
+            "required": ["query"],
+            "handler": _discover_tools_handler,
+        }
+        self._tool_modules["discover_tools"] = "system"
+
+    # ── P1.6: Index vectoriel des outils ──
+    def _init_tool_index(self) -> None:
+        """Construit un index ChromaDB des descriptions d'outils (one-shot au 1er appel)."""
+        try:
+            import chromadb
+        except ImportError:
+            logger.warning("[discover_tools] chromadb non installé — fallback keyword")
+            self._tool_collection = _FallbackToolSearch(self.tools)
+            return
+
+        client = chromadb.Client()  # In-memory, pas persistent
+        collection = client.get_or_create_collection(
+            name="lumena_tools",
+            metadata={"hnsw:space": "cosine"},
+        )
+
+        ids, docs, metas = [], [], []
+        for name, tool in self.tools.items():
+            if name == "discover_tools":
+                continue
+            desc = tool.get("description", name)
+            params = tool.get("parameters", {})
+            param_names = ", ".join(params.keys()) if params else ""
+            full_text = f"{name}({param_names}): {desc}"
+            ids.append(name)
+            docs.append(full_text)
+            metas.append({"name": name, "category": self._tool_modules.get(name, "unknown")})
+
+        collection.add(ids=ids, documents=docs, metadatas=metas)
+        self._tool_collection = collection
+        logger.info(f"[discover_tools] Tool index built: {len(ids)} tools indexed (in-memory ChromaDB)")
+
+    def _resolve_default_workspace_root(self) -> Path:
+        raw = os.getenv("LUMENA_DEFAULT_WORKSPACE", "").strip()
+        if raw:
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = (self.lumena_root / candidate).resolve()
+            else:
+                candidate = candidate.resolve()
+            return candidate
+        from ..utils.paths import WORKSPACE_DIR
+        return WORKSPACE_DIR.resolve()
+
+    @staticmethod
+    def _normalize_existing_dir(path: Optional[str]) -> Optional[str]:
+        if not path:
+            return None
+        try:
+            p = Path(str(path)).expanduser().resolve()
+        except Exception:
+            return None
+        return str(p) if p.exists() and p.is_dir() else None
+
+    @staticmethod
+    def _normalize_existing_file(path: Optional[str]) -> Optional[str]:
+        if not path:
+            return None
+        try:
+            p = Path(str(path)).expanduser().resolve()
+        except Exception:
+            return None
+        return str(p) if p.exists() and p.is_file() else None
+
+    @staticmethod
+    def _normalize_existing_parent_dir(path: Optional[str]) -> Optional[str]:
+        if not path:
+            return None
+        try:
+            p = Path(str(path)).expanduser().resolve()
+        except Exception:
+            return None
+
+        current = p if p.is_dir() else p.parent
+        for _ in range(8):
+            if current.exists() and current.is_dir():
+                return str(current)
+            if current.parent == current:
+                break
+            current = current.parent
+        return None
+
+    @staticmethod
+    def _infer_workspace_from_file_paths(
+        active_file_path: Optional[str],
+        open_files: List[str],
+    ) -> Optional[str]:
+        markers = (
+            ".git",
+            "package.json",
+            "pyproject.toml",
+            "requirements.txt",
+            "Cargo.toml",
+            "go.mod",
+            "pom.xml",
+            "composer.json",
+        )
+        candidates: List[str] = []
+        if active_file_path:
+            candidates.append(active_file_path)
+        candidates.extend(open_files[:30])
+
+        for raw in candidates:
+            normalized = ToolRegistry._normalize_existing_file(raw)
+            if not normalized:
+                continue
+            current = Path(normalized).parent
+            for _ in range(10):
+                if any((current / marker).exists() for marker in markers):
+                    return str(current)
+                if current.parent == current:
+                    break
+                current = current.parent
+            return str(Path(normalized).parent)
+        return None
+
+    def _normalize_ide_context(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        workspace_path = self._normalize_existing_dir(raw.get("workspace_path"))
+        workspace_hint_parent = self._normalize_existing_parent_dir(raw.get("workspace_path"))
+        active_file_path = self._normalize_existing_file(raw.get("active_file_path"))
+        open_files: List[str] = []
+        for item in (raw.get("open_files") or [])[:30]:
+            normalized = self._normalize_existing_file(item)
+            if normalized:
+                open_files.append(normalized)
+
+        if not workspace_path:
+            workspace_path = self._infer_workspace_from_file_paths(active_file_path, open_files)
+        if not workspace_path:
+            workspace_path = workspace_hint_parent
+
+        return {
+            "workspace_path": workspace_path,
+            "active_file_path": active_file_path,
+            "open_files": open_files,
+        }
+
+    def _is_ide_runtime(self) -> bool:
+        return bool(self.ide_context.get("workspace_path"))
+
+    def _get_effective_root(self) -> Path:
+        workspace = self.ide_context.get("workspace_path")
+        if workspace:
+            try:
+                p = Path(workspace).resolve()
+                if p.exists() and p.is_dir():
+                    return p
+            except Exception:
+                pass  # chemin invalide, on essaie le suivant
+        self.default_workspace_root.mkdir(parents=True, exist_ok=True)
+        return self.default_workspace_root
+
+    @staticmethod
+    def _get_env_int(key: str, default: int, minimum: int = 1) -> int:
+        raw = os.getenv(key)
+        if raw is None:
+            return default
+        try:
+            value = int(str(raw).strip())
+            return max(minimum, value)
+        except (TypeError, ValueError):
+            return default
+
+    def _ide_read_page_size(self) -> int:
+        return self._get_env_int("LUMENA_IDE_READ_LINES", 200000, minimum=1000)
+
+    def _ide_list_max_items(self) -> int:
+        return self._get_env_int("LUMENA_IDE_LIST_ITEMS", 20000, minimum=200)
+
+    def _ide_find_max_results(self) -> int:
+        return self._get_env_int("LUMENA_IDE_FIND_RESULTS", 20000, minimum=200)
+
+    def _ide_command_timeout_sec(self) -> Optional[int]:
+        raw = os.getenv("LUMENA_IDE_COMMAND_TIMEOUT_SEC")
+        if raw is None:
+            return 3600
+        try:
+            value = int(str(raw).strip())
+        except Exception:
+            return 3600
+        if value <= 0:
+            return None
+        return max(30, value)
+
+    def _ide_command_output_limit(self) -> int:
+        return self._get_env_int("LUMENA_IDE_OUTPUT_LIMIT", 2000000, minimum=20000)
+
+    def _patch_strict_enabled(self) -> bool:
+        if self._is_ide_runtime():
+            return False
+        raw = os.getenv("LUMENA_PATCH_STRICT", "1")
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _file_cards_enabled(self) -> bool:
+        raw = os.getenv("LUMENA_CHAT_FILE_CARDS", "1")
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _trace_ids(self) -> tuple[Optional[str], Optional[str]]:
+        if not TELEMETRY_AVAILABLE or current_trace_context is None:
+            return None, None
+        try:
+            ctx = current_trace_context() or {}
+            return ctx.get("trace_id"), ctx.get("turn_id")
+        except Exception:
+            return None, None
+
+    def _record_file_edit(
+        self,
+        *,
+        tool_name: str,
+        action: str,
+        file_path: Path,
+        before_content: Optional[str],
+        after_content: Optional[str],
+        existed_before: bool,
+        summary: str,
+        workspace_relative: Optional[str] = None,
+    ) -> None:
+        if not self._file_cards_enabled():
+            return
+        if not TELEMETRY_AVAILABLE or get_file_edits_store is None:
+            return
+
+        trace_id, turn_id = self._trace_ids()
+        if not trace_id:
+            return
+
+        try:
+            store = get_file_edits_store()
+            store.start_edit_session(trace_id=trace_id, turn_id=turn_id)
+            if workspace_relative is None and compute_workspace_relative is not None:
+                workspace_relative = compute_workspace_relative(file_path, self.runtime_root)
+            task_id = None
+            if callable(get_current_runtime_context):
+                try:
+                    runtime_ctx = get_current_runtime_context()
+                    task_id = getattr(runtime_ctx, "task_id", None) if runtime_ctx else None
+                except Exception:
+                    task_id = None
+            store.record_edit(
+                trace_id=trace_id,
+                turn_id=turn_id,
+                task_id=task_id,
+                tool_name=tool_name,
+                action=action,
+                file_path=str(file_path),
+                workspace_relative=workspace_relative,
+                before_content=before_content,
+                after_content=after_content,
+                existed_before=existed_before,
+                summary=summary,
+            )
+        except Exception as exc:
+            logger.debug("file_edit record skipped: {}", exc)
+
+    # ── Filtrage contextuel des outils ────────────────────────────────────
+    # Catégories toujours injectées quel que soit le contexte
+    _ALWAYS_INCLUDE_CATEGORIES: set = {"system"}
+    # Catégories de fallback quand aucune règle ne matche
+    _FALLBACK_CATEGORIES: set = {"files", "system", "web", "memory"}
+
+    # Mots-clés français + anglais → catégories pertinentes
+    _CONTEXT_RULES: list = [
+        # (keywords, categories à inclure)
+        (
+            {"chrome", "chromium", "firefox", "navigateur", "browser", "onglet",
+             "tab", "site", "page web", "webpage", "url", "lien", "click",
+             "cliquer", "formulaire", "form", "bouton", "button", "scraping",
+             "leboncoin", "le bon coin", "google", "bing", "youtube"},
+            {"browser", "web", "system"},
+        ),
+        (
+            {"souris", "mouse", "clavier", "keyboard", "écran", "screen",
+             "fenêtre", "window", "bureau", "desktop", "clic droit",
+             "right click", "drag", "scroll", "défilement", "application",
+             "notepad", "excel", "word", "paint", "terminal"},
+            {"computer_use", "system"},
+        ),
+        (
+            {"fichier", "file", "dossier", "folder", "directory", "répertoire",
+             "écrire", "write", "lire", "read", "créer", "create", "supprimer",
+             "delete", "renommer", "rename", "copier", "copy", "déplacer",
+             "move", "code", "script", "python", "patch"},
+            {"files", "skills", "system"},
+        ),
+        (
+            {"mail", "email", "courriel", "courrier", "envoyer un mail",
+             "send mail", "inbox", "boîte de réception", "imap",
+             "telegram", "whatsapp", "envoyer", "envoi", "zip"},
+            {"mail", "files", "system"},
+        ),
+        (
+            {"document", "rapport", "pdf", "docx", "xlsx", "pptx",
+             "facture", "devis", "invoice", "contrat", "compte rendu",
+             "compte-rendu", "synthèse", "synthese", "bon de commande",
+             "note de frais", "proforma", "avoir", "tableur", "csv",
+             "présentation", "presentation", "diaporama", "slides",
+             "word", "excel", "powerpoint", "spreadsheet"},
+            {"documents", "files", "system"},
+        ),
+        (
+            {"spotify", "musique", "music", "chanson", "song", "playlist",
+             "album", "artiste", "artist", "écouter", "play"},
+            {"spotify", "system"},
+        ),
+        (
+            {"notion", "notion.so", "page notion", "base de données notion",
+             "database notion"},
+            {"notion", "system"},
+        ),
+        # ── Catégories ajoutées (Phase 1.2) ──
+        (
+            {"projet", "project", "site web", "website", "app", "application web",
+             "développe", "génère", "crée un site", "crée un projet",
+             "landing page", "portfolio", "dashboard", "webapp", "frontend",
+             "backend", "fullstack", "react", "vue", "angular", "html", "css"},
+            {"project", "website", "files", "system"},
+        ),
+        (
+            {"git", "commit", "branch", "branche", "merge", "pull", "push",
+             "rebase", "stash", "diff", "log", "clone", "checkout", "repo",
+             "repository", "dépôt"},
+            {"git", "files", "system"},
+        ),
+        (
+            {"github", "pull request", "issue", "pr", "gist", "fork",
+             "github.com", "actions", "workflow", "release"},
+            {"github", "git", "system"},
+        ),
+        (
+            {"autonome", "autonomy", "daemon", "heartbeat", "planification",
+             "schedule", "tâche planifiée", "cron", "automatique", "routine",
+             "proactif", "surveillance", "tâche", "tâches", "tache", "taches",
+             "enregistr", "récurren", "recurren", "rappel", "rappelle-moi",
+             "tous les jours", "chaque jour", "quotidien"},
+            {"autonomy", "system"},
+        ),
+        (
+            {"réseau", "network", "ping", "ip", "dns", "port", "scan",
+             "traceroute", "nmap", "connexion", "bandwidth", "latence",
+             "firewall", "proxy", "vpn", "socket", "tcp", "udp"},
+            {"network", "security", "system"},
+        ),
+        (
+            {"ide", "éditeur", "editor", "vscode", "cursor", "code source",
+             "lsp", "autocomplétion", "refactor", "navigate", "symbole"},
+            {"ide", "lsp", "codebase", "files", "system"},
+        ),
+        (
+            {"codebase", "base de code", "analyse de code", "dépendances",
+             "imports", "architecture", "structure du code", "index",
+             "search code", "cherche dans le code"},
+            {"codebase", "files", "system"},
+        ),
+        (
+            {"discord", "serveur discord", "bot discord", "salon", "channel",
+             "modération", "ban", "kick", "rôle", "role"},
+            {"discord", "system"},
+        ),
+        (
+            {"sécurité", "security", "osint", "reconnaissance", "vulnérabilité",
+             "vulnerability", "audit", "pentest", "whois", "shodan",
+             "exploit", "cve", "hash", "encrypt", "decrypt", "chiffr"},
+            {"security", "network", "system"},
+        ),
+        (
+            {"agent", "sub-agent", "sous-agent", "délègue", "delegate",
+             "spécialisé", "expert", "multi-agent"},
+            {"agents", "system"},
+        ),
+        (
+            {"image", "photo", "screenshot", "capture", "ocr", "texte dans",
+             "reconnaissance", "perception", "analyse d'image", "pdf"},
+            {"documents", "files", "system"},
+        ),
+        (
+            {"mémoire", "memory", "souvenir", "rappelle", "remember",
+             "oublie", "forget", "journal", "apprends", "learn",
+             "connaissance", "knowledge"},
+            {"memory", "system"},
+        ),
+        (
+            {"cherche", "search", "recherche", "trouve", "find", "web",
+             "internet", "en ligne", "online", "actualité", "news",
+             "information", "wiki", "wikipedia"},
+            {"web", "system"},
+        ),
+        (
+            {"skill", "compétence", "installer", "install", "plugin",
+             "extension", "module", "activer", "désactiver"},
+            {"skills", "system"},
+        ),
+        (
+            {"api", "http", "rest", "endpoint", "requête http", "get", "post",
+             "json", "webhook", "curl", "fetch"},
+            {"web", "network", "system"},
+        ),
+        (
+            {"stripe", "paiement", "payment", "facture", "invoice", "abonnement",
+             "subscription", "prix", "price", "produit stripe", "lien de paiement",
+             "payment link", "checkout", "coupon", "remboursement", "refund",
+             "client stripe", "customer", "solde", "balance", "encaisser",
+             "facturer", "tarif", "monétis", "monetiz", "vendre", "sell"},
+            {"stripe", "system"},
+        ),
+        # ── P1.8: Règle code/dev ──
+        (
+            {"développe", "dev", "code", "bug", "debug", "erreur",
+             "test", "function", "class", "refactor", "variable",
+             "import", "module", "compile", "build", "npm",
+             "pip", "package", "dépendance"},
+            {"project", "git", "codebase", "files", "lsp", "ide", "system"},
+        ),
+        # ── P1.9: Catégories manquantes (social, automation, custom) ──
+        (
+            {"twitter", "tweet", "x.com", "poster", "publier",
+             "timeline", "retweet", "rt", "follow", "unfollow",
+             "hashtag", "mention"},
+            {"social", "web", "system"},
+        ),
+        (
+            {"n8n", "workflow", "automatiser", "automate", "scénario",
+             "trigger", "webhook n8n", "node", "intégration"},
+            {"automation", "web", "system"},
+        ),
+        (
+            {"custom tool", "outil custom", "skill installé",
+             "installed skill", "plugin", "extension custom"},
+            {"custom", "skills", "system"},
+        ),
+    ]
+
+    # ── Phase 1.1-1.4: Filtrage contextuel des outils ──────────────────────
+    def apply_context_filter(self, query: str, intent: Optional[str] = None) -> None:
+        """Filtre les outils disponibles en fonction du contexte de la requête.
+
+        Matche *query* contre _CONTEXT_RULES, collecte les catégories pertinentes,
+        puis set _allowed_tools = union des outils dont la catégorie est sélectionnée.
+        Invalide le cache de descriptions.
+
+        Args:
+            query: Requête utilisateur.
+            intent: Intent classifié (chat/tool_direct/project/react). Si "chat",
+                    restreint aux catégories memory/system pour économiser le
+                    contexte d'outils.
+        """
+        if not query or not getattr(self, "_tool_modules", None):
+            # Pas de modules mappés → on ne peut pas filtrer, tout reste ouvert
+            return
+
+        query_lower = query.lower()
+        matched_categories: set = set()
+
+        for keywords, categories in self._CONTEXT_RULES:
+            for kw in keywords:
+                if kw in query_lower:
+                    matched_categories |= categories
+                    break  # un match suffit pour cette règle
+
+        # Toujours inclure les catégories obligatoires
+        matched_categories |= self._ALWAYS_INCLUDE_CATEGORIES
+
+        # Override intent-based : CHAT pur → restreindre à memory+system (réponse directe)
+        if intent == "chat":
+            matched_categories = {"memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
+        elif intent == "tool_direct" and matched_categories != self._ALWAYS_INCLUDE_CATEGORIES:
+            # tool_direct : garder uniquement les catégories matchées (pas de fallback large)
+            pass
+        elif matched_categories == self._ALWAYS_INCLUDE_CATEGORIES:
+            # Fallback : aucune règle spécifique → catégories par défaut
+            matched_categories |= self._FALLBACK_CATEGORIES
+
+        # Construire le set d'outils autorisés à partir des catégories matchées
+        allowed: set = set()
+        for tool_name, tool_cat in self._tool_modules.items():
+            if tool_cat in matched_categories:
+                allowed.add(tool_name)
+
+        # Toujours inclure final_answer, ask_user et les outils plan_*
+        for tool_name in self.tools:
+            if tool_name in ("final_answer", "ask_user") or tool_name.startswith("plan_"):
+                allowed.add(tool_name)
+
+        # P1.3: Guard — si le filtre ne matche aucun outil réel, ne pas filtrer
+        if not allowed:
+            return
+
+        # Appliquer le filtre et invalider le cache
+        old_allowed = self._allowed_tools
+        self._allowed_tools = allowed
+        if old_allowed != allowed:
+            self._tools_desc_cache = None
+
+    def clear_context_filter(self) -> None:
+        """Retire le filtre contextuel — tous les outils redeviennent disponibles."""
+        if self._allowed_tools is not None:
+            self._allowed_tools = None
+            self._tools_desc_cache = None
+
+    def register(
+        self, 
+        name: str, 
+        description: str, 
+        parameters: Dict[str, Any],
+        handler: callable
+    ):
+        """Enregistre un nouvel outil."""
+        self.tools[name] = {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "handler": handler
+        }
+        self._tools_desc_cache = None  # invalider le cache de description
+    
+    def get_tools_description(self) -> str:
+        """Retourne une description compacte des outils (1 ligne chacun). Résultat mis en cache."""
+        if self._tools_desc_cache is not None:
+            return self._tools_desc_cache
+        # Certains tests construisent ToolRegistry via object.__new__ sans appeler __init__.
+        # On tolère ce mode pour éviter une régression de compatibilité.
+        allowed_tools = getattr(self, "_allowed_tools", None)
+        descriptions = []
+        for name, tool in self.tools.items():
+            if allowed_tools is not None and name not in allowed_tools:
+                continue
+            params = tool["parameters"]
+            required_params = set(tool.get("required", []))
+            if not params:
+                descriptions.append(f"- {name}(): {tool['description']}")
+            else:
+                param_list = ", ".join(
+                    f"{p}" if p in required_params else f"{p}?"
+                    for p in params
+                )
+                descriptions.append(f"- {name}({param_list}): {tool['description']}")
+        self._tools_desc_cache = "\n".join(descriptions)
+        return self._tools_desc_cache
+    
+    def get_tools_schema(self) -> List[Dict[str, Any]]:
+        """Retourne le schéma des outils pour l'API."""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": tool["description"],
+                    "parameters": {
+                        "type": "object",
+                        "properties": tool["parameters"],
+                        "required": list(tool["parameters"].keys())
+                    }
+                }
+            }
+            for name, tool in self.tools.items()
+        ]
+    
+    async def execute(self, name: str, args: Dict[str, Any]) -> Observation:
+        """Exécute un outil."""
+        if name not in self.tools:
+            # Auto-fix: normalisation + fuzzy strict (cutoff=0.75) avant d'échouer
+            from src.llm.output_normalizer import auto_fix_action_name
+            _fixed = auto_fix_action_name(name, set(self.tools.keys()))
+            if _fixed != name and _fixed in self.tools:
+                logger.info(f"🔧 Auto-fix nom d'outil: '{name}' → '{_fixed}'")
+                name = _fixed
+            else:
+                # Phase 4.2: Suggestion fuzzy du nom d'outil le plus proche
+                _pool = list(self.tools.keys())  # P1.1: Toujours suggérer depuis le pool complet
+                close = difflib.get_close_matches(name, _pool, n=3, cutoff=0.5)
+                hint = f" Outils similaires: {', '.join(close)}" if close else ""
+                return Observation(
+                    content=f"Outil '{name}' non trouvé.{hint}",
+                    success=False
+                )
+        if self._allowed_tools is not None and name not in self._allowed_tools:
+            # P1.1: Soft filter — log + auto-expand, jamais de blocage
+            logger.info(f"🔧 Tool '{name}' hors filtre prompt — exécution soft-filter")
+            self._allowed_tools.add(name)
+            self._tools_desc_cache = None
+        started = perf_counter()
+        if TELEMETRY_AVAILABLE:
+            publish_trace(
+                stage="tool_exec_start",
+                status="start",
+                mode="agent",
+                tool_name=name,
+                summary=str(args),
+            )
+        
+        try:
+            handler = self.tools[name]["handler"]
+            
+            # Si args est vide ou None, passer un dict vide
+            if args is None:
+                args = {}
+            
+            # --- Unwrap wrappers courants (LLM envoie souvent {"input": {args...}} au lieu de {args...}) ---
+            _WRAPPER_KEYS = ("input", "parameters", "arguments", "params", "data", "payload")
+            if len(args) == 1:
+                _only_key = next(iter(args))
+                if _only_key in _WRAPPER_KEYS and isinstance(args[_only_key], dict):
+                    logger.info(f"🔧 Outil {name}: unwrap '{_only_key}' wrapper → {list(args[_only_key].keys())}")
+                    args = args[_only_key]
+            
+            # --- Mapping d'aliases courants pour les params (LLM envoie souvent de mauvais noms) ---
+            _PARAM_ALIASES = {
+                "edit_file": {"path": "file_path", "content": "new_content", "old": "old_content", "original": "old_content", "replacement": "new_content"},
+                "write_file": {"file_path": "path", "text": "content"},
+                "write_website_files": {"files": "json_data", "data": "json_data"},
+                "parallel_tools": {"input": "tool_calls", "tools": "tool_calls", "calls": "tool_calls"},
+                "run_command": {"input": "command", "cmd": "command", "shell": "command"},
+                "type_text": {"input": "text", "content": "text", "message": "text", "value": "text"},
+                "open_app": {"input": "name", "app": "name", "application": "name", "program": "name"},
+            }
+            if name in _PARAM_ALIASES:
+                alias_map = _PARAM_ALIASES[name]
+                remapped = {}
+                for k, v in args.items():
+                    remapped[alias_map.get(k, k)] = v
+                if remapped != args:
+                    logger.info(f"🔧 Outil {name}: aliases remappés: {set(args.keys()) - set(remapped.keys())} → params corrigés")
+                args = remapped
+            
+            # Filtrer les arguments via le cache de signatures (buildé à l'init — O(1) ici)
+            # Exception: parallel_tools gère ses propres args (wrapper avec recovery)
+            has_var_keyword, valid_params = self._sig_cache.get(name, (True, None))
+            if has_var_keyword and name != "parallel_tools":
+                # Wrapper V2 avec **kw — utiliser le schéma déclaré pour filtrer
+                _raw_params = self.tools[name].get("parameters", {})
+                tool_params = set(_raw_params.get("properties", _raw_params).keys())
+                if tool_params:
+                    filtered_args = {k: v for k, v in args.items() if k in tool_params}
+                    if len(filtered_args) != len(args):
+                        removed = set(args.keys()) - set(filtered_args.keys())
+                        logger.warning(f"🔧 Outil {name}: args inconnus retirés: {removed} (valides: {tool_params})")
+                    args = filtered_args
+            elif valid_params:
+                filtered_args = {k: v for k, v in args.items() if k in valid_params}
+                if len(filtered_args) != len(args):
+                    removed = set(args.keys()) - set(filtered_args.keys())
+                    logger.debug(f"🔧 Outil {name}: args filtrés, retirés: {removed}")
+                args = filtered_args
+            
+            # --- Coercion de types courants (int↔str, str→JSON) ---
+            tool_schema = self.tools[name].get("parameters", {})
+
+            # --- Validation des paramètres requis ---
+            _tool_meta = self.tools[name]
+            _required_params: list = _tool_meta.get("required", [])
+            if not _required_params and isinstance(tool_schema, dict):
+                # Fallback: paramètres sans "default" dans le schema
+                _required_params = [
+                    k for k, v in tool_schema.items()
+                    if isinstance(v, dict) and v.get("required", False)
+                ]
+            _missing = [p for p in _required_params if p not in args or args[p] is None]
+            if _missing:
+                return Observation(
+                    content=f"Paramètre(s) requis manquant(s) pour '{name}': {', '.join(_missing)}",
+                    success=False,
+                )
+
+            # --- Validation de type basique (string vide pour requis = erreur) ---
+            for _pname in _required_params:
+                _val = args.get(_pname)
+                if isinstance(_val, str) and not _val.strip():
+                    return Observation(
+                        content=f"Paramètre '{_pname}' de '{name}' est vide (string vide).",
+                        success=False,
+                    )
+
+            for _pname, _pval in list(args.items()):
+                _pschema = tool_schema.get(_pname, {})
+                _expected_type = _pschema.get("type", "") if isinstance(_pschema, dict) else ""
+                if _expected_type == "string" and isinstance(_pval, (int, float)):
+                    args[_pname] = str(_pval)
+                elif _expected_type == "integer" and isinstance(_pval, str):
+                    try:
+                        args[_pname] = int(_pval, 0) if _pval.startswith("0x") or _pval.startswith("0X") else int(_pval)
+                    except (ValueError, TypeError):
+                        pass
+                elif _expected_type in ("array", "object") and isinstance(_pval, str):
+                    try:
+                        _parsed = json.loads(_pval)
+                        if isinstance(_parsed, (list, dict)):
+                            args[_pname] = _parsed
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+            # Log debug pour voir les arguments reçus
+            _arg_preview = {}
+            for _k, _v in (args or {}).items():
+                _s = str(_v)
+                _arg_preview[_k] = _s[:80] + "…" if len(_s) > 80 else _s
+            logger.debug(f"🔧 Outil {name} appelé avec args: {_arg_preview if _arg_preview else 'VIDE'}")
+            
+            # Cache d'observations : eviter les appels redondants pour les outils de lecture
+            cache_key = None
+            if name in self._CACHEABLE_TOOLS:
+                try:
+                    cache_key = f"{name}::{json.dumps(args, sort_keys=True, default=str)}"
+                except Exception:
+                    cache_key = f"{name}::{args}"
+                if cache_key in self._observation_cache:
+                    logger.debug(f"Cache hit: {name}")
+                    return Observation(content=self._observation_cache[cache_key], success=True)
+            
+            try:
+                result = await handler(**args)
+            except TypeError as _te:
+                # Le LLM a passé des arguments invalides (param inconnu, type incorrect)
+                logger.warning(f"TypeError dans outil {name}: {_te}")
+                return Observation(
+                    content=f"\u2717 Erreur d'arguments pour {name}: {_te}",
+                    success=False,
+                )
+
+            # ── Invalidation du cache après opération d'écriture ──
+            _WRITE_TOOLS = {
+                "write_file", "edit_file", "edit_by_lines", "apply_patch",
+                "run_command", "create_file", "delete_file",
+            }
+            if name in _WRITE_TOOLS and self._observation_cache:
+                _stale = [k for k in self._observation_cache
+                          if k.startswith(("list_directory::", "read_file::"))]
+                for _sk in _stale:
+                    del self._observation_cache[_sk]
+                if _stale:
+                    logger.debug("Cache invalidé: {} entrées (après {})", len(_stale), name)
+
+            if isinstance(result, str):
+                raw = result.strip()
+                # Stocker dans le cache si applicable (limite 12000 chars)
+                # Ne pas cacher les résultats paginés (contiennent "SUITE DISPONIBLE")
+                if cache_key is not None and len(raw) < 12000 and "SUITE DISPONIBLE" not in raw:
+                    if len(self._observation_cache) >= self._OBS_CACHE_MAX:
+                        self._observation_cache.pop(next(iter(self._observation_cache)))
+                    self._observation_cache[cache_key] = raw
+                variants = {raw.lower()}
+                try:
+                    repaired = raw.encode("latin-1", errors="ignore").decode("utf-8", errors="ignore").strip()
+                    if repaired:
+                        variants.add(repaired.lower())
+                except Exception as e:
+                    logger.debug(f"Tool name repair: {e}")
+
+                def _fold_status_text(value: str) -> str:
+                    folded = unicodedata.normalize("NFKD", value)
+                    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+                    folded = re.sub(r"[^a-z0-9:/._\-\s]", " ", folded)
+                    return re.sub(r"\s+", " ", folded).strip()
+
+                folded_variants = [_fold_status_text(v) for v in variants]
+
+                starts_with_error = any(
+                    text.startswith(prefix)
+                    for text in folded_variants
+                    for prefix in ("error", "erreur", "echec", "failed", "failure", "timeout")
+                )
+                validation_failure = any(
+                    "validation" in text
+                    and any(
+                        token in text
+                        for token in (
+                            "echec",
+                            "echou",
+                            "failed",
+                            "failure",
+                            "invalid",
+                            "invalide",
+                            "interdit",
+                            "vide",
+                            "empty",
+                        )
+                    )
+                    for text in folded_variants
+                )
+                missing_param_error = any(
+                    ("parametre" in text or "parameter" in text or "argument" in text)
+                    and any(token in text for token in ("missing", "manquant", "required", "requis"))
+                    for text in folded_variants
+                )
+
+                # Vérifier aussi les marqueurs unicode d'erreur dans le texte brut
+                starts_with_unicode_error = (
+                    raw.startswith("✗") or raw.startswith("❌") or raw.startswith("✖")
+                )
+
+                if starts_with_error or starts_with_unicode_error or validation_failure or missing_param_error:
+                    if TELEMETRY_AVAILABLE:
+                        publish_trace(
+                            stage="tool_exec_done",
+                            status="error",
+                            mode="agent",
+                            tool_name=name,
+                            duration_ms=(perf_counter() - started) * 1000.0,
+                            error=result,
+                        )
+                    return Observation(content=result, success=False)
+            if TELEMETRY_AVAILABLE:
+                publish_trace(
+                    stage="tool_exec_done",
+                    status="ok",
+                    mode="agent",
+                    tool_name=name,
+                    duration_ms=(perf_counter() - started) * 1000.0,
+                    summary=(result[:220] if isinstance(result, str) else None),
+                )
+            return Observation(content=result, success=True)
+        except TypeError as e:
+            # Erreur de paramètres manquants
+            error_msg = str(e)
+            if "required" in error_msg or "missing" in error_msg:
+                logger.warning(f"⚠️ Outil {name}: paramètres manquants - args reçus: {args}")
+                if TELEMETRY_AVAILABLE:
+                    publish_trace(
+                        stage="tool_exec_done",
+                        status="error",
+                        mode="agent",
+                        tool_name=name,
+                        duration_ms=(perf_counter() - started) * 1000.0,
+                        error=error_msg,
+                    )
+                # Retrouver les vrais paramètres requis depuis le schéma du tool
+                _params = self.tools.get(name, {}).get("parameters", {})
+                if "properties" in _params:
+                    # Format JSON Schema (V2 handlers)
+                    _required = _params.get("required", list(_params["properties"].keys()))
+                else:
+                    # Format flat (tool_system) : requis = ceux sans "default"
+                    _required = [k for k, v in _params.items() if isinstance(v, dict) and "default" not in v] or list(_params.keys())
+                _hint = f"Paramètres requis: {', '.join(_required)}" if _required else "voir schéma de l'outil"
+                return Observation(
+                    content=f"❌ Paramètres manquants pour {name}. Reçu: {list(args.keys()) if args else 'aucun'}. {_hint}",
+                    success=False
+                )
+            raise
+        except Exception as e:
+            logger.error(f"Erreur exécution outil {name}: {e}")
+            if TELEMETRY_AVAILABLE:
+                publish_trace(
+                    stage="tool_exec_done",
+                    status="error",
+                    mode="agent",
+                    tool_name=name,
+                    duration_ms=(perf_counter() - started) * 1000.0,
+                    error=str(e),
+                )
+            return Observation(
+                content=f"Erreur: {str(e)}",
+                success=False
+            )
+    
+    async def execute_parallel(self, tool_calls: List[Dict[str, Any]]) -> List[Observation]:
+        """
+        🚀 PHASE 2: Exécute plusieurs outils en parallèle.
+        
+        Gros gain de performance quand plusieurs outils indépendants
+        doivent être exécutés (ex: lire 3 fichiers, faire 2 recherches).
+        
+        Args:
+            tool_calls: Liste de {name: str, args: dict}
+            
+        Returns:
+            Liste d'Observations dans le même ordre
+            
+        Exemple:
+            results = await registry.execute_parallel([
+                {"name": "read_file", "args": {"path": "a.py"}},
+                {"name": "read_file", "args": {"path": "b.py"}},
+                {"name": "web_search", "args": {"query": "python async"}}
+            ])
+        """
+        import asyncio
+        
+        if not tool_calls:
+            return []
+        
+        # Créer les tâches
+        tasks = []
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+            tasks.append(self.execute(name, args))
+        
+        # Exécuter en parallèle
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Convertir les exceptions en Observations
+        observations = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                observations.append(Observation(
+                    content=f"❌ Erreur parallèle: {result}",
+                    success=False
+                ))
+            else:
+                observations.append(result)
+        
+        return observations
+
+    def _get_mail_hub(self):
+        if self._mail_hub_instance is None:
+            from ..tools.mail_hub import MailHub
+            from ..utils.paths import MAIL_DIR
+            self._mail_hub_instance = MailHub(MAIL_DIR)
+        return self._mail_hub_instance
+
+    def _get_critical_alert_hub(self):
+        if self._critical_alert_hub_instance is None:
+            from ..tools.critical_alert_hub import CriticalAlertHub
+            from ..utils.paths import ALERTS_DIR
+            self._critical_alert_hub_instance = CriticalAlertHub(ALERTS_DIR)
+        return self._critical_alert_hub_instance
+
+    def _get_web_crawler(self):
+        if self._web_crawler_instance is None:
+            from ..tools.web_crawler import WebCrawler
+            from ..utils.paths import CRAWLER_DIR
+            self._web_crawler_instance = WebCrawler(CRAWLER_DIR)
+        return self._web_crawler_instance
+
+    def _get_document_hub(self):
+        if self._document_hub_instance is None:
+            from ..tools.document_hub import DocumentHub
+            # On sauvegarde les documents directement dans le workspace
+            self._document_hub_instance = DocumentHub(self.runtime_root)
+        return self._document_hub_instance
+
+    def _get_search_hub(self):
+        if self._search_hub_instance is None:
+            from ..tools.search_hub import SearchHub
+            self._search_hub_instance = SearchHub()
+        return self._search_hub_instance
+
+    def _get_spotify_hub(self):
+        if self._spotify_hub_instance is None:
+            from ..tools.spotify_hub import SpotifyHub
+            self._spotify_hub_instance = SpotifyHub()
+        return self._spotify_hub_instance
+
+    def _get_notion_hub(self):
+        if self._notion_hub_instance is None:
+            from ..tools.notion_hub import NotionHub
+            self._notion_hub_instance = NotionHub()
+        return self._notion_hub_instance
+# ──────────────────────────────────────────────────────────────────────────────
+# © 2025-2026 LossKarr — Lumena Project
+# Licensed under the Apache License, Version 2.0
+# https://github.com/Losskarr/lumena
+# ──────────────────────────────────────────────────────────────────────────────

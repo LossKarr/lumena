@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2.5cm; }
+  body { font-family: 'Georgia', serif; color: #222; font-size: 12px; line-height: 1.8; }
+  h1 { text-align: center; font-size: 22px; color: #1a1a2e; margin-bottom: 30px; }
+  .en-tete { text-align: center; margin-bottom: 20px; }
+  .en-tete strong { font-size: 14px; }
+  .corps { text-align: justify; margin: 20px 0; }
+  .fait { margin-top: 30px; }
+  .signature { margin-top: 40px; text-align: right; }
+  .footer { margin-top: 30px; text-align: center; font-size: 10px; color: #aaa; }
+</style>
+</head>
+<body>
+  <div class="en-tete">
+    <strong>{{ societe.name|default('') }}</strong><br>
+    {{ societe.address|default('') }}<br>
+    {{ societe.city|default('') }}
+    {% if societe.siret %}<br>SIRET : {{ societe.siret }}{% endif %}
+  </div>
+
+  <h1>ATTESTATION</h1>
+
+  <div class="corps">
+    <p>Je soussigné(e), <strong>{{ attestant.name|default('') }}</strong>{% if attestant.titre %}, {{ attestant.titre }}{% endif %}{% if societe.name %} de <strong>{{ societe.name }}</strong>{% endif %}, atteste par la présente que :</p>
+
+    <p style="background:#f8f8fa;padding:14px 18px;border-radius:6px;border-left:3px solid #1a1a2e;">
+      <strong>{{ beneficiaire.name|default('') }}</strong>{% if beneficiaire.titre %}, {{ beneficiaire.titre }}{% endif %},
+      {{ objet }}.
+    </p>
+
+    <p>Cette attestation est délivrée pour servir et valoir ce que de droit.</p>
+  </div>
+
+  <div class="fait">
+    <p>Fait à {{ lieu|default('_______________') }}, le {{ date|default('___/___/______') }}.</p>
+  </div>
+
+  <div class="signature">
+    {{ attestant.name|default('') }}<br>
+    {% if attestant.titre %}<em>{{ attestant.titre }}</em><br>{% endif %}
+    <br><em>Signature</em>
+  </div>
+
+  <div class="footer">Document généré par Lumena</div>
+</body>
+</html>

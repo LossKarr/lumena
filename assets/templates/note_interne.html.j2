@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 2cm; }
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #222; font-size: 12px; line-height: 1.6; }
+  .banner { background: {{ accent|default('#1a1a2e') }}; color: white; padding: 14px 20px; border-radius: 6px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+  .banner h1 { margin: 0; font-size: 16px; }
+  .priority { display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 10px; font-weight: bold; text-transform: uppercase; }
+  .priority-haute { background: #ef444433; color: #ef4444; }
+  .priority-normale { background: #6366f133; color: #6366f1; }
+  .priority-basse { background: #22c55e33; color: #22c55e; }
+  .meta { display: flex; gap: 16px; margin-bottom: 14px; font-size: 11px; color: #555; }
+  .meta .item { background: #f8f8fa; padding: 6px 12px; border-radius: 4px; }
+  .dest { background: #f8f8fa; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; font-size: 11px; }
+  .contenu { text-align: justify; }
+  .contenu p { margin: 8px 0; }
+  .footer { margin-top: 20px; text-align: center; font-size: 10px; color: #aaa; }
+</style>
+</head>
+<body>
+  <div class="banner">
+    <h1>NOTE INTERNE</h1>
+    {% set pri_class = 'priority-' + (priorite|default('normale'))|lower %}
+    <span class="priority {{ pri_class }}">{{ priorite|default('Normale') }}</span>
+  </div>
+
+  <div class="meta">
+    <div class="item"><strong>De :</strong> {{ expediteur }}</div>
+    <div class="item"><strong>Date :</strong> {{ date|default('') }}</div>
+    <div class="item"><strong>Objet :</strong> {{ objet }}</div>
+  </div>
+
+  <div class="dest">
+    <strong>À :</strong>
+    {% for d in destinataires|default([]) %}
+    {{ d }}{% if not loop.last %}, {% endif %}
+    {% endfor %}
+  </div>
+
+  <div class="contenu">
+    {% if contenu is iterable and contenu is not string %}
+    {% for p in contenu %}<p>{{ p }}</p>{% endfor %}
+    {% else %}
+    <p>{{ contenu }}</p>
+    {% endif %}
+  </div>
+
+  <div class="footer">Document interne — Diffusion restreinte</div>
+</body>
+</html>
