@@ -7,7 +7,7 @@ name = "lumena"
 version = "1.0.0"
 description = "Autonomous AI assistant with persistent memory, ReAct reasoning, and multi-channel support"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = {text = "AGPL-3.0-only"}
 requires-python = ">=3.10,<3.13"
 authors = [
     {name = "LossKarr", email = "losskarr@proton.me"},

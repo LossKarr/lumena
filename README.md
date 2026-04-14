@@ -5,7 +5,7 @@ Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore se
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Tests](https://img.shields.io/badge/tests-6572%20passed-brightgreen)
-![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
 ---
 
@@ -301,4 +301,4 @@ Ou depuis l'interface web : panneau **Fine-tuning** → **Installer les dépenda
 
 ## Licence
 
-Apache License 2.0 — Copyright (c) 2025-2026 LossKarr. Voir [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 — Copyright (c) 2025-2026 LossKarr. Voir [LICENSE](LICENSE).

@@ -30,7 +30,8 @@ class TestPiperProvider:
     def test_models_dir_is_path(self, provider):
         assert isinstance(provider.models_dir, Path)
 
-    def test_generate_requires_output_path(self, provider, tmp_path):
+    @pytest.mark.asyncio
+    async def test_generate_requires_output_path(self, provider, tmp_path):
         out_file = tmp_path / "output.wav"
         # Only test if piper is available, otherwise it will fail
         if provider.is_available():
@@ -38,7 +39,7 @@ class TestPiperProvider:
             pass
         else:
             # When not available, generate should return False or raise
-            result = provider.generate("hello", out_file)
+            result = await provider.generate("hello", out_file)
             assert result is False or result is None
 
 
