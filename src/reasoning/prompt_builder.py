@@ -116,11 +116,18 @@ def is_video_request(query: str) -> bool:
     if not q:
         return False
 
+    # Mots-clés qui disqualifient "animation" comme vidéo (contexte CSS/web)
+    web_context = ["css", "html", "site", "web", "page", "scroll", "hover", "transition"]
+    has_web_context = any(w in q for w in web_context)
+
     video_keywords = [
         "vidéo", "video", "clip", "reel", "tiktok", "short",
-        "animation", "motion", "trailer", "intro vidéo", "outro",
-        "pub vidéo", "explainer", "motion design",
+        "motion design", "trailer", "intro vidéo", "outro",
+        "pub vidéo", "explainer",
     ]
+    # "animation" et "motion" ne comptent comme vidéo que hors contexte CSS/web
+    if not has_web_context:
+        video_keywords.extend(["animation", "motion"])
     creation_verbs = [
         "cree", "crée", "creer", "créer", "genere", "génère",
         "build", "make", "fais", "produi", "réalis", "realis",

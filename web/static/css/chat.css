@@ -200,7 +200,7 @@
 }
 .compose-box:focus-within{border-color:var(--accent);box-shadow:var(--focus-glow)}
 .compose-textarea{
-  flex:1;min-height:36px;max-height:150px;padding:6px 4px;
+  flex:1;min-height:36px;max-height:400px;padding:6px 4px;
   background:transparent;border:none;color:var(--text);
   font-size:14px;resize:none;outline:none;line-height:1.5;
 }

@@ -2164,11 +2164,14 @@ class CodeAgent(SubAgent):
                     except Exception:
                         pass  # node absent ou timeout → fallback bracket check
             # 2) Bracket balance check (string-aware)
-            _brk, _prn = _count_brackets_clean(content)
-            if abs(_brk) > 1:
-                errors.append(f"JS/TS bracket imbalance: {_brk:+d} net accolades")
-            if abs(_prn) > 1:
-                errors.append(f"JS/TS parenthèses: {_prn:+d} net parenthèses")
+            # Skip si node --check a déjà validé le fichier (pas d'erreurs de syntaxe)
+            _node_validated = ext == ".js" and node_exe and not errors
+            if not _node_validated:
+                _brk, _prn = _count_brackets_clean(content)
+                if abs(_brk) > 1:
+                    errors.append(f"JS/TS bracket imbalance: {_brk:+d} net accolades")
+                if abs(_prn) > 1:
+                    errors.append(f"JS/TS parenthèses: {_prn:+d} net parenthèses")
 
         elif ext in (".html", ".htm"):
             # Bracket balance des balises structurelles
