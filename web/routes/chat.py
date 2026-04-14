@@ -1634,9 +1634,13 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                                 elif "\U0001f4e5 LLM RESPONSE SIZE" in thought:
                                     yield _emit({"type": "thinking", "content": thought.replace("\U0001f4e5 ", "")})
                                 elif "[CodeAgent]" in thought:
-                                    # Extract action detail from CodeAgent iter log
                                     _ca_detail = thought.split("[CodeAgent]", 1)[1].strip() if "[CodeAgent]" in thought else thought
-                                    yield _emit({"type": "agent_step", "content": _ca_detail})
+                                    if _ca_detail.startswith("💭"):
+                                        # Pensée/raisonnement du CodeAgent
+                                        yield _emit({"type": "thinking", "content": _ca_detail[2:].strip()})
+                                    else:
+                                        # Action du CodeAgent (iter, write_file, etc.)
+                                        yield _emit({"type": "agent_step", "content": _ca_detail})
                                 elif "Iteration " in thought:
                                     yield _emit({"type": "thinking", "content": thought})
                                 else:

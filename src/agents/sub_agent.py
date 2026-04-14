@@ -615,19 +615,20 @@ Tu tournes sur WINDOWS (cmd.exe / PowerShell 5.1). Aide-mémoire :
 - write_file crée automatiquement tous les sous-dossiers (css/, js/, images/) — PAS BESOIN de mkdir
 
 Actions disponibles (réponds UNIQUEMENT en JSON valide, rien d'autre) :
+IMPORTANT: Ajoute TOUJOURS un champ "thought" (2-3 phrases) expliquant ton raisonnement dans CHAQUE action.
 
-{"action": "plan", "steps": ["étape 1", "étape 2", "étape 3"]}
+{"action": "plan", "thought": "Je dois d'abord comprendre la structure du projet...", "steps": ["étape 1", "étape 2", "étape 3"]}
 {"action": "think", "thought": "raisonnement explicite avant une action complexe"}
-{"action": "read_file", "path": "chemin/relatif", "start_line": 10, "end_line": 50}
-{"action": "edit_lines", "path": "chemin/relatif", "start_line": 5, "end_line": 10, "content": "nouveau contenu\nlignes multiples"}
-{"action": "str_replace", "path": "chemin/relatif", "old_str": "texte EXACT copié depuis read_file (3-5 lignes de contexte)", "new_str": "version modifiée"}
-{"action": "undo_edit", "path": "chemin/relatif"}
-{"action": "write_file", "path": "chemin/relatif", "content": "contenu complet du fichier"}
-{"action": "list_files", "path": "répertoire"}
-{"action": "apply_patch", "patch": "*** Begin Patch\n*** Update File: path\n@@ context\n- old\n+ new\n*** End File\n*** End Patch"}
-{"action": "run_command", "command": "commande shell"}
-{"action": "run_tests", "test_path": "tests/test_xxx.py"}
-{"action": "grep", "pattern": "motif", "path": "répertoire"}
+{"action": "read_file", "thought": "Je lis ce fichier pour comprendre...", "path": "chemin/relatif", "start_line": 10, "end_line": 50}
+{"action": "edit_lines", "thought": "Je modifie les lignes 5-10 pour corriger...", "path": "chemin/relatif", "start_line": 5, "end_line": 10, "content": "nouveau contenu\nlignes multiples"}
+{"action": "str_replace", "thought": "Je remplace cette section pour...", "path": "chemin/relatif", "old_str": "texte EXACT copié depuis read_file (3-5 lignes de contexte)", "new_str": "version modifiée"}
+{"action": "undo_edit", "thought": "L'edit précédent a cassé le fichier, je restaure", "path": "chemin/relatif"}
+{"action": "write_file", "thought": "Je crée ce fichier avec...", "path": "chemin/relatif", "content": "contenu complet du fichier"}
+{"action": "list_files", "thought": "Je vérifie la structure du dossier", "path": "répertoire"}
+{"action": "apply_patch", "thought": "J'applique ce patch pour...", "patch": "*** Begin Patch\n*** Update File: path\n@@ context\n- old\n+ new\n*** End File\n*** End Patch"}
+{"action": "run_command", "thought": "Je lance cette commande pour...", "command": "commande shell"}
+{"action": "run_tests", "thought": "Je vérifie que mes changements n'ont rien cassé", "test_path": "tests/test_xxx.py"}
+{"action": "grep", "thought": "Je cherche les occurrences de...", "pattern": "motif", "path": "répertoire"}
 {"action": "lint", "path": "chemin/relatif.py"}
 {"action": "done", "summary": "résumé complet de ce qui a été fait"}
 
@@ -1023,6 +1024,46 @@ def _count_brackets_clean(code: str) -> tuple[int, int]:
         clean.count("{") - clean.count("}"),
         clean.count("(") - clean.count(")"),
     )
+
+
+def _locate_bracket_errors(code: str, ext: str = ".js") -> str:
+    """Localise les lignes où les brackets se déséquilibrent.
+    Retourne un message lisible avec les numéros de ligne, ou '' si OK."""
+    clean = _RE_STRINGS_BRK.sub('""', code)
+    clean = _RE_BLOCK_COMMENTS_BRK.sub('', clean)
+    clean = _RE_LINE_COMMENTS_BRK.sub('', clean)
+    lines = clean.split("\n")
+    depth = 0
+    paren_depth = 0
+    last_open_lines: list[int] = []  # stack de lignes d'ouverture {
+    errors: list[str] = []
+    for i, line in enumerate(lines, 1):
+        for ch in line:
+            if ch == "{":
+                depth += 1
+                last_open_lines.append(i)
+            elif ch == "}":
+                depth -= 1
+                if last_open_lines:
+                    last_open_lines.pop()
+                if depth < 0:
+                    errors.append(f"L{i}: accolade fermante '}}' en trop (profondeur négative)")
+                    depth = 0
+            elif ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+                if paren_depth < 0:
+                    errors.append(f"L{i}: parenthèse fermante ')' en trop")
+                    paren_depth = 0
+    if depth > 0 and last_open_lines:
+        for ln in last_open_lines[-min(3, len(last_open_lines)):]:
+            errors.append(f"L{ln}: accolade ouvrante '{{' jamais fermée (depth restant: {depth})")
+    if paren_depth > 0:
+        errors.append(f"Fin de fichier: {paren_depth} parenthèse(s) non fermée(s)")
+    if not errors:
+        return ""
+    return "ERREURS DE BRACKETS DÉTECTÉES:\n" + "\n".join(errors[:8])
 
 
 class CodeAgent(SubAgent):
@@ -1526,6 +1567,10 @@ class CodeAgent(SubAgent):
             _action_detail = f"{action_type}"
             if _action_path:
                 _action_detail += f" {_action_path}"
+            # Stream thought si présent dans la réponse JSON
+            _iter_thought = action.get("thought", "") if isinstance(action, dict) else ""
+            if _iter_thought:
+                logger.info("[CodeAgent] 💭 {}", _iter_thought[:800])
             logger.info("[CodeAgent] iter={}/{} {} (attempt {})", iteration, max_iter, _action_detail, attempt)
 
             messages.append({"role": "assistant", "content": raw_text})
@@ -2191,25 +2236,40 @@ class CodeAgent(SubAgent):
             return "❌ Chemin de fichier manquant."
         if not content or not content.strip():
             return "❌ Contenu vide."
+
+        # ── Anti-rewrite: compter les write_file consécutifs sur le même fichier ──
+        if not hasattr(self, "_write_counts"):
+            self._write_counts: dict[str, int] = {}
+        self._write_counts[file_path] = self._write_counts.get(file_path, 0) + 1
+        _wc = self._write_counts[file_path]
+
         try:
             abs_path = self._resolve_path(file_path)
+            _ext = abs_path.suffix.lower()
+
+            # ── Anti-rewrite nudge: après 2 rewrites, forcer edit_lines ──
+            if _wc >= 3 and _ext in _WEB_BRACKET_EXTS:
+                _bracket_info = _locate_bracket_errors(content, _ext)
+                if _bracket_info:
+                    return (
+                        f"⛔ STOP — tu as déjà réécrit {file_path} {_wc} fois et les brackets "
+                        f"sont TOUJOURS déséquilibrés.\n\n{_bracket_info}\n\n"
+                        f"OBLIGATION: utilise read_file pour lire le fichier actuel, puis "
+                        f"str_replace ou edit_lines pour corriger UNIQUEMENT les lignes problématiques. "
+                        f"Ne réécris PLUS le fichier entier."
+                    )
             abs_path.parent.mkdir(parents=True, exist_ok=True)
             # Détection de contenu tronqué (HTML/JS/CSS incomplets)
-            _ext = abs_path.suffix.lower()
             _trunc_warn = ""
             if _ext == ".html":
                 if content.count("<") > content.count(">") + 2:
                     _trunc_warn = "\n⚠️ HTML potentiellement tronqué (balises non fermées). Vérifie le fichier."
                 if "<html" in content.lower() and "</html>" not in content.lower():
                     _trunc_warn = "\n⚠️ HTML tronqué: </html> manquant. Ajoute la fin avec edit_file."
-            elif _ext in (".js", ".ts", ".jsx", ".tsx"):
-                _brk_w, _prn_w = _count_brackets_clean(content)
-                if (_brk_w + _prn_w) > 3:
-                    _trunc_warn = "\n⚠️ JS potentiellement tronqué (accolades/parenthèses non fermées)."
-            elif _ext == ".css":
-                _brk_css_w, _ = _count_brackets_clean(content)
-                if _brk_css_w > 2:
-                    _trunc_warn = "\n⚠️ CSS potentiellement tronqué (accolades non fermées)."
+            elif _ext in (".js", ".ts", ".jsx", ".tsx", ".css"):
+                _bracket_detail = _locate_bracket_errors(content, _ext)
+                if _bracket_detail:
+                    _trunc_warn = f"\n{_bracket_detail}\nUtilise str_replace ou edit_lines pour corriger les lignes indiquées ci-dessus."
             abs_path.write_text(content, encoding="utf-8")
             syntax_err = await self._check_python_syntax(file_path)
             web_err = await self._check_web_syntax(file_path)
@@ -2488,7 +2548,7 @@ class CodeAgent(SubAgent):
                 return ActionResult(f"❌ Aucun snapshot disponible pour {_undo_path} — impossible d'annuler")
             elif act == "think":
                 _thought = action.get("thought", "")
-                logger.info("[CodeAgent] think: {}", _thought[:120])
+                logger.info("[CodeAgent] think: {}", _thought[:200])
                 return ActionResult("💭 Pensée enregistrée. Continue avec ton action suivante.")
             elif act == "edit_lines":
                 from src.tools.apply_patch import edit_by_lines
