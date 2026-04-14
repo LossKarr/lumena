@@ -52,6 +52,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y portaudio19-dev libsndfile1-dev libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev
+
       - name: Install dependencies (locked)
         run: |
           python -m pip install --upgrade pip
