@@ -17,7 +17,7 @@ from loguru import logger
 
 # ─── Configuration ──────────────────────────────────────────────────────────
 
-_DOCKER_IMAGE = os.getenv("LUMENA_SANDBOX_IMAGE", "python:3.12-slim")
+_DOCKER_IMAGE = os.getenv("LUMENA_SANDBOX_IMAGE", "lumena-sandbox")
 _DOCKER_MEMORY = os.getenv("LUMENA_SANDBOX_MEMORY", "512m")
 _DOCKER_CPUS = os.getenv("LUMENA_SANDBOX_CPUS", "1")
 
@@ -169,8 +169,53 @@ async def is_docker_available() -> bool:
         _docker_available = proc.returncode == 0
     except Exception:
         _docker_available = False
+    if _docker_available:
+        await _ensure_sandbox_image()
     logger.info("[sandbox] Docker disponible: {}", _docker_available)
     return _docker_available
+
+
+_sandbox_image_checked = False
+
+
+async def _ensure_sandbox_image() -> None:
+    """Build l'image sandbox si elle n'existe pas encore."""
+    global _sandbox_image_checked
+    if _sandbox_image_checked:
+        return
+    _sandbox_image_checked = True
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "image", "inspect", _DOCKER_IMAGE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=10)
+        if proc.returncode == 0:
+            return  # image existe déjà
+    except Exception:
+        pass
+    # Chercher Dockerfile.sandbox à la racine du projet
+    dockerfile = Path(__file__).resolve().parents[2] / "Dockerfile.sandbox"
+    if not dockerfile.exists():
+        logger.warning("[sandbox] Dockerfile.sandbox introuvable, image '{}' absente — fallback python:3.12-slim", _DOCKER_IMAGE)
+        return
+    logger.info("[sandbox] Image '{}' absente — build automatique depuis {}...", _DOCKER_IMAGE, dockerfile.name)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "build", "-f", str(dockerfile), "-t", _DOCKER_IMAGE, str(dockerfile.parent),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        if proc.returncode == 0:
+            logger.info("[sandbox] ✅ Image '{}' construite avec succès", _DOCKER_IMAGE)
+        else:
+            logger.error("[sandbox] ❌ Build échoué (exit {}): {}", proc.returncode, stderr.decode()[:500])
+    except asyncio.TimeoutError:
+        logger.error("[sandbox] ❌ Build timeout (300s)")
+    except Exception as e:
+        logger.error("[sandbox] ❌ Build erreur: {}", e)
 
 
 def _needs_network(command: str) -> bool:

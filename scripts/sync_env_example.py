@@ -28,7 +28,7 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("Paths (avancé)", "LUMENA_LOGS_DIR", "data/logs", "Dossier des logs"),
     ("Paths (avancé)", "LUMENA_BACKUPS_DIR", "./backups", "Dossier des backups"),
     # --- Docker Sandbox ---
-    ("Docker Sandbox (avancé)", "LUMENA_SANDBOX_IMAGE", "python:3.12-slim", "Image Docker sandbox"),
+    ("Docker Sandbox (avancé)", "LUMENA_SANDBOX_IMAGE", "lumena-sandbox", "Image Docker sandbox"),
     ("Docker Sandbox (avancé)", "LUMENA_SANDBOX_CPUS", "1", "CPUs alloués au conteneur"),
     ("Docker Sandbox (avancé)", "LUMENA_SANDBOX_PIDS_LIMIT", "256", "Limite de PIDs Docker"),
     ("Docker Sandbox (avancé)", "LUMENA_SANDBOX_STARTUP_MARGIN", "30", "Marge timeout startup Docker (sec)"),
