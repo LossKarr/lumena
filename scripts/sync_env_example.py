@@ -112,6 +112,10 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("WhatsApp (avancé)", "LUMENA_WHATSAPP_READ_TIMEOUT", "30.0", "Timeout lecture (sec)"),
     ("WhatsApp (avancé)", "LUMENA_WHATSAPP_DOC_PREVIEW_CHARS", "2500", "Chars preview document"),
     ("WhatsApp (avancé)", "LUMENA_WHATSAPP_WEBHOOK_MAX_RETRIES", "3", "Retries webhook processing"),
+    # --- IONOS (Hébergement) ---
+    ("IONOS (avancé)", "LUMENA_IONOS_DEFAULT_SITE", "", "Domaine par défaut pour les déploiements SFTP"),
+    ("IONOS (avancé)", "LUMENA_IONOS_BACKUP_BEFORE_DEPLOY", "1", "Backup distant avant chaque déploiement (0/1)"),
+    ("IONOS (avancé)", "LUMENA_IONOS_MAX_UPLOAD_MB", "100", "Taille max totale d'un déploiement en Mo"),
     # --- Twitter ---
     ("Twitter", "LUMENA_DISABLE_TWITTER", "", "Désactiver canal Twitter (1 = off)"),
     ("Twitter", "LUMENA_TWITTER_POLL_INTERVAL", "90", "Intervalle poll Twitter (sec)"),

@@ -715,7 +715,7 @@ class AgentService:
                     f"Réponds uniquement avec le résumé, sans introduction."
                 )
                 llm_summary = await self.core.llm.chat(
-                    [{"role": "user", "content": summary_prompt}], temperature=0.3
+                    [{"role": "user", "content": summary_prompt}], temperature=0.3, no_upgrade=True
                 )
                 if llm_summary and llm_summary.strip():
                     response_summary = llm_summary.strip()

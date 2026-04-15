@@ -176,6 +176,24 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
 
     command_stripped = command.strip()
 
+    # 0. Détection de credentials dans la commande (fuite de secrets)
+    _CREDENTIAL_PATTERNS = [
+        r"(?:sftp|ssh|ftp)://[^@\s]+:[^@\s]+@",       # sftp://user:pass@host
+        r"\bsshpass\b",                                  # sshpass utility
+        r"(?:-[oO]\s*|StrictHostKeyChecking|PasswordAuth).*(?:pass|pwd)",
+        r"ConvertTo-SecureString\s+['\"][^'\"]{4,}['\"]",  # PS plaintext→SecureString
+        r"Net\.NetworkCredential\s*\(['\"][^'\"]+['\"],\s*['\"][^'\"]+['\"]\)",
+        r"(?:password|passwd|pwd|pass)\s*[=:]\s*['\"][^'\"]{4,}['\"]",  # password='...'
+    ]
+    for _cp in _CREDENTIAL_PATTERNS:
+        if re.search(_cp, command_stripped, re.IGNORECASE):
+            logger.warning("Commande bloquee (credential leak): {}", command_stripped[:40] + "...")
+            return False, (
+                "⛔ Commande bloquée: credentials détectés en clair dans la commande. "
+                "Utilise les outils natifs (ionos_deploy, ionos_add_site, etc.) "
+                "au lieu de passer les mots de passe dans des commandes shell."
+            )
+
     # 1. Verifier les patterns toujours bloques
     for pattern in BLOCKED_PATTERNS:
         if re.search(pattern, command_stripped, re.IGNORECASE):

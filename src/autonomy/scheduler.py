@@ -1123,7 +1123,11 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
                 due_tasks = [t for t in due_tasks if t.handler_name in _AGENT_BUSY_ALLOWED]
                 n_paused = n_before - len(due_tasks)
                 if n_paused:
-                    logger.debug(f"⏸️ Agent occupé: {n_paused} tâche(s) en pause ce cycle (seul save_state autorisé)")
+                    self._busy_log_n = getattr(self, "_busy_log_n", 0) + 1
+                    if self._busy_log_n == 1 or self._busy_log_n % 6 == 0:
+                        logger.debug(f"⏸️ Agent occupé: {n_paused} tâche(s) en pause (cycle #{self._busy_log_n}, seul save_state autorisé)")
+                else:
+                    self._busy_log_n = 0
 
             # P3.3: Exécution parallèle des tâches non-critiques
             _CRITICAL_HANDLERS = {"runtime_health", "provider_probe", "save_state_real", "save_state"}

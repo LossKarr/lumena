@@ -33,6 +33,7 @@ from src.reasoning.handlers.files import get_file_handler_defs
 from src.reasoning.handlers.system import get_system_handler_defs
 from src.reasoning.handlers.web import get_web_handler_defs
 from src.reasoning.handlers.memory import get_memory_handler_defs
+from src.reasoning.handlers.ionos import get_ionos_handler_defs
 
 
 # ─── Collecte de tous les HandlerDefs ────────────────────────────────────
@@ -50,6 +51,7 @@ ALL_GETTER_FUNCS = [
     ("system", get_system_handler_defs),
     ("web", get_web_handler_defs),
     ("memory", get_memory_handler_defs),
+    ("ionos", get_ionos_handler_defs),
 ]
 
 
@@ -218,14 +220,14 @@ class TestNoDuplicates:
         Si ce nombre change, il faut mettre à jour ce test
         (et comprendre pourquoi).
         """
-        assert len(ALL_HDEFS) == 222, (
-            f"Attendu 222 handlers, trouvé {len(ALL_HDEFS)}. "
+        assert len(ALL_HDEFS) == 229, (
+            f"Attendu 229 handlers, trouvé {len(ALL_HDEFS)}. "
             f"Mettre à jour ce test si ajout/suppression intentionnel."
         )
 
     def test_twelve_modules(self):
-        """Il doit y avoir exactement 12 modules de handlers."""
-        assert len(ALL_GETTER_FUNCS) == 12
+        """Il doit y avoir exactement 13 modules de handlers."""
+        assert len(ALL_GETTER_FUNCS) == 13
 
 
 # ═══════════════════════════════════════════════════════════════════════════

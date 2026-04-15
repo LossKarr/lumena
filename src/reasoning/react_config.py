@@ -226,7 +226,8 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     # Website builder
     "generate_website": ["site", "landing", "portfolio", "page web", "genér", "gener", "créer", "creer", "website"],
     "write_website_files": ["site", "écri", "ecri", "fichier", "website", "html", "css"],
-    "edit_website": ["modif", "amélio", "amelio", "ajout", "corrig", "chang", "site", "portfolio", "website"],
+    "edit_website": ["corrig", "fix", "couleur", "typo", "lien", "petit", "css", "texte"],
+    "delegate_task": ["modif", "amélio", "amelio", "ajout", "chang", "site", "portfolio", "website", "mettre a jour", "mise a jour", "actualise", "update", "refaire", "retravaill", "optimis", "renouvel", "reecrire", "refondre", "restructur"],
     "serve_website": ["servir", "serveur", "preview", "prévisual", "previsual", "lancer", "ouvrir"],
     "export_website_zip": ["export", "zip", "archiv", "télécharg", "telecharg"],
     "list_website_projects": ["list", "projet", "site", "website"],
@@ -272,11 +273,11 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     "email_check": ["email", "fuite", "breach", "pwned", "compromis"],
     "domain_recon": ["recon", "domain", "sous-domain", "dns"],
     # Stripe / Paiements
-    "stripe_create_product": ["produit", "product", "créer", "creer", "create", "stripe", "article", "offre"],
+    "stripe_create_product": ["produit", "product", "créer", "creer", "create", "stripe", "article", "offre", "lien", "paiement", "payment"],
     "stripe_list_products": ["produit", "product", "list", "lister", "catalogue", "stripe"],
     "stripe_update_product": ["produit", "product", "modif", "update", "changer", "stripe"],
     "stripe_delete_product": ["produit", "product", "supprim", "delete", "retir", "stripe"],
-    "stripe_create_price": ["prix", "price", "tarif", "créer", "creer", "create", "montant", "stripe"],
+    "stripe_create_price": ["prix", "price", "tarif", "créer", "creer", "create", "montant", "stripe", "lien", "paiement", "payment", "14", "euro"],
     "stripe_list_prices": ["prix", "price", "tarif", "list", "lister", "stripe"],
     "stripe_create_payment_link": ["lien", "link", "paiement", "payment", "créer", "creer", "url", "partag", "stripe"],
     "stripe_list_payment_links": ["lien", "link", "paiement", "payment", "list", "lister", "stripe"],

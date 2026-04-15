@@ -107,6 +107,23 @@ def register_project(
     logger.info("[registry] Nouveau projet enregistré: {} → {}", slug, path_str)
 
 
+def _is_fallback_match(query: str, found: Path) -> bool:
+    """Détecte si find_project a retourné un fallback sans vrai match.
+
+    Vérifie si au moins un mot significatif du slug du projet apparaît dans
+    la query. Si aucun mot ne matche, c'est un fallback (projet le + récent).
+    """
+    slug = found.name
+    slug_words = set(_norm(slug.replace("-", " ")).split())
+    slug_words -= {"projet", "new", "app", "web", "site"}
+    slug_words.discard("")
+    if not slug_words:
+        return True
+    q_words = set(re.sub(r"[^a-z0-9\s]", " ", _norm(query)).split())
+    q_words.discard("")
+    return len(slug_words & q_words) == 0
+
+
 def find_project(query: str) -> Optional[Path]:
     """
     Trouve le meilleur projet correspondant à la requête.
@@ -432,8 +449,17 @@ def resolve_workspace(
             # on abaisse la confiance à 0.5 pour éviter le fast-route CodeAgent
             # sur des messages purement conversationnels ("ca va ?", "bah alors").
             # Le seuil du fast-route est 0.7 — intent explicite ("modify") garde 0.8.
-            _conf = 0.5 if intent == "unknown" else 0.8
-            logger.info("[resolve_workspace] Projet trouvé via registre: {} (intent={}, conf={:.1f})", found, effective_intent, _conf)
+            #
+            # Fallback (projet le plus récent, aucun match réel) → conf 0.4 max
+            # pour ne JAMAIS déclencher le fast-route sur une requête sans rapport.
+            _is_fallback = _is_fallback_match(query, found)
+            if _is_fallback:
+                _conf = 0.4
+            elif intent == "unknown":
+                _conf = 0.5
+            else:
+                _conf = 0.8
+            logger.info("[resolve_workspace] Projet trouvé via registre: {} (intent={}, conf={:.1f}, fallback={})", found, effective_intent, _conf, _is_fallback)
             return WorkspaceResolution(path=found, intent=effective_intent, source="registry", confidence=_conf)
 
     # ── 4. Création si intention détectée et aucun projet existant ──

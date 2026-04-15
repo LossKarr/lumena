@@ -55,6 +55,8 @@ CONTRAINTES:
 - animation_in: "fadeIn" | "slideLeft" | "slideRight" | "slideUp" | "scaleUp" | "typewriter"
 - animation_out: "fadeOut" | "slideLeft" | "slideRight" | "scaleDown"
 - {fps} fps × {duration_sec}s = {total_frames} frames total
+- INTERDIT: mettre "logo" dans elements si aucun asset logo n'est fourni dans ASSETS CI-DESSUS
+- Si aucun asset fourni, elements ne peut contenir QUE: "title", "subtitle", "text", "badge"
 """
 
 # ── Prompt Phase 2 : Génération composant scène ────────────────────
@@ -73,20 +75,20 @@ SCENE_COMPONENT_PROMPT = """Génère le composant React/Remotion pour cette scè
 IMPORTS DISPONIBLES (utilise UNIQUEMENT ceux-ci):
 ```tsx
 import {{ useCurrentFrame, useVideoConfig, interpolate, spring, Sequence, AbsoluteFill, Img }} from 'remotion';
-import {{ staticFile }} from 'remotion'; // Pour les assets locaux fournis
+{static_file_import_hint}
 ```
 
 CONTRAINTES STRICTES:
 1. Export default du composant: `export default function {component_name}()`
 2. Animations via interpolate() et spring() UNIQUEMENT (PAS de CSS @keyframes)
-3. Images sans assets: URL Unsplash DIRECTES uniquement
-   Images AVEC assets fournis: utilise `<Img src={{staticFile("nom_fichier.ext")}} />` pour les intégrer visuellement
+3. {image_constraint}
 4. Texte: via constantes dans le composant, pas de props externes
 5. Responsive: utiliser les dimensions de useVideoConfig(), pas de valeurs hardcodées
 6. Fond: CSS background/backgroundColor/backgroundImage inline
 7. Le composant DOIT occuper tout l'espace (<AbsoluteFill>)
 8. PAS de dépendances npm supplémentaires
 9. Typage TypeScript valide
+10. {static_file_constraint}
 
 EXEMPLE D'ANIMATION:
 ```tsx

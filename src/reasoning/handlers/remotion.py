@@ -157,6 +157,25 @@ async def generate_video_handler(
         _code_model = "deepseek-reasoner"
         logger.info("[video] Auto-upgrade LLM: {} → deepseek-reasoner (génération TSX)", _current_model)
 
+    # Résoudre le max_output_tokens du modèle effectif
+    from ...llm.providers import get_model_config
+    _effective_model = _code_model or _current_model
+    _model_cfg = get_model_config(_effective_model)
+    _model_cap = _model_cfg.max_output_tokens if _model_cfg else 8192
+    if _model_cap < 4096:
+        return HandlerResult.fail(
+            f"❌ Le modèle '{_effective_model}' a un max_output trop faible ({_model_cap} tokens) "
+            "pour générer une vidéo. Utilise un modèle avec au moins 8K tokens de sortie.",
+            handler_name="generate_video",
+        )
+    # Budget tokens par phase (adapté au modèle)
+    _plan_tokens = min(8000, _model_cap)
+    _plan_tokens_retry = min(16000, _model_cap)
+    _scene_tokens = min(16000, _model_cap)
+    _sequencer_tokens = min(8000, _model_cap)
+    logger.info("[video] Modèle effectif: {} (max_output={}), budget plan={}/scene={}/seq={}",
+                _effective_model, _model_cap, _plan_tokens, _scene_tokens, _sequencer_tokens)
+
     logger.info("[video] Phase 1/4 — Planification des scènes ({} sec, template: {})...", duration_sec, tpl_name)
     plan_prompt = VIDEO_PLAN_PROMPT.format(
         description=description,
@@ -179,10 +198,12 @@ async def generate_video_handler(
 
     plan: dict | None = None
     for _plan_attempt in range(1, 3):  # max 2 tentatives
+        # Augmenter les tokens au retry si le premier a été tronqué
+        _plan_max_tokens = _plan_tokens if _plan_attempt == 1 else _plan_tokens_retry
         plan_response = await llm.chat(
             messages=_plan_messages,
             temperature=0.5 + (_plan_attempt - 1) * 0.1,
-            max_tokens=4000,
+            max_tokens=_plan_max_tokens,
             stop=["OBSERVATION:"],
             model=_code_model,
         )
@@ -240,20 +261,61 @@ async def generate_video_handler(
             fps=tpl["fps"],
             component_name=component_name,
             assets_section=_assets_prompt,
+            static_file_import_hint=(
+                "import { staticFile } from 'remotion'; // Pour les assets locaux fournis"
+                if _assets_map else
+                "// Pas d'assets locaux — NE PAS importer staticFile"
+            ),
+            image_constraint=(
+                "Images AVEC assets fournis: utilise `<Img src={staticFile(\"nom_fichier.ext\")} />` "
+                "pour les intégrer"
+                if _assets_map else
+                "Images: URL Unsplash DIRECTES UNIQUEMENT — INTERDIT d'utiliser staticFile()"
+            ),
+            static_file_constraint=(
+                "staticFile() autorisé UNIQUEMENT pour ces fichiers: "
+                + ", ".join(_assets_map.values())
+                if _assets_map else
+                "INTERDIT d'utiliser staticFile() ou d'importer quoi que ce soit depuis public/. "
+                "Utilise des URLs https:// directement."
+            ),
         )
 
+        _scene_msgs = [
+            {"role": "system", "content": SCENE_COMPONENT_SYSTEM},
+            {"role": "user", "content": scene_prompt},
+        ]
         code = await llm.chat(
-            messages=[
-                {"role": "system", "content": SCENE_COMPONENT_SYSTEM},
-                {"role": "user", "content": scene_prompt},
-            ],
+            messages=_scene_msgs,
             temperature=0.3,
-            max_tokens=4000,
+            max_tokens=_scene_tokens,
             model=_code_model,
         )
 
         # Nettoyer les backticks markdown si présents
         code = _strip_markdown_fences(code)
+
+        # FIX: Valider que le résultat est du TSX, pas du texte descriptif
+        if not any(m in code for m in ("import ", "export ", "React")):
+            logger.warning("[video] ⚠️ Scène {} — pas de TSX valide, retry...", component_name)
+            code = await llm.chat(messages=_scene_msgs, temperature=0.5, max_tokens=_scene_tokens, model=_code_model)
+            code = _strip_markdown_fences(code)
+
+        # FIX: Si aucun asset fourni, supprimer tout usage de staticFile() qui causerait un 404
+        if not _assets_map and "staticFile" in code:
+            import re as _re_fix
+            # Supprimer l'import staticFile
+            code = _re_fix.sub(r"import\s*\{\s*staticFile\s*\}\s*from\s*'remotion'\s*;\s*\n?", "", code)
+            code = _re_fix.sub(r",\s*staticFile\s*(?=[,}])", "", code)
+            # Remplacer staticFile("...") par une URL Unsplash de remplacement
+            def _replace_static_file(m: "_re_fix.Match[str]") -> str:
+                return '"https://images.unsplash.com/photo-1620712943543-bcc4688e7485?auto=format&fit=crop&w=1600&q=80"'
+            code = _re_fix.sub(r'staticFile\(["\'][^"\']*["\']\)', _replace_static_file, code)
+            logger.warning(
+                "[video] ⚠️ {} — staticFile() sans assets détecté et corrigé (URLs Unsplash substituées)",
+                component_name,
+            )
+
         scenes_code[f"src/scenes/{component_name}.tsx"] = code
         logger.info("[video] ✅ {}.tsx généré ({} chars)", component_name, len(code))
 
@@ -272,10 +334,28 @@ async def generate_video_handler(
             )},
         ],
         temperature=0.3,
-        max_tokens=4000,
+        max_tokens=_sequencer_tokens,
         model=_code_model,
     )
-    scenes_code["src/Video.tsx"] = _strip_markdown_fences(video_tsx)
+    video_tsx_code = _strip_markdown_fences(video_tsx)
+
+    # FIX: Valider Video.tsx aussi
+    if not any(m in video_tsx_code for m in ("import ", "export ", "Sequence")):
+        logger.warning("[video] ⚠️ Video.tsx invalide, retry...")
+        video_tsx = await llm.chat(
+            messages=[
+                {"role": "system", "content": SCENE_COMPONENT_SYSTEM},
+                {"role": "user", "content": VIDEO_SEQUENCER_PROMPT.format(
+                    scenes_list=scenes_list,
+                    total_frames=total_frames,
+                )},
+            ],
+            temperature=0.5,
+            max_tokens=_sequencer_tokens,
+            model=_code_model,
+        )
+        video_tsx_code = _strip_markdown_fences(video_tsx)
+    scenes_code["src/Video.tsx"] = video_tsx_code
     logger.info("[video] ✅ Video.tsx assemblé")
 
     # ── Phase 3 : Scaffold projet + écriture fichiers ──

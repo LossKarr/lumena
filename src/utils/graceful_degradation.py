@@ -90,6 +90,9 @@ class GracefulDegradation:
         "discord": "discord",
         "whatsapp": "whatsapp",
         
+        # Hosting
+        "paramiko": "ionos",
+        
         # Utilities
         "psutil": "system_monitoring",
         "filelock": "file_locking",

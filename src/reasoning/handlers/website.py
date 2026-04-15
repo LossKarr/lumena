@@ -149,6 +149,109 @@ async def stop_website_server_handler(ctx: HandlerContext) -> HandlerResult:
         return HandlerResult.fail(f"❌ Erreur stop_website_server: {e}", handler_name="stop_website_server")
 
 
+def _read_project_files(target: "Path", max_total_chars: int = 16000) -> str:
+    """Lit tous les fichiers HTML/CSS/JS du projet et retourne leur contenu formaté."""
+    _WEB_SUFFIXES = {".html", ".css", ".js", ".json", ".svg"}
+    files_content: list[str] = []
+    total_chars = 0
+
+    for f in sorted(target.rglob("*")):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in _WEB_SUFFIXES:
+            continue
+        # Skip backups et node_modules
+        rel = f.relative_to(target)
+        rel_str = str(rel).replace("\\", "/")
+        if any(part.startswith(".") or part == "node_modules" for part in rel.parts):
+            continue
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        if total_chars + len(content) > max_total_chars:
+            files_content.append(
+                f"\n--- {rel_str} (TRONQUÉ — {len(content)} chars) ---\n"
+                f"{content[:2000]}\n[... tronqué ...]\n"
+            )
+            total_chars += 2000
+            break
+        files_content.append(f"\n--- {rel_str} ({len(content)} chars) ---\n{content}")
+        total_chars += len(content)
+
+    return "".join(files_content) if files_content else "(aucun fichier trouvé)"
+
+
+# Contexte factuel sur Lumena — injecté pour que le CodeAgent
+# génère du contenu cohérent quand il modifie le site de Lumena elle-même.
+_LUMENA_SELF_CONTEXT = """
+## Contexte factuel sur Lumena (à utiliser si le contenu du site parle de Lumena)
+- Lumena est une IA autonome open-source écrite en **Python 3.12** avec **FastAPI**
+- Stack : Python, FastAPI, ChromaDB, Playwright, Docker, SFTP/SSH
+- LLM : DeepSeek V3 (principal), GPT-5.4, Claude Opus, Gemini, Ollama local
+- 466 outils natifs (create_pdf, web_search, mail_send, execute_python, deploy_to_ionos, etc.)
+- Canaux : Web UI, Telegram, Discord, Twitter/X, WhatsApp
+- Mémoire : ChromaDB vectorielle + BM25, persistante entre sessions
+- Architecture : src/ (agents, autonomy, computer_use, context, core_services, hooks, learning, llm, memory, perception, reasoning, runtime, services, skills, tools, voice, web)
+- 29 skills programmables, système de hooks, scheduler CRON, daemon autonome
+- Tourne 100% en local sur la machine de l'utilisateur (pas de cloud obligatoire)
+- Déploiement sites web : SFTP vers IONOS (openlumena.com)
+- NE PAS utiliser : npm, Node.js, config.json, localhost:3000 — ce sont des erreurs
+"""
+
+
+async def _edit_website_via_codeagent(
+    ctx: HandlerContext,
+    modifications: str,
+    target: "Path",
+    logger,
+) -> HandlerResult:
+    """Délègue la modification de site web au CodeAgent itératif.
+
+    Pré-lit TOUS les fichiers du projet et les injecte dans la description,
+    pour que le CodeAgent agisse comme un éditeur (pas un explorateur).
+    """
+    try:
+        from ...agents.sub_agent import delegate_to_agent
+
+        # Pré-lire tous les fichiers du projet
+        files_dump = _read_project_files(target)
+        logger.info(
+            "[edit_website] Pré-lecture projet: {} chars injectés dans la description CodeAgent",
+            len(files_dump),
+        )
+
+        description = (
+            f"Modifie le site web dans le dossier '{target}'.\n\n"
+            f"## Modifications demandées\n{modifications}\n\n"
+            f"## Fichiers ACTUELS du projet (contenu complet)\n"
+            f"Utilise TOUJOURS les chemins ABSOLUS (ex: '{target}/index.html') "
+            f"pour str_replace ou write_file.\n"
+            f"{files_dump}\n\n"
+            f"{_LUMENA_SELF_CONTEXT}\n"
+            "## Instructions\n"
+            "1. Tu as DÉJÀ le contenu de tous les fichiers ci-dessus. NE FAIS PAS de read_file/list_files.\n"
+            "2. Utilise str_replace ou edit_lines pour appliquer les modifications.\n"
+            "3. Vérifie la cohérence HTML↔CSS↔JS après modification.\n"
+            "4. Quand tu as fini, utilise ACTION: done."
+        )
+        context = {
+            "project_dir": str(target),
+            "workspace_path": str(target),
+        }
+        result = await delegate_to_agent(description, "code", context)
+        return HandlerResult.ok(
+            f"✅ Modifications appliquées via CodeAgent !\n\n"
+            f"📂 Projet: {target.name}\n"
+            f"📁 Dossier: {target}\n\n"
+            f"{result}",
+            handler_name="edit_website",
+        )
+    except Exception as e:
+        logger.error("[edit_website] CodeAgent fallback échoué: {}", e)
+        return HandlerResult.fail(f"❌ Erreur edit_website (CodeAgent): {e}", handler_name="edit_website")
+
+
 async def edit_website_handler(
     ctx: HandlerContext,
     modifications: str = "",
@@ -158,25 +261,10 @@ async def edit_website_handler(
     if not WEBSITE_BUILDER_AVAILABLE:
         return HandlerResult.fail("❌ Module website_builder non disponible", handler_name="edit_website")
     try:
-        # Phase 1 : Construire le prompt (via l'ancien handler qui prépare le contexte)
-        edit_prompt = await _edit_website(
-            modifications=modifications,
-            project_name=project_name,
-            directory=directory,
-        )
-        if edit_prompt.startswith("❌"):
-            return HandlerResult.fail(edit_prompt, handler_name="edit_website")
-
-        # Phase 2 : Appeler le LLM pour générer les modifications
-        lumena = ctx.lumena
-        if not lumena or not hasattr(lumena, "llm"):
-            return HandlerResult.ok(edit_prompt, handler_name="edit_website")
-
-        llm = lumena.llm
         from loguru import logger
+        from pathlib import Path
 
         # Résoudre le répertoire cible
-        from pathlib import Path
         if directory:
             target = Path(directory)
         elif project_name:
@@ -199,91 +287,9 @@ async def edit_website_handler(
             else:
                 return HandlerResult.fail("❌ Workspace introuvable", handler_name="edit_website")
 
-        # ── Diff-based edit mode : patch ciblé au lieu de fichiers complets ──
-        if _PATCH_AVAILABLE:
-            logger.info("[edit_website] 🔧 Mode diff-based: génération de patch ciblé")
-
-            raw_response = await llm.chat(
-                messages=[
-                    {"role": "system", "content": edit_prompt},
-                    {"role": "user", "content": (
-                        "Applique les modifications demandées en utilisant le format PATCH suivant.\n"
-                        "Retourne UNIQUEMENT un patch, pas de fichiers complets.\n\n"
-                        "Format:\n"
-                        "*** Begin Patch\n"
-                        "*** Update File: chemin/fichier.ext\n"
-                        "@@\n"
-                        "- ancienne ligne exacte\n"
-                        "+ nouvelle ligne\n"
-                        "*** End File\n"
-                        "*** End Patch\n\n"
-                        "Pour ajouter un nouveau fichier:\n"
-                        "*** Add File: chemin/nouveau.ext\n"
-                        "[contenu complet]\n"
-                        "*** End File\n\n"
-                        "Sois PRÉCIS sur les lignes à remplacer (copie exacte)."
-                    )},
-                ],
-                temperature=0.3,
-            )
-
-            # Tenter d'appliquer comme patch
-            if "*** Begin Patch" in raw_response or "*** Update File" in raw_response or "*** Add File" in raw_response:
-                patch_result = await _apply_patch(raw_response, workspace_root=target)
-                if patch_result.success and (patch_result.modified or patch_result.added):
-                    all_changed = patch_result.modified + patch_result.added
-                    files_list = "\n".join(f"  📄 {f}" for f in all_changed)
-                    return HandlerResult.ok(
-                        f"✅ Modifications appliquées (mode diff) !\n\n"
-                        f"📂 Projet: {project_name or target.name}\n"
-                        f"📁 Dossier: {target}\n"
-                        f"📊 {len(all_changed)} fichier(s) modifié(s)\n\n"
-                        f"Fichiers modifiés:\n{files_list}\n\n"
-                        f"📝 {patch_result.summary()}",
-                        handler_name="edit_website",
-                    )
-                else:
-                    logger.warning("[edit_website] Patch échoué: {} — fallback JSON complet", patch_result.errors)
-            else:
-                logger.info("[edit_website] Réponse non-patch, tentative fallback JSON")
-
-        # ── Fallback: mode fichiers complets (ancien comportement) ──
-        logger.info("[edit_website] Mode complet: régénération des fichiers modifiés")
-
-        raw_response_full = await llm.chat(
-            messages=[
-                {"role": "system", "content": edit_prompt},
-                {"role": "user", "content": (
-                    "Applique les modifications demandées. "
-                    "Retourne UNIQUEMENT le JSON avec les fichiers COMPLETS modifiés, "
-                    'au format {"files": {"chemin": "contenu complet"}, "summary": "..."}'
-                )},
-            ],
-            temperature=0.3,
-        )
-
-        parsed = _parse_website_response(raw_response_full)
-        if not parsed or not parsed.get("files"):
-            logger.warning("[edit_website] ⚠️ LLM n'a pas retourné de JSON valide — retour du prompt brut")
-            return HandlerResult.ok(edit_prompt, handler_name="edit_website")
-
-        write_result = _write_project_to_disk(parsed, target)
-
-        if write_result["success"]:
-            files_list = "\n".join(f"  📄 {f}" for f in parsed["files"].keys())
-            summary = parsed.get("summary", "Modifications appliquées")
-            return HandlerResult.ok(
-                f"✅ Modifications appliquées avec succès !\n\n"
-                f"📂 Projet: {project_name or target.name}\n"
-                f"📁 Dossier: {target}\n"
-                f"📊 {write_result['files_written']} fichier(s) modifié(s)\n\n"
-                f"Fichiers modifiés:\n{files_list}\n\n"
-                f"📝 {summary}",
-                handler_name="edit_website",
-            )
-        else:
-            errors_text = "\n".join(f"  ❌ {e}" for e in write_result.get("errors", []))
-            return HandlerResult.fail(f"❌ Erreur écriture:\n{errors_text}", handler_name="edit_website")
+        # Déléguer directement au CodeAgent itératif (50 iter, read→edit→validate)
+        logger.info("[edit_website] Délégation directe au CodeAgent pour: {}", modifications[:80])
+        return await _edit_website_via_codeagent(ctx, modifications, target, logger)
 
     except Exception as e:
         return HandlerResult.fail(f"❌ Erreur edit_website: {e}", handler_name="edit_website")
@@ -483,9 +489,10 @@ def get_website_handler_defs() -> List[HandlerDef]:
         HandlerDef(
             name="generate_website",
             description=(
-                "Génère un site web complet (frontend + backend + API) à partir d'une description. "
+                "Génère un NOUVEAU site web complet (frontend + backend + API) à partir d'une description. "
                 "Crée la structure du projet, les fichiers HTML/CSS/JS, et optionnellement le backend PHP/Node + SQL. "
-                "Utilise pour: créer un site, faire une landing page, construire une app web."
+                "Utilise UNIQUEMENT pour créer un site from scratch. "
+                "⚠️ Pour MODIFIER/AMÉLIORER un site existant, utiliser edit_website à la place."
             ),
             parameters={
                 "properties": {
@@ -544,9 +551,9 @@ def get_website_handler_defs() -> List[HandlerDef]:
         HandlerDef(
             name="edit_website",
             description=(
-                "Modifie chirurgicalement un site web existant. "
-                "Charge les fichiers du projet et prépare les instructions de modification. "
-                "Utilise pour: ajouter une page, modifier le style, corriger un bug."
+                "Modifie chirurgicalement un site web existant (diff-based, pas de recréation). "
+                "Charge les fichiers du projet et applique les modifications ciblées. "
+                "Utilise pour: améliorer un site, ajouter une section, modifier le contenu/style, corriger un bug, mettre à jour un site déjà déployé."
             ),
             parameters={
                 "properties": {

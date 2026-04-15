@@ -51,7 +51,8 @@ import {
   loadSessionDetail, closeSessionDetail, loadOverview,
   loadTelegramDetails, loadAutonomyDetails, loadWhatsAppDetails,
   loadDocs, switchDoc, saveDoc,
-  loadProductDocs, switchDocSection
+  loadProductDocs, switchDocSection,
+  loadIonosSites, addIonosSite, removeIonosSite
 } from './panels.js';
 
 // ── Stripe ──
@@ -118,6 +119,7 @@ Object.assign(window, {
   loadTelegramDetails, loadAutonomyDetails, loadWhatsAppDetails,
   loadDocs, switchDoc, saveDoc,
   loadProductDocs, switchDocSection,
+  loadIonosSites, addIonosSite, removeIonosSite,
   // stripe
   loadStripeOverview, loadStripePayments,
   loadStripeSubscriptions, loadStripeProducts,

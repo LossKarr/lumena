@@ -281,8 +281,10 @@ class TestRemotionPrompts:
 
     def test_scene_prompt_forbids_local_files(self):
         from src.tools.remotion_prompts import SCENE_COMPONENT_PROMPT
-        # Le prompt encadre l'usage des fichiers locaux (Unsplash sans assets, staticFile() avec assets)
-        assert "Unsplash" in SCENE_COMPONENT_PROMPT or "staticFile" in SCENE_COMPONENT_PROMPT
+        # Le prompt encadre l'usage des fichiers locaux via des placeholders dynamiques
+        # {image_constraint} contiendra "Unsplash" ou "staticFile" selon les assets
+        # {static_file_constraint} contiendra "staticFile" ou "INTERDIT"
+        assert "{image_constraint}" in SCENE_COMPONENT_PROMPT or "Unsplash" in SCENE_COMPONENT_PROMPT or "staticFile" in SCENE_COMPONENT_PROMPT
 
     def test_root_tsx_template_has_composition(self):
         from src.tools.remotion_prompts import ROOT_TSX_TEMPLATE

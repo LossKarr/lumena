@@ -1057,7 +1057,7 @@ def get_stripe_api_handler_defs() -> List[HandlerDef]:
         # ── Liens de paiement ──
         HandlerDef(
             name="stripe_create_payment_link",
-            description="Crée un lien de paiement partageable (price_id requis, retourne l'URL).",
+            description="Crée un lien de paiement Stripe partageable à partir d'un price_id. Si tu n'as pas encore de price_id, commence par stripe_create_product (obtiens product_id) puis stripe_create_price (unit_amount en centimes, ex: 1400 pour 14€ → obtiens price_id) — ENSUITE appelle ce handler avec le price_id obtenu.",
             parameters={"price_id": {"type": "string", "required": True}, "quantity": {"type": "integer"}, "metadata": {"type": "object"}, "after_completion_url": {"type": "string"}},
             handler=stripe_create_payment_link_handler, category="stripe", source_module="handlers.stripe_api",
         ),

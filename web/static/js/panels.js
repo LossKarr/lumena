@@ -681,6 +681,7 @@ const _GROUP_ORDER=[
   {name:'Paiements',         level:'avancé'},
   {name:'Automation (n8n)',  level:'avancé'},
   {name:'Vidéo',             level:'avancé'},
+  {name:'IONOS (Hébergement)',level:'avancé'},
   {name:'Apprentissage',     level:'avancé'},
   {name:'Ops',               level:'expert'},
   {name:'SLO',               level:'expert'},
@@ -1172,4 +1173,106 @@ export function switchDocSection(id) {
   // Scroll to top of main
   const main = document.getElementById('doc-main');
   if (main) main.scrollTop = 0;
+}
+
+/* ============================================================
+   IONOS — Gestion des comptes SFTP
+   ============================================================ */
+
+let _ionosSites = [];
+
+export async function loadIonosSites() {
+  const box = document.getElementById('ionos-sites-list');
+  if (!box) return;
+  box.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center">Chargement...</div>';
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites`, { headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    _ionosSites = d.sites || [];
+    _renderIonosSites();
+    const badge = document.getElementById('badge-ionos');
+    if (badge) { badge.textContent = _ionosSites.length; badge.style.background = _ionosSites.length ? 'var(--ok)' : 'var(--muted)'; }
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--danger);padding:20px">Erreur: ${e.message}</div>`;
+  }
+}
+
+function _renderIonosSites() {
+  const box = document.getElementById('ionos-sites-list');
+  if (!box) return;
+  if (!_ionosSites.length) {
+    box.innerHTML = '<div style="color:var(--muted);padding:30px;text-align:center;font-size:13px">Aucun compte IONOS configuré.<br>Ajoute-en un ci-dessous.</div>';
+    return;
+  }
+  let html = '';
+  for (const s of _ionosSites) {
+    const lastDeploy = s.last_deploy ? new Date(s.last_deploy).toLocaleString('fr-FR') : 'Jamais';
+    html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:rgba(255,255,255,.02)">
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:600;color:var(--text)">${esc(s.label || s.domain)}</div>
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:2px">${esc(s.host)}:${s.port} &mdash; ${esc(s.user)} &mdash; root: ${esc(s.root)}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">Dernier déploiement: ${lastDeploy} &bull; ${s.deploy_count || 0} déploiement(s)</div>
+      </div>
+      <button class="btn" style="font-size:11px;padding:4px 10px;color:var(--danger);border-color:var(--danger)" onclick="removeIonosSite('${esc(s.domain)}')">
+        <i data-lucide="trash-2" style="width:13px;height:13px"></i> Supprimer
+      </button>
+    </div>`;
+  }
+  box.innerHTML = html;
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export async function addIonosSite() {
+  const get = id => (document.getElementById(id) || {}).value?.trim() || '';
+  const domain = get('ionos-domain');
+  const host = get('ionos-host');
+  const user = get('ionos-user');
+  const password = get('ionos-password');
+  const port = parseInt(get('ionos-port') || '22', 10);
+  const root = get('ionos-root') || '/';
+  const label = get('ionos-label') || '';
+  const msg = document.getElementById('ionos-msg');
+
+  if (!domain || !host || !user || !password) {
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Domaine, host, utilisateur et mot de passe sont obligatoires.'; }
+    return;
+  }
+
+  if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--muted)'; msg.textContent = 'Test de connexion SFTP en cours...'; }
+
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+      body: JSON.stringify({ domain, host, user, password, port, root, label }),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--ok)'; msg.textContent = `Site ${domain} ajouté avec succès. Connexion SFTP OK.`; }
+      // Clear form
+      ['ionos-domain', 'ionos-host', 'ionos-user', 'ionos-password', 'ionos-label'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      loadIonosSites();
+    } else {
+      if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = `Erreur: ${d.detail || 'Échec de connexion'}`; }
+    }
+  } catch (e) {
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = `Erreur: ${e.message}`; }
+  }
+}
+
+export async function removeIonosSite(domain) {
+  if (!confirm(`Supprimer le site ${domain} ?`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+    });
+    if (r.ok) {
+      loadIonosSites();
+    } else {
+      const d = await r.json();
+      alert(`Erreur: ${d.detail || 'Échec suppression'}`);
+    }
+  } catch (e) { alert(`Erreur: ${e.message}`); }
 }

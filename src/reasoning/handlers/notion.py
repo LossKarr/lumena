@@ -69,12 +69,20 @@ async def notion_read_page_handler(
 
 
 async def notion_create_page_handler(
-    ctx: HandlerContext, parent_id: str, title: str, content: str = ""
+    ctx: HandlerContext, parent_id: str = "", title: str = "", content: str = ""
 ) -> HandlerResult:
     """Crée une page dans Notion."""
+    if not title:
+        return HandlerResult.fail(
+            "❌ title requis.",
+            handler_name="notion_create_page",
+        )
     if not parent_id:
         return HandlerResult.fail(
-            "❌ parent_id requis. Utilise notion_search('') pour trouver une page parente.",
+            "❌ parent_id requis. "
+            "Notion n'autorise pas la création à la racine pour les intégrations internes. "
+            "Utilise d'abord notion_search('') pour trouver une page ou database, "
+            "puis fournis son ID.",
             handler_name="notion_create_page",
         )
     try:
@@ -234,15 +242,16 @@ def get_notion_handler_defs() -> List[HandlerDef]:
             name="notion_create_page",
             description=(
                 "Crée une nouvelle page dans Notion. "
-                "Le parent peut être une page ou une database (ID ou URL)."
+                "Le parent peut être une page ou une database (ID ou URL). "
+                "Si parent_id est omis, la page est créée à la racine du workspace Notion."
             ),
             parameters={
                 "properties": {
-                    "parent_id": {"type": "string", "description": "ID de la page ou database parente"},
+                    "parent_id": {"type": "string", "description": "ID de la page ou database parente (optionnel — omis = racine workspace)"},
                     "title": {"type": "string", "description": "Titre de la nouvelle page"},
                     "content": {"type": "string", "description": "Contenu en Markdown (# titres, - listes, **gras**, etc.)"},
                 },
-                "required": ["parent_id", "title"],
+                "required": ["title"],
             },
             handler=notion_create_page_handler,
             category="notion",

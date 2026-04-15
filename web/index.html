@@ -242,6 +242,11 @@
             <span class="nav-item-icon"><i data-lucide="settings"></i></span>
             <span class="nav-item-label">Configuration</span>
           </div>
+          <div class="nav-item" data-panel="ionos">
+            <span class="nav-item-icon"><i data-lucide="server"></i></span>
+            <span class="nav-item-label">IONOS</span>
+            <span class="badge" id="badge-ionos" style="background:var(--muted)">—</span>
+          </div>
           <div class="nav-item" data-panel="docs">
             <span class="nav-item-icon"><i data-lucide="file-text"></i></span>
             <span class="nav-item-label">Fichiers</span>
@@ -1052,6 +1057,59 @@
         <main class="doc-main" id="doc-main">
           <div class="doc-loading">Chargement de la documentation...</div>
         </main>
+      </div>
+    </div>
+
+    <!-- ======= IONOS ======= -->
+    <div class="panel" id="panel-ionos">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="server"></i> IONOS — Comptes SFTP</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadIonosSites">Rafraichir</button>
+        </div>
+        <div class="card-content" style="padding-bottom:0">
+          <p style="color:var(--muted);font-size:12px">Gérez vos comptes d'hébergement IONOS. Chaque compte est testé (connexion SFTP) à l'ajout.</p>
+        </div>
+      </div>
+      <div id="ionos-sites-list" style="margin-top:12px"></div>
+      <div class="card" style="margin-top:16px">
+        <div class="card-title"><i data-lucide="plus-circle"></i> Ajouter un compte IONOS</div>
+        <div class="card-content">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Domaine *</label>
+              <input id="ionos-domain" class="input" placeholder="monsite.fr" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Host SFTP *</label>
+              <input id="ionos-host" class="input" placeholder="access-XXX.webspace-host.com" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Utilisateur *</label>
+              <input id="ionos-user" class="input" placeholder="su123456" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Mot de passe SFTP *</label>
+              <input id="ionos-password" type="password" class="input" placeholder="••••••••" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Port</label>
+              <input id="ionos-port" class="input" type="number" value="22" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Racine distante</label>
+              <input id="ionos-root" class="input" value="/" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+            <div style="grid-column:span 2">
+              <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">Label (optionnel)</label>
+              <input id="ionos-label" class="input" placeholder="Mon site personnel" style="width:100%;height:32px;font-size:12px;padding:0 8px">
+            </div>
+          </div>
+          <div id="ionos-msg" style="display:none;margin-top:10px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
+          <div style="margin-top:12px;text-align:right">
+            <button class="btn primary" style="font-size:12px;padding:6px 18px" data-action="addIonosSite"><i data-lucide="plus"></i> Ajouter le compte</button>
+          </div>
+        </div>
       </div>
     </div>
 

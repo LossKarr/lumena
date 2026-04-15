@@ -41,6 +41,8 @@ _PUBLIC_ROUTES = frozenset({
     "GET /api/emotion/history",
     # Emotion WebSocket — real-time mood stream, read-only
     "WEBSOCKET /ws/emotion",
+    # IONOS — read-only site list (no credentials exposed)
+    "GET /api/ionos/sites",
 })
 
 
@@ -144,6 +146,6 @@ class TestAuthCoverageExhaustive:
         public = sum(1 for r in routes if r["key"] in _PUBLIC_ROUTES)
 
         # Current: 80+ total, 69+ protected, 11 public (emotion routes read-only ajoutées)
-        assert len(routes) >= 70, f"Route count dropped to {len(routes)} — accidental deletion?"
-        assert protected >= 60, f"Protected routes dropped to {protected} — auth removed?"
-        assert public <= 15, f"Public routes increased to {public} — review whitelist"
+        assert len(routes) >= 73, f"Route count dropped to {len(routes)} — accidental deletion?"
+        assert protected >= 62, f"Protected routes dropped to {protected} — auth removed?"
+        assert public <= 16, f"Public routes increased to {public} — review whitelist"

@@ -278,10 +278,12 @@ async def stripe_webhook(request: Request):
         logger.warning("[Stripe] Signature invalide — requête rejetée")
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    event_type = event.get("type", "unknown")
-    obj = event.get("data", {}).get("object", {})
+    event_type = event.type if hasattr(event, 'type') else event.get("type", "unknown")
+    event_data = event.data if hasattr(event, 'data') else event.get("data", {})
+    obj = event_data.object if hasattr(event_data, 'object') else (event_data.get("object", {}) if isinstance(event_data, dict) else {})
+    event_id = event.id if hasattr(event, 'id') else event.get('id', '?')
 
-    logger.debug(f"[Stripe] Événement reçu: {event_type} (id: {event.get('id', '?')})")
+    logger.debug(f"[Stripe] Événement reçu: {event_type} (id: {event_id})")
 
     handler = _EVENT_HANDLERS.get(event_type)
     if handler:

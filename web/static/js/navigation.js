@@ -64,6 +64,7 @@ export function loadPanelData(p){
     case'finetuning':loadFinetuning();break;
     case'logs':loadLogsRecent();break;
     case'config':loadConfig();break;
+    case'ionos':loadIonosSites();break;
     case'docs':loadDocs();break;
     case'product-docs':loadProductDocs();break;
     case'stripe-overview':loadStripeOverview();break;
@@ -97,6 +98,7 @@ const cmdItems=[
   {icon:'message-circle',label:'WhatsApp',action:()=>switchPanel('infra-whatsapp')},
   {icon:'bot',label:'Autonomie',action:()=>switchPanel('infra-autonomy')},
   {icon:'book-open-check',label:'Documentation',action:()=>switchPanel('product-docs')},
+  {icon:'server',label:'IONOS',action:()=>switchPanel('ionos')},
   {icon:'cpu',label:'Fine-tuning',action:()=>switchPanel('finetuning')},
   {icon:'maximize',label:'Mode Focus',action:()=>toggleFocus()},
   {icon:'plug',label:'Toggle Agent',action:()=>toggleAgent()},

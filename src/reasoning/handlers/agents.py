@@ -417,7 +417,7 @@ def get_agents_handler_defs() -> List[HandlerDef]:
     return [
         HandlerDef(
             name="delegate_task",
-            description="Délègue une tâche à un sub-agent spécialisé. QUAND utiliser: recherche web multi-sources (research), debug/traceback complexe (debug), refacto module entier (refactor), planification multi-étapes (planner), génération code isolée (code), opérations fichiers en masse (file). Utilise dès qu'une sous-tâche prendrait >3 itérations seul.",
+            description="Délègue une sous-tâche à un agent spécialisé et RETOURNE le résultat ici pour continuer. Tu peux ensuite enchaîner avec d'autres outils (deploy, mail, etc.). QUAND utiliser: modification code complexe (code), recherche web multi-sources (research), debug/traceback (debug), refacto module (refactor), planification (planner), fichiers en masse (file). Utilise dès qu'une sous-tâche prendrait >3 itérations seul.",
             parameters={
                 "properties": {
                     "description": {"type": "string", "description": "Description précise de la tâche à déléguer"},

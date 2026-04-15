@@ -73,7 +73,12 @@ async def ingest_document_handler(
             )
 
         source_name = p.name
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        if isinstance(tags, list):
+            tag_list = [str(t).strip() for t in tags if str(t).strip()]
+        elif tags:
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        else:
+            tag_list = []
 
         # Importance par type de chunk
         _importance: Dict[str, float] = {

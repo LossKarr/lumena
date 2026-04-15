@@ -42,7 +42,13 @@ def has_unclosed_quotes(text: str) -> bool:
 def ends_with_strong_punctuation(text: str) -> bool:
     if not text:
         return False
-    return bool(re.search(r"[.!?\"')\]\}]$", text.strip()))
+    stripped = text.strip()
+    if not stripped:
+        return False
+    # Emojis et symboles Unicode (> U+2000) comptent comme ponctuation forte
+    if ord(stripped[-1]) > 0x2000:
+        return True
+    return bool(re.search(r"[.!?\"')\]\}]$", stripped))
 
 
 def is_exploratory_tool(tool_name: str) -> bool:
@@ -130,7 +136,7 @@ def is_video_request(query: str) -> bool:
         video_keywords.extend(["animation", "motion"])
     creation_verbs = [
         "cree", "crée", "creer", "créer", "genere", "génère",
-        "build", "make", "fais", "produi", "réalis", "realis",
+        "build", "make", "fais", "faire", "fait", "produi", "réalis", "realis",
     ]
     return any(k in q for k in video_keywords) and any(v in q for v in creation_verbs)
 
@@ -156,7 +162,11 @@ def looks_incomplete_final_answer(answer: str, llm_meta: Dict[str, Any]) -> bool
         return True
 
     # Long answers are often intentionally detailed in coding tasks.
+    # Mais on doit quand même vérifier les délimiteurs non-fermés (code tronqué).
     if finish_reason in {"stop", "end_turn", "eos", "completed", "complete"} and len(trimmed) >= 2000:
+        _structured_long = looks_code_like_or_structured(trimmed)
+        if _structured_long and (has_unbalanced_delimiters(trimmed) or has_unclosed_quotes(trimmed)):
+            return True
         return False
 
     if len(trimmed) < 30:
@@ -194,6 +204,9 @@ def looks_incomplete_final_answer(answer: str, llm_meta: Dict[str, Any]) -> bool
 
     # For explicit non-truncated finish reasons, require very strong evidence
     if finish_reason in {"stop", "end_turn", "eos", "completed", "complete"}:
+        # Réponses courtes/moyennes avec stop, pas de problème structurel → certainement complètes
+        if len(trimmed) < 1500 and not _has_unbalanced and not _has_unclosed and not trailing_connector:
+            return False
         if _has_unbalanced or _has_unclosed or trailing_connector:
             return True
         return suspicion_score >= 5

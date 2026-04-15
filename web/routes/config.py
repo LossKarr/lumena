@@ -311,6 +311,16 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Numéro du propriétaire au format international (ex: 33612345678). Pour les alertes proactives.", "default": ""},
     {"key": "LUMENA_DISABLE_WHATSAPP", "label": "Désactiver WhatsApp", "type": "bool", "group": "WhatsApp",
      "hint": "Mettre à 1 pour désactiver le channel WhatsApp (désactivé par défaut — credentials Meta requis).", "default": "1"},
+    # ── IONOS (Hébergement) ──
+    {"key": "LUMENA_IONOS_DEFAULT_SITE", "label": "Site IONOS par défaut",
+     "group": "IONOS (Hébergement)", "type": "text", "default": "",
+     "hint": "Domaine par défaut pour les déploiements (ex: lumena.fr). Vide = demander à chaque fois."},
+    {"key": "LUMENA_IONOS_BACKUP_BEFORE_DEPLOY", "label": "Backup avant déploiement",
+     "group": "IONOS (Hébergement)", "type": "bool", "default": "1",
+     "hint": "Télécharge les fichiers existants en backup local avant chaque déploiement."},
+    {"key": "LUMENA_IONOS_MAX_UPLOAD_MB", "label": "Taille max upload (Mo)",
+     "group": "IONOS (Hébergement)", "type": "number", "default": "100", "min": 1, "max": 5000,
+     "hint": "Taille maximale totale d'un déploiement en Mo. Protège contre les uploads accidentels."},
 ]
 
 # ── P3.3 restart flags manquants ─────────────────────────────────────────────

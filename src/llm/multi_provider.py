@@ -534,12 +534,19 @@ class MultiProviderLLM:
         context_pressure = text_size > 18000
         strong_debug_intent = any(term in user_text for term in ("stack trace", "traceback", "syntaxerror", "exception"))
 
+        # ── Auto-switch agressif comme le CodeAgent ──
+        # Si action de code + terme/extension code → switch direct (pas besoin de pression tokens)
+        if has_code_action and (has_code_term or has_code_extension):
+            return True, "code_task"
+
+        # Debug long → switch si pression
         if strong_debug_intent and (token_pressure or context_pressure):
             reason = "code_debug_long_context" if context_pressure else "code_debug_high_tokens"
             return True, reason
 
-        if has_code_action and (has_code_term or has_code_extension) and (token_pressure or context_pressure):
-            reason = "code_task_long_context" if context_pressure else "code_task_high_tokens"
+        # Extension/terme code seul → switch uniquement sous pression tokens (évite surcoût)
+        if (has_code_extension or has_code_term) and (token_pressure or context_pressure):
+            reason = "code_context_pressure"
             return True, reason
 
         return False, None
@@ -629,11 +636,13 @@ class MultiProviderLLM:
                     provider, messages, temperature, max_tokens, model, stop=stop,
                 )
             except RuntimeError as exc:
-                if "Event loop is closed" in str(exc):
-                    # Connexions keepalive liées à un event loop fermé (Windows ProactorEventLoop)
+                _exc_str = str(exc)
+                if "Event loop is closed" in _exc_str or "bound to a different event loop" in _exc_str:
+                    # Connexions keepalive ou asyncio primitives liées à un event loop fermé/différent
+                    # (Windows ProactorEventLoop ou changement de loop entre deux requêtes)
                     # → recréer le client HTTP et retry immédiatement
                     self._recreate_http_client()
-                    logger.debug(f"🔄 {provider.value} Event loop closed — client HTTP recréé, retry")
+                    logger.debug(f"🔄 {provider.value} event loop changed — client HTTP recréé, retry")
                     last_exc = exc
                     continue
                 raise
@@ -873,6 +882,7 @@ class MultiProviderLLM:
         temperature: float = 0.7,
         max_tokens: int = 65536,  # Valeur haute : chaque provider plafonne à son propre max
         stop: Optional[List[str]] = None,
+        no_upgrade: bool = False,  # True → désactive l'auto-switch vers le modèle raisonneur
     ) -> str:
         """
         Envoie un message au LLM et retourne la réponse.
@@ -904,7 +914,7 @@ class MultiProviderLLM:
         auto_switch_reason: Optional[str] = None
 
         should_switch, switch_reason = self._is_code_heavy_request(messages, max_tokens=max_tokens)
-        if should_switch:
+        if should_switch and not no_upgrade:
             reasoner_cfg = get_model_config("deepseek-reasoner")
             reasoner_model = reasoner_cfg.model_id if reasoner_cfg else "deepseek-reasoner"
             if str(model_for_call).lower() != str(reasoner_model).lower():
@@ -1759,14 +1769,32 @@ class MultiProviderLLM:
                         content = _json_mod.dumps(_last_json)
                         logger.warning("⚠️ DeepSeek: content vide, extraction JSON action depuis reasoning_content ({} candidats, dernier retenu)", len(_candidates))
                     else:
-                        logger.warning("⚠️ DeepSeek: content vide, utilisation brute de reasoning_content (pas de bloc THOUGHT/ACTION ni JSON trouvé)")
-                        content = reasoning_content
+                        # FIX: Ne pas utiliser du texte descriptif comme code
+                        _fence = _re.search(r'```(?:\w*)\n(.+?)```', reasoning_content, _re.DOTALL)
+                        if _fence:
+                            content = _fence.group(1).strip()
+                            logger.warning("⚠️ DeepSeek: content vide, code fenced extrait de reasoning_content")
+                        elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
+                            content = reasoning_content
+                            logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (contient du code)")
+                        else:
+                            logger.error("🚨 DeepSeek: content vide, reasoning_content ne contient que du texte descriptif → rejeté")
+                            content = ""
                 except Exception:
-                    logger.warning("⚠️ DeepSeek: content vide, utilisation brute de reasoning_content (pas de bloc THOUGHT/ACTION ni JSON trouvé)")
-                    content = reasoning_content
+                    _fence = _re.search(r'```(?:\w*)\n(.+?)```', reasoning_content, _re.DOTALL)
+                    if _fence:
+                        content = _fence.group(1).strip()
+                        logger.warning("⚠️ DeepSeek: content vide, code fenced extrait (exception)")
+                    elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
+                        content = reasoning_content
+                        logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (exception)")
+                    else:
+                        content = ""
+                        logger.error("🚨 DeepSeek: content vide, reasoning_content descriptif rejeté (exception)")
 
         # FIX: Détecter les réponses tronquées par limite de tokens
         finish_reason = choice.get("finish_reason", "")
+        _truncated = False
         if finish_reason == "length":
             # Vérifier si le contenu semble incomplet (HTML/CSS/JS non fermé)
             content_lower = content.lower()
@@ -1777,14 +1805,19 @@ class MultiProviderLLM:
                 (content.count("(") > content.count(")")),  # Fonctions non fermées
             ]
             if any(incomplete_signs):
-                logger.error("🚨 TRONCATURE DÉTECTÉE: DeepSeek V3.2 a atteint sa limite de 16K tokens!")
-                logger.error("💡 SOLUTION: Utilisez 'deepseek-reasoner' pour la génération de code (32K tokens)")
+                _truncated = True
+                _used_model = payload.get("model", "deepseek-chat")
+                _used_max = max_tokens
+                logger.error("🚨 TRONCATURE DÉTECTÉE: {} a atteint sa limite de {} tokens (finish_reason=length)!", _used_model, _used_max)
+                if "reasoner" not in str(_used_model):
+                    logger.error("💡 SOLUTION: Utilisez 'deepseek-reasoner' pour la génération de code (64K tokens)")
 
         return {
             "text": content,
             "finish_reason": finish_reason,
             "provider_used": ProviderType.DEEPSEEK.value,
             "model_used": payload["model"],
+            "truncated": _truncated,
         }
 
     async def _chat_minimax_result(

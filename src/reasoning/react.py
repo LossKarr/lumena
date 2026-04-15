@@ -337,6 +337,84 @@ class ReActLoop:
         return looks_incomplete_final_answer(answer, llm_meta)
 
     # ------------------------------------------------------------------
+    # Pipeline Direct — bypass complet de la boucle ReAct
+    # ------------------------------------------------------------------
+
+    async def _try_direct_pipeline(self, query: str) -> Optional[str]:
+        """Tente d'exécuter un pipeline direct pour les workflows connus.
+
+        Si un pipeline match (edit+deploy, deploy seul, etc.), l'exécute
+        sans passer par la boucle ReAct. Retourne None si aucun pipeline
+        ne correspond, ce qui laisse la boucle ReAct prendre le relais.
+        """
+        # Guard : pas de pipeline si outils contraints (scheduler, tâches internes)
+        if getattr(self.tools, "_caller_set_allowed", False):
+            return None
+
+        # ── Skill priority gate ──
+        # Si un skill spécifique matche avec un score élevé, ne PAS capturer
+        # avec le pipeline web — laisser ReAct injecter le skill.
+        try:
+            from ..skills.loader import SkillLoader
+            _loader = SkillLoader()
+            _skill_matches = _loader.match_skills(query, max_results=3)
+            _VIDEO_KW = {"video", "vidéo", "remotion", "animation", "clip", "render"}
+            _q_lower = query.lower()
+            _q_is_video = any(kw in _q_lower for kw in _VIDEO_KW)
+            for _sm in _skill_matches:
+                if _sm.score < 5.0:
+                    break
+                _sn = _sm.name
+                # Exceptions: les skills web → le pipeline peut les capturer
+                if _sn in ("website-generator", "web-artifacts-builder"):
+                    continue
+                # Counter-filter — éviter faux positifs (ex: pptx sur query vidéo)
+                if _q_is_video and _sn != "remotion-skill":
+                    logger.debug("[ReAct] False positive skill '{}' sur query vidéo → ignoré", _sn)
+                    continue
+                logger.debug(
+                    "[ReAct] Skill '{}' (score={:.1f}) prioritaire → pipeline skip",
+                    _sn, _sm.score,
+                )
+                return None
+        except Exception:
+            pass
+
+        from .pipeline_router import match_pipeline, run_pipeline
+
+        pipe = match_pipeline(query)
+        if pipe is None:
+            return None
+
+        logger.info("[ReAct] Pipeline Direct détecté: '{}' → bypass boucle ReAct", pipe.name)
+
+        def _plan_callback(items, ctx_tool):
+            """Émet le plan pipeline au format TODO_STATE pour le SSE."""
+            import json as _json
+            state = _json.dumps(items)
+            logger.info("TODO_STATE:" + state)
+
+        result = await run_pipeline(
+            pipe, query, self.tools,
+            plan_callback=_plan_callback,
+        )
+
+        if not result.success:
+            # Pipeline échoué → fallback sur la boucle ReAct
+            logger.warning(
+                "[ReAct] Pipeline '{}' échoué ({}/{} steps) → fallback ReAct: {}",
+                result.pipeline_name, result.steps_executed,
+                len(pipe.steps), result.message[:200],
+            )
+            return None
+
+        logger.info(
+            "[ReAct] Pipeline '{}' terminé avec succès ({} steps)",
+            result.pipeline_name, result.steps_executed,
+        )
+        return result.message
+
+    # ------------------------------------------------------------------
     # Auto-route CodeAgent pour tâches code-heavy
     # ------------------------------------------------------------------
 
@@ -368,6 +446,19 @@ class ReActLoop:
         from .prompt_builder import is_video_request as _is_video
         if _is_video(query):
             logger.debug("[ReAct] Auto-route skip: requête vidéo détectée → ReAct loop")
+            return None
+
+        # ── Guard 4 : requêtes service/config/outil → ReAct (handlers V2) ──
+        # Ces requêtes ciblent un handler spécifique, pas un projet code.
+        import re as _re_svc
+        _SERVICE_RE = _re_svc.compile(
+            r'\b(ionos|sftp|ftp|h[eé]bergement|deploy|d[eé]ploi|upload\w*.{0,30}(?:site|serveur|server|fichiers?)|stripe|n8n|whatsapp|'
+            r'telegram|discord|ollama|config(ure|uration)?|compte|account|cred|'
+            r'identifiant|mot\s*de\s*passe|password|api[_\s-]?key|webhook)\b',
+            _re_svc.IGNORECASE,
+        )
+        if _SERVICE_RE.search(query):
+            logger.debug("[ReAct] Auto-route skip: requête service/config détectée → ReAct loop")
             return None
 
         # ── FAST-ROUTE : resolve_workspace haute confiance ──
@@ -416,7 +507,15 @@ class ReActLoop:
         _pf_has_fix_file = bool(_FIX_WITH_FILE_RE.search(query))
         _pf_has_verb = bool(_STRONG_CODE_VERB_RE.search(query))
         _pf_has_target = bool(_CODE_TARGET_RE2.search(query))
-        if _pf_has_fix_file or (not _pf_is_feedback and _pf_has_verb and _pf_has_target):
+        # Exclusion : requêtes non-code (PDF, vidéo, mail, etc.) malgré verbe fort
+        _NON_CODE_KW_RE = _re_code.compile(
+            r"\b(r[eé]sum[eé]|rapport|pdf|document|facture|devis|contrat|mail|email|"
+            r"vid[eé]o|remotion|photo|image|musique|spotify|discord|telegram|"
+            r"whatsapp|cherche|recherche|analyse|explique|raconte|parle)\b",
+            _re_code.IGNORECASE,
+        )
+        _pf_has_non_code = bool(_NON_CODE_KW_RE.search(query))
+        if _pf_has_fix_file or (not _pf_is_feedback and _pf_has_verb and _pf_has_target and not _pf_has_non_code):
             logger.debug("[ReAct] Pré-filtre CODE fort → route vers CodeAgent")
             _ws_pf = _early_ws
             if _ws_pf is None or not getattr(_ws_pf, "path", None):
@@ -475,7 +574,7 @@ class ReActLoop:
         _cached = _cache.get(_key)
         if _cached is not None:
             _ts, _val = _cached
-            if (_now - _ts) < 60.0:
+            if (_now - _ts) < 120.0:
                 return _val
 
         _system = (
@@ -506,8 +605,10 @@ class ReActLoop:
             logger.debug("[ReAct] _classify_intent_llm failed ({}) — fallback REACT", _e)
             _intent = "REACT"
 
-        # Cache simple (1 entrée rolling pour éviter la croissance infinie)
-        self._intent_cache = {_key: (_now, _intent)}
+        # Cache LRU 16 entrées (éviter la croissance infinie)
+        if not hasattr(self, '_intent_cache') or len(self._intent_cache) > 16:
+            self._intent_cache = {}
+        self._intent_cache[_key] = (_now, _intent)
         logger.info("[ReAct] Intent LLM: {}", _intent)
         return _intent
 
@@ -687,6 +788,12 @@ class ReActLoop:
             ("stripe", "paiement", "payment", "abonnement",
              "subscription", "checkout", "coupon", "lien de paiement"),
             {"stripe"},
+        ),
+        (
+            ("ionos", "hébergement", "hebergement", "sftp", "ftp",
+             "deploy", "déploie", "deploie", "déployer", "deployer",
+             "hosting", "mettre en ligne", "mise en ligne"),
+            {"ionos"},
         ),
     ]
 
@@ -1019,6 +1126,14 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 6. Sous-tache > 3 iterations sans progres -> `delegate_task` a l'agent specialise (code/research/debug/refactor/planner/file).
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
+
+## Modification de sites web — REGLES STRICTES :
+⛔ N'utilise JAMAIS `edit_file` ou `apply_patch` directement sur des fichiers HTML/CSS/JS d'un site web. Ca echoue systematiquement.
+✅ Pour MODIFIER un site existant (ameliorer, ajouter du contenu, refondre, mettre a jour) → `delegate_task` avec agent_type="code" et context={{"project_dir": "chemin/du/site"}}. Le CodeAgent lit, edite et valide en boucle.
+✅ Pour un micro-fix (typo, couleur CSS, lien casse) → `edit_website`.
+✅ Pour CREER un site from scratch → `generate_website` (JAMAIS si un site existe deja).
+✅ Apres modification → `deploy_to_ionos` pour deployer.
+- DELEGATION MID-LOOP : `delegate_task` retourne le resultat ici, tu continues normalement avec d'autres outils (deploy, mail, etc.).
 {self._format_plan_section()}
 ## Historique:
 {self._format_history()}
@@ -1508,6 +1623,11 @@ Maintenant, reflechis et reponds:"""
         _has_done_edits: bool = False      # au moins une écriture a eu lieu dans cette session
         _web_writes_count: int = 0         # nb de write_file sur fichiers web (.html/.css/.js)
 
+        # ── Pipeline Direct : workflows connus exécutés sans boucle ReAct ──
+        _pipeline_result = await self._try_direct_pipeline(query)
+        if _pipeline_result is not None:
+            return _pipeline_result
+
         # ── Auto-route CodeAgent : tâches code-heavy court-circuitent la boucle ReAct ──
         _codeagent_result = await self._maybe_auto_route_codeagent(query)
         if _codeagent_result is not None:
@@ -1891,11 +2011,8 @@ Maintenant, reflechis et reponds:"""
                     # Après 3 stagnations consécutives : forcer la complétion du plan
                     # pour que PLAN GUARD ne bloque pas le prochain FINAL
                     if _stagnation_streak >= 3 and self._task_plan:
-                        logger.warning("⚠️ Stagnation critique (%d) — auto-complétion du plan pour débloquer FINAL", _stagnation_streak)
-                        for _st in self._task_plan:
-                            if not _st.completed:
-                                _st.completed = True
-                                _st.completed_by_tool = "stagnation_auto"
+                        logger.warning("⚠️ Stagnation critique ({}) — bypass PLAN GUARD pour débloquer FINAL", _stagnation_streak)
+                        # NE PAS mentir sur l'état des tâches — juste bypasser le guard
                         self._plan_guard_retries = 3  # Empêche PLAN GUARD de bloquer
                 else:
                     _stagnation_streak = 0  # Reset si la pensée change
@@ -2486,16 +2603,37 @@ Maintenant, reflechis et reponds:"""
                         (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", ["mail_send", "send_email", "mail_reply_message"]),
                     ]
                     _tools_used_this_session = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
+                    # ── Conversation-aware: inclure les outils des requêtes précédentes ──
+                    _conv_tools: set = set()
+                    try:
+                        _web_ctx = getattr(self.tools, "_web_context", None) or []
+                        for _msg in _web_ctx:
+                            _msg_content = (_msg.get("content") or "").lower()
+                            for _p2, _et2 in _HALLUCINATION_PATTERNS:
+                                if re.search(_p2, _msg_content, re.IGNORECASE):
+                                    _conv_tools.update(_et2)
+                    except Exception:
+                        pass
+                    _all_known_tools = _tools_used_this_session | _conv_tools
+                    # Exclusion : références temporelles au passé ("j'ai créé plus tôt", "que j'avais envoyé hier")
+                    # → le LLM parle d'une action passée, pas d'une action de cette session.
+                    _TEMPORAL_BYPASS_RE = re.compile(
+                        r"\bj[''`']ai\s+\w+(\s+\w+){0,5}\s+(plus\s+t[oô]t|pr[eé]c[eé]demment|avant|hier|la\s+derni[eè]re\s+fois|tout\s+[àa]\s+l[''']heure|tantôt|tantoˆt)|"
+                        r"\b(que\s+tu\s+m[''']a(vai[st]|s)\s+demand\w*|comme\s+(demand\w*|convenu)|"
+                        r"tout\s+[àa]\s+l[''']instant|juste\s+avant)\b",
+                        re.IGNORECASE,
+                    )
+                    _has_temporal_ref = bool(_TEMPORAL_BYPASS_RE.search(_combined_text))
                     _hallucination_blocked = False
-                    if self._premature_final_retries < 2:
+                    if self._premature_final_retries < 2 and not _has_temporal_ref:
                         for _pattern, _expected_tools in _HALLUCINATION_PATTERNS:
                             if re.search(_pattern, _combined_text, re.IGNORECASE):
                                 # Vérifie si AU MOINS l'un des outils attendus a été appelé
-                                if not any(t in _tools_used_this_session for t in _expected_tools):
+                                if not any(t in _all_known_tools for t in _expected_tools):
                                     self._premature_final_retries += 1
                                     logger.warning(
                                         "[HALLUCINATION GUARD] Thought affirme une action non exécutée (pattern: {}, outils attendus: {}, outils utilisés: {}) - retry {}/2",
-                                        _pattern[:50], _expected_tools, list(_tools_used_this_session)[:5], self._premature_final_retries,
+                                        _pattern[:50], _expected_tools, list(_all_known_tools)[:5], self._premature_final_retries,
                                     )
                                     self.history.pop()
                                     query = (
@@ -2650,6 +2788,18 @@ Maintenant, reflechis et reponds:"""
                     _at = (action.answer or "").lower()
                     _ct = _ht + " " + _at
                     _tu = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
+                    # Conversation-aware tools (même logique que le guard principal)
+                    _conv_tools_np: set = set()
+                    try:
+                        _web_ctx_np = getattr(self.tools, "_web_context", None) or []
+                        for _msg_np in _web_ctx_np:
+                            _msg_c_np = (_msg_np.get("content") or "").lower()
+                            for _p3, _et3 in _HP_NOPLAN:
+                                if re.search(_p3, _msg_c_np, re.IGNORECASE):
+                                    _conv_tools_np.update(_et3)
+                    except Exception:
+                        pass
+                    _all_known_np = _tu | _conv_tools_np
                     _HP_NOPLAN = [
                         (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b",
                          ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "memory_save", "create_file", "telegram_send_message", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents"]),
@@ -2663,9 +2813,28 @@ Maintenant, reflechis et reponds:"""
                          ["mail_send", "send_email", "mail_reply_message"]),
                     ]
                     _hb_noplan = False
-                    if self._premature_final_retries < 2:
+                    # Bypass: si un outil de création non listé dans _HP_NOPLAN a été utilisé,
+                    # le LLM rapporte un vrai résultat — ne pas bloquer
+                    _all_hp_expected = {t for _, _et0 in _HP_NOPLAN for t in _et0}
+                    _READONLY_TOOLS = {
+                        "read_file", "web_search", "search_web", "read_url", "memory_recall",
+                        "memory_retrieve", "get_context", "list_files", "list_directory",
+                        "search_memory", "retrieve_memory", "get_weather",
+                    }
+                    _unlisted_action_tools = _tu - _READONLY_TOOLS - _all_hp_expected
+                    if _unlisted_action_tools:
+                        _hb_noplan = False  # outils d'action utilisés → claims probablement légitimes
+                        _has_temporal_ref_np = True  # skip HP guard (action réelle)
+                    else:
+                        _has_temporal_ref_np = bool(re.search(
+                        r"\bj[''`']ai\s+\w+(\s+\w+){0,5}\s+(plus\s+t[oô]t|pr[eé]c[eé]demment|avant|hier|la\s+derni[eè]re\s+fois|tout\s+[àa]\s+l[''']heure|tantôt|tantoˆt)|"
+                        r"\b(que\s+tu\s+m[''']a(vai[st]|s)\s+demand\w*|comme\s+(demand\w*|convenu)|"
+                        r"tout\s+[àa]\s+l[''']instant|juste\s+avant)\b",
+                        _ct, re.IGNORECASE,
+                    ))
+                    if self._premature_final_retries < 2 and not _has_temporal_ref_np:
                         for _p, _et in _HP_NOPLAN:
-                            if re.search(_p, _ct, re.IGNORECASE) and not any(t in _tu for t in _et):
+                            if re.search(_p, _ct, re.IGNORECASE) and not any(t in _all_known_np for t in _et):
                                 self._premature_final_retries += 1
                                 logger.warning(
                                     "[HALLUCINATION GUARD] Action non exécutée (sans plan): {} — retry {}/2",
@@ -2764,7 +2933,11 @@ Maintenant, reflechis et reponds:"""
                         self._mark_task_done("final_from_last_observation")
                         return message
 
-                should_repair = self._looks_incomplete_final_answer(answer, self._last_llm_meta)
+                # Skip repair si stagnation déjà détectée — le FINAL est volontaire
+                should_repair = (
+                    _stagnation_streak == 0
+                    and self._looks_incomplete_final_answer(answer, self._last_llm_meta)
+                )
 
                 if should_repair:
                     if self._final_repair_attempts < self.max_final_repair_attempts:

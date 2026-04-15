@@ -138,10 +138,17 @@ class NotionHub:
         """Crée une nouvelle page dans un parent (page ou database).
 
         Args:
-            parent_id: ID d'une page ou database Notion
+            parent_id: ID d'une page ou database Notion (requis pour intégrations internes)
             title: Titre de la page
             content: Contenu en Markdown
         """
+        if not parent_id:
+            raise ValueError(
+                "Notion n'autorise pas la création de pages à la racine pour les intégrations internes. "
+                "Utilise notion_search pour trouver une page ou database parente, "
+                "puis fournis son ID dans parent_id."
+            )
+
         parent_id = self._clean_id(parent_id)
 
         # Détecter si c'est une database ou une page

@@ -157,6 +157,7 @@ class ToolRegistry:
             (".handlers.stripe_api",     "get_stripe_api_handler_defs",    "stripe"),
             (".handlers.n8n",            "get_n8n_handler_defs",           "automation"),
             (".handlers.remotion",       "get_video_handler_defs",         "video"),
+            (".handlers.ionos",          "get_ionos_handler_defs",         "ionos"),
         ]
 
         import importlib
@@ -743,6 +744,20 @@ class ToolRegistry:
             {"custom tool", "outil custom", "skill installé",
              "installed skill", "plugin", "extension custom"},
             {"custom", "skills", "system"},
+        ),
+        (
+            {"ionos", "hébergement", "hebergement", "hébergeur", "hebergeur",
+             "sftp", "ftp", "deploy", "déploie", "deploie", "déployer",
+             "deployer", "déploiement", "deploiement", "hosting",
+             "mettre en ligne", "mise en ligne", "upload", "serveur web"},
+            {"ionos", "system"},
+        ),
+        # ── Video / Remotion / Animation ──
+        (
+            {"video", "vidéo", "remotion", "reel", "short", "tiktok",
+             "animation", "motion", "clip", "montage", "ffmpeg",
+             "render", "composition", "captions", "sous-titres"},
+            {"video", "files", "system"},
         ),
     ]
 
