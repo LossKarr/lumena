@@ -2,7 +2,6 @@
 🌟 LUMENA - Process Manager
 
 Gestion des processus en arrière-plan pour les commandes longues.
-Inspiré de Moltbot bash-process-registry.
 """
 
 from typing import Dict, Optional, Tuple, Any

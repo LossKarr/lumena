@@ -1,5 +1,5 @@
 """
-🔧 LUMENA - Smart Patching System (inspiré Moltbot)
+🔧 LUMENA - Smart Patching System
 
 Permet d'appliquer des modifications ciblées aux fichiers
 sans réécrire le contenu complet → économie de tokens.

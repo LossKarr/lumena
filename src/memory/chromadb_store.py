@@ -4,7 +4,7 @@
 Système de mémoire persistante et sémantique pour LUMENA.
 Utilise ChromaDB pour la recherche vectorielle + recherche hybride.
 
-Améliorations inspirées de Moltbot:
+Fonctionnalités:
 - Recherche hybride (vecteur + mots-clés BM25)
 - Fusion intelligente avec RRF (Reciprocal Rank Fusion)
 - Cache d'embeddings intégré
@@ -556,7 +556,7 @@ class ChromaMemoryStore:
         """
         Fusionne les résultats vectoriels et mots-clés.
         
-        Inspiré de Moltbot hybrid.ts - combine les scores avec pondération.
+        Combine les scores vectoriels et mots-clés avec pondération.
         """
         # Index par ID
         by_id: Dict[str, Memory] = {}
@@ -861,7 +861,7 @@ class LumenaMemory:
         """
         Génère un contexte mémoire pour le prompt LLM.
         
-        INSPIRÉ DE MOLTBOT: Recherche hybride + inclusion des détails complets.
+        Recherche hybride + inclusion des détails complets.
         
         Args:
             query: La question/message actuel
@@ -904,7 +904,7 @@ class LumenaMemory:
                 facts_text = "\n".join([f"- {k}: {v}" for k, v in info_facts.items()])
                 parts.append(f"## Informations sur l'utilisateur:\n{facts_text}")
         
-        # === RECHERCHE MÉMOIRE AMÉLIORÉE (inspirée de Moltbot) ===
+        # === RECHERCHE MÉMOIRE AMÉLIORÉE ===
         # Détecter si la question porte sur des sujets mémorisés
         query_lower = query.lower()
         personal_keywords = ["portfolio", "portefolio", "site", "moi", "mon", "me", "toi", "lumena", "lumi"]

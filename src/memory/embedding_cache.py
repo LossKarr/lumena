@@ -4,7 +4,6 @@
 Cache persistant pour les embeddings vectoriels.
 Évite de recalculer les embeddings pour les textes déjà vus.
 
-Inspiré de Moltbot embeddings.ts et manager-cache-key.ts
 """
 
 from typing import List, Optional, Callable, Any

@@ -4,7 +4,6 @@
 Surveille les fichiers mémoire (MEMORY.md, data/memory/, etc.)
 et re-indexe automatiquement quand ils changent.
 
-Inspiré de Moltbot file watching patterns
 """
 
 from typing import List, Callable, Optional, Set

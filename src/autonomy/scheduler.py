@@ -4,7 +4,7 @@
 Permet à LUMENA de planifier et exécuter des tâches automatiques.
 C'est le cœur de son autonomie 24/7.
 
-Améliorations inspirées de Moltbot:
+Fonctionnalités:
 - Support expressions CRON (ex: "0 9 * * *" = 9h tous les jours)
 - Intervalles dynamiques en millisecondes
 """
@@ -167,7 +167,7 @@ class ScheduledTask:
             pass
         
         elif self.frequency == TaskFrequency.CRON:
-            # Expression CRON (inspiré de Moltbot)
+            # Expression CRON
             if CRONITER_AVAILABLE and self.cron_expr:
                 try:
                     cron = croniter(self.cron_expr, now)
@@ -181,7 +181,7 @@ class ScheduledTask:
                 self.next_run = now + timedelta(hours=1)
         
         elif self.frequency == TaskFrequency.INTERVAL_MS:
-            # Intervalle en millisecondes (inspiré de Moltbot)
+            # Intervalle en millisecondes
             if self.interval_ms and self.interval_ms > 0:
                 self.next_run = now + timedelta(milliseconds=self.interval_ms)
             else:

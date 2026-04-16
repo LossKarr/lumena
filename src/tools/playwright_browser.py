@@ -2,7 +2,6 @@
 🌐 LUMENA - Contrôle Navigateur avec Playwright
 
 Alternative moderne à Selenium avec Playwright.
-Inspiré de Moltbot browser/index.ts
 
 Avantages Playwright:
 - Plus rapide que Selenium
@@ -664,7 +663,7 @@ class PlaywrightBrowser:
         """
         Récupère l'arbre d'accessibilité de la page.
         
-        Inspiré de Moltbot accessibility.ts - utile pour comprendre
+        Utile pour comprendre
         la structure de la page de façon sémantique.
         """
         if not self._page:

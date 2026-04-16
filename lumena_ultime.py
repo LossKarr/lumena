@@ -93,7 +93,7 @@ try:
 except ImportError:
     MULTI_PROVIDER_AVAILABLE = False
 
-# Import des modules daemon (intégrés dans le CLI - comme Moltbot)
+# Import des modules daemon (intégrés dans le CLI)
 try:
     from src.autonomy.curiosity import CuriosityModule, get_curiosity_module
     from src.autonomy.heartbeat import HeartbeatSystem, get_heartbeat
@@ -114,7 +114,7 @@ class LumenaUltime:
     Lumena avec :
     - Modèle LoRA fine-tuné
     - Système complet (mémoire, émotions, skills)
-    - Daemon intégré (curiosité, heartbeat, scheduler) - comme Moltbot
+    - Daemon intégré (curiosité, heartbeat, scheduler)
     """
     
     def __init__(self):
@@ -307,7 +307,7 @@ class LumenaUltime:
         # 2. Charger le modèle LoRA
         self.load_lora_model()
         
-        # 3. Initialiser les modules daemon INTÉGRÉS (comme Moltbot - un seul processus)
+        # 3. Initialiser les modules daemon INTÉGRÉS (un seul processus)
         if DAEMON_MODULES_AVAILABLE:
             try:
                 # Curiosité

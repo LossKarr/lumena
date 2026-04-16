@@ -2,7 +2,6 @@
 🔄 LUMENA - Model Manager avec Failover
 
 Gère la rotation et le failover automatique entre modèles LLM.
-Inspiré de Moltbot model-rotation.ts
 
 Fonctionnalités:
 - Failover automatique si un modèle échoue

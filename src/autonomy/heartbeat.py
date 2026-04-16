@@ -1,7 +1,7 @@
 """
 🌟 LUMENA - Système Heartbeat (Battement de Coeur)
 
-Inspiré de Moltbot : permet à Lumena de tourner en autonomie
+Permet à Lumena de tourner en autonomie
 en vérifiant périodiquement s'il y a des tâches à faire.
 
 Le fichier HEARTBEAT.md contient les tâches que Lumena doit surveiller.

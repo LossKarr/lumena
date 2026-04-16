@@ -1,5 +1,5 @@
 """
-🧠 LUMENA - Context Compaction System (inspiré Moltbot)
+🧠 LUMENA - Context Compaction System
 
 Gère la compression du contexte pour permettre des conversations
 infinies sans dépasser les limites du LLM.

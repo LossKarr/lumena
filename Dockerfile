@@ -47,7 +47,7 @@ RUN mkdir -p /app/data && chown -R lumena:lumena /app
 # Métadonnées
 LABEL maintainer="Losskarr" \
       description="Lumena — Agent IA autonome" \
-      version="0.7.0"
+      version="1.0.0"
 
 EXPOSE 8080
 

@@ -18,7 +18,7 @@ import re
 IS_WINDOWS = platform.system() == "Windows"
 OS_NAME = platform.system()
 
-# Import des nouveaux outils (Phase 1 & 2 - inspiré Moltbot)
+# Import des outils avancés
 try:
     from ..tools.apply_patch import apply_patch, edit_file, parse_patch
     from ..tools.compaction import ContextCompactor, get_token_stats, format_token_stats, estimate_tokens

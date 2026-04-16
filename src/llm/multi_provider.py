@@ -2344,7 +2344,7 @@ class MultiProviderLLM:
         max_tool_iterations: int = 5
     ) -> str:
         """
-        Chat avec support automatique des outils (inspiré Moltbot).
+        Chat avec support automatique des outils.
         
         Le LLM peut décider d'utiliser des outils et cette méthode
         gère automatiquement la boucle d'exécution.

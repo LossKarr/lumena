@@ -8,7 +8,6 @@ Génère des system prompts dynamiques basés sur :
 - Le contexte mémoire
 - Les préférences utilisateur
 
-Inspiré de Moltbot system.ts
 """
 
 from typing import Dict, Any, List, Optional, Callable

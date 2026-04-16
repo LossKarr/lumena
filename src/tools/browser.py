@@ -1,6 +1,6 @@
 """
 🌐 LUMENA - Contrôle du Navigateur
-Inspiré de Moltbot - Permet de contrôler le navigateur comme un humain
+Permet de contrôler le navigateur comme un humain
 
 Actions disponibles:
 - open_browser: Ouvre le navigateur
@@ -785,7 +785,7 @@ class LumenaBrowser:
     
     def deep_research(self, query: str, max_pages: int = 10) -> Dict[str, Any]:
         """
-        🔬 Recherche approfondie - Inspirée de Moltbot
+        🔬 Recherche approfondie
         
         1. Fait une recherche
         2. Ouvre les résultats pertinents dans des onglets séparés
@@ -852,7 +852,7 @@ class LumenaBrowser:
                     except Exception as e:
                         logger.debug(f"Accept cookies: {e}")
                     
-                    # Extraire le contenu (inspiré Moltbot web-fetch-utils)
+                    # Extraire le contenu
                     content = self._extract_readable_content()
                     
                     if content:
@@ -893,7 +893,7 @@ class LumenaBrowser:
     
     def _extract_readable_content(self) -> str:
         """
-        Extrait le contenu lisible d'une page (inspiré Moltbot extractReadableContent).
+        Extrait le contenu lisible d'une page.
         Supprime les scripts, styles, et garde le texte principal.
         """
         try:

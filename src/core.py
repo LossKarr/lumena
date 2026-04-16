@@ -65,7 +65,7 @@ try:
 except ImportError:
     TASK_ORCHESTRATOR_AVAILABLE = False
 
-# Import du système de tools automatique (inspiré Moltbot)
+# Import du système de tools automatique
 try:
     from .tools.tool_system import get_tool_system
     TOOL_SYSTEM_AVAILABLE = True
@@ -361,7 +361,7 @@ class LumenaCore:
         # Système de mémoire persistante
         self.memory = LumenaMemory(self.data_dir / "memory") if MEMORY_AVAILABLE else None
         
-        # 🛠️ Système de tools automatique (toujours actif, comme Moltbot)
+        # 🛠️ Système de tools automatique (toujours actif)
         self.tool_system = get_tool_system() if TOOL_SYSTEM_AVAILABLE else None
         if self.tool_system:
             if self.memory and hasattr(self.tool_system, "bind_memory"):

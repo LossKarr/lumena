@@ -3,7 +3,7 @@
 
 Module pour faire parler LUMENA en utilisant edge-tts.
 
-Améliorations inspirées de Moltbot:
+Fonctionnalités:
 - Système de fallback (edge-tts → pyttsx3)
 - Métriques de latence et succès
 """
@@ -53,7 +53,7 @@ except ImportError:
 @dataclass
 class TTSMetrics:
     """
-    Métriques TTS inspirées de Moltbot.
+    Métriques TTS.
     
     Permet de suivre les performances et la fiabilité du TTS.
     """
@@ -129,7 +129,7 @@ class LumenaTTS:
     Système Text-to-Speech pour LUMENA.
     
     Utilise edge-tts (Microsoft Edge TTS) avec fallback vers pyttsx3.
-    Inclut métriques de performances inspirées de Moltbot.
+    Inclut métriques de performances.
     """
     
     # Voix françaises recommandées

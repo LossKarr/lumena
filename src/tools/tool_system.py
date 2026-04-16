@@ -61,7 +61,7 @@ class LumenaToolSystem:
     """
     Système de tools automatique pour LUMENA.
     
-    Comme Moltbot, les outils sont toujours disponibles et le LLM
+    Les outils sont toujours disponibles et le LLM
     décide lui-même quand les utiliser. Pas besoin de préfixe "!".
     """
     
@@ -460,7 +460,7 @@ class LumenaToolSystem:
         """
         Génère la section du system prompt qui décrit les outils.
         
-        Inspiré de Moltbot: le prompt explique QUAND et COMMENT utiliser les outils.
+        Le prompt explique QUAND et COMMENT utiliser les outils.
         """
         lines = [
             "## 🛠️ Outils Disponibles",

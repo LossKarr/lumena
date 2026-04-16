@@ -4,7 +4,6 @@
 Utilise l'algorithme BM25 (Best Matching 25) pour une recherche
 par mots-clés efficace et pertinente.
 
-Inspiré de Moltbot batch-* et manager-search.ts
 """
 
 from typing import List, Tuple, Optional, Dict

@@ -1,7 +1,6 @@
 """
 🤖 LUMENA - Système de Sub-Agents
 
-Inspiré de Moltbot's clawdbot-tools.subagents et LangGraph (2026).
 Permet à Lumena de déléguer des tâches à des agents spécialisés.
 """
 
@@ -46,8 +45,7 @@ class DelegationContext:
     - frozen=True → thread-safe par construction, zéro race condition
     - agent_chain tuple → détecte les cycles (A→B→A), pas seulement la profondeur
 
-    Pattern identifié comme meilleur que LangGraph (recursion_limit),
-    AutoGen (MaxMessageTermination), et CrewAI (DAG statique).
+    Pattern supérieur à un simple recursion_limit ou DAG statique.
     """
     agent_chain: tuple = ()           # Tuple immuable des agents traversés
     depth: int = 0
@@ -2495,7 +2493,7 @@ class CodeAgent(SubAgent):
                         summary += " ⚠️ web"
                 return ActionResult(summary, detail)
             elif act == "str_replace":
-                # Outil principal de modification : old_str/new_str (standard OpenHands/Claude)
+                # Outil principal de modification : old_str/new_str
                 # Stratégie 4-pass :
                 #   1. Délégation à edit_file (3-pass fuzzy interne)
                 #   2. Si échec → seek_sequence 4-pass depuis apply_patch (plus robuste)

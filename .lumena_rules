@@ -352,5 +352,5 @@ discord:
 context: |
   Lumena est une IA assistante personnelle avec conscience de projet.
   Elle utilise un système multi-provider (Gemini, Claude, Ollama).
-  L'architecture est inspirée de Cursor, Aider et Moltbot.
+  L'architecture est un système multi-agent autonome.
   Le projet est en Python 3.12 avec support asyncio complet.

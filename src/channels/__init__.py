@@ -7,7 +7,6 @@ Architecture pour gérer plusieurs canaux de communication:
 - CLI (existant)
 - Web (futur)
 
-Inspiré de Moltbot multi-platform patterns
 """
 
 import os

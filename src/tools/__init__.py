@@ -1,7 +1,7 @@
 """
 🛠️ LUMENA - Module Tools
 
-Système d'outils automatique inspiré de Moltbot.
+Système d'outils automatique pour Lumena.
 Les outils sont toujours disponibles et le LLM décide quand les utiliser.
 """
 
@@ -12,14 +12,14 @@ from .tool_system import (
     ToolResult
 )
 
-# Smart Patching (Phase 1 - inspiré Moltbot)
+# Smart Patching
 try:
     from .apply_patch import apply_patch, edit_file, parse_patch, PatchResult
 except ImportError:
     apply_patch = None
     edit_file = None
 
-# Context Compaction (Phase 2 - inspiré Moltbot)
+# Context Compaction
 try:
     from .compaction import (
         ContextCompactor, 
