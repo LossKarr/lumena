@@ -1,0 +1,104 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bump version & Release
+    runs-on: ubuntu-latest
+    # Ne pas tourner sur les commits de bump automatique
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          python - <<'PYEOF'
+          import re, os
+
+          # ── Lire la version actuelle depuis pyproject.toml ──
+          with open("pyproject.toml", "r", encoding="utf-8") as f:
+              content = f.read()
+
+          match = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', content, re.MULTILINE)
+          if not match:
+              raise SystemExit("Version introuvable dans pyproject.toml")
+
+          major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
+          old_version = f"{major}.{minor}.{patch}"
+          new_version = f"{major}.{minor}.{patch + 1}"
+          print(f"Bump: {old_version} → {new_version}")
+
+          # ── Mettre à jour pyproject.toml ──
+          content = content.replace(f'version = "{old_version}"', f'version = "{new_version}"', 1)
+          with open("pyproject.toml", "w", encoding="utf-8") as f:
+              f.write(content)
+
+          # ── Mettre à jour src/__init__.py ──
+          init_path = "src/__init__.py"
+          with open(init_path, "r", encoding="utf-8") as f:
+              init_content = f.read()
+          init_content = init_content.replace(f'__version__ = "{old_version}"', f'__version__ = "{new_version}"', 1)
+          init_content = init_content.replace(f'Version: {old_version}', f'Version: {new_version}', 1)
+          with open(init_path, "w", encoding="utf-8") as f:
+              f.write(init_content)
+
+          # ── Exporter pour les steps suivantes ──
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"old_version={old_version}\n")
+              f.write(f"new_version={new_version}\n")
+              f.write(f"tag=v{new_version}\n")
+          PYEOF
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml src/__init__.py
+          git commit -m "release: v${{ steps.bump.outputs.new_version }} [skip ci]"
+          git tag "v${{ steps.bump.outputs.new_version }}"
+          git push origin HEAD --tags
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Récupérer les commits depuis le dernier tag (ou les 20 derniers si premier release)
+          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1) || true
+          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "v${{ steps.bump.outputs.new_version }}" ]; then
+            LOG=$(git log --oneline -20 --no-decorate)
+          else
+            LOG=$(git log --oneline --no-decorate "$PREV_TAG"..HEAD~1)
+          fi
+          {
+            echo "body<<EOFLOG"
+            echo "## Changements"
+            echo ""
+            echo "$LOG" | sed 's/^/- /'
+            echo ""
+            echo "EOFLOG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump.outputs.new_version }}
+          name: Lumena v${{ steps.bump.outputs.new_version }}
+          body: ${{ steps.changelog.outputs.body }}
+          draft: false
+          prerelease: false
