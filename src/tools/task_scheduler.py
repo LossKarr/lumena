@@ -207,23 +207,41 @@ def _make_conv_task_handler(task_id: str, action: str, chat_id: str) -> Callable
 
         logger.info(f"⏰ Tâche conv. déclenchée: {task_id} (action={action[:60]})")
 
+        # Cadrage d'exécution — empêche le LLM de confondre "spec à enregistrer"
+        # avec "instructions à exécuter maintenant"
+        prompt = (
+            "[TÂCHE PLANIFIÉE — EXÉCUTION AUTOMATIQUE]\n"
+            "Tu es en mode exécution autonome. Cette tâche a été programmée par l'utilisateur. "
+            "Tu dois EXÉCUTER les actions décrites ci-dessous MAINTENANT, pas les enregistrer, "
+            "les modifier ni les planifier. Utilise tes outils pour agir concrètement.\n\n"
+            f"{action}"
+        )
+
         result_text = ""
+        task_success = False
+
+        # Timeout configurable — tâches complexes (CodeAgent, deploy) ont besoin de temps
+        conv_timeout = int(os.environ.get("LUMENA_CONV_TASK_TIMEOUT", "1800"))
 
         # Essayer lumena_think (full reasoning)
         if _lumena_think_fn is not None:
             try:
                 result_text = await asyncio.wait_for(
-                    _lumena_think_fn(action, chat_id),
-                    timeout=120,
+                    _lumena_think_fn(prompt, chat_id),
+                    timeout=conv_timeout,
                 )
+                task_success = True
             except asyncio.TimeoutError:
-                result_text = f"⏱️ Tâche planifiée '{action[:40]}...' expirée (timeout 120s)"
+                result_text = f"⏱️ Tâche planifiée '{action[:40]}...' expirée (timeout {conv_timeout}s)"
+                logger.warning(f"⏱️ Conv task {task_id} timeout après {conv_timeout}s")
             except Exception as e:
                 result_text = f"⚠️ Erreur tâche planifiée : {e}"
+                logger.error(f"❌ Conv task {task_id} erreur: {e}")
 
         # Fallback : envoyer juste le message de rappel
         elif _telegram_send_fn is not None:
             result_text = f"⏰ Rappel planifié : {action}"
+            task_success = True
 
         # Envoyer le résultat si on a un sender Telegram et un chat_id
         if chat_id and _telegram_send_fn is not None and result_text:
@@ -251,7 +269,7 @@ def _make_conv_task_handler(task_id: str, action: str, chat_id: str) -> Callable
             except Exception as e:
                 logger.warning(f"Nettoyage conv_tasks échoué: {e}")
 
-        return {"success": True, "run_count": run_count}
+        return {"success": task_success, "run_count": run_count}
 
     _handler.__name__ = f"conv_task_{task_id}"
     return _handler
@@ -422,6 +440,10 @@ async def handle_schedule_task(**kwargs) -> str:
 
     # Sauvegarder dans le registre conv_tasks
     conv_tasks = _load_conv_tasks()
+
+    # Aligner le timeout scheduler avec le timeout interne du handler
+    conv_timeout = int(os.environ.get("LUMENA_CONV_TASK_TIMEOUT", "1800"))
+    scheduled_task.timeout_seconds = conv_timeout + 120  # marge pour envoi Telegram/WhatsApp
 
     conv_tasks["tasks"][task_id] = {
         "scheduler_task_id": scheduled_task.id,
@@ -895,11 +917,12 @@ def restore_conv_tasks() -> int:
             sched.register_handler(handler_name, handler_fn)
 
             # Déterminer le type de planification depuis la description sauvée
+            conv_timeout = int(os.environ.get("LUMENA_CONV_TASK_TIMEOUT", "1800"))
             if "CRON" in schedule or re.search(r"\d+ \d+ \*", schedule):
                 cron_match = re.search(r"`([^`]+)`", schedule)
                 cron_expr = cron_match.group(1) if cron_match else None
                 if cron_expr:
-                    sched.schedule(
+                    st = sched.schedule(
                         name=name,
                         description=f"[Restauré] {action[:100]}",
                         handler_name=handler_name,
@@ -907,12 +930,13 @@ def restore_conv_tasks() -> int:
                         cron_expr=cron_expr,
                         metadata={"action": action, "chat_id": chat_id, "source": "restored"},
                     )
+                    st.timeout_seconds = conv_timeout + 120
                     restored += 1
             elif "toutes les" in schedule:
                 min_match = re.search(r"toutes les (\d+) minute", schedule)
                 if min_match:
                     minutes = int(min_match.group(1))
-                    sched.schedule(
+                    st = sched.schedule(
                         name=name,
                         description=f"[Restauré] {action[:100]}",
                         handler_name=handler_name,
@@ -920,6 +944,7 @@ def restore_conv_tasks() -> int:
                         interval_ms=minutes * 60 * 1000,
                         metadata={"action": action, "chat_id": chat_id, "source": "restored"},
                     )
+                    st.timeout_seconds = conv_timeout + 120
                     restored += 1
             # Les tâches "unique" non encore exécutées sont ignorées
             # (on ne peut pas reconstruire la date exacte sans run_at sauvegardée)

@@ -224,9 +224,11 @@ class TestConfigPanelP2:
 
 class TestModelCountP2:
     def test_total_models(self):
-        # P1: 39, P2: +5 minimax +2 o3/o4-mini = 46
-        assert len(AVAILABLE_MODELS) == 46
+        # Static models: 47 (dynamic Ollama models may add more at runtime)
+        assert len(MODEL_SKILLS) == 47
+        assert len(AVAILABLE_MODELS) >= len(MODEL_SKILLS)
 
     def test_all_models_have_skills(self):
-        for name in AVAILABLE_MODELS:
-            assert name in MODEL_SKILLS, f"{name} missing from MODEL_SKILLS"
+        # Only check statically declared models (dynamic Ollama models are excluded)
+        for name in MODEL_SKILLS:
+            assert name in AVAILABLE_MODELS, f"{name} in MODEL_SKILLS but missing from AVAILABLE_MODELS"

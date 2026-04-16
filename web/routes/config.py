@@ -70,6 +70,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Timeout par étape individuelle d'une tâche déléguée. 0 = pas de limite. Utile pour les tâches planifiées."},
     {"key": "LUMENA_TASK_STEP_TIMEOUT_RETRIES", "label": "Retries par étape", "group": "LLM", "type": "number", "default": "1", "min": 0, "max": 10,
      "hint": "Nombre de tentatives si une étape échoue par timeout. 1 = un seul essai."},
+    {"key": "LUMENA_CONV_TASK_TIMEOUT", "label": "Timeout tâche conversationnelle (secondes)", "group": "LLM", "type": "number", "default": "1800", "min": 60, "max": 7200,
+     "hint": "Durée max d'exécution d'une tâche planifiée conversationnelle (CRON). 1800 = 30 min."},
     {"key": "LUMENA_PARALLEL_TOOL_MAX_CALLS", "label": "Max outils en parallèle", "group": "LLM", "type": "number", "default": "20", "min": 1, "max": 100,
      "hint": "Nombre max d'outils exécutés simultanément via parallel_tools. 20 = défaut. Lumena choisit librement quels outils paralléliser (seule la récursion est interdite)."},
     {"key": "LUMENA_AUTONOMY_EXECUTE_ACTIONS", "label": "Exécution autonome", "group": "Autonomie", "type": "bool", "default": "1",

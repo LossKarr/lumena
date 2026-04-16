@@ -213,7 +213,7 @@ async def _edit_website_via_codeagent(
     pour que le CodeAgent agisse comme un éditeur (pas un explorateur).
     """
     try:
-        from ...agents.sub_agent import delegate_to_agent
+        from ...agents.sub_agent import get_orchestrator, AgentType
 
         # Pré-lire tous les fichiers du projet
         files_dump = _read_project_files(target)
@@ -240,12 +240,19 @@ async def _edit_website_via_codeagent(
             "project_dir": str(target),
             "workspace_path": str(target),
         }
-        result = await delegate_to_agent(description, "code", context)
+        orchestrator = get_orchestrator()
+        agent_result = await orchestrator.run_task_sync(description, AgentType.CODE, context)
+        if not agent_result.success:
+            logger.warning("[edit_website] CodeAgent échoué: {}", agent_result.output[:200])
+            return HandlerResult.fail(
+                f"❌ CodeAgent n'a pas pu modifier le site.\n\n{agent_result.output}",
+                handler_name="edit_website",
+            )
         return HandlerResult.ok(
             f"✅ Modifications appliquées via CodeAgent !\n\n"
             f"📂 Projet: {target.name}\n"
             f"📁 Dossier: {target}\n\n"
-            f"{result}",
+            f"{agent_result.output}",
             handler_name="edit_website",
         )
     except Exception as e:
