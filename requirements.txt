@@ -99,6 +99,9 @@ mypy>=1.10.0
 # Token counting précis
 tiktoken>=0.7.0
 
+# Desktop (fenêtre native, optionnel)
+pywebview>=4.0.0
+
 # Hosting / Deploy
 paramiko>=3.0.0
 

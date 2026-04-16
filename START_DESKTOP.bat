@@ -8,12 +8,12 @@ if "%~1"=="" (
 
 chcp 65001 >nul 2>&1
 setlocal EnableExtensions EnableDelayedExpansion
-title LUMENA
+title LUMENA Desktop
 cd /d "%~dp0"
 
 echo.
 echo  ================================================================
-echo      L U M E N A
+echo      L U M E N A   —   Mode Desktop
 echo  ================================================================
 echo.
 
@@ -24,9 +24,42 @@ if not exist "venv\" (
 )
 call venv\Scripts\activate.bat
 
-REM === Single instance guard ===
-set "LUMENA_SINGLE_INSTANCE=1"
+REM === Verifier pywebview ===
+python -c "import webview" >nul 2>&1
+if errorlevel 1 (
+    echo [..] Installation de pywebview...
+    pip install pywebview >nul 2>&1
+    if errorlevel 1 (
+        echo [ERREUR] Impossible d'installer pywebview.
+        echo          Lancez START.bat pour le mode navigateur classique.
+        pause & exit /b 1
+    )
+    echo [OK] pywebview installe
+)
 
+REM === Verifier WebView2 Runtime (requis pour ES modules) ===
+reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" >nul 2>&1
+if errorlevel 1 (
+    reg query "HKLM\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" >nul 2>&1
+)
+if errorlevel 1 (
+    echo [WARN] WebView2 Runtime non detecte.
+    echo        La fenetre desktop necessite WebView2 pour fonctionner.
+    echo.
+    echo        Telechargement automatique...
+    curl.exe -sL -o "%TEMP%\MicrosoftEdgeWebview2Setup.exe" "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+    if exist "%TEMP%\MicrosoftEdgeWebview2Setup.exe" (
+        echo [..] Installation de WebView2 Runtime...
+        "%TEMP%\MicrosoftEdgeWebview2Setup.exe" /silent /install
+        echo [OK] WebView2 installe
+        del "%TEMP%\MicrosoftEdgeWebview2Setup.exe" >nul 2>&1
+    ) else (
+        echo [ERREUR] Telechargement echoue. Installez WebView2 manuellement:
+        echo          https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+        echo          Ou lancez START.bat pour le mode navigateur classique.
+        pause & exit /b 1
+    )
+)
 
 REM === Lire le port depuis .env (defaut 8080) ===
 set "LUMENA_PORT=8080"
@@ -63,75 +96,27 @@ if errorlevel 1 (
     echo [OK] Ollama operationnel
 )
 
-REM === Docker Sandbox (quick check) ===
-where docker >nul 2>&1
-if not errorlevel 1 (
-    docker info >nul 2>&1
-    if not errorlevel 1 (
-        docker image inspect lumena-sandbox >nul 2>&1
-        if errorlevel 1 (
-            if exist "Dockerfile.sandbox" (
-                echo [..] Build image Docker sandbox...
-                docker build -f Dockerfile.sandbox -t lumena-sandbox . >nul 2>&1
-                if not errorlevel 1 (
-                    echo [OK] Docker sandbox pret
-                ) else (
-                    echo [WARN] Build Docker sandbox echoue
-                )
-            )
-        ) else (
-            echo [OK] Docker sandbox
-        )
-    )
-)
-
 REM === Port deja occupe ? ===
 curl.exe -sf --connect-timeout 2 http://127.0.0.1:!LUMENA_PORT!/api/health >nul 2>&1
 if not errorlevel 1 (
     echo.
     echo [INFO] Lumena tourne deja sur le port !LUMENA_PORT!.
-    start http://localhost:!LUMENA_PORT!
+    echo        Ouverture de la fenetre desktop...
+    python run_desktop.py --web
     pause & exit /b 0
 )
 
 echo.
 echo  =========================================================
-echo      LANCEMENT
+echo      LANCEMENT DESKTOP
 echo  ---------------------------------------------------------
 echo.
 
-REM === Serveur (arriere-plan) ===
-start "Lumena Backend" venv\Scripts\python.exe web/server.py
+REM === Lancement natif (serveur + fenetre) ===
+echo [..] Demarrage de Lumena Desktop...
+python run_desktop.py
 
-REM === Attente serveur pret (max 30s) ===
-echo [..] Demarrage du serveur web...
-set SRV_OK=0
-for /L %%i in (1,1,30) do (
-    if "!SRV_OK!"=="0" (
-        curl.exe -sf --connect-timeout 1 http://127.0.0.1:!LUMENA_PORT!/api/health >nul 2>&1
-        if not errorlevel 1 set SRV_OK=1
-        if "!SRV_OK!"=="0" timeout /t 1 /nobreak >nul
-    )
-)
-if "!SRV_OK!"=="1" (
-    echo [OK] Lumena operationnel sur http://localhost:!LUMENA_PORT!
-) else (
-    echo [WARN] Timeout d'attente - ouverture navigateur quand meme
-)
 echo.
-start http://localhost:!LUMENA_PORT!
-
-echo  [OK] Lumena tourne en arriere-plan.
-echo  Cette fenetre se fermera automatiquement a l'arret du serveur.
-echo.
-
-:_wait_server
-timeout /t 3 /nobreak >nul 2>&1
-curl.exe -sf --connect-timeout 2 http://127.0.0.1:!LUMENA_PORT!/api/health >nul 2>&1
-if not errorlevel 1 goto _wait_server
-
-REM === Serveur arrete ===
-echo.
-echo  [OK] Lumena arretee.
+echo  [OK] Lumena Desktop fermee.
 timeout /t 2 >nul 2>&1
 exit /b 0
