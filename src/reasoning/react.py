@@ -2788,18 +2788,6 @@ Maintenant, reflechis et reponds:"""
                     _at = (action.answer or "").lower()
                     _ct = _ht + " " + _at
                     _tu = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
-                    # Conversation-aware tools (même logique que le guard principal)
-                    _conv_tools_np: set = set()
-                    try:
-                        _web_ctx_np = getattr(self.tools, "_web_context", None) or []
-                        for _msg_np in _web_ctx_np:
-                            _msg_c_np = (_msg_np.get("content") or "").lower()
-                            for _p3, _et3 in _HP_NOPLAN:
-                                if re.search(_p3, _msg_c_np, re.IGNORECASE):
-                                    _conv_tools_np.update(_et3)
-                    except Exception:
-                        pass
-                    _all_known_np = _tu | _conv_tools_np
                     _HP_NOPLAN = [
                         (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b",
                          ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "memory_save", "create_file", "telegram_send_message", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents"]),
@@ -2812,6 +2800,18 @@ Maintenant, reflechis et reponds:"""
                         (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b",
                          ["mail_send", "send_email", "mail_reply_message"]),
                     ]
+                    # Conversation-aware tools (même logique que le guard principal)
+                    _conv_tools_np: set = set()
+                    try:
+                        _web_ctx_np = getattr(self.tools, "_web_context", None) or []
+                        for _msg_np in _web_ctx_np:
+                            _msg_c_np = (_msg_np.get("content") or "").lower()
+                            for _p3, _et3 in _HP_NOPLAN:
+                                if re.search(_p3, _msg_c_np, re.IGNORECASE):
+                                    _conv_tools_np.update(_et3)
+                    except Exception:
+                        pass
+                    _all_known_np = _tu | _conv_tools_np
                     _hb_noplan = False
                     # Bypass: si un outil de création non listé dans _HP_NOPLAN a été utilisé,
                     # le LLM rapporte un vrai résultat — ne pas bloquer

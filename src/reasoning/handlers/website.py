@@ -11,6 +11,7 @@ Pattern: async (ctx: HandlerContext, **kwargs) -> HandlerResult
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from loguru import logger
