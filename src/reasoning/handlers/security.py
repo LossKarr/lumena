@@ -63,23 +63,97 @@ from .registry_v2 import HandlerDef
 # Guard — Autorisation explicite pour outils offensifs
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Outils soumis au guard d'autorisation renforcé
+_OFFENSIVE_TOOLS = frozenset({
+    "nmap_scan", "port_scan_fast", "ssh_exec", "netcat_probe",
+    "reverse_shell_listen", "capture_traffic", "multi_agent_parallel",
+})
+
+# Mots-clés validant l'intention utilisateur (au moins 1 requis dans l'autorisation)
+_AUTH_INTENT_KEYWORDS = frozenset({
+    "scan", "nmap", "port", "ssh", "netcat", "reverse", "capture", "trafic",
+    "traffic", "réseau", "network", "audit", "pentest", "sécurité", "security",
+    "test", "probe", "agent", "parallel", "multi",
+})
+
+# Longueur minimale d'une autorisation valide (empêche "oui", "ok", "yes")
+_AUTH_MIN_LENGTH = 15
+
+
 def _require_authorization(authorization: str, tool_name: str) -> Optional[HandlerResult]:
     """
-    Vérifie qu'une autorisation explicite a été fournie pour un outil offensif.
+    Vérifie qu'une autorisation explicite et qualifiée a été fournie pour un outil offensif.
+
+    Règles de validation:
+    1. Le paramètre authorization ne doit pas être vide.
+    2. Il doit contenir au moins 15 caractères (empêche "oui", "ok", "yes").
+    3. Il doit contenir au moins un mot-clé d'intention liée à la sécurité/réseau.
+    4. L'outil est bloqué inconditionnellement en mode autonome (daemon/heartbeat/scheduler).
 
     Lumena ne passera JAMAIS ce paramètre automatiquement en mode autonome.
     Il doit être fourni explicitement lors d'une demande utilisateur directe
     (conversation active, pas heartbeat/scheduler/goals).
     """
+    # ── Blocage inconditionnel en mode autonome ──
+    _autonomy_active = os.getenv("LUMENA_AUTONOMY_EXECUTE_ACTIONS", "0").strip()
+    if _autonomy_active == "1":
+        logger.warning(
+            "[SECURITY] Outil offensif '{}' bloqué — mode autonome actif", tool_name
+        )
+        return HandlerResult.ok(
+            f"⛔ BLOQUÉ — '{tool_name}' est interdit en mode autonome.\n"
+            f"Les outils offensifs ne s'exécutent que sur demande explicite de l'utilisateur.",
+            handler_name=tool_name,
+        )
+
     auth = (authorization or "").strip()
+
+    # ── Autorisation vide ──
     if not auth:
         return HandlerResult.ok(
             f"⛔ AUTORISATION REQUISE — '{tool_name}' est un outil offensif.\n"
             f"Cet outil ne s'exécute que sur demande explicite de l'utilisateur.\n"
-            f"Fournir le paramètre: authorization='<raison explicite en français>'\n"
-            f"Exemple: authorization='scan réseau local pour audit de sécurité autorisé par l\'utilisateur'",
+            f"Fournir le paramètre: authorization='<raison détaillée en français, min {_AUTH_MIN_LENGTH} caractères>'\n"
+            f"La raison doit contenir un mot-clé pertinent (scan, audit, ssh, network, etc.).\n"
+            f"Exemple: authorization='scan réseau local pour audit de sécurité autorisé par l'utilisateur'",
             handler_name=tool_name,
         )
+
+    # ── Autorisation trop courte (empêche "oui", "ok", "yes", "autoriser") ──
+    if len(auth) < _AUTH_MIN_LENGTH:
+        logger.warning(
+            "[SECURITY] Autorisation trop courte pour '{}': '{}' ({} chars < {})",
+            tool_name, auth, len(auth), _AUTH_MIN_LENGTH,
+        )
+        return HandlerResult.ok(
+            f"⛔ AUTORISATION INSUFFISANTE — '{tool_name}' exige une raison détaillée.\n"
+            f"Reçu: '{auth}' ({len(auth)} caractères)\n"
+            f"Minimum requis: {_AUTH_MIN_LENGTH} caractères avec un mot-clé pertinent.\n"
+            f"Exemple: authorization='audit de sécurité réseau demandé par l'utilisateur'",
+            handler_name=tool_name,
+        )
+
+    # ── Vérification des mots-clés d'intention ──
+    auth_lower = auth.lower()
+    has_intent = any(kw in auth_lower for kw in _AUTH_INTENT_KEYWORDS)
+    if not has_intent:
+        logger.warning(
+            "[SECURITY] Autorisation sans mot-clé d'intention pour '{}': '{}'",
+            tool_name, auth[:100],
+        )
+        return HandlerResult.ok(
+            f"⛔ AUTORISATION INVALIDE — aucun mot-clé d'intention reconnu.\n"
+            f"L'autorisation doit mentionner l'action demandée (scan, audit, ssh, network, etc.).\n"
+            f"Reçu: '{auth[:80]}'\n"
+            f"Exemple: authorization='scan de ports demandé pour audit réseau'",
+            handler_name=tool_name,
+        )
+
+    # ── Autorisé — log pour audit trail ──
+    logger.info(
+        "[SECURITY] Outil offensif '{}' autorisé — raison: '{}'",
+        tool_name, auth[:200],
+    )
     return None  # Autorisé
 
 
