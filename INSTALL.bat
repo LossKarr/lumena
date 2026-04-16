@@ -160,6 +160,34 @@ if errorlevel 1 (
     echo [OK] Navigateur installe
 )
 
+REM === 5b. Docker Sandbox (optionnel) ===
+where docker >nul 2>&1
+if not errorlevel 1 (
+    docker info >nul 2>&1
+    if not errorlevel 1 (
+        docker image inspect lumena-sandbox >nul 2>&1
+        if errorlevel 1 (
+            if exist "Dockerfile.sandbox" (
+                echo [..] Construction de l'image Docker sandbox (premiere fois, 1-2 min)...
+                docker build -f Dockerfile.sandbox -t lumena-sandbox . >nul 2>&1
+                if not errorlevel 1 (
+                    echo [OK] Image Docker sandbox construite
+                ) else (
+                    echo [WARN] Build Docker sandbox echoue - execution locale utilisee
+                )
+            )
+        ) else (
+            echo [OK] Docker sandbox pret
+        )
+    ) else (
+        echo [INFO] Docker installe mais non demarre - sandbox indisponible
+        echo        Lancez Docker Desktop puis relancez INSTALL.bat pour activer le sandbox
+    )
+) else (
+    echo [INFO] Docker non detecte - optionnel, pour sandbox securise
+    echo        https://docker.com/products/docker-desktop
+)
+
 REM === 6. .env ===
 if not exist ".env" (
     if exist ".env.example" (

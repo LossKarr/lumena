@@ -63,6 +63,28 @@ if errorlevel 1 (
     echo [OK] Ollama operationnel
 )
 
+REM === Docker Sandbox (quick check) ===
+where docker >nul 2>&1
+if not errorlevel 1 (
+    docker info >nul 2>&1
+    if not errorlevel 1 (
+        docker image inspect lumena-sandbox >nul 2>&1
+        if errorlevel 1 (
+            if exist "Dockerfile.sandbox" (
+                echo [..] Build image Docker sandbox...
+                docker build -f Dockerfile.sandbox -t lumena-sandbox . >nul 2>&1
+                if not errorlevel 1 (
+                    echo [OK] Docker sandbox pret
+                ) else (
+                    echo [WARN] Build Docker sandbox echoue
+                )
+            )
+        ) else (
+            echo [OK] Docker sandbox
+        )
+    )
+)
+
 REM === Port deja occupe ? ===
 curl.exe -sf --connect-timeout 2 http://127.0.0.1:!LUMENA_PORT!/api/health >nul 2>&1
 if not errorlevel 1 (

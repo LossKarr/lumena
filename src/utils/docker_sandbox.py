@@ -152,13 +152,20 @@ _NETWORK_COMMANDS = frozenset({
 
 # Cache: Docker est-il disponible ?
 _docker_available: Optional[bool] = None
+_docker_checked_at: float = 0.0
+_DOCKER_NEGATIVE_TTL = float(os.getenv("LUMENA_DOCKER_RETRY_SEC", "300"))  # re-check après 5 min si négatif
 
 
 async def is_docker_available() -> bool:
     """Vérifie si Docker est installé et le daemon tourne."""
-    global _docker_available
-    if _docker_available is not None:
-        return _docker_available
+    global _docker_available, _docker_checked_at
+    import time
+    now = time.monotonic()
+    # Cache positif = permanent, cache négatif = TTL 5 min
+    if _docker_available is True:
+        return True
+    if _docker_available is False and (now - _docker_checked_at) < _DOCKER_NEGATIVE_TTL:
+        return False
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker", "info",
@@ -169,6 +176,7 @@ async def is_docker_available() -> bool:
         _docker_available = proc.returncode == 0
     except Exception:
         _docker_available = False
+    _docker_checked_at = now
     if _docker_available:
         await _ensure_sandbox_image()
     logger.info("[sandbox] Docker disponible: {}", _docker_available)
