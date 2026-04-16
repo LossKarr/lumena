@@ -339,7 +339,7 @@ async def setup_schema():
             "LUMENA_BRAIN_VISION": {
                 "icon": "eye",
                 "desc": "Analyse d'images, photos, captures d'écran, PDF visuels",
-                "top": ["gpt-5.4", "gemini-3.1-pro", "claude-opus-4.6", "grok-4.20-0309-reasoning"],
+                "top": ["gpt-5.4", "gemini-3.1-pro", "claude-opus-4.7", "claude-opus-4.6", "grok-4.20-0309-reasoning"],
                 "top_free": ["nvidia-kimi-k2-thinking", "nvidia-deepseek-v3.2"],
             },
             "LUMENA_BRAIN_CODE": {

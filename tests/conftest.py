@@ -57,8 +57,27 @@ try:
 
     if hasattr(_pa_plugin, '_provide_clean_event_loop'):
         _pa_plugin._provide_clean_event_loop = _patched_provide_clean_event_loop
+
 except Exception:
     pass  # Sécurité: si pytest-asyncio change d'API, on ne plante pas
+
+# ── Patch Runner.close pour timeout sur ProactorEventLoop ──────────────────
+# Sur Windows, Runner.close() → _cancel_all_tasks(loop) →
+# loop.run_until_complete(gather(*to_cancel)) hang si des transports IOCP
+# (subprocess, pipes) sont encore ouverts. Wrappons close() avec un timeout.
+try:
+    _OrigRunner = asyncio.Runner
+    _orig_runner_close = _OrigRunner.close
+
+    def _runner_close_with_timeout(self):
+        """Runner.close() avec timeout de 3s pour éviter les hangs."""
+        t = threading.Thread(target=_orig_runner_close, args=(self,), daemon=True)
+        t.start()
+        t.join(timeout=3)
+
+    _OrigRunner.close = _runner_close_with_timeout
+except Exception:
+    pass
 
 
 # ── Suppression des erreurs GC asyncio après fermeture du loop ─────────────

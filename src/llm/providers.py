@@ -235,6 +235,19 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
 
     # === ANTHROPIC ===
+    "claude-opus-4.7": ModelConfig(
+        name="claude-opus-4.7",
+        display_name="Claude Opus 4.7 (Anthropic)",
+        provider=ProviderType.ANTHROPIC,
+        model_id="claude-opus-4-7",
+        context_window=1000000,  # 1M tokens
+        max_output_tokens=128000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=5.0,
+        description="Claude Opus 4.7 — frontier intelligence, agents+code, 1M context, 128K output",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist"}),
+    ),
     "claude-opus-4.6": ModelConfig(
         name="claude-opus-4.6",
         display_name="Claude Opus 4.6 (Anthropic)",
@@ -968,6 +981,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     #         vision (analyse image via API), web (recherche/analyse web)
     # vision=0 => le modèle n'a PAS d'API vision
     # ── Anthropic ──────────────────────────────────────────────────────────
+    "claude-opus-4.7":             {"code": 92, "speed": 45, "reasoning": 96, "creative": 97, "research": 94, "vision": 96, "web": 91},
     "claude-opus-4.6":             {"code": 90, "speed": 45, "reasoning": 94, "creative": 96, "research": 92, "vision": 95, "web": 90},
     "claude-opus-4.5":             {"code": 88, "speed": 50, "reasoning": 91, "creative": 93, "research": 89, "vision": 92, "web": 87},
     "claude-opus-4":               {"code": 87, "speed": 52, "reasoning": 90, "creative": 92, "research": 87, "vision": 90, "web": 85},
@@ -1032,7 +1046,7 @@ def best_model_for(
     """
     Retourne le nom du meilleur modèle disponible pour un domaine.
 
-    Règle "réserve Claude" : les modèles premium (claude-opus-4.6) ne sont
+    Règle "réserve Claude" : les modèles premium (claude-opus-4.7) ne sont
     sélectionnés que si leur score dépasse le meilleur modèle non-premium
     d'au moins _PREMIUM_THRESHOLD points. Autrement le modèle spécialisé
     moins cher gagne (grok-code pour code, deepseek-reasoner pour reasoning, etc.)
@@ -1045,7 +1059,7 @@ def best_model_for(
         Nom du modèle (clé AVAILABLE_MODELS) ou None si aucun disponible.
     """
     # Modèles réservés aux tâches vraiment complexes : sélectionnés seulement
-    # si leur avantage de score > _PREMIUM_THRESHOLD sur le meilleur standard.
+    # si leur avantage de score > _PRE7", "claude-opus-4.MIUM_THRESHOLD sur le meilleur standard.
     _PREMIUM_MODELS = {"claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5"}
     _PREMIUM_THRESHOLD = 10
 
