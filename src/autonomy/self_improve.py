@@ -316,61 +316,137 @@ class SelfImprover:
     
     def get_my_capabilities(self) -> str:
         """
-        Retourne un résumé des capacités de Lumena basé sur l'analyse du code.
-        Utile pour l'auto-connaissance.
+        Retourne un résumé des capacités RÉELLES de Lumena basé sur l'analyse du code.
+        Utile pour l'auto-connaissance et le marketing (site vitrine).
+
+        Compte:
+        - Modules src/ (dossiers Python)
+        - Skills (sous-dossiers de skills/ contenant SKILL.md)
+        - Handlers V2 (HandlerDef dans src/reasoning/handlers/*.py)
+        - Channels (src/channels/*.py)
+        - Providers LLM (ProviderType dans src/llm/providers.py)
+        - Tests (nombre de fichiers test_*.py)
         """
         try:
-            capabilities = {
+            capabilities: Dict[str, Any] = {
                 "modules": [],
-                "tools": [],
                 "skills": [],
-                "features": []
+                "handlers": [],
+                "channels": [],
+                "providers": [],
+                "test_files": 0,
+                "total_loc": 0,
             }
-            
-            # Compter les modules dans src/
+
+            # 1. Modules src/
             for module in self.src_dir.iterdir():
-                if module.is_dir() and not module.name.startswith("_"):
-                    py_files = list(module.glob("*.py"))
+                if module.is_dir() and not module.name.startswith("_") and module.name != "__pycache__":
+                    py_files = [f for f in module.rglob("*.py") if "__pycache__" not in str(f)]
                     if py_files:
                         capabilities["modules"].append(f"{module.name} ({len(py_files)} fichiers)")
-            
-            # Lister les skills
+
+            # 2. Skills (sous-dossiers avec SKILL.md)
             skills_dir = self.root / "skills"
             if skills_dir.exists():
-                for skill in skills_dir.iterdir():
-                    if skill.suffix in [".md", ".py"]:
-                        capabilities["skills"].append(skill.stem)
-            
-            # Chercher les tools enregistrés
-            tool_system = self.src_dir / "tools" / "tool_system.py"
-            if tool_system.exists():
-                content = tool_system.read_text(encoding='utf-8')
-                # Compter les register_tool
-                import re
-                tools = re.findall(r'register_tool\(["\'](\w+)["\']', content)
-                capabilities["tools"] = tools[:10] if len(tools) > 10 else tools
-            
+                for skill in sorted(skills_dir.iterdir()):
+                    if skill.is_dir() and not skill.name.startswith((".", "_")):
+                        skill_md = skill / "SKILL.md"
+                        if skill_md.exists() or any(skill.iterdir()):
+                            capabilities["skills"].append(skill.name)
+
+            # 3. Handlers V2 — comptage des HandlerDef dans src/reasoning/handlers/*.py
+            handlers_dir = self.src_dir / "reasoning" / "handlers"
+            handler_count_by_module: Dict[str, int] = {}
+            if handlers_dir.exists():
+                for hf in sorted(handlers_dir.glob("*.py")):
+                    if hf.name.startswith("_") or hf.name in ("context.py", "registry_v2.py", "contracts.py"):
+                        continue
+                    try:
+                        content = hf.read_text(encoding="utf-8")
+                        # HandlerDef(name="...") — pattern officiel V2
+                        matches = re.findall(r'HandlerDef\s*\(\s*name\s*=\s*["\']([\w_]+)["\']', content)
+                        if matches:
+                            handler_count_by_module[hf.stem] = len(matches)
+                            capabilities["handlers"].extend(matches)
+                    except Exception:
+                        continue
+
+            # 4. Channels
+            channels_dir = self.src_dir / "channels"
+            if channels_dir.exists():
+                for ch in channels_dir.glob("*_channel.py"):
+                    capabilities["channels"].append(ch.stem.replace("_channel", ""))
+
+            # 5. Providers LLM
+            providers_file = self.src_dir / "llm" / "providers.py"
+            if providers_file.exists():
+                try:
+                    content = providers_file.read_text(encoding="utf-8")
+                    # ProviderType.XXX = "xxx"
+                    providers = re.findall(r'^\s+([A-Z][A-Z_]+)\s*=\s*["\'][\w-]+["\']', content, re.MULTILINE)
+                    capabilities["providers"] = [p for p in providers if p not in ("API_KEY", "MODEL_ID")]
+                except Exception:
+                    pass
+
+            # 6. Tests
+            tests_dir = self.root / "tests"
+            if tests_dir.exists():
+                capabilities["test_files"] = len(list(tests_dir.rglob("test_*.py")))
+
+            # 7. Lignes de code src/
+            try:
+                total = 0
+                for py in self.src_dir.rglob("*.py"):
+                    if "__pycache__" in str(py):
+                        continue
+                    try:
+                        total += sum(1 for _ in py.open("r", encoding="utf-8", errors="ignore"))
+                    except Exception:
+                        continue
+                capabilities["total_loc"] = total
+            except Exception:
+                pass
+
             # Générer le résumé
-            result = "🧠 **MES CAPACITÉS (Auto-analyse)**\n\n"
-            
+            total_handlers = len(capabilities["handlers"])
+            result = "🧠 **MES CAPACITÉS RÉELLES (Auto-analyse)**\n\n"
+
+            result += f"**📊 Vue d'ensemble:**\n"
+            result += f"  - {len(capabilities['modules'])} modules src/\n"
+            result += f"  - {total_handlers} handlers V2 (outils ReAct)\n"
+            result += f"  - {len(capabilities['skills'])} skills chargeables\n"
+            result += f"  - {len(capabilities['channels'])} canaux (web, telegram, discord, whatsapp, twitter, voice...)\n"
+            result += f"  - {len(capabilities['providers'])} providers LLM\n"
+            result += f"  - {capabilities['test_files']} fichiers de tests\n"
+            result += f"  - {capabilities['total_loc']:,} lignes de code Python\n\n"
+
             result += f"**📦 Modules ({len(capabilities['modules'])}):**\n"
             for m in capabilities["modules"]:
                 result += f"  - {m}\n"
-            
+
+            if handler_count_by_module:
+                result += f"\n**🔧 Handlers V2 par domaine (total: {total_handlers}):**\n"
+                for mod, count in sorted(handler_count_by_module.items(), key=lambda x: -x[1]):
+                    result += f"  - {mod}: {count} outils\n"
+
             result += f"\n**🎯 Skills ({len(capabilities['skills'])}):**\n"
             for s in capabilities["skills"]:
                 result += f"  - {s}\n"
-            
-            result += f"\n**🔧 Outils ({len(capabilities['tools'])}):**\n"
-            for t in capabilities["tools"]:
-                result += f"  - {t}\n"
-            if len(capabilities["tools"]) == 10:
-                result += "  - ... et plus\n"
-            
-            result += "\n💡 Utilise `read_own_code('module_name/')` pour explorer un module en détail."
-            
+
+            if capabilities["channels"]:
+                result += f"\n**📡 Canaux ({len(capabilities['channels'])}):**\n"
+                for c in capabilities["channels"]:
+                    result += f"  - {c}\n"
+
+            if capabilities["providers"]:
+                result += f"\n**🤖 Providers LLM ({len(capabilities['providers'])}):**\n"
+                for p in capabilities["providers"]:
+                    result += f"  - {p}\n"
+
+            result += "\n💡 Chiffres exacts à jour — utilisables pour le site vitrine / marketing."
+
             return result
-            
+
         except Exception as e:
             return f"❌ Erreur analyse capacités: {e}"
     
