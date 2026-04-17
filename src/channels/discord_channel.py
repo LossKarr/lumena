@@ -235,6 +235,23 @@ class DiscordChannel(BaseChannel):
                 if attachment_prefix:
                     content = f"{attachment_prefix}\n{content}".strip() if content else attachment_prefix
 
+                # Si des images sont reçues, ajouter l'instruction d'édition si pertinent
+                if image_paths:
+                    from .base import _is_image_edit_request
+                    _user_text = message.content or ""
+                    if is_mention:
+                        _user_text = _user_text.replace(f"<@{self._bot.user.id}>", "").strip()
+                    if has_prefix:
+                        _user_text = _user_text[len(self.prefix):].strip()
+                    if _is_image_edit_request(_user_text):
+                        _paths_str = ", ".join(image_paths)
+                        content += (
+                            f"\n\n⚠️ L'utilisateur veut MODIFIER cette image, PAS juste la décrire.\n"
+                            f"Utilise les outils d'édition/génération d'image disponibles "
+                            f"(edit_image, remove_background, upscale_image, etc.) avec le(s) fichier(s): {_paths_str}\n"
+                            f"NE TE CONTENTE PAS de décrire l'image."
+                        )
+
                 # ── Vérification admin Lumena ──────────────────────────────────
                 is_admin = await self._is_discord_admin(message)
 

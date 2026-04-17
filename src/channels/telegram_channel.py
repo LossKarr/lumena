@@ -718,22 +718,8 @@ Sois précis et concis."""
                 image_description = "[Module Vision non disponible]"
             
             # Step 2: Build message for Lumena's brain
-            if caption:
-                # User sent a message with the image
-                combined_message = f"""[📷 L'utilisateur a envoyé une image avec ce message: "{caption}"]
-
-📸 Description de l'image:
-{image_description}
-
-Réponds à la demande de l'utilisateur en tenant compte de l'image ci-dessus."""
-            else:
-                # No caption, just describe/analyze the image
-                combined_message = f"""[📷 L'utilisateur a envoyé une image sans message]
-
-📸 Description de l'image:
-{image_description}
-
-Décris ce que tu vois et si tu as des observations ou commentaires utiles, partage-les."""
+            from .base import build_image_combined_message
+            combined_message = build_image_combined_message(caption, image_description, str(save_path))
             
             # Step 3: Create ChannelMessage and pass to Lumena's brain
             channel_msg = ChannelMessage(

@@ -908,6 +908,12 @@ async def ensure_n8n_running() -> str:
         return f"Erreur redémarrage n8n: {out}"
 
     # Container inexistant → créer
+    # D'abord pull l'image (peut prendre plusieurs minutes la première fois)
+    logger.info("[N8N] Pull de l'image n8n (première fois = 2-5 min)...")
+    rc_pull, out_pull = await _run_cmd("docker", "pull", _N8N_IMAGE, timeout=300.0)
+    if rc_pull != 0:
+        logger.warning(f"[N8N] Pull échoué (rc={rc_pull}): {out_pull[:200]} — tentative de run quand même")
+
     logger.info("[N8N] Création du container n8n...")
     rc, out = await _run_cmd(
         "docker", "run", "-d",

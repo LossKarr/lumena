@@ -680,6 +680,46 @@ class AgentService:
 
         return ""
 
+    # ── BLOCKER D: Auto-dispatch images for Telegram/WhatsApp channels ────
+
+    _IMAGE_PATH_RE = None
+
+    async def _dispatch_generated_images(
+        self, response: str, source_channel: str, sender: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Détecte les chemins d'images générées dans la réponse ReAct et les envoie sur le canal."""
+        if source_channel not in ("telegram", "whatsapp") or not response:
+            return
+        import re
+        if AgentService._IMAGE_PATH_RE is None:
+            AgentService._IMAGE_PATH_RE = re.compile(
+                r'(?:Fichier|File|chemin|path)[:\s]+([^\n]+\.(?:png|jpg|jpeg|webp|gif|svg))',
+                re.IGNORECASE,
+            )
+        matches = AgentService._IMAGE_PATH_RE.findall(response)
+        if not matches:
+            return
+        chat_id = (sender or {}).get("chat_id", "")
+        if not chat_id:
+            return
+        for raw_path in matches:
+            p = Path(raw_path.strip())
+            if not p.exists():
+                continue
+            try:
+                if source_channel == "telegram":
+                    from src.channels.telegram_channel import TelegramChannel
+                    tg = TelegramChannel.get_instance() if hasattr(TelegramChannel, 'get_instance') else None
+                    if tg:
+                        await tg.send_photo(str(p), chat_id)
+                elif source_channel == "whatsapp":
+                    from src.channels.whatsapp_channel import WhatsAppChannel
+                    wa = WhatsAppChannel.get_instance() if hasattr(WhatsAppChannel, 'get_instance') else None
+                    if wa:
+                        await wa.send_photo(str(p), chat_id)
+            except Exception as e:
+                logger.warning(f"Auto-dispatch image {source_channel} failed: {e}")
+
     async def _save_conversation_to_memory(self, user_message: str, response: str):
         """Sauvegarde la conversation en mémoire persistante ChromaDB."""
         if not self.core.memory:
@@ -1402,6 +1442,8 @@ Conversations et apprentissages de la journée.
                 yield _text
                 if _fmarker:
                     yield _fmarker
+                # BLOCKER D: Auto-dispatch images pour Telegram/WhatsApp
+                await self._dispatch_generated_images(full_response, source_channel, sender)
         else:
             active_context.add_message("user", user_message)
 
@@ -1551,6 +1593,8 @@ Conversations et apprentissages de la journée.
                 yield word + (" " if i < len(words) - 1 else "")
             if _fmarker:
                 yield _fmarker
+            # BLOCKER D: Auto-dispatch images pour Telegram/WhatsApp
+            await self._dispatch_generated_images(full_response, source_channel, sender)
 
         if _discord_user_id and _discord_channel_id:
             profile = c._discord_users.get(_discord_user_id, {})

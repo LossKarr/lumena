@@ -41,6 +41,13 @@ class ProviderType(Enum):
     XAI = "xai"
     NVIDIA = "nvidia"
     MINIMAX = "minimax"
+    # Image generation providers
+    STABILITY = "stability"
+    FLUX = "flux"
+    IDEOGRAM = "ideogram"
+    RECRAFT = "recraft"
+    REPLICATE = "replicate"
+    HUGGINGFACE = "huggingface"
 
 
 @dataclass
@@ -1170,6 +1177,13 @@ def check_api_key(provider: ProviderType) -> bool:
         ProviderType.XAI: "XAI_API_KEY",
         ProviderType.NVIDIA: "NVIDIA_API_KEY",
         ProviderType.MINIMAX: "MINIMAX_API_KEY",
+        # Image generation providers
+        ProviderType.STABILITY: "STABILITY_API_KEY",
+        ProviderType.FLUX: "BFL_API_KEY",
+        ProviderType.IDEOGRAM: "IDEOGRAM_API_KEY",
+        ProviderType.RECRAFT: "RECRAFT_API_KEY",
+        ProviderType.REPLICATE: "REPLICATE_API_TOKEN",
+        ProviderType.HUGGINGFACE: "HUGGINGFACE_TOKEN",
     }
     
     if provider == ProviderType.OLLAMA:
@@ -1192,6 +1206,13 @@ def get_api_key(provider: ProviderType) -> Optional[str]:
         ProviderType.XAI: "XAI_API_KEY",
         ProviderType.NVIDIA: "NVIDIA_API_KEY",
         ProviderType.MINIMAX: "MINIMAX_API_KEY",
+        # Image generation providers
+        ProviderType.STABILITY: "STABILITY_API_KEY",
+        ProviderType.FLUX: "BFL_API_KEY",
+        ProviderType.IDEOGRAM: "IDEOGRAM_API_KEY",
+        ProviderType.RECRAFT: "RECRAFT_API_KEY",
+        ProviderType.REPLICATE: "REPLICATE_API_TOKEN",
+        ProviderType.HUGGINGFACE: "HUGGINGFACE_TOKEN",
     }
     
     env_var = env_vars.get(provider)

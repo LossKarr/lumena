@@ -1127,10 +1127,37 @@ async def lifespan(app: FastAPI):
                     _svc = get_stripe_cli_service()
                     if not _svc.is_installed():
                         # Auto-install Stripe CLI si absente
-                        import sys, subprocess as _sp
+                        import sys, shutil, subprocess as _sp
                         print("[STRIPE] CLI non trouvee — tentative d'installation automatique...")
                         if sys.platform == "win32":
-                            _sp.run(["winget", "install", "--id", "Stripe.StripeCLI", "--accept-source-agreements", "--accept-package-agreements", "--silent"], capture_output=True, timeout=120)
+                            # Essayer winget d'abord (Windows 10/11)
+                            _winget_ok = _sp.run(["winget", "install", "--id", "Stripe.StripeCLI", "--accept-source-agreements", "--accept-package-agreements", "--silent"], capture_output=True, timeout=120).returncode == 0 if shutil.which("winget") else False
+                            if not _winget_ok:
+                                # Fallback: télécharger le zip depuis GitHub (Windows Server)
+                                import zipfile, tempfile
+                                _stripe_dir = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "Stripe"
+                                _stripe_dir.mkdir(parents=True, exist_ok=True)
+                                _stripe_zip = Path(tempfile.gettempdir()) / "stripe_cli.zip"
+                                print("[STRIPE] Telechargement depuis GitHub...")
+                                try:
+                                    import httpx
+                                    # Résoudre la dernière version via la redirection GitHub
+                                    _resp = httpx.head("https://github.com/stripe/stripe-cli/releases/latest", follow_redirects=True, timeout=30)
+                                    _ver = str(_resp.url).rstrip("/").split("/")[-1]  # ex: v1.40.6
+                                    _zip_url = f"https://github.com/stripe/stripe-cli/releases/download/{_ver}/stripe_{_ver.lstrip('v')}_windows_x86_64.zip"
+                                    print(f"[STRIPE] Version: {_ver} -> {_zip_url}")
+                                    _dl = httpx.get(_zip_url, follow_redirects=True, timeout=120)
+                                    if _dl.status_code != 200:
+                                        raise RuntimeError(f"HTTP {_dl.status_code}")
+                                    _stripe_zip.write_bytes(_dl.content)
+                                    with zipfile.ZipFile(_stripe_zip) as zf:
+                                        zf.extractall(_stripe_dir)
+                                    _stripe_zip.unlink(missing_ok=True)
+                                    # Ajouter au PATH de cette session
+                                    os.environ["PATH"] = str(_stripe_dir) + os.pathsep + os.environ.get("PATH", "")
+                                    print(f"[STRIPE] CLI extraite dans {_stripe_dir}")
+                                except Exception as _e:
+                                    print(f"[STRIPE] Echec telechargement: {_e}")
                         else:
                             _sp.run(["bash", "-c", "curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null && echo 'deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main' | sudo tee /etc/apt/sources.list.d/stripe.list && sudo apt-get update -qq && sudo apt-get install -y stripe"], capture_output=True, timeout=120)
                     if _svc.is_installed() or _svc.find_cli():

@@ -74,6 +74,10 @@ class StripeCLIService:
         local_app = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "stripe.exe"
         if local_app.exists():
             return str(local_app)
+        # Auto-install via zip (fallback Windows Server)
+        local_stripe = Path(os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))) / "Stripe" / "stripe.exe"
+        if local_stripe.exists():
+            return str(local_stripe)
         return None
 
     @staticmethod

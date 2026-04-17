@@ -233,6 +233,17 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     "list_website_projects": ["list", "projet", "site", "website"],
     # Vidéo Remotion
     "generate_video": ["vidéo", "video", "clip", "reel", "short", "tiktok", "animation", "motion", "présentation", "pub", "publicité", "trailer", "intro", "outro", "explainer"],
+    # Génération / édition d'images
+    "generate_image": ["image", "photo", "illustration", "dessin", "picture", "genere", "crée", "cree", "créer", "imagin", "visualis", "affiche", "poster", "visuel", "graphi", "render", "génère", "génér", "génération", "ai image"],
+    "edit_image": ["modif", "edit", "retouche", "inpaint", "remplac", "efface", "supprim", "image", "photo"],
+    "generate_thumbnail": ["miniature", "thumbnail", "vignette", "youtube", "ctr"],
+    "generate_logo": ["logo", "marque", "brand", "icône", "icone", "identité"],
+    "upscale_image": ["agrand", "upscale", "résolution", "resolution", "zoom", "amélio", "amelio", "quality"],
+    "remove_background": ["fond", "background", "supprim", "transparent", "détour", "detour"],
+    "replace_background": ["fond", "background", "remplac", "changer le fond"],
+    "sketch_to_image": ["croquis", "sketch", "dessin", "transform", "réalis", "realis"],
+    "generate_svg": ["svg", "vectoriel", "vector", "scalable"],
+    "list_image_models": ["modèle", "modele", "model", "image", "provider", "list", "disponible"],
     "edit_video": ["modif", "edit", "chang", "vidéo", "video", "scène", "scene", "animation", "couleur", "texte"],
     "preview_video": ["preview", "prévisual", "previsual", "aperçu", "apercu", "vidéo", "video"],
     "list_video_projects": ["list", "projet", "vidéo", "video", "remotion"],

@@ -434,18 +434,8 @@ class WhatsAppChannel(BaseChannel):
 
         image_description = await self._analyze_image(save_path)
 
-        if caption:
-            combined_message = (
-                f'[📷 L\'utilisateur a envoyé une image avec ce message: "{caption}"]\n\n'
-                f"📸 Description de l'image:\n{image_description}\n\n"
-                f"Réponds à la demande de l'utilisateur en tenant compte de l'image ci-dessus."
-            )
-        else:
-            combined_message = (
-                f"[📷 L'utilisateur a envoyé une image sans message]\n\n"
-                f"📸 Description de l'image:\n{image_description}\n\n"
-                f"Décris ce que tu vois et si tu as des observations ou commentaires utiles, partage-les."
-            )
+        from .base import build_image_combined_message
+        combined_message = build_image_combined_message(caption, image_description, str(save_path))
 
         channel_msg = ChannelMessage(
             content=combined_message,

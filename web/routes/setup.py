@@ -357,8 +357,8 @@ async def setup_schema():
             "LUMENA_BRAIN_IMAGE_GEN": {
                 "icon": "image",
                 "desc": "Génération d'images à partir de descriptions textuelles",
-                "top": ["dall-e-3"],
-                "top_free": [],
+                "top": ["gpt-image-1.5", "flux-2-pro", "ideogram-v3-quality", "stable-image-ultra", "gemini-3.1-flash-image"],
+                "top_free": ["gemini-3.1-flash-image", "gemini-2.5-flash-image", "huggingface-sdxl"],
             },
         },
     })

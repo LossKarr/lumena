@@ -39,6 +39,7 @@ SCREENSHOTS_DIR: Path = DATA_DIR / "screenshots"
 BROWSER_PROFILES_DIR: Path = DATA_DIR / "browser_profiles"
 BROWSER_TRACES_DIR: Path = DATA_DIR / "browser_traces"
 RECEIVED_IMAGES_DIR: Path = DATA_DIR / "received_images"
+GENERATED_IMAGES_DIR: Path = Path(os.getenv("LUMENA_GENERATED_IMAGES_DIR", str(WORKSPACE_DIR / "images")))
 RECEIVED_DOCS_DIR: Path = Path(os.getenv("LUMENA_UPLOADS_DIR", str(DATA_DIR / "received_documents")))
 CUSTOM_HANDLERS_DIR: Path = DATA_DIR / "custom_handlers"
 CODE_INDEX_DIR: Path = DATA_DIR / "code_index"
@@ -123,6 +124,7 @@ _CRITICAL_DIRS: tuple[Path, ...] = (
     ALERTS_DIR,
     MAIL_DIR,
     RECEIVED_IMAGES_DIR,
+    GENERATED_IMAGES_DIR,
     RECEIVED_DOCS_DIR,
     TRAINING_VALIDATED_DIR,
     FINETUNED_MODELS_DIR,

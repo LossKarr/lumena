@@ -43,6 +43,8 @@ _PUBLIC_ROUTES = frozenset({
     "WEBSOCKET /ws/emotion",
     # IONOS — read-only site list (no credentials exposed)
     "GET /api/ionos/sites",
+    # Workspace file serving — needed for inline image rendering in chat UI
+    "GET /api/files/workspace/{file_path:path}",
 })
 
 

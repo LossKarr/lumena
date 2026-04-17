@@ -158,6 +158,7 @@ class ToolRegistry:
             (".handlers.n8n",            "get_n8n_handler_defs",           "automation"),
             (".handlers.remotion",       "get_video_handler_defs",         "video"),
             (".handlers.ionos",          "get_ionos_handler_defs",         "ionos"),
+            (".handlers.image_gen",     "get_image_gen_handler_defs",     "image"),
         ]
 
         import importlib

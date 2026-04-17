@@ -474,6 +474,22 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 </div>
 
 <div class="doc-cap-card">
+  <h4>Génération d'images</h4>
+  <ul>
+    <li>11 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax</li>
+    <li>37 modèles — de gratuits (Gemini Flash, HuggingFace SDXL) à ultra (Flux 2 Max, Imagen 4 Ultra)</li>
+    <li>13 handlers ReAct : generate, edit (inpaint/outpaint/erase), compose (multi-images), thumbnail, thumbnail-pro (pipeline LLM), headlines, logo, upscale, remove/replace background, sketch-to-image, SVG vectoriel</li>
+    <li>Mode <code>auto</code> : sélection automatique du meilleur modèle disponible (fallback par tier de qualité Q10→Q5)</li>
+    <li>8 templates de prompt : <code>photo</code>, <code>illustration</code>, <code>3d_render</code>, <code>pixel_art</code>, <code>watercolor</code>, <code>anime</code>, <code>logo</code>, <code>icon</code></li>
+    <li>Édition avancée : inpainting (masque), outpainting (extension), search-and-replace, erase object</li>
+    <li>Upscale 2×/4× (modes fast, conservative, creative) via Stability AI</li>
+    <li>SVG natif via Recraft V4 — export vectoriel vrai</li>
+    <li>API : <code>POST /api/images/generate</code> + <code>GET /api/images/models</code></li>
+    <li>Config : <code>LUMENA_BRAIN_IMAGE_GEN</code>, <code>LUMENA_IMAGE_DEFAULT_SIZE</code>, <code>LUMENA_IMAGE_DEFAULT_QUALITY</code></li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
   <h4>Vidéo & Multimédia</h4>
   <ul>
     <li>Génération vidéo programmatique avec <strong>Remotion</strong> (React TSX → MP4/WebM)</li>
@@ -686,7 +702,7 @@ ou installés depuis un fichier YAML. Actuellement <strong>{skills_count} skills
 <tr><td>Ops / Automation</td><td>5</td><td>deploy, backup, cron</td></tr>
 <tr><td>Documents</td><td>4</td><td>facture, contrat, rapport</td></tr>
 <tr><td>Communication</td><td>3</td><td>email, notification, briefing</td></tr>
-<tr><td>Création</td><td>3</td><td>image, music, 3D</td></tr>
+<tr><td>Création</td><td>3</td><td>image (11 providers, 37 modèles), music, 3D</td></tr>
 </tbody>
 </table>
 

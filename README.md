@@ -11,7 +11,7 @@ Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore se
 
 ## Qu'est-ce que Lumena
 
-Lumena est une plateforme d'agent IA qui combine un **raisonnement ReAct** (Think → Act → Observe), **451 outils** intégrés, une **mémoire vectorielle** persistante (ChromaDB), et un **contrôle complet du PC** (clavier, souris, navigateur, apps).
+Lumena est une plateforme d'agent IA qui combine un **raisonnement ReAct** (Think → Act → Observe), **479 outils** intégrés, une **mémoire vectorielle** persistante (ChromaDB), et un **contrôle complet du PC** (clavier, souris, navigateur, apps).
 
 Ce n'est pas un wrapper API. C'est un agent qui planifie, exécute, vérifie, et corrige ses propres erreurs.
 
@@ -21,8 +21,9 @@ Ce n'est pas un wrapper API. C'est un agent qui planifie, exécute, vérifie, et
 |---|---|
 | **LLM** | 9 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Moonshot, xAI, NVIDIA, MINIMAX — 46 modèles |
 | **Raisonnement** | Boucle ReAct avec plan auto, 8 types de sub-agents (code, research, debug, refactor, browser, planner, file, orchestrator), anti-hallucination |
-| **Outils** | 451 handlers V2 dans 33 modules : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, Stripe, n8n, IDE |
+| **Outils** | 479 handlers V2 dans 34 modules : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE |
 | **Documents** | 36 handlers, 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
+| **Images** | 11 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax), 37 modèles, 13 handlers (generate, edit, compose, thumbnail, thumbnail-pro, headlines, upscale, logo, SVG, remove/replace background, sketch-to-image) |
 | **Mémoire** | 4 niveaux : session, ChromaDB vectorielle, Knowledge Graph, BM25 — embedding cache, file watcher |
 | **Autonomie** | Scheduler CRON, goals auto-évalués, curiosité, self_improve, cycle quotidien de skills |
 | **Computer Use** | Cascade native CU (Anthropic→OpenAI→Google→fallback), pywinauto, vision (Gemini→Claude→Ollama→OCR) |
@@ -135,9 +136,10 @@ src/
 │   ├── tool_registry.py    # ToolRegistry complet (1 243L)
 │   ├── response_parser.py  # Parsing ReAct pur (292L)
 │   ├── prompt_builder.py   # Heuristiques statiques (177L)
-│   └── handlers/           # 33 modules, 451 outils V2
+│   └── handlers/           # 34 modules, 479 outils V2
 │       ├── browser.py      # Playwright stealth v2 (52 handlers)
 │       ├── documents.py    # 36 handlers PDF/DOCX (factures, contrats…)
+│       ├── image_gen.py    # 13 handlers génération d'images (11 providers, 37 modèles)
 │       ├── ide.py          # 33 handlers IDE bridge
 │       ├── stripe_api.py   # 33 handlers Stripe
 │       ├── computer_use.py # 28 handlers CU
@@ -165,6 +167,8 @@ src/
 │   └── cu_agent_loop.py    # Boucle screenshot → LLM → action (1 023L)
 ├── agents/
 │   └── sub_agent.py        # 8 types d'agents, 12 actions (3 856L)
+├── services/
+│   └── image_gen.py        # 11 providers image, 37 modèles, fallback auto (1 564L)
 ├── training/               # Pipeline fine-tuning LoRA → GGUF → Ollama
 ├── perception/             # Lecture documents, knowledge extraction
 ├── voice/                  # STT (Whisper) + TTS (Coqui XTTS / Piper)

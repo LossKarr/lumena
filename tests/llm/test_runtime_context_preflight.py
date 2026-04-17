@@ -78,7 +78,10 @@ class TestGetDefaultModelForProvider:
         assert m is None
 
     def test_all_providers_have_models(self):
+        _IMAGE_ONLY_PROVIDERS = {"stability", "flux", "ideogram", "recraft", "replicate", "huggingface"}
         for pt in ProviderType:
+            if pt.value in _IMAGE_ONLY_PROVIDERS:
+                continue  # image-generation-only providers, no LLM models
             m = get_default_model_for_provider(pt.value)
             assert m is not None, f"No model for provider {pt.value}"
 

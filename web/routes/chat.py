@@ -1166,6 +1166,10 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
                 _fp = _edit.get("workspace_relative") or _edit.get("file_path", "")
                 _nm = _fp.rsplit("/", 1)[-1] if "/" in _fp else _fp.rsplit("\\", 1)[-1] if "\\" in _fp else _fp
                 _doc: Dict[str, Any] = {"name": _nm, "path": _fp}
+                _ext = _nm.rsplit(".", 1)[-1].lower() if "." in _nm else ""
+                if _ext in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
+                    _doc["url"] = f"/api/files/workspace/{_fp}"
+                    _doc["type"] = "image"
                 _ct = _edit.get("after_content")
                 if _ct and len(_ct) <= 3000:
                     _doc["content"] = _ct
@@ -1883,6 +1887,10 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                     fp = edit.get("workspace_relative") or edit.get("file_path", "")
                     name = fp.rsplit("/", 1)[-1] if "/" in fp else fp.rsplit("\\", 1)[-1] if "\\" in fp else fp
                     doc: Dict[str, Any] = {"name": name, "path": fp}
+                    ext_ = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+                    if ext_ in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
+                        doc["url"] = f"/api/files/workspace/{fp}"
+                        doc["type"] = "image"
                     content = edit.get("after_content")
                     if content and len(content) <= 3000:
                         doc["content"] = content
