@@ -1125,14 +1125,22 @@ async def lifespan(app: FastAPI):
                 if stripe_key and stripe_cli_auto:
                     from src.services.stripe_cli import get_stripe_cli_service
                     _svc = get_stripe_cli_service()
-                    if _svc.is_installed():
+                    if not _svc.is_installed():
+                        # Auto-install Stripe CLI si absente
+                        import sys, subprocess as _sp
+                        print("[STRIPE] CLI non trouvee — tentative d'installation automatique...")
+                        if sys.platform == "win32":
+                            _sp.run(["winget", "install", "--id", "Stripe.StripeCLI", "--accept-source-agreements", "--accept-package-agreements", "--silent"], capture_output=True, timeout=120)
+                        else:
+                            _sp.run(["bash", "-c", "curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null && echo 'deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main' | sudo tee /etc/apt/sources.list.d/stripe.list && sudo apt-get update -qq && sudo apt-get install -y stripe"], capture_output=True, timeout=120)
+                    if _svc.is_installed() or _svc.find_cli():
                         _started = await _svc.start()
                         if _started:
                             print(f"[STRIPE] CLI demarree — webhooks -> {_svc.forward_url}")
                         else:
                             print("[STRIPE] CLI installee mais demarrage echoue (stripe login requis ?)")
                     else:
-                        print("[STRIPE] CLI non trouvee — webhooks locaux desactives")
+                        print("[STRIPE] CLI non trouvee apres tentative d'install — webhooks locaux desactives")
                 elif stripe_key and not stripe_cli_auto:
                     print("[STRIPE] CLI auto-start desactive (STRIPE_CLI_AUTO=0)")
             except Exception as e:

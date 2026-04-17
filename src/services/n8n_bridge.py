@@ -850,7 +850,7 @@ _N8N_IMAGE = "n8nio/n8n:latest"
 _N8N_PORT = 5678
 
 
-async def _run_cmd(*args: str, timeout: float = 10.0) -> tuple[int, str]:
+async def _run_cmd(*args: str, timeout: float = 60.0) -> tuple[int, str]:
     """Exécute une commande système et retourne (returncode, stdout)."""
     import asyncio
     proc = await asyncio.create_subprocess_exec(

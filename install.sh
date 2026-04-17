@@ -89,6 +89,22 @@ fi
 echo "[..] Installation du navigateur automatisé (Chromium)..."
 python -m playwright install chromium 2>/dev/null && ok "Navigateur installé" || warn "Playwright non installé — navigation web limitée"
 
+# === 5b. Stripe CLI ===
+if command -v stripe &>/dev/null; then
+    ok "Stripe CLI détectée"
+else
+    info "Installation de Stripe CLI..."
+    if command -v brew &>/dev/null; then
+        brew install stripe/stripe-cli/stripe 2>/dev/null && ok "Stripe CLI installée (brew)" || warn "Stripe CLI non installée — webhooks locaux désactivés"
+    elif command -v apt-get &>/dev/null; then
+        curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor 2>/dev/null | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null 2>&1
+        echo "deb [signed-by=/usr/share/keyrings/stripe.gpg] https://packages.stripe.dev/stripe-cli-debian-local stable main" | sudo tee /etc/apt/sources.list.d/stripe.list >/dev/null 2>&1
+        sudo apt-get update -qq 2>/dev/null && sudo apt-get install -y stripe 2>/dev/null && ok "Stripe CLI installée (apt)" || warn "Stripe CLI non installée — webhooks locaux désactivés"
+    else
+        warn "Stripe CLI non installée — installez manuellement: https://docs.stripe.com/stripe-cli"
+    fi
+fi
+
 # === 6. .env ===
 if [ ! -f ".env" ]; then
     if [ -f ".env.example" ]; then

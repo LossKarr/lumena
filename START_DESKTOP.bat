@@ -11,6 +11,9 @@ setlocal EnableExtensions EnableDelayedExpansion
 title LUMENA Desktop
 cd /d "%~dp0"
 
+REM === Desactive QuickEdit (empeche le freeze console au clic) ===
+reg add HKCU\Console /v QuickEdit /t REG_DWORD /d 0 /f >nul 2>&1
+
 echo.
 echo  ================================================================
 echo      L U M E N A   —   Mode Desktop

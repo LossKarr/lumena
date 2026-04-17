@@ -10,6 +10,9 @@ chcp 65001 >nul 2>&1
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
+REM === Desactive QuickEdit (empeche le freeze console au clic) ===
+reg add HKCU\Console /v QuickEdit /t REG_DWORD /d 0 /f >nul 2>&1
+
 echo.
 echo  ================================================================
 echo      L U M E N A  -  Installation
@@ -160,7 +163,23 @@ if errorlevel 1 (
     echo [OK] Navigateur installe
 )
 
-REM === 5b. Docker Sandbox (optionnel) ===
+REM === 5b. Stripe CLI ===
+where stripe >nul 2>&1
+if errorlevel 1 (
+    echo [..] Installation de Stripe CLI...
+    powershell -Command "winget install --id Stripe.StripeCLI --accept-source-agreements --accept-package-agreements --silent" >nul 2>&1
+    where stripe >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] Stripe CLI non installee - webhooks locaux desactives
+        echo        Installez manuellement : winget install Stripe.StripeCLI
+    ) else (
+        echo [OK] Stripe CLI installee
+    )
+) else (
+    echo [OK] Stripe CLI detectee
+)
+
+REM === 5c. Docker Sandbox (optionnel) ===
 where docker >nul 2>&1
 if not errorlevel 1 (
     docker info >nul 2>&1
