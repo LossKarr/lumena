@@ -85,6 +85,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Nombre max de caractères conservés par observation dans l'historique ReAct. Plus haut = plus de contexte, plus de tokens consommés."},
     {"key": "LUMENA_MAX_REACT_ITERATIONS", "label": "Max itérations ReAct", "group": "LLM", "type": "number", "default": "25", "min": 1, "max": 100,
      "hint": "Nombre maximum de cycles THOUGHT→ACTION→OBSERVATION avant arrêt forcé. 25 convient pour la majorité des tâches."},
+    {"key": "LUMENA_MIN_REACT_ITERATIONS", "label": "Min itérations ReAct", "group": "LLM", "type": "number", "default": "8", "min": 1, "max": 50,
+     "hint": "Plancher garanti d'itérations. Empêche les boucles trop courtes même si un appel interne réduit le max."},
     {"key": "LUMENA_REACT_TIMEOUT", "label": "Timeout global ReAct (sec)", "group": "LLM", "type": "number", "default": "3600", "min": 60, "max": 86400,
      "hint": "Durée max d'une boucle ReAct complète en secondes. 3600 = 1 heure. Protège contre les tâches infinies."},
     {"key": "LUMENA_TASK_STEP_TIMEOUT_SEC", "label": "Timeout étape externe (0=off)", "group": "LLM", "type": "number", "default": "0", "min": 0, "max": 3600,

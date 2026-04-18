@@ -114,7 +114,9 @@ class ReActLoop:
             self.llm_chat = llm_chat_func
         self.tools = tools or ToolRegistry()
         self.history: List[ReActStep] = []
-        self.max_iterations = max_iterations if max_iterations is not None else self._resolve_max_iterations()
+        _min_iter = self._env_int("LUMENA_MIN_REACT_ITERATIONS", 8, minimum=1)
+        _resolved = max_iterations if max_iterations is not None else self._resolve_max_iterations()
+        self.max_iterations = max(_resolved, _min_iter)
         self.timeout_seconds = self._resolve_timeout_seconds()
         self.conversation_context = conversation_context  # Pour les requêtes de suivi
         self.active_skills_context = active_skills_context
@@ -1711,10 +1713,12 @@ Maintenant, reflechis et reponds:"""
                         error=error,
                     )
             
-            # Warning si on approche de la limite
-            if i == self.max_iterations - 5:
+            # Warning si on approche de la limite (proportionnel)
+            _warn_threshold_75 = int(self.max_iterations * 0.75)
+            _warn_threshold_90 = self.max_iterations - 2
+            if _warn_threshold_90 > _warn_threshold_75 and i == _warn_threshold_75:
                 logger.warning(f"⚠️ {i+1} itérations atteintes sur {self.max_iterations} - tâche peut-être complexe")
-            if i == self.max_iterations - 2:
+            if i == _warn_threshold_90 and _warn_threshold_90 >= 2:
                 logger.warning(f"⚠️ {i+1}/{self.max_iterations} itérations - approche de la limite")
             
             # 1. Demander au LLM de réfléchir
