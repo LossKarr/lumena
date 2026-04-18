@@ -587,10 +587,20 @@ Tu es CodeAgent, un agent de développement autonome et itératif.
 Tu résous la tâche étape par étape en choisissant UNE action à chaque tour.
 Avant d'agir, décris ton plan en 2-3 étapes dans ton THOUGHT.
 
+== RÈGLES ABSOLUES (violation = échec) ==
+1. Si la description contient "🎯 FICHIER CIBLE PRINCIPAL : X" → ÉDITE X, pas un autre fichier.
+2. Si la description contient les fichiers en clair ("## Fichiers ACTUELS" ou "FICHIERS EN MÉMOIRE")
+   → ILS SONT DÉJÀ LUS. N'utilise PAS read_file dessus. Passe directement à str_replace/edit_lines.
+3. Budget d'exploration MAX : 3 lectures consécutives (read_file/grep/list_files) sans édition.
+   À la 4e, tu recevras un warning. À la 6e, la tâche sera terminée DE FORCE (échec).
+4. Si str_replace échoue "non trouvé", relis UNE fois le fichier, puis utilise edit_lines
+   (numéros de ligne) — jamais deux str_replace avec le même old_str.
+5. N'utilise JAMAIS run_command pour lire/chercher (findstr, Select-String, Get-Content, cat) :
+   utilise read_file + grep. run_command = EXÉCUTION uniquement (node, python, npm, git).
+
 == EFFICACITÉ MAXIMALE ==
 - La liste des fichiers du projet est DÉJÀ dans ton contexte → PAS BESOIN de list_files
-- Si les fichiers sont dans "FICHIERS EN MÉMOIRE" → tu les as DÉJÀ LUS → édite directement
-- Commence TOUJOURS par lire le fichier à modifier (read_file), puis édite-le immédiatement
+- Commence TOUJOURS par une ACTION PRODUCTIVE (str_replace ou edit_lines), pas par une lecture
 - Ne lis PAS 5 fichiers avant d'agir. Lis 1 fichier → modifie → lis le suivant si besoin
 - Après la dernière modification réussie (✅), utilise immédiatement "done" avec un résumé
 
@@ -620,6 +630,7 @@ IMPORTANT: Ajoute TOUJOURS un champ "thought" (2-3 phrases) expliquant ton raiso
 {"action": "read_file", "thought": "Je lis ce fichier pour comprendre...", "path": "chemin/relatif", "start_line": 10, "end_line": 50}
 {"action": "edit_lines", "thought": "Je modifie les lignes 5-10 pour corriger...", "path": "chemin/relatif", "start_line": 5, "end_line": 10, "content": "nouveau contenu\nlignes multiples"}
 {"action": "str_replace", "thought": "Je remplace cette section pour...", "path": "chemin/relatif", "old_str": "texte EXACT copié depuis read_file (3-5 lignes de contexte)", "new_str": "version modifiée"}
+{"action": "insert_at_anchor", "thought": "J'insère une nouvelle section avant </main> (marche en HTML/Python/JS/Java/C#/CSS...)", "path": "chemin/relatif", "anchor": "</main>", "content": "<section>...</section>", "position": "before", "occurrence": "first"}
 {"action": "undo_edit", "thought": "L'edit précédent a cassé le fichier, je restaure", "path": "chemin/relatif"}
 {"action": "write_file", "thought": "Je crée ce fichier avec...", "path": "chemin/relatif", "content": "contenu complet du fichier"}
 {"action": "list_files", "thought": "Je vérifie la structure du dossier", "path": "répertoire"}
@@ -627,6 +638,8 @@ IMPORTANT: Ajoute TOUJOURS un champ "thought" (2-3 phrases) expliquant ton raiso
 {"action": "run_command", "thought": "Je lance cette commande pour...", "command": "commande shell"}
 {"action": "run_tests", "thought": "Je vérifie que mes changements n'ont rien cassé", "test_path": "tests/test_xxx.py"}
 {"action": "grep", "thought": "Je cherche les occurrences de...", "pattern": "motif", "path": "répertoire"}
+{"action": "read_files_batch", "thought": "Je lis N fichiers en UN SEUL appel (parallèle + cache)", "paths": ["a.html", "b.css", "c.js"], "start_line": 1, "end_line": 200}
+{"action": "apply_patches", "thought": "J'applique tous les edits multi-fichiers ATOMIQUEMENT (rollback si un seul échoue)", "patches": [{"file": "a.html", "old": "texte exact", "new": "remplacement"}, {"file": "b.css", "old": "...", "new": "..."}]}
 {"action": "lint", "path": "chemin/relatif.py"}
 {"action": "done", "summary": "résumé complet de ce qui a été fait"}
 
@@ -665,6 +678,26 @@ Tour 2: {"action": "edit_lines", "path": "src/utils/helpers.py", "start_line": 2
 → Résultat: ✅ Modifié src/utils/helpers.py L2-L2
 
 Tour 3: {"action": "done", "summary": "Ajouté conversion int() dans add() pour gérer les inputs string."}
+
+⛔ ANTI-PATTERN À NE JAMAIS FAIRE ⛔
+Tour 1: {"action": "read_file", "path": "index.html", "start_line": 1, "end_line": 100}
+Tour 2: {"action": "read_file", "path": "index.html", "start_line": 101, "end_line": 200}  ← INTERDIT
+Tour 3: {"action": "read_file", "path": "index.html", "start_line": 201, "end_line": 300}  ← INTERDIT
+→ RAISON : un seul read_file SANS start/end_line te donne TOUT le fichier avec numéros de ligne.
+   Si tu as déjà lu un fichier, il est en cache — édite directement avec edit_lines / str_replace / apply_patches.
+
+✅ BON PATTERN MULTI-FICHIERS ✅
+Tour 1: {"action": "read_files_batch", "paths": ["index.html", "documentation.html", "css/style.css"]}
+Tour 2: {"action": "apply_patches", "patches": [
+          {"file": "index.html", "old": "<a href=\\"#blog\\">Blog</a>", "new": ""},
+          {"file": "documentation.html", "old": "v1.0", "new": "v1.2"}
+        ]}
+Tour 3: {"action": "done", "summary": "2 fichiers corrigés en 2 tours"}
+
+⛔ INSERTION — NE JAMAIS grep+read pour trouver une ancre ⛔
+✅ 1 SEUL tour via insert_at_anchor (HTML/Python/JS/Java/C#/Go/CSS/...) :
+  {"action": "insert_at_anchor", "path": "x", "anchor": "</main>", "position": "before", "content": "<section>...</section>"}
+  Anchors: "</main>" (HTML), "# END IMPORTS" (Py), "export default" (JS), "} // end class" (Java), "func main()" (Go).
 """
 
 _LONG_EXAMPLE = """
@@ -905,12 +938,26 @@ _MODIFICATION_INSTRUCTIONS = """
 Tu modifies un projet qui FONCTIONNE déjà. Le code existant est PRÉCIEUX.
 
 STRATÉGIE D'ÉDITION — ordre de priorité OBLIGATOIRE :
+
+⚡ MODE MULTI-FICHIERS (2+ fichiers à modifier) — OBLIGATOIRE pour l'efficacité :
+  A. Lis TOUS les fichiers d'un coup via read_files_batch (1 appel au lieu de N)
+  B. Applique TOUS les edits d'un coup via apply_patches (atomique, rollback auto si un échoue)
+  → Évite totalement le ping-pong read→edit→read→edit. 2 tours au lieu de 2N.
+  Exemple :
+     {"action": "read_files_batch", "paths": ["index.html", "documentation.html", "css/style.css"]}
+     {"action": "apply_patches", "patches": [
+        {"file": "index.html", "old": "<title>Old</title>", "new": "<title>New</title>"},
+        {"file": "documentation.html", "old": "v1.0", "new": "v2.0"},
+        {"file": "css/style.css", "old": "color: red", "new": "color: blue"}
+     ]}
+
+🔧 MODE MONO-FICHIER :
 1. LIS d'abord le fichier complet (read_file) → les numéros de ligne sont affichés
 2. ÉDITE via edit_lines EN PREMIER (numéros de ligne = jamais de problème de matching) :
    {"action": "edit_lines", "path": "fichier", "start_line": 42, "end_line": 44, "content": "nouveau contenu"}
 3. Si tu ne connais pas les numéros → utilise str_replace (copie 3-5 lignes EXACTES depuis read_file) :
    {"action": "str_replace", "path": "fichier", "old_str": "texte exact\ntel que\nlu dans le fichier", "new_str": "remplacement"}
-4. Dernier recours si multi-fichiers → apply_patch
+4. Dernier recours si multi-fichiers hors simples str_replace → apply_patch (format diff)
 
 RÈGLES CRITIQUES :
 - NE JAMAIS utiliser write_file sur un fichier existant — ça écrase tout
@@ -1085,6 +1132,8 @@ class CodeAgent(SubAgent):
         self._edit_fail_for_path: dict[str, int] = {}
         # P6: compteur de self-repair syntaxe (réinitialisé à chaque tentative)
         self._self_repair_count: int = 0
+        # P_ANTI_REREAD: nb de read_file par chemin (reset par tâche, pas par tentative)
+        self._read_count_per_file: dict[str, int] = {}
 
     async def _execute_task(self, task: AgentTask) -> "str | AgentResult":
         """Exécute une tâche de code."""
@@ -1165,6 +1214,9 @@ class CodeAgent(SubAgent):
 
         prior_failures: list[str] = []
         last_result: AgentResult | None = None
+        # Reset compteur anti-relecture pour cette tâche (survit aux outer retries
+        # → si attempt 1 a déjà lu un fichier 3×, attempt 2 ne le relira pas non plus)
+        self._read_count_per_file = {}
 
         for attempt in range(1, _CODE_AGENT_MAX_OUTER_RETRIES + 1):
             # P2 : Au dernier retry, simplifier la description pour aider à converger
@@ -1331,6 +1383,31 @@ class CodeAgent(SubAgent):
                 errors.pop(0)
             errors.append(short)
 
+    def _build_actions_recap(self) -> str:
+        """Récap court de ce que l'agent a déjà fait (injecté quand il boucle sur les reads).
+        L'objectif: lui rappeler ce qu'il connaît déjà pour qu'il évite de relire."""
+        mem = getattr(self, "_session_memory", None) or {}
+        files_read = mem.get("files_read") or {}
+        edits_done = mem.get("edits_done") or []
+        lines: list[str] = ["📋 RÉCAP de ce que tu as déjà fait :"]
+        if files_read:
+            lines.append(f"📖 Fichiers déjà lus (en cache, ne les relis PAS) — {len(files_read)} :")
+            for p, content in list(files_read.items())[-10:]:
+                try:
+                    nb_lines = content.count("\n") + 1
+                    lines.append(f"  • {p} ({nb_lines} lignes, {len(content)} chars)")
+                except Exception:
+                    lines.append(f"  • {p}")
+        else:
+            lines.append("📖 Aucun fichier lu encore.")
+        if edits_done:
+            lines.append(f"✏️ Modifications déjà faites — {len(edits_done)} :")
+            for entry in edits_done[-8:]:
+                lines.append(f"  • {entry}")
+        else:
+            lines.append("✏️ Aucune modification encore.")
+        return "\n".join(lines)
+
     def _gather_project_context(self, task_description: str, target_files: list[str] | None = None) -> str:
         """
         Inject repo map + semantic code context + import skeletons into the CodeAgent prompt.
@@ -1421,6 +1498,10 @@ class CodeAgent(SubAgent):
         _context_cache: dict[str, str] = {}
         _llm_retries: int = 0
         temperature = 0.15 + (attempt - 1) * 0.05
+        # DeepSeek suit mieux les instructions strictes à basse température
+        _model_name_lc = str(getattr(llm, "model_name", "") or "").lower()
+        if "deepseek" in _model_name_lc:
+            temperature = min(temperature, 0.1)
 
         # ── P2 : Phase Architect (avant la boucle, mode modify + tâche complexe) ──
         _mode_attempt = getattr(self, '_resolved_intent', 'auto')
@@ -1462,6 +1543,36 @@ class CodeAgent(SubAgent):
                 logger.warning("[CodeAgent] Phase Architect échouée ({}), continue sans", _arch_exc)
 
         for iteration in range(1, max_iter + 1):
+            # ── ANTI-RELECTURE PRÉEMPTIVE (utile surtout pour DeepSeek) ──
+            # Avant chaque appel LLM, on rappelle CONCRÈTEMENT quels fichiers sont déjà
+            # en mémoire. DeepSeek suit le contexte récent mieux que les règles abstraites
+            # du system prompt. On n'injecte qu'à partir de l'iter 2 (sinon contexte initial OK)
+            # et on évite le spam en ne ré-injectant pas si le dernier user-message le contient déjà.
+            if iteration >= 2:
+                try:
+                    _mem_files = (self._session_memory or {}).get("files_read") or {}
+                    if _mem_files:
+                        _cached_list = []
+                        for _p, _c in list(_mem_files.items())[-8:]:
+                            _nl = (_c or "").count("\n") + 1 if _c else 0
+                            _cached_list.append(f"  • {_p} ({_nl} lignes en cache)")
+                        if _cached_list:
+                            _reminder = (
+                                "📂 FICHIERS DÉJÀ EN MÉMOIRE (NE PAS les relire avec read_file) :\n"
+                                + "\n".join(_cached_list)
+                                + "\n\n→ Pour MODIFIER : edit_lines (numéros de ligne) ou str_replace (texte exact)"
+                                + "\n→ Pour CHERCHER une section : grep (pattern + path)"
+                                + "\n→ Pour MULTI-FICHIERS : apply_patches (atomique) / read_files_batch (si nouveaux)"
+                            )
+                            # Ne pas dupliquer si déjà présent dans le dernier message user
+                            _last_user = next(
+                                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                                "",
+                            )
+                            if "FICHIERS DÉJÀ EN MÉMOIRE" not in str(_last_user):
+                                messages.append({"role": "user", "content": _reminder})
+                except Exception:
+                    pass
             try:
                 raw = await llm.chat(
                     messages=messages,
@@ -1556,6 +1667,21 @@ class CodeAgent(SubAgent):
                 reads_since_last_edit=reads_since_last_edit,
                 context_cache=_context_cache,
             )
+
+            # ── Break immédiat si _post_action_hooks a levé _force_done ──
+            if getattr(self, '_force_done', False):
+                self._force_done = False  # reset pour la prochaine tentative
+                report.append(f"[iter {iteration}] ARRÊT FORCÉ — trop de lectures sans édition")
+                return AgentResult(
+                    task_id=task.task_id,
+                    success=False,
+                    output=(
+                        "CodeAgent arrêté : trop de lectures consécutives sans édition. "
+                        "Aucune modification effectuée.\n" + "\n".join(report[-8:])
+                    ),
+                    status_code=StatusCode.PARTIAL,
+                    meta={"iterations": iteration, "force_done": True, "attempt": attempt},
+                ), True
 
             # ── Compaction ──
             messages = await self._maybe_compact(messages, llm, report)
@@ -1846,9 +1972,30 @@ class CodeAgent(SubAgent):
                         pass
 
         # ── Compteur edits pour auto-run tests ──
-        if action_type in ("edit_file", "apply_patch", "write_file", "edit_lines", "str_replace"):
+        _SINGLE_EDIT_ACTIONS = ("edit_file", "apply_patch", "write_file", "edit_lines", "str_replace", "insert_at_anchor")
+        _BATCH_EDIT_ACTIONS = ("apply_patches", "batch_patch", "multi_patch")
+        # Reset compteur anti-relecture pour TOUS les fichiers modifiés (single ou batch)
+        _edited_paths: list[str] = []
+        if action_type in _SINGLE_EDIT_ACTIONS:
+            _sp = action.get("path", "")
+            if _sp:
+                _edited_paths.append(_sp)
+        elif action_type in _BATCH_EDIT_ACTIONS:
+            for _p in (action.get("patches") or []):
+                if isinstance(_p, dict):
+                    _fp = _p.get("file") or _p.get("path") or ""
+                    if _fp:
+                        _edited_paths.append(_fp)
+        if _edited_paths and "❌" not in str(observation)[:10]:
+            _rc = getattr(self, "_read_count_per_file", None)
+            if isinstance(_rc, dict):
+                for _ep in _edited_paths:
+                    _ed_key = str(_ep).replace("\\", "/").strip()
+                    if _ed_key in _rc:
+                        _rc[_ed_key] = 0
+        if action_type in _SINGLE_EDIT_ACTIONS or action_type in _BATCH_EDIT_ACTIONS:
             edits_since_last_test += 1
-            edit_path = action.get("path", "")
+            edit_path = action.get("path", "") or (_edited_paths[0] if _edited_paths else "")
             if edit_path and "❌" not in str(observation)[:10]:
                 related = self._find_related_tests(edit_path)
                 if related:
@@ -1933,42 +2080,61 @@ class CodeAgent(SubAgent):
                 self._self_repair_count = 0
 
         # ── Compteur read-only : détecter boucles de lecture sans écriture ──
-        _passive_actions = ("read_file", "list_files", "grep", "search_in_files", "think")
-        _active_actions = ("edit_file", "write_file", "edit_lines", "apply_patch", "str_replace")
-        _READS_BEFORE_NUDGE = 4
-        _READS_BEFORE_FORCE = 8
+        _passive_actions = ("read_file", "list_files", "grep", "search_in_files", "think",
+                            "read_files_batch", "read_batch", "batch_read")
+        _active_actions = ("edit_file", "write_file", "edit_lines", "apply_patch", "str_replace",
+                           "insert_at_anchor", "apply_patches", "batch_patch", "multi_patch")
+        _READS_BEFORE_NUDGE = 5
+        _READS_BEFORE_FORCE = 10
+        _READS_BEFORE_HARD_STOP = 15  # très permissif : seulement coupe les vraies boucles infinies
         if action_type in _passive_actions:
             reads_since_last_edit += 1
         elif action_type in _active_actions or action_type == "done":
             reads_since_last_edit = 0
-        if reads_since_last_edit >= _READS_BEFORE_FORCE:
-            # Force terminaison — le LLM a ignoré le premier warning
-            logger.warning(
-                "[CodeAgent] {} reads consécutifs sans edit — injection STOP",
+        if reads_since_last_edit >= _READS_BEFORE_HARD_STOP:
+            # Seulement pour couper les vraies boucles infinies après 2 warnings ignorés
+            logger.error(
+                "[CodeAgent] {} reads consécutifs — ARRÊT FORCÉ (2 warnings ignorés)",
                 reads_since_last_edit,
             )
+            self._force_done = True  # flag lu par _single_code_attempt pour sortir
             messages.append({
                 "role": "user",
                 "content": (
-                    f"🛑 STOP IMMÉDIAT — {reads_since_last_edit} lectures consécutives "
-                    "sans aucune modification. Tu as TOUTE l'information nécessaire.\n\n"
-                    "Tu DOIS maintenant faire UNE des actions suivantes :\n"
-                    "1. `edit_lines` (numéros de ligne) ou `str_replace` (texte exact) pour modifier\n"
-                    "2. `write_file` pour CRÉER un nouveau fichier\n"
-                    "3. `done` si tu ne trouves rien à corriger\n\n"
-                    "TOUTE AUTRE ACTION DE LECTURE sera ignorée."
+                    f"🚫 ARRÊT FORCÉ — {reads_since_last_edit} lectures sans modification, "
+                    "2 warnings ignorés. La boucle est terminée. "
+                    "Tu n'as RIEN modifié pendant toute la tâche : c'est un échec."
                 ),
             })
-            reads_since_last_edit = 0
-        elif reads_since_last_edit >= _READS_BEFORE_NUDGE:
+        elif reads_since_last_edit >= _READS_BEFORE_FORCE:
+            # Rappel ferme mais non bloquant — on injecte un récap de ce qui a déjà été fait
+            logger.warning(
+                "[CodeAgent] {} reads consécutifs sans edit — rappel récap",
+                reads_since_last_edit,
+            )
+            _recap = self._build_actions_recap() if hasattr(self, "_build_actions_recap") else ""
             messages.append({
                 "role": "user",
                 "content": (
-                    f"⚠️ Tu as fait {reads_since_last_edit} actions de LECTURE consécutives "
-                    "sans aucune modification. Tu as assez de contexte. AGIS MAINTENANT :\n"
-                    "- Utilise edit_lines (numéros de ligne) ou str_replace (texte exact) pour modifier\n"
-                    "- Si tu ne sais pas quoi modifier, utilise 'done' pour terminer\n"
-                    "- NE RELIS PAS de fichiers que tu as déjà lus."
+                    f"🛑 {reads_since_last_edit} lectures consécutives sans modification.\n\n"
+                    f"{_recap}\n"
+                    "Prends ton temps, mais souviens-toi de ce que tu as déjà lu avant de relire.\n"
+                    "Quand tu es prêt, utilise :\n"
+                    "• `edit_lines` / `str_replace` pour modifier\n"
+                    "• `insert_at_anchor` pour insérer autour d'un repère\n"
+                    "• `write_file` pour créer un fichier\n"
+                    "• `done` si tu as terminé ou si tu ne trouves rien."
+                ),
+            })
+        elif reads_since_last_edit >= _READS_BEFORE_NUDGE:
+            _recap = self._build_actions_recap() if hasattr(self, "_build_actions_recap") else ""
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"ℹ️ Tu as fait {reads_since_last_edit} lectures consécutives sans modifier.\n\n"
+                    f"{_recap}\n"
+                    "Tu peux prendre ton temps — mais évite de relire les mêmes fichiers.\n"
+                    "Quand tu sais quoi faire : edit_lines / str_replace / insert_at_anchor / write_file."
                 ),
             })
 
@@ -2350,21 +2516,93 @@ class CodeAgent(SubAgent):
                 return ActionResult(f"Plan noté ({len(steps)} étapes). Commence par l'étape 1.")
             elif act == "read_file":
                 _raw_path = action.get("path", "")
+                _norm_key = str(_raw_path or "").replace("\\", "/").strip()
+                # Compteur peut ne pas exister sur les sub-classes hors CodeAgent
+                _read_counts = getattr(self, "_read_count_per_file", None)
+                if _read_counts is None:
+                    _read_counts = {}
+                    try:
+                        self._read_count_per_file = _read_counts
+                    except Exception:
+                        pass
+                _prev_reads = _read_counts.get(_norm_key, 0)
+                _req_start = action.get("start_line")
+                _req_end = action.get("end_line")
+                # ── ANTI-RELECTURE intelligente :
+                #   • 1ère lecture : normale (respecte start/end_line si fournis)
+                #   • 2ème lecture (même fichier, n'importe quelle plage) : AUTO-PROMOTION
+                #     → on lit le fichier ENTIER une fois, on met en cache, on renvoie tout
+                #   • 3ème+ lecture : on renvoie le cache (toutes lignes déjà dispo) +
+                #     consigne d'action concrète (le LLM a tout, qu'il édite ou grep)
                 abs_path = self._resolve_path(_raw_path)
+                if _prev_reads >= 2:
+                    _sess_mem = getattr(self, "_session_memory", None)
+                    _cached_content = ""
+                    if isinstance(_sess_mem, dict):
+                        _cached_content = _sess_mem.get("files_read", {}).get(_norm_key, "")
+                    if not _cached_content and abs_path.exists() and abs_path.is_file():
+                        # cache vide (LRU éjecté ?) → recharger UNE fois
+                        try:
+                            _cached_content = abs_path.read_text(encoding="utf-8", errors="replace")
+                            if hasattr(self, "_record_session_read"):
+                                try:
+                                    self._record_session_read(_norm_key, _cached_content)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            _cached_content = ""
+                    if _cached_content:
+                        _read_counts[_norm_key] = _prev_reads + 1
+                        _cached_lines = _cached_content.count("\n") + 1
+                        logger.warning(
+                            "[CodeAgent] read_file({}) → cache servi (lecture #{})",
+                            _raw_path, _prev_reads + 1,
+                        )
+                        # Si le LLM a précisé une plage, on la lui sert depuis le cache
+                        if _req_start is not None and _req_end is not None:
+                            try:
+                                _all_lines = _cached_content.split("\n")
+                                _s = max(1, int(_req_start))
+                                _e = min(len(_all_lines), int(_req_end))
+                                _slice = _all_lines[_s - 1 : _e]
+                                _numbered = [f"{_s + i:4d} | {l}" for i, l in enumerate(_slice)]
+                                return ActionResult(
+                                    f"📦 Cache: {_raw_path} L{_s}-{_e} (déjà lu {_prev_reads}× — sers le cache)",
+                                    "\n".join(_numbered) + (
+                                        "\n\n💡 Tu as déjà ce fichier en mémoire complète. "
+                                        "Préfère edit_lines / str_replace / grep plutôt que de relire."
+                                    ),
+                                )
+                            except Exception:
+                                pass
+                        # Pas de plage : on renvoie le fichier complet + consigne
+                        return ActionResult(
+                            f"📦 Cache complet: {_raw_path} ({_cached_lines} lignes, lecture #{_prev_reads + 1})",
+                            (
+                                f"=== {_raw_path} (cache session) ===\n{_cached_content}\n\n"
+                                "💡 Ce fichier est en mémoire. Pour ne pas le relire :\n"
+                                "  • `edit_lines` (start_line/end_line + new_content) pour modifier\n"
+                                "  • `str_replace` (search/replace exact) pour modifier\n"
+                                "  • `grep` (pattern + path) si tu cherches une section précise"
+                            ),
+                        )
+                if not abs_path.exists():
+                    return ActionResult(f"❌ Fichier non trouvé: {_raw_path} (résolu: {abs_path})")
+                # 2e lecture : AUTO-PROMOTION en lecture complète + cache
+                _auto_full = (_prev_reads == 1)
+                _read_counts[_norm_key] = _prev_reads + 1
                 if abs_path.is_dir():
                     # Le LLM a demandé read_file sur un dossier → rediriger vers list_files
                     result = await self._list_files_action(_raw_path)
                     return ActionResult(result.split("\n")[0] if "\n" in result else result, result)
-                if not abs_path.exists():
-                    return ActionResult(f"❌ Fichier non trouvé: {_raw_path} (résolu: {abs_path})")
                 try:
                     raw = abs_path.read_text(encoding="utf-8", errors="replace")
                 except Exception as exc:
                     return ActionResult(f"❌ Impossible de lire {_raw_path}: {exc}")
                 # Ajouter numéros de ligne pour faciliter edit_lines
                 lines = raw.split("\n")
-                _start_line = action.get("start_line")
-                _end_line = action.get("end_line")
+                _start_line = None if _auto_full else action.get("start_line")
+                _end_line = None if _auto_full else action.get("end_line")
                 if _start_line is not None and _end_line is not None:
                     _s = max(1, int(_start_line))
                     _e = min(len(lines), int(_end_line))
@@ -2374,6 +2612,20 @@ class CodeAgent(SubAgent):
                     return ActionResult(f"✅ Lu: {_raw_path} L{_s}-{_e} ({len(lines_slice)} lignes)", detail)
                 numbered = [f"{i+1:4d} | {l}" for i, l in enumerate(lines)]
                 detail = "\n".join(numbered)
+                # Stocker dans la session memory pour les prochaines lectures
+                if hasattr(self, "_record_session_read"):
+                    try:
+                        self._record_session_read(_norm_key, raw)
+                    except Exception:
+                        pass
+                if _auto_full:
+                    return ActionResult(
+                        f"✅ Lu COMPLET: {_raw_path} ({len(lines)} lignes) — auto-promotion 2e lecture, cache activé",
+                        detail + (
+                            "\n\n💡 Le fichier est maintenant en mémoire complète. "
+                            "Toute prochaine read_file servira le cache : préfère edit_lines / str_replace / grep."
+                        ),
+                    )
                 if len(lines) > 300 and not action.get("start_line"):
                     return ActionResult(
                         f"✅ Lu: {_raw_path} ({len(lines)} lignes — GROS FICHIER, utilise "
@@ -2583,6 +2835,50 @@ class CodeAgent(SubAgent):
                         )
                         summary += " ⚠️ web"
                 return ActionResult(summary, detail)
+            elif act == "insert_at_anchor":
+                # Action 1-shot : insère du contenu autour d'une ancre textuelle.
+                # Remplace grep+read_file+str_replace pour des insertions HTML/Python/JS/Java.
+                from src.reasoning.handlers.files import insert_at_anchor_core
+                _ia_raw = action.get("path", "")
+                _ia_anchor = action.get("anchor", "")
+                _ia_content = action.get("content", "")
+                _ia_position = action.get("position", "before")
+                _ia_occurrence = action.get("occurrence", "first")
+                if not _ia_raw or not _ia_anchor:
+                    return ActionResult("❌ insert_at_anchor: path et anchor sont requis")
+                _ia_full = self._resolve_path(_ia_raw)
+                if not _ia_full.exists():
+                    return ActionResult(f"❌ Fichier introuvable: {_ia_raw}")
+                try:
+                    _ia_before = _ia_full.read_text(encoding="utf-8")
+                    _ia_after = insert_at_anchor_core(
+                        file_text=_ia_before,
+                        anchor=_ia_anchor,
+                        content=_ia_content,
+                        position=_ia_position,
+                        occurrence=_ia_occurrence,
+                    )
+                except ValueError as _ia_ve:
+                    return ActionResult(
+                        f"❌ insert_at_anchor: {_ia_ve}. Relis le fichier et vérifie l'ancre exacte."
+                    )
+                except Exception as _ia_exc:
+                    return ActionResult(f"❌ insert_at_anchor erreur: {_ia_exc}")
+                if _ia_after == _ia_before:
+                    return ActionResult(f"⚠️ insert_at_anchor: aucune modification (contenu identique)")
+                _ia_full.write_text(_ia_after, encoding="utf-8")
+                result = f"✅ insert_at_anchor({_ia_position}) OK dans {_ia_raw} (ancre: {_ia_anchor[:40]!r})"
+                detail = result
+                # Auto-vérif syntaxe (py + web)
+                syntax_err = await self._check_python_syntax(_ia_raw)
+                if syntax_err:
+                    detail += f"\n\n⚠️ Erreur de syntaxe Python:\n{syntax_err}\nCorrige avant de continuer."
+                    result += " ⚠️ syntaxe"
+                web_err = await self._check_web_syntax(_ia_raw)
+                if web_err:
+                    detail += f"\n\n⚠️ Erreur web:\n{web_err}\nCorrige avant de continuer."
+                    result += " ⚠️ web"
+                return ActionResult(result.split("\n")[0], detail)
             elif act == "apply_patch":
                 from src.tools.apply_patch import apply_patch as _do_patch
                 patch_text = action.get("patch", "")
@@ -2619,6 +2915,64 @@ class CodeAgent(SubAgent):
 
                 # ── Smart redirect: commandes de lecture → read_file (plus rapide) ──
                 import re as _re_cmd
+
+                # ── Smart redirect: findstr/Select-String/grep → grep action (UTF-8 safe) ──
+                # findstr casse sur Windows avec du texte UTF-8 (accents français)
+                # Select-String est mieux mais plus lent → rediriger vers grep Python
+                _grep_pattern = None
+                _grep_path = None
+
+                # findstr /I "pattern" file
+                _m_findstr = _re_cmd.match(
+                    r'^findstr\s+(?:/[a-zA-Z]+\s+)*["\']?(.+?)["\']?\s+["\']?([^"\']+?)["\']?\s*$',
+                    _cmd, _re_cmd.IGNORECASE,
+                )
+                if _m_findstr:
+                    _grep_pattern = _m_findstr.group(1).strip()
+                    _grep_path = _m_findstr.group(2).strip()
+
+                # Select-String -Pattern "pattern" -Path file
+                if not _grep_pattern:
+                    _m_selstr = _re_cmd.match(
+                        r'^(?:powershell\s+)?(?:Select-String|sls)\s+(?:-Pattern\s+)?["\']?(.+?)["\']?\s+'
+                        r'(?:-Path\s+)?["\']?([^"\']+?)["\']?\s*$',
+                        _cmd, _re_cmd.IGNORECASE,
+                    )
+                    if _m_selstr:
+                        _grep_pattern = _m_selstr.group(1).strip()
+                        _grep_path = _m_selstr.group(2).strip()
+
+                # Get-Content file | Select-String pattern
+                if not _grep_pattern:
+                    _m_pipe_ss = _re_cmd.match(
+                        r'^(?:powershell\s+)?(?:Get-Content|gc|type)\s+["\']?([^|"\']+?)["\']?\s*'
+                        r'\|\s*(?:Select-String|sls)\s+(?:-Pattern\s+)?["\']?(.+?)["\']?\s*$',
+                        _cmd, _re_cmd.IGNORECASE,
+                    )
+                    if _m_pipe_ss:
+                        _grep_path = _m_pipe_ss.group(1).strip()
+                        _grep_pattern = _m_pipe_ss.group(2).strip()
+
+                # grep -i "pattern" file (Linux style via run_command)
+                if not _grep_pattern:
+                    _m_grep_linux = _re_cmd.match(
+                        r'^grep\s+(?:-[a-zA-Z]+\s+)*["\']?(.+?)["\']?\s+["\']?([^"\']+?)["\']?\s*$',
+                        _cmd, _re_cmd.IGNORECASE,
+                    )
+                    if _m_grep_linux:
+                        _grep_pattern = _m_grep_linux.group(1).strip()
+                        _grep_path = _m_grep_linux.group(2).strip()
+
+                if _grep_pattern and _grep_path:
+                    self._redirect_count = getattr(self, '_redirect_count', 0) + 1
+                    logger.info(
+                        "[CodeAgent] Smart redirect #{} search cmd → grep('{}' in '{}')",
+                        self._redirect_count, _grep_pattern[:40], _grep_path,
+                    )
+                    return await self._execute_loop_action(
+                        {"action": "grep", "pattern": _grep_pattern, "path": _grep_path},
+                        snapshots=snapshots,
+                    )
 
                 # Smart redirect: Get-Content file | Select-Object -Index X..Y → read_file(plage)
                 _m_gc_select = _re_cmd.match(
@@ -2800,6 +3154,73 @@ class CodeAgent(SubAgent):
                 if lint_result:
                     return ActionResult(f"⚠️ Erreurs lint détectées", lint_result)
                 return ActionResult("✅ Aucune erreur détectée.")
+            elif act in ("read_files_batch", "read_batch", "batch_read"):
+                # Levier 4: lecture parallèle de N fichiers via handler V2.
+                _paths = action.get("paths") or action.get("path") or []
+                if isinstance(_paths, str):
+                    _paths = [p.strip() for p in _paths.split(",") if p.strip()]
+                if not _paths or not isinstance(_paths, list):
+                    return ActionResult("❌ read_files_batch: 'paths' doit être une liste non vide")
+                # Résoudre tous les chemins relativement au workspace actif.
+                _resolved_paths = [str(self._resolve_path(str(p))) for p in _paths]
+                _args: dict = {"paths": _resolved_paths}
+                if action.get("start_line") is not None:
+                    _args["start_line"] = int(action["start_line"])
+                if action.get("end_line") is not None:
+                    _args["end_line"] = int(action["end_line"])
+                if action.get("max_chars_per_file") is not None:
+                    _args["max_chars_per_file"] = int(action["max_chars_per_file"])
+                try:
+                    result = await self._call_tool("read_files_batch", _args)
+                except Exception as exc:
+                    return ActionResult(f"❌ read_files_batch: {exc}")
+                _first_line = result.split("\n", 1)[0] if result else "read_files_batch"
+                return ActionResult(_first_line, result or "")
+            elif act in ("apply_patches", "batch_patch", "multi_patch"):
+                # Levier 4: edits multi-fichiers ATOMIQUES via handler V2.
+                _patches = action.get("patches") or []
+                if not isinstance(_patches, list) or not _patches:
+                    return ActionResult(
+                        "❌ apply_patches: 'patches' doit être une liste non vide "
+                        "[{file, old, new}, ...]"
+                    )
+                # Snapshot automatique avant patches (rollback manuel possible via undo_edit).
+                if snapshots is not None:
+                    for _p in _patches:
+                        if isinstance(_p, dict):
+                            _pf = _p.get("file") or _p.get("path") or ""
+                            if _pf:
+                                self._snapshot_file(snapshots, _pf)
+                # Résoudre tous les chemins relatifs.
+                _normalized: list = []
+                for _p in _patches:
+                    if not isinstance(_p, dict):
+                        continue
+                    _pf = _p.get("file") or _p.get("path") or ""
+                    if not _pf:
+                        continue
+                    _normalized.append({
+                        "file": str(self._resolve_path(str(_pf))),
+                        "old": _p.get("old") or _p.get("old_str") or "",
+                        "new": _p.get("new") or _p.get("new_str") or "",
+                    })
+                if not _normalized:
+                    return ActionResult("❌ apply_patches: aucun patch valide (chaque patch requiert 'file' et 'old')")
+                try:
+                    result = await self._call_tool("apply_patches", {"patches": _normalized})
+                except Exception as exc:
+                    return ActionResult(f"❌ apply_patches: {exc}")
+                # Auto-lint sur fichiers Python modifiés (max 3).
+                _py_files = [p["file"] for p in _normalized if p["file"].endswith(".py")][:3]
+                _extra = ""
+                if not result.startswith("❌"):
+                    for _pyf in _py_files:
+                        _syn = await self._check_python_syntax(_pyf)
+                        if _syn:
+                            _extra += f"\n⚠️ Syntaxe [{_pyf}]:\n{_syn}\n"
+                _first = result.split("\n", 1)[0] if result else "apply_patches"
+                _detail = (result or "") + (_extra if _extra else "")
+                return ActionResult(_first, _detail)
             else:
                 return ActionResult(f"Action inconnue: {act}")
         except Exception as exc:
@@ -3435,7 +3856,45 @@ class SubAgentOrchestrator:
         logger.info(f"📝 Tâche créée: {task_id} -> {agent_type.value}")
         
         return task_id
-    
+
+    async def dispatch_parallel(
+        self,
+        tasks: List[AgentTask],
+        max_concurrent: int = 3,
+        max_retries: int = 1,
+    ) -> List[AgentResult]:
+        """Exécute N tâches en parallèle avec limitation de concurrence (Levier 3).
+
+        - Utilise un Semaphore pour borner le nombre d'agents simultanés.
+        - Chaque échec est converti en AgentResult(success=False) au lieu de lever.
+        - Retourne la liste ordonnée (même index que `tasks`).
+        """
+        if not tasks:
+            return []
+        max_concurrent = max(1, min(int(max_concurrent or 1), 10))
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _run(t: AgentTask) -> AgentResult:
+            async with sem:
+                try:
+                    return await self.execute_task(t, max_retries=max_retries)
+                except Exception as exc:
+                    logger.warning("dispatch_parallel: tâche {} échouée: {}", t.task_id, exc)
+                    return AgentResult(
+                        task_id=t.task_id,
+                        success=False,
+                        output=f"❌ Erreur: {exc}",
+                        status_code=StatusCode.ERROR,
+                        meta={"error_type": "fanout_exception"},
+                    )
+
+        logger.info(
+            "⚡ Fanout: dispatch_parallel({} tâches, max_concurrent={})",
+            len(tasks), max_concurrent,
+        )
+        results = await asyncio.gather(*(_run(t) for t in tasks))
+        return list(results)
+
     async def execute_task(
         self,
         task: AgentTask,

@@ -490,17 +490,30 @@ class ReActLoop:
         _STRONG_CODE_VERB_RE = _re_code.compile(
             r"\b(fai[st]?|cr[eé][eé][sz]?|d[eé]veloppe?[sz]?|codes?|[eé]cri[st]?|"
             r"g[eé]n[eè]re?[sz]?|builds?|programm[eè]?[sz]?|r[eé]alise?[sz]?|"
-            r"construi[st]?|fini[rst]?\w*|termin[eè]?\w*|compl[eè]te?[sz]?)\b",
+            r"construi[st]?|fini[rst]?\w*|termin[eè]?\w*|compl[eè]te?[sz]?|"
+            r"modifie?[sz]?|change?[sz]?|remplace?[sz]?|"
+            r"ajoute?[sz]?|ajout|retire?[sz]?|enl[eè]ve?[sz]?|supprime?[sz]?|"
+            r"am[eé]liore?[sz]?|refactor\w*|renomme?[sz]?|"
+            r"mets?\s+[aà]\s+jour|maj|met[sz]?\s+en\s+place|"
+            r"corrige?[sz]?|r[eé]pare?[sz]?|fixe?[sz]?|debug\w*|"
+            r"optimise?[sz]?|nettoie?[sz]?|clean\w*|upgrade\w*)\b",
             _re_code.IGNORECASE,
         )
         _CODE_TARGET_RE2 = _re_code.compile(
             r"\b(jeu|game|site|web|app(li(cation)?)?|script|bot|outil|plugin|api|"
             r"backend|frontend|dashboard|interface|programme|projet|snake|tetris|"
-            r"pong|todo|calculator|serveur|server)\b|\.\w{2,4}\b",
+            r"pong|todo|calculator|serveur|server|"
+            r"bug|erreur|fonction|classe|m[eé]thode|variable|import|"
+            r"favicon|footer|header|navbar|menu|lien|liens|bouton|"
+            r"couleur|style|css|html|js|typo|texte|titre|page)\b|\.\w{2,4}\b",
             _re_code.IGNORECASE,
         )
         _FIX_WITH_FILE_RE = _re_code.compile(
-            r"\b(corrige[sz]?|r[eé]pare[sz]?|fixe[sz]?|debug(gue[sz]?)?)\b.{0,80}\.\w{2,4}\b",
+            r"\b(corrige[sz]?|r[eé]pare[sz]?|fixe[sz]?|debug(gue[sz]?)?|"
+            r"modifie[sz]?|change[sz]?|remplace[sz]?|retire[sz]?|supprime[sz]?|"
+            r"ajoute[sz]?|am[eé]liore[sz]?)\b.{0,80}(\.\w{2,4}\b|"
+            r"\b(bug|lien|liens|favicon|footer|header|fonction|classe|"
+            r"couleur|style|titre|bouton|page|projet|site)\b)",
             _re_code.IGNORECASE | _re_code.DOTALL,
         )
         _pf_is_feedback = bool(_FEEDBACK_FRAME_RE.match(query))
@@ -749,8 +762,12 @@ class ReActLoop:
         # --- 5. Règles de cohérence ---
         parts.append(
             "## Règles de cohérence\n"
+            "- Windows 11 : utilise UNIQUEMENT des commandes Windows (dir, type, where, tasklist). JAMAIS ls, head, tail, grep, find /mnt/.\n"
+            "- Tu ne mentionnes JAMAIS : Qwen, Alibaba, OpenAI, Claude, GPT, LLaMA, Mistral, DeepSeek, ou tout autre modèle/entreprise IA.\n"
+            "- Tu NE DIS JAMAIS que tu es « basée sur » ou « dérivée de » quoi que ce soit.\n"
+            "- JAMAIS parler de toi à la 3ème personne (« Lumena pense… »). Toujours « je », « moi », « mon ».\n"
             "- Tu ne peux PAS entendre (pas de micro). Ne parle pas de « voix ».\n"
-            "- Tu ne peux PAS voir (pas de caméra). Ne parle pas d'apparence.\n"
+            "- Tu ne peux PAS voir l'utilisateur (pas de caméra). Ne parle pas d'apparence.\n"
             "- Tu ne dis JAMAIS « je ne peux pas stocker les conversations » — tu AS une mémoire.\n"
             "- Tu ne dis JAMAIS « je n'ai pas accès à internet » — tu AS accès au web.\n"
         )
@@ -1318,6 +1335,8 @@ Maintenant, reflechis et reponds:"""
 
         _any_matched = False
         _has_specific_match = False  # True si au moins un arg/tool/obs match (pas juste hint)
+        _completed_this_call = 0  # Limite le nombre de complétion par appel
+        _MAX_COMPLETIONS_PER_CALL = 2  # garde-fou: un outil complète au max 2 tâches
         for task in self._task_plan:
             if task.completed:
                 continue
@@ -1351,10 +1370,19 @@ Maintenant, reflechis et reponds:"""
                 # Hint-only (pas d'arg/tool/obs spécifique) → max 1 tâche par itération
                 if not is_specific and _any_matched and not _has_specific_match:
                     continue
+                # Garde-fou: empêcher un seul outil de compléter trop de tâches d'un coup
+                # (évite que edit_website marque 4 tâches "completed" à iter 4)
+                if _completed_this_call >= _MAX_COMPLETIONS_PER_CALL:
+                    logger.debug(
+                        "[PLAN] Limite %d completions atteinte, skip '%s' (iter %d)",
+                        _MAX_COMPLETIONS_PER_CALL, task.description, iteration,
+                    )
+                    break
                 task.completed = True
                 task.completed_at_iteration = iteration
                 task.completed_by_tool = tool_name
                 _any_matched = True
+                _completed_this_call += 1
                 if is_specific:
                     _has_specific_match = True
 
@@ -1412,13 +1440,33 @@ Maintenant, reflechis et reponds:"""
             # sont marquées completed d'un coup sans rapport avec le contenu réel)
             if self._last_auto_advance_iter == iteration:
                 pass  # déjà auto-avancé cette itération
+            # Garde 2: pas d'auto-avancement trop tôt (itération 0) sauf si
+            # l'observation contient un marqueur de succès explicite (✅)
+            elif iteration < 1 and "\u2705" not in (observation_content or ""):
+                pass
+            # Garde 3: l'observation doit être substantielle (pas juste "OK" ou vide)
             elif (
                 observation_content
-                and observation_content.strip()
+                and len(observation_content.strip()) >= 10
                 and (tool_name not in _TRIVIAL_TOOLS or _trivial_tool_matches_next_task())
             ):
+                # Garde 4: si la tâche mentionne explicitement un nom d'outil différent
+                # du tool actuel, ne PAS auto-avancer (ex: tâche dit "check_web_project"
+                # mais le tool est "run_command" → pas de lien causal)
+                import re as _re_plan
                 for task in self._task_plan:
                     if not task.completed:
+                        desc_lower = task.description.lower()
+                        # Extraire les noms d'outils potentiels dans la description
+                        _tool_refs = _re_plan.findall(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', desc_lower)
+                        # Si la description référence un outil spécifique ET ce n'est
+                        # pas le tool courant → l'auto-avancement est illégitime
+                        if _tool_refs and tool_name.lower() not in _tool_refs:
+                            logger.debug(
+                                "[PLAN] Auto-avancement bloqué: '{}' référence {} mais tool={} (iter {})",
+                                task.description, _tool_refs, tool_name, iteration,
+                            )
+                            break
                         task.completed = True
                         task.completed_at_iteration = iteration
                         task.completed_by_tool = f"{tool_name}:auto"
@@ -1918,6 +1966,25 @@ Maintenant, reflechis et reponds:"""
             logger.debug(f"Thought: {thought.content}")
             logger.debug(f"Action: {action.action_type.value}")
 
+            # P2 FIX: Si une tentative de repair FINAL a produit un tool_call au lieu
+            # d'un FINAL, la réponse originale était correcte — rollback immédiat.
+            _pre_repair = getattr(self, '_pre_repair_answer', None)
+            if _pre_repair and action.action_type != ActionType.FINAL_ANSWER:
+                logger.warning(
+                    "⚠️ Repair FINAL a produit {} au lieu de FINAL — rollback vers réponse originale ({} chars)",
+                    action.action_type.value, len(_pre_repair),
+                )
+                self._pre_repair_answer = None
+                self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
+                self._run_meta["agent_output_incomplete"] = False
+                _finish_iteration(status="ok", summary="final_repair_rollback")
+                message = _pre_repair
+                self._mark_task_done(message)
+                return message
+            # Clear pre_repair si le repair a réussi (FINAL produit)
+            if _pre_repair and action.action_type == ActionType.FINAL_ANSWER:
+                self._pre_repair_answer = None
+
             # 2.0a Tracking hallucinations consécutives (Kimi simule des OBSERVATION)
             _halluc_warning = ""
             if getattr(self, '_last_thought_was_hallucinated', False):
@@ -2263,12 +2330,31 @@ Maintenant, reflechis et reponds:"""
                         self._mark_task_done(message)
                         return message
                 
-                # --- Détection d'échecs répétés sur le MÊME outil (même si args varient) ---
-                _recent_fails = sum(
-                    1 for h in self.history[-5:]
-                    if h.action.tool_name == action.tool_name
-                    and h.observation and not h.observation.success
-                )
+                # --- Détection d'échecs CONSÉCUTIFS sur le MÊME outil ---
+                # FIX: ignorer les outils read-only qui ont retourné du contenu
+                # non-vide (ex: read_file de 10KB mal flaggé par le détecteur
+                # par mots-clés). Un "échec" avec 500+ chars de contenu est un
+                # faux positif, pas une vraie erreur.
+                _READ_ONLY_NO_FAIL_COUNT = {
+                    "read_file", "list_directory", "find_files", "grep_search",
+                    "search_in_code", "view_file_outline", "browser_get_content",
+                    "memory_search", "web_search", "read_own_code",
+                }
+                _recent_fails = 0
+                for h in reversed(self.history[-8:]):
+                    if h.action.tool_name != action.tool_name:
+                        continue
+                    if h.observation and h.observation.success:
+                        break  # un succès récent casse la série
+                    if h.observation and not h.observation.success:
+                        # Skip: outil lecture ayant ramené du contenu substantiel
+                        if (
+                            action.tool_name in _READ_ONLY_NO_FAIL_COUNT
+                            and h.observation.content
+                            and len(h.observation.content) >= 500
+                        ):
+                            continue
+                        _recent_fails += 1
                 if _recent_fails >= 3:
                     logger.warning(f"⚠️ Outil {action.tool_name} a échoué {_recent_fails}x récemment — escalade CodeAgent")
 
@@ -2943,6 +3029,8 @@ Maintenant, reflechis et reponds:"""
                     if self._final_repair_attempts < self.max_final_repair_attempts:
                         self._final_repair_attempts += 1
                         self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
+                        # Sauvegarder la réponse originale pour rollback si le repair échoue
+                        self._pre_repair_answer = answer
                         logger.warning(
                             "⚠️ FINAL potentiellement tronqué (finish_reason={}) - tentative de réparation {}/{}",
                             finish_reason,
@@ -3059,34 +3147,76 @@ Maintenant, reflechis et reponds:"""
                             self.tools._tools_desc_cache = None
 
                 # ── Multi-action : exécuter les actions en queue ──
+                # Levier 1: parallélisation automatique quand toutes les actions sont read-only.
                 _pending = getattr(self, '_pending_multi_actions', [])
                 if _pending and observation.success:
                     _combined_obs = [observation.content or ""]
-                    _abort_multi = False
-                    for _ma_name, _ma_args in _pending:
-                        if _abort_multi:
-                            logger.warning("⚡ Multi-action '{}' annulé (échec précédent)", _ma_name)
-                            _combined_obs.append(f"[{_ma_name}] Annulé (action précédente échouée)")
-                            continue
-                        try:
-                            logger.info("⚡ Multi-action queue: exécution de '{}' (args: {})", _ma_name, list(_ma_args.keys()))
-                            _ma_start = perf_counter()
-                            _ma_obs = await self.tools.execute(_ma_name, _ma_args)
-                            _ma_dur = perf_counter() - _ma_start
-                            if hasattr(self, '_timeout_deadline'):
-                                self._timeout_deadline += _ma_dur
-                                self._tool_time_total = getattr(self, '_tool_time_total', 0.0) + _ma_dur
-                            _combined_obs.append(f"[{_ma_name}] {_ma_obs.content or ''}")
-                            if self._task_plan and _ma_obs.success:
-                                self._update_plan_progress(_ma_name, _ma_args, _ma_obs.content or "", i)
-                            # Si un outil échoue, annuler les suivants du même type
-                            if not _ma_obs.success:
+                    # Set d'outils considérés read-only (safe à paralléliser).
+                    _READ_ONLY_TOOLS = {
+                        "read_file", "read_files_batch", "list_files", "list_dir",
+                        "grep", "grep_search", "grep_batch",
+                        "web_search", "web_fetch", "memory_search", "semantic_search",
+                        "get_file_info", "find_files", "scan_project",
+                    }
+                    _all_read_only = (
+                        (action.tool_name or "") in _READ_ONLY_TOOLS
+                        and all((_n or "") in _READ_ONLY_TOOLS for _n, _ in _pending)
+                        and len(_pending) >= 1
+                    )
+                    if _all_read_only:
+                        # ── Exécution PARALLÈLE ──
+                        logger.info("⚡ Multi-action PARALLÈLE ({} actions read-only)", len(_pending))
+                        _par_start = perf_counter()
+
+                        async def _run_one(_n: str, _a: dict):
+                            try:
+                                return _n, await self.tools.execute(_n, _a), None
+                            except Exception as _e:
+                                return _n, None, _e
+
+                        _results = await asyncio.gather(
+                            *(_run_one(_n, _a) for _n, _a in _pending),
+                            return_exceptions=False,
+                        )
+                        _par_dur = perf_counter() - _par_start
+                        if hasattr(self, '_timeout_deadline'):
+                            # Temps parallèle ≈ max(individuels) ≈ _par_dur (pas somme).
+                            self._timeout_deadline += _par_dur
+                            self._tool_time_total = getattr(self, '_tool_time_total', 0.0) + _par_dur
+                        for _n, _obs, _err in _results:
+                            if _err is not None:
+                                _combined_obs.append(f"[{_n}] Erreur: {_err}")
+                            else:
+                                _combined_obs.append(f"[{_n}] {_obs.content or ''}")
+                                if self._task_plan and getattr(_obs, 'success', False):
+                                    self._update_plan_progress(_n, {}, _obs.content or "", i)
+                    else:
+                        # ── Exécution SÉQUENTIELLE (legacy : abort-on-fail pour writes) ──
+                        _abort_multi = False
+                        for _ma_name, _ma_args in _pending:
+                            if _abort_multi:
+                                logger.warning("⚡ Multi-action '{}' annulé (échec précédent)", _ma_name)
+                                _combined_obs.append(f"[{_ma_name}] Annulé (action précédente échouée)")
+                                continue
+                            try:
+                                logger.info("⚡ Multi-action queue: exécution de '{}' (args: {})", _ma_name, list(_ma_args.keys()))
+                                _ma_start = perf_counter()
+                                _ma_obs = await self.tools.execute(_ma_name, _ma_args)
+                                _ma_dur = perf_counter() - _ma_start
+                                if hasattr(self, '_timeout_deadline'):
+                                    self._timeout_deadline += _ma_dur
+                                    self._tool_time_total = getattr(self, '_tool_time_total', 0.0) + _ma_dur
+                                _combined_obs.append(f"[{_ma_name}] {_ma_obs.content or ''}")
+                                if self._task_plan and _ma_obs.success:
+                                    self._update_plan_progress(_ma_name, _ma_args, _ma_obs.content or "", i)
+                                # Si un outil échoue, annuler les suivants du même type
+                                if not _ma_obs.success:
+                                    _abort_multi = True
+                                    logger.warning("⚡ Multi-action '{}' échoué — annulation des suivants", _ma_name)
+                            except Exception as _ma_err:
+                                logger.warning("Multi-action '{}' échoué: {}", _ma_name, _ma_err)
+                                _combined_obs.append(f"[{_ma_name}] Erreur: {_ma_err}")
                                 _abort_multi = True
-                                logger.warning("⚡ Multi-action '{}' échoué — annulation des suivants", _ma_name)
-                        except Exception as _ma_err:
-                            logger.warning("Multi-action '{}' échoué: {}", _ma_name, _ma_err)
-                            _combined_obs.append(f"[{_ma_name}] Erreur: {_ma_err}")
-                            _abort_multi = True
                     self._pending_multi_actions = []
                     observation = Observation(
                         content="\n\n".join(_combined_obs),

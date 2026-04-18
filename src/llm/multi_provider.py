@@ -405,6 +405,8 @@ class MultiProviderLLM:
             "continuation_steps": 0,
             "finish_reason": None,
             "continuation_warning": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
         }
 
     def _set_last_response_meta(self, **kwargs) -> None:
@@ -975,6 +977,8 @@ class MultiProviderLLM:
                 finish_reason=result.get("finish_reason"),
                 continuation_warning=result.get("continuation_warning"),
                 text_may_be_incomplete=result.get("text_may_be_incomplete", False),
+                prompt_tokens=result.get("prompt_tokens"),
+                completion_tokens=result.get("completion_tokens"),
             )
             return result.get("text", "")
         except Exception as e:
@@ -1041,6 +1045,8 @@ class MultiProviderLLM:
                         continuation_steps=fallback_result.get("continuation_steps", 0),
                         finish_reason=fallback_result.get("finish_reason"),
                         continuation_warning=fallback_result.get("continuation_warning"),
+                        prompt_tokens=fallback_result.get("prompt_tokens"),
+                        completion_tokens=fallback_result.get("completion_tokens"),
                     )
                     return fallback_result.get("text", "")
                 except Exception as fallback_error:
@@ -1143,11 +1149,14 @@ class MultiProviderLLM:
         response = await self._http.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
+        _usage = data.get("usage") or {}
         return {
             "text": data.get("message", {}).get("content", "") or "",
             "finish_reason": data.get("done_reason"),
             "provider_used": ProviderType.OLLAMA.value,
             "model_used": payload["model"],
+            "prompt_tokens": _usage.get("prompt_tokens") or data.get("prompt_eval_count"),
+            "completion_tokens": _usage.get("completion_tokens") or data.get("eval_count"),
         }
     
     async def _chat_openai(
@@ -1270,11 +1279,14 @@ class MultiProviderLLM:
             response.raise_for_status()
         data = response.json()
         choice = data["choices"][0]
+        _usage = data.get("usage") or {}
         return {
             "text": choice.get("message", {}).get("content", "") or "",
             "finish_reason": choice.get("finish_reason"),
             "provider_used": ProviderType.OPENAI.value,
             "model_used": effective_model,
+            "prompt_tokens": _usage.get("prompt_tokens"),
+            "completion_tokens": _usage.get("completion_tokens"),
         }
     
     async def _chat_anthropic(
@@ -1345,11 +1357,14 @@ class MultiProviderLLM:
         if not text_parts:
             raise ValueError("Reponse Anthropic sans contenu texte exploitable")
 
+        _usage = data.get("usage") or {}
         return {
             "text": "".join(text_parts),
             "finish_reason": data.get("stop_reason"),
             "provider_used": ProviderType.ANTHROPIC.value,
             "model_used": payload["model"],
+            "prompt_tokens": _usage.get("input_tokens"),
+            "completion_tokens": _usage.get("output_tokens"),
         }
     
     async def _chat_google(
@@ -1428,6 +1443,8 @@ class MultiProviderLLM:
                         "finish_reason": finish_reason,
                         "provider_used": ProviderType.GOOGLE.value,
                         "model_used": effective_model,
+                        "prompt_tokens": None,
+                        "completion_tokens": None,
                     }
                 raise ValueError(f"Réponse vide (finishReason: {finish_reason})")
 
@@ -1439,11 +1456,14 @@ class MultiProviderLLM:
             if not text_parts:
                 raise ValueError("Aucune partie texte exploitable dans la reponse Gemini")
 
+            _usage_meta = data.get("usageMetadata") or {}
             return {
                 "text": "".join(text_parts),
                 "finish_reason": finish_reason,
                 "provider_used": ProviderType.GOOGLE.value,
                 "model_used": effective_model,
+                "prompt_tokens": _usage_meta.get("promptTokenCount"),
+                "completion_tokens": _usage_meta.get("candidatesTokenCount"),
             }
         except KeyError as e:
             logger.error(f"Structure réponse Gemini inattendue: {data}")
@@ -1506,11 +1526,14 @@ class MultiProviderLLM:
             response.raise_for_status()
             data = response.json()
             choice = data["choices"][0]
+            _usage = data.get("usage") or {}
             return {
                 "text": choice.get("message", {}).get("content", "") or "",
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.MOONSHOT.value,
                 "model_used": payload["model"],
+                "prompt_tokens": _usage.get("prompt_tokens"),
+                "completion_tokens": _usage.get("completion_tokens"),
             }
         except httpx.HTTPStatusError as e:
             # Capturer le détail de l'erreur API
@@ -1593,11 +1616,14 @@ class MultiProviderLLM:
             data = response.json()
             choice = data["choices"][0]
             content = choice.get("message", {}).get("content", "") or ""
+            _usage = data.get("usage") or {}
             return {
                 "text": content,
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.XAI.value,
                 "model_used": target_model,
+                "prompt_tokens": _usage.get("prompt_tokens"),
+                "completion_tokens": _usage.get("completion_tokens"),
             }
         except httpx.HTTPStatusError as e:
             error_detail = ""
@@ -1671,11 +1697,14 @@ class MultiProviderLLM:
                 raise ValueError(f"NVIDIA NIM: réponse vide (pas de choices) pour {target_model}")
             choice = choices[0]
             content = choice.get("message", {}).get("content", "") or ""
+            _usage = data.get("usage") or {}
             return {
                 "text": content,
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.NVIDIA.value,
                 "model_used": target_model,
+                "prompt_tokens": _usage.get("prompt_tokens"),
+                "completion_tokens": _usage.get("completion_tokens"),
             }
         except httpx.HTTPStatusError as e:
             error_detail = ""
@@ -1816,12 +1845,15 @@ class MultiProviderLLM:
                 if "reasoner" not in str(_used_model):
                     logger.error("💡 SOLUTION: Utilisez 'deepseek-reasoner' pour la génération de code (64K tokens)")
 
+        _usage = data.get("usage") or {}
         return {
             "text": content,
             "finish_reason": finish_reason,
             "provider_used": ProviderType.DEEPSEEK.value,
             "model_used": payload["model"],
             "truncated": _truncated,
+            "prompt_tokens": _usage.get("prompt_tokens"),
+            "completion_tokens": _usage.get("completion_tokens"),
         }
 
     async def _chat_minimax_result(
@@ -1865,11 +1897,14 @@ class MultiProviderLLM:
         data = response.json()
         choice = data["choices"][0]
         content = choice.get("message", {}).get("content", "") or ""
+        _usage = data.get("usage") or {}
         return {
             "text": content,
             "finish_reason": choice.get("finish_reason"),
             "provider_used": ProviderType.MINIMAX.value,
             "model_used": model_id,
+            "prompt_tokens": _usage.get("prompt_tokens"),
+            "completion_tokens": _usage.get("completion_tokens"),
         }
 
     async def describe_image(self, image_path: str, prompt: str = "") -> str:
@@ -2074,8 +2109,48 @@ class MultiProviderLLM:
                 resp.raise_for_status()
                 return resp.json().get("message", {}).get("content", "") or ""
 
+        except httpx.HTTPStatusError as e:
+            # Log le body complet pour diagnostic (modèle invalide, format, quota…)
+            body = ""
+            try:
+                body = e.response.text[:500]
+            except Exception:
+                pass
+            logger.warning(
+                f"Vision API ({vision_provider} / {vision_model_id}): "
+                f"HTTP {e.response.status_code} — {body or e}"
+            )
+            # Fallback auto sur Gemini si l'erreur vient d'ailleurs (bad model, auth…)
+            if vision_provider != ProviderType.GOOGLE:
+                try:
+                    gemini_key = get_api_key(ProviderType.GOOGLE)
+                    if gemini_key:
+                        logger.info(f"Vision fallback → Gemini (après {vision_provider.value} échec)")
+                        payload = {
+                            "contents": [{
+                                "parts": [
+                                    {"inline_data": {"mime_type": mime, "data": b64}},
+                                    {"text": user_prompt},
+                                ]
+                            }]
+                        }
+                        resp = await self._http.post(
+                            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                            headers={"Content-Type": "application/json"},
+                            params={"key": gemini_key},
+                            json=payload,
+                            timeout=60.0,
+                        )
+                        resp.raise_for_status()
+                        candidates = resp.json().get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            return "".join(pt.get("text", "") for pt in parts)
+                except Exception as fallback_err:
+                    logger.warning(f"Vision fallback Gemini: {fallback_err}")
+            return ""
         except Exception as e:
-            logger.warning(f"Vision API ({vision_provider}): {e}")
+            logger.warning(f"Vision API ({vision_provider} / {vision_model_id}): {e}")
             return ""
         return ""
 

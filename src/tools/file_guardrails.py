@@ -215,7 +215,16 @@ class WorkspaceFileGuardrails:
         return Path(*safe_parts)
 
     def find_workspace_match(self, requested_path: Path, want_dir: bool = False) -> Optional[Path]:
-        """Find the most recent matching file/dir in workspace."""
+        """Find the best matching file/dir in workspace.
+
+        Scoring (higher is better):
+          - Pénalise les chemins "louches" : .backups/, .bak, _archive, old/, tmp/,
+            .history/, __pycache__/, node_modules/, et les sous-dossiers inclus dans
+            des dossiers datés (YYYY-MM-DD/) qui dupliquent un projet racine.
+          - Bonus forte pour les projets directement à la racine de workspace.
+          - En cas d'égalité → fichier le plus récent (mtime).
+        """
+        import re as _re_fw
         workspace_root = self._workspace_root()
         if not workspace_root.exists():
             return None
@@ -241,7 +250,68 @@ class WorkspaceFileGuardrails:
         if not matches:
             return None
 
-        matches.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        _DATE_RE = _re_fw.compile(r"^\d{4}-\d{2}-\d{2}$")
+        _BAD_SEG_RE = _re_fw.compile(
+            r"^(\.backups?|\.bak|_?archive|_?old|_?tmp|_?temp|\.history|"
+            r"__pycache__|node_modules|dist|build)$",
+            _re_fw.IGNORECASE,
+        )
+        _BAD_SUFFIXES = (".bak", ".backup", ".old", ".orig", ".tmp")
+
+        # Projets directement à la racine de workspace (référence anti-doublon)
+        try:
+            root_projects = {
+                d.name.lower()
+                for d in workspace_root.iterdir()
+                if d.is_dir() and not _DATE_RE.match(d.name) and not d.name.startswith(".")
+            }
+        except OSError:
+            root_projects = set()
+
+        def _score(item: Path) -> tuple[int, float]:
+            try:
+                rel_parts = item.relative_to(workspace_root).parts
+            except ValueError:
+                rel_parts = item.parts
+            score = 0
+            # Pénalité très forte : segment de chemin de type backup/archive/cache
+            for seg in rel_parts:
+                if _BAD_SEG_RE.match(seg):
+                    score -= 1000
+                if any(seg.lower().endswith(suf) for suf in _BAD_SUFFIXES):
+                    score -= 500
+            # Pénalité : filename avec suffixe de backup (ex: documentation.html.bak_200120)
+            name_lower = item.name.lower()
+            for suf in _BAD_SUFFIXES:
+                if suf in name_lower and not name_lower.endswith(requested_rel.suffix.lower() or ""):
+                    score -= 500
+            if _re_fw.search(r"\.bak[_.-]?\d*$", name_lower):
+                score -= 500
+            # Pénalité doublon : si le fichier est dans un dossier daté (YYYY-MM-DD)
+            # ET son parent-projet immédiat existe aussi à la racine workspace
+            # → c'est probablement une copie/miroir automatique.
+            for i, seg in enumerate(rel_parts[:-1]):
+                if _DATE_RE.match(seg) and i + 1 < len(rel_parts) - 1:
+                    # seg suivant = dossier projet dans le dossier daté
+                    date_child = rel_parts[i + 1]
+                    # Si un des segments suivants correspond à un projet racine → doublon
+                    for deeper in rel_parts[i + 2 : -1]:
+                        if deeper.lower() in root_projects:
+                            score -= 2000  # très forte pénalité : c'est un miroir
+                            break
+                    # Pénalité douce pour tout fichier rangé sous une date
+                    score -= 100
+                    break
+            # Bonus : chemin court (projet racine)
+            score -= len(rel_parts)
+            # Tiebreak : le plus récent gagne
+            try:
+                mtime = item.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            return (score, mtime)
+
+        matches.sort(key=_score, reverse=True)
         return matches[0]
 
     def resolve_user_path(self, path: str, want_dir: bool = False) -> Path:
@@ -285,7 +355,17 @@ class WorkspaceFileGuardrails:
                 elif candidate.is_absolute():
                     resolved = candidate
                 else:
-                    resolved = self.lumena_root / candidate
+                    # Anti-pollution: ne JAMAIS créer un fichier de projet web
+                    # (.html/.css/.js/.tsx...) directement à la racine de Lumena.
+                    # Rediriger vers workspace/<projet>/ via get_workspace_path().
+                    ext = candidate.suffix.lower()
+                    if ext in self._project_extensions:
+                        try:
+                            resolved = self.get_workspace_path(str(candidate))
+                        except Exception:
+                            resolved = self.lumena_root / candidate
+                    else:
+                        resolved = self.lumena_root / candidate
 
         # P0.2: Boundary check — must be inside lumena_root or workspace_root
         check_path_boundary(

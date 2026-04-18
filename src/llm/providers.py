@@ -597,7 +597,7 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         name="nvidia-glm-4.7",
         display_name="GLM-4.7 (NVIDIA NIM)",
         provider=ProviderType.NVIDIA,
-        model_id="z-ai/glm-4.7",
+        model_id="z-ai/glm4.7",
         context_window=131072,
         max_output_tokens=32768,
         supports_vision=False,
@@ -1104,12 +1104,96 @@ def best_model_for(
     return best_standard_name or best_premium_name  # fallback si aucun standard dispo
 
 
+def _detect_ollama_vision_models() -> List[str]:
+    """D\u00e9tecte les mod\u00e8les Ollama locaux avec support vision.
+
+    Interroge GET /api/tags sur le serveur Ollama et croise avec
+    les noms de familles vision connues.
+
+    Returns:
+        Liste de model_id Ollama vision disponibles (ex: ["llava:13b"]).
+    """
+    import time
+
+    now = time.monotonic()
+    cache = getattr(_detect_ollama_vision_models, "_cache", None)
+    if cache and (now - cache[0]) < 120:
+        return cache[1]
+
+    ollama_host = os.getenv("LUMENA_OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    _VISION_FAMILIES = {
+        "llava", "bakllava", "moondream", "minicpm-v", "llama3.2-vision",
+        "llava-llama3", "llava-phi3", "obsidian", "granite3-vision",
+        "granite3.1-vision", "qwen2-vl", "qwen2.5-vl",
+    }
+    result: List[str] = []
+    try:
+        import httpx
+        resp = httpx.get(f"{ollama_host}/api/tags", timeout=3.0)
+        if resp.status_code == 200:
+            for m in resp.json().get("models", []):
+                name: str = m.get("name", "")
+                base = name.split(":")[0].lower()
+                if base in _VISION_FAMILIES:
+                    result.append(name)
+    except Exception:
+        pass
+
+    _detect_ollama_vision_models._cache = (now, result)  # type: ignore[attr-defined]
+    return result
+
+
+def _resolve_vision_auto() -> Optional[str]:
+    """R\u00e9sout le meilleur mod\u00e8le vision en mode auto, gratuit d'abord.
+
+    Cascade :
+    1. Ollama local (mod\u00e8les vision d\u00e9tect\u00e9s dynamiquement) \u2014 gratuit
+    2. Mod\u00e8les cloud ultra-cheap (< $0.20/M) avec API key dispo
+    3. Mod\u00e8les cloud cheap (< $1.00/M) avec API key dispo
+    4. Mod\u00e8les cloud mid-tier (< $3.00/M) avec API key dispo
+    5. Fallback: best_model_for("vision") classique (meilleur score absolu)
+
+    \u00c0 chaque palier, on prend le mod\u00e8le avec le meilleur score vision.
+    """
+    # --- \u00c9tape 1 : Ollama local vision ---
+    local_vision = _detect_ollama_vision_models()
+    if local_vision:
+        for name, cfg in AVAILABLE_MODELS.items():
+            if cfg.provider == ProviderType.OLLAMA and cfg.supports_vision:
+                return name
+
+    # --- \u00c9tapes 2-4 : cloud par palier de co\u00fbt ---
+    for max_cost in (0.20, 1.00, 3.00):
+        best_name: Optional[str] = None
+        best_score = -1
+        for name, cfg in AVAILABLE_MODELS.items():
+            if not cfg.supports_vision or cfg.is_local():
+                continue
+            if cfg.cost_per_million_tokens > max_cost:
+                continue
+            if not check_api_key(cfg.provider):
+                continue
+            score = MODEL_SKILLS.get(name, {}).get("vision", 0)
+            if score > best_score:
+                best_score = score
+                best_name = name
+        if best_name:
+            logger.info(f"Vision auto: {best_name} (\u2264${max_cost}/M, score={best_score})")
+            return best_name
+
+    # --- \u00c9tape 5 : fallback classique ---
+    return best_model_for("vision")
+
+
 def get_brain_model(task: str) -> Optional[str]:
     """
     Retourne le mod\u00e8le optimal pour un type de t\u00e2che sp\u00e9cialis\u00e9.
 
     Lit d'abord la variable d'environnement LUMENA_BRAIN_{TASK.upper()},
     puis s\u00e9lectionne automatiquement via best_model_for(task).
+
+    Pour vision en mode auto, utilise une cascade co\u00fbt-efficace
+    (gratuit/local d'abord, puis cheap cloud, puis premium en fallback).
 
     Args:
         task: "vision" | "code" | "web" | "image_gen"
@@ -1131,6 +1215,10 @@ def get_brain_model(task: str) -> Optional[str]:
             if getattr(cfg, "supports_image_generation", False) and check_api_key(cfg.provider):
                 return name
         return None
+
+    # Vision auto : cascade gratuit \u2192 cheap \u2192 premium
+    if task == "vision":
+        return _resolve_vision_auto()
 
     return best_model_for(task)
 

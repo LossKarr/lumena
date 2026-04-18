@@ -75,6 +75,14 @@ except Exception:
 
 # ─── Helpers internes ──────────────────────────────────────────────────────
 
+def _invalidate_read_cache(file_path: Path) -> None:
+    """Levier 5: invalide le cache de lecture après toute modification."""
+    try:
+        from .batch import invalidate_file_cache
+        invalidate_file_cache(file_path)
+    except Exception:
+        pass
+
 def _record_file_edit(
     ctx: HandlerContext,
     *,
@@ -182,7 +190,15 @@ async def read_file_handler(
                 handler_name="read_file",
             )
 
-        content = resolved.read_text(encoding="utf-8", errors="replace")
+        # Levier 5: lecture via cache LRU + invalidation mtime
+        try:
+            from .batch import _read_text_cached as _cached_read
+            content = _cached_read(resolved)
+            if not content and resolved.stat().st_size > 0:
+                # Cache a échoué (ex. résolution iffy) → fallback direct
+                content = resolved.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            content = resolved.read_text(encoding="utf-8", errors="replace")
         lines = content.splitlines()
         total_lines = len(lines)
         if total_lines == 0:
@@ -510,6 +526,7 @@ async def write_file_handler(
             summary=summary,
             workspace_relative=write_workspace_relative or resolved_workspace_relative,
         )
+        _invalidate_read_cache(write_file_path)
         return HandlerResult.ok(write_message, handler_name="write_file")
     except Exception as e:
         return HandlerResult.fail(f"Erreur ecriture: {e}", handler_name="write_file")
@@ -545,6 +562,7 @@ async def delete_file_handler(ctx: HandlerContext, path: str) -> HandlerResult:
                 except ValueError:
                     pass
         file_path.unlink()
+        _invalidate_read_cache(file_path)
         return HandlerResult.ok(
             f"🗑️ Fichier supprimé\n- fichier: {file_path.name}\n- chemin: {file_path}",
             handler_name="delete_file",
@@ -679,6 +697,7 @@ async def edit_file_handler(
                 )
 
         after_content = _after_snapshot(resolved)
+        _invalidate_read_cache(resolved)
         _record_file_edit(
             ctx,
             tool_name="edit_file",
@@ -751,6 +770,173 @@ async def multi_edit_file_handler(ctx: HandlerContext, edits: list) -> HandlerRe
         return HandlerResult.ok(result, handler_name="multi_edit_file")
     except Exception as e:
         return HandlerResult.fail(f"❌ Erreur multi_edit: {e}", handler_name="multi_edit_file")
+
+
+def insert_at_anchor_core(
+    file_text: str,
+    anchor: str,
+    content: str,
+    position: str = "before",
+    occurrence: Any = "first",
+) -> str:
+    """
+    Insère ``content`` autour d'une ancre textuelle (language-agnostic).
+
+    - position ∈ {"before", "after", "replace"}
+    - occurrence ∈ {"first", "last", int (1-indexed)}
+
+    Raises ValueError si l'ancre est absente ou si les paramètres sont invalides.
+    Retourne le nouveau contenu complet.
+    """
+    if not anchor:
+        raise ValueError("anchor vide")
+    pos = (position or "before").lower().strip()
+    if pos not in ("before", "after", "replace"):
+        raise ValueError(f"position invalide: {position!r} (attendu: before/after/replace)")
+
+    # Collecte toutes les positions de l'ancre (exact match).
+    offsets: List[int] = []
+    start = 0
+    while True:
+        idx = file_text.find(anchor, start)
+        if idx < 0:
+            break
+        offsets.append(idx)
+        start = idx + 1  # overlaps OK
+
+    if not offsets:
+        raise ValueError(f"anchor introuvable: {anchor!r}")
+
+    # Résolution de l'occurrence.
+    if isinstance(occurrence, str):
+        occ_norm = occurrence.lower().strip()
+        if occ_norm in ("first", "", "1"):
+            target = offsets[0]
+        elif occ_norm == "last":
+            target = offsets[-1]
+        else:
+            try:
+                n = int(occ_norm)
+            except ValueError:
+                raise ValueError(f"occurrence invalide: {occurrence!r}")
+            if n < 1 or n > len(offsets):
+                raise ValueError(f"occurrence {n} hors bornes (1..{len(offsets)})")
+            target = offsets[n - 1]
+    elif isinstance(occurrence, int):
+        if occurrence < 1 or occurrence > len(offsets):
+            raise ValueError(f"occurrence {occurrence} hors bornes (1..{len(offsets)})")
+        target = offsets[occurrence - 1]
+    else:
+        raise ValueError(f"occurrence invalide: {occurrence!r}")
+
+    anchor_len = len(anchor)
+    if pos == "before":
+        # Préserve l'indentation de la ligne de l'ancre si content n'est pas déjà indenté.
+        line_start = file_text.rfind("\n", 0, target) + 1
+        indent = file_text[line_start:target]
+        content_has_leading_ws = content and content[0] in (" ", "\t")
+        if indent and indent.strip() == "" and not content_has_leading_ws:
+            # Préfixe chaque ligne du content avec l'indent de l'ancre.
+            insertion = indent + content.rstrip("\n") + "\n"
+        else:
+            insertion = content if content.endswith("\n") else content + "\n"
+        # Insertion au début de la ligne de l'ancre.
+        new_text = file_text[:line_start] + insertion + file_text[line_start:]
+    elif pos == "after":
+        # Insère juste après l'ancre (même ligne, continue en ligne suivante si content commence par \n).
+        end_of_anchor = target + anchor_len
+        if content.startswith("\n"):
+            insertion = content
+        else:
+            insertion = "\n" + content
+        if not insertion.endswith("\n"):
+            insertion += "\n"
+        new_text = file_text[:end_of_anchor] + insertion + file_text[end_of_anchor:]
+    else:  # replace
+        new_text = file_text[:target] + content + file_text[target + anchor_len:]
+
+    return new_text
+
+
+async def insert_at_anchor_handler(
+    ctx: HandlerContext,
+    path: str,
+    anchor: str,
+    content: str,
+    position: str = "before",
+    occurrence: Any = "first",
+) -> HandlerResult:
+    """
+    Insère ``content`` autour d'une ancre textuelle dans un fichier.
+
+    Action 1-shot pour remplacer le pattern "grep+read_file+str_replace" :
+    - HTML : anchor="</main>" / "</body>" / "<!-- DASHBOARD -->"
+    - Python : anchor="# END IMPORTS" / "def main():"
+    - JS/TS : anchor="export default" / "// EOF"
+    - Java/C# : anchor="} // end class"
+
+    position ∈ {"before", "after", "replace"}
+    occurrence ∈ {"first", "last", N} (N = 1-indexed)
+    """
+    try:
+        resolved = ctx.resolve_path(path)
+        if check_write_blacklist is not None:
+            try:
+                check_write_blacklist(resolved, ctx.lumena_root)
+            except PathSecurityError as sec_err:
+                return HandlerResult.fail(str(sec_err), handler_name="insert_at_anchor")
+
+        if not resolved.exists():
+            return HandlerResult.ok(
+                f"❌ Fichier introuvable: {path}",
+                handler_name="insert_at_anchor",
+            )
+
+        existed_before, before_content = _before_snapshot(resolved)
+        file_text = before_content or ""
+
+        try:
+            new_text = insert_at_anchor_core(
+                file_text=file_text,
+                anchor=anchor,
+                content=content,
+                position=position,
+                occurrence=occurrence,
+            )
+        except ValueError as ve:
+            return HandlerResult.ok(
+                f"❌ insert_at_anchor: {ve}. Relis le fichier et vérifie l'ancre exacte.",
+                handler_name="insert_at_anchor",
+            )
+
+        if new_text == file_text:
+            return HandlerResult.ok(
+                f"⚠️ insert_at_anchor: aucune modification (contenu identique)",
+                handler_name="insert_at_anchor",
+            )
+
+        resolved.write_text(new_text, encoding="utf-8")
+
+        after_content = _after_snapshot(resolved)
+        _invalidate_read_cache(resolved)
+        _record_file_edit(
+            ctx,
+            tool_name="insert_at_anchor",
+            action="patched",
+            file_path=resolved,
+            before_content=before_content,
+            after_content=after_content,
+            existed_before=existed_before,
+            summary=f"insert_at_anchor[{position}]: {resolved.name}",
+            workspace_relative=(_compute_workspace_relative(resolved, ctx.lumena_root)
+                                if _compute_workspace_relative else None),
+        )
+        return HandlerResult.ok(
+            f"✅ insert_at_anchor({position}) OK dans {path} (ancre: {anchor[:40]!r})",
+            handler_name="insert_at_anchor",
+        )
+    except Exception as e:
+        return HandlerResult.fail(f"❌ Erreur insert_at_anchor: {e}", handler_name="insert_at_anchor")
 
 
 async def apply_patch_handler(
@@ -1245,6 +1431,28 @@ def get_file_handler_defs() -> List[HandlerDef]:
                 "required": ["edits"],
             },
             handler=multi_edit_file_handler,
+            category="files",
+            source_module="handlers.files",
+        ),
+        HandlerDef(
+            name="insert_at_anchor",
+            description=(
+                "Insère du contenu autour d'une ancre textuelle (language-agnostic). "
+                "Remplace le pattern grep+read_file+str_replace en 1 seule action. "
+                "Marche pour tous les langages: HTML (</main>, </body>), Python (# END IMPORTS), "
+                "JS/TS (export default), Java/C# (} // end class), CSS (/* END */), etc."
+            ),
+            parameters={
+                "properties": {
+                    "path": {"type": "string", "description": "Chemin du fichier à modifier"},
+                    "anchor": {"type": "string", "description": "Texte exact à localiser dans le fichier (ex: '</main>', '# END IMPORTS')"},
+                    "content": {"type": "string", "description": "Contenu à insérer"},
+                    "position": {"type": "string", "description": "Où insérer: 'before' (défaut) | 'after' | 'replace' (remplace l'ancre)"},
+                    "occurrence": {"type": "string", "description": "Quelle occurrence: 'first' (défaut) | 'last' | N (entier 1-indexé)"},
+                },
+                "required": ["path", "anchor", "content"],
+            },
+            handler=insert_at_anchor_handler,
             category="files",
             source_module="handlers.files",
         ),

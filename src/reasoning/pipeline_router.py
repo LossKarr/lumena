@@ -101,14 +101,56 @@ _SKILL_EXCLUSION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Intent destructif : suppression/retrait → JAMAIS un pipeline direct.
+# Ces requêtes doivent passer par ReAct pour que le LLM comprenne quoi supprimer.
+_DESTRUCTIVE_INTENT_RE = re.compile(
+    r"\b(supprim\w*|enlev\w*|enlèv\w*|retir\w*|effac\w*|delete\w*|remove\w*|"
+    r"détruir\w*|detruir\w*|vir\w*er|nettoi\w*|purge\w*|élimin\w*|elimin\w*|"
+    r"désactiv\w*|desactiv\w*|cach\w*er)\b",
+    re.IGNORECASE,
+)
+
+# Détecte si les mots-clés deploy apparaissent uniquement dans un contexte
+# nominal (nom de section, guillemets, etc.) et pas comme un verbe d'action.
+_DEPLOY_AS_NOUN_RE = re.compile(
+    r"(?:[\"\«\»\u201C\u201D']|(?:section|partie|bloc|zone|titre|rubrique|cat[eé]gorie|onglet)\s+(?:de\s+|du\s+|des\s+)?)"
+    r"(?:d[eé]ploiement|deploy\w*)",
+    re.IGNORECASE,
+)
+
 # ---------------------------------------------------------------------------
 # Matchers — fonctions booléennes testées dans l'ordre.
 # Un seul match suffit pour déclencher le pipeline.
 # ---------------------------------------------------------------------------
 
+def _has_destructive_intent(query: str) -> bool:
+    """Vérifie si la requête exprime une intention de suppression/retrait."""
+    return bool(_DESTRUCTIVE_INTENT_RE.search(query))
+
+
+def _deploy_is_contextual(query: str) -> bool:
+    """Vérifie si 'deploy/déploiement' apparaît comme nom de section, pas comme verbe.
+
+    Ex: 'supprime la partie Déploiement Automatique' → deploy est un noun
+    Ex: 'déploie le site sur ionos' → deploy est un verbe d'action
+    """
+    if not _DEPLOY_AS_NOUN_RE.search(query):
+        return False
+    # Vérifier qu'il n'y a PAS aussi un vrai verbe de deploy
+    # (ex: 'supprime la section Deploy et redéploie' → verbe + noun)
+    _verb_deploy = re.search(
+        r"\b(d[eé]ploi(?:e[rsz]?|er|ons|ez|ent)|deploy(?:s|ed|ing)?)\b",
+        query, re.IGNORECASE,
+    )
+    return not _verb_deploy
+
+
 def _match_edit_and_deploy(query: str) -> bool:
     """Détecte 'modifie/améliore/complète un site web ET déploie/upload'."""
     q = query.lower()
+    # Intent destructif → jamais un pipeline direct
+    if _has_destructive_intent(q):
+        return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"
         r"corrig\w*|r[eé]par\w*|refond\w*|redesign\w*|update\w*|edit\w*|improv\w*|upgrad\w*)\b",
@@ -123,6 +165,9 @@ def _match_edit_and_deploy(query: str) -> bool:
         r"ionos|openlumena|h[eé]berg\w*|sftp)\b",
         q,
     ))
+    # Deploy contextuel (nom de section) → pas de vrai intent deploy
+    if has_deploy and _deploy_is_contextual(query):
+        has_deploy = False
     has_skill_kw = bool(_SKILL_EXCLUSION_RE.search(q))
     return has_edit and has_site and has_deploy and not has_skill_kw
 
@@ -130,6 +175,9 @@ def _match_edit_and_deploy(query: str) -> bool:
 def _match_edit_website_only(query: str) -> bool:
     """Détecte 'modifie/améliore un site web' SANS demande de deploy."""
     q = query.lower()
+    # Intent destructif → jamais un pipeline direct
+    if _has_destructive_intent(q):
+        return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"
         r"corrig\w*|r[eé]par\w*|refond\w*|redesign\w*|update\w*|edit\w*|improv\w*|upgrad\w*)\b",
@@ -151,6 +199,9 @@ def _match_edit_website_only(query: str) -> bool:
 def _match_deploy_only(query: str) -> bool:
     """Détecte 'déploie/upload le site' sans demande de modification."""
     q = query.lower()
+    # Intent destructif → jamais un pipeline direct
+    if _has_destructive_intent(q):
+        return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"
         r"corrig\w*|r[eé]par\w*|refond\w*|redesign\w*|update\w*|edit\w*|improv\w*|upgrad\w*)\b",
@@ -161,6 +212,9 @@ def _match_deploy_only(query: str) -> bool:
         r"ionos|h[eé]berg\w*|sftp)\b",
         q,
     ))
+    # Deploy contextuel (nom de section) → pas de vrai intent deploy
+    if has_deploy and _deploy_is_contextual(query):
+        return False
     # Pas de verbe d'édition → deploy only
     return has_deploy and not has_edit
 

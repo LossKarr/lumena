@@ -89,25 +89,71 @@ async def finetuning_status(_auth=Depends(deps.verify_admin_token)):
 
 @router.get("/api/finetuning/models")
 async def finetuning_models(_auth=Depends(deps.verify_admin_token)):
-    """All fine-tunable models with VRAM fit info."""
-    from src.training.gpu_detect import detect_gpu_safe, recommend_models, detect_ollama_installed_models, FINETUNE_CATALOG
+    """All fine-tunable models with VRAM fit info + auto-detected Ollama models."""
+    from src.training.gpu_detect import detect_gpu_safe, detect_ollama_installed_models, FINETUNE_CATALOG
     gpu = detect_gpu_safe()
     vram = gpu.get("vram_gb", 0)
     ollama = detect_ollama_installed_models()
-    installed_set = set(ollama)
+
+    # Build flexible installed lookup: exact name + base (without quant suffix)
+    installed_set: set[str] = set(ollama)
+    installed_bases: set[str] = set()
+    for m in ollama:
+        installed_bases.add(m.split(":")[0])
+
+    def _is_installed(oid: str) -> bool:
+        if oid in installed_set:
+            return True
+        base = oid.split(":")[0]
+        if base in installed_bases:
+            return True
+        # Match e.g. "qwen3:8b" against "qwen3:8b-q4_0"
+        for inst in installed_set:
+            if inst.startswith(oid):
+                return True
+        return False
 
     models = []
+    catalog_bases: set[str] = set()
     for entry in FINETUNE_CATALOG:
         if not entry["finetune_ok"]:
             continue
         oid = entry["ollama_id"]
-        already = oid in installed_set
+        catalog_bases.add(oid)
+        catalog_bases.add(oid.split(":")[0])
+        already = _is_installed(oid)
         fits = entry["vram_ft_min_gb"] <= vram if vram > 0 else False
         models.append({**entry, "already_installed": already, "fits_vram": fits})
 
-    # Sort: fits first, then installed, then by vram ascending (smaller = more accessible)
-    models.sort(key=lambda x: (-x["fits_vram"], -x["already_installed"], x["vram_ft_min_gb"]))
-    return {"models": models, "gpu": gpu}
+    # Auto-detect: add installed Ollama models NOT in catalog
+    for name in ollama:
+        base = name.split(":")[0]
+        if name in catalog_bases or base in catalog_bases:
+            continue
+        # Infer category from name
+        cat = "llm"
+        lower = name.lower()
+        if any(v in lower for v in ("llava", "bakllava", "moondream", "minicpm-v", "vision")):
+            cat = "vision"
+        elif any(c in lower for c in ("coder", "codestral", "starcoder", "deepseek-coder")):
+            cat = "code"
+        models.append({
+            "ollama_id": name,
+            "params": "?",
+            "category": cat,
+            "desc": "Modèle Ollama détecté (installé localement)",
+            "hf_id_4bit": None,
+            "hf_id_full": None,
+            "vram_ft_min_gb": 0,
+            "finetune_ok": True,
+            "already_installed": True,
+            "fits_vram": True,
+            "auto_detected": True,
+        })
+
+    # Sort: installed first, then fits, then by vram ascending
+    models.sort(key=lambda x: (-x["already_installed"], -x["fits_vram"], x["vram_ft_min_gb"]))
+    return {"models": models, "gpu": gpu, "ollama_installed": ollama}
 
 
 @router.get("/api/finetuning/dataset-stats")

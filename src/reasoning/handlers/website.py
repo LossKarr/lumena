@@ -150,6 +150,61 @@ async def stop_website_server_handler(ctx: HandlerContext) -> HandlerResult:
         return HandlerResult.fail(f"❌ Erreur stop_website_server: {e}", handler_name="stop_website_server")
 
 
+def _detect_target_html_files(target: "Path", modifications: str) -> list[str]:
+    """Détecte quel(s) fichier(s) HTML contiennent les sélecteurs/IDs/classes mentionnés
+    dans `modifications`. Retourne la liste des noms relatifs (ex: ["documentation.html"]).
+
+    Heuristique :
+    1. Extraire les IDs (#xxx) et classes (.xxx) des modifications.
+    2. Extraire les noms de fichiers HTML littéralement mentionnés (foo.html).
+    3. Pour chaque .html du projet, compter les matches de ces tokens.
+    4. Retourner les fichiers triés par score décroissant (>=1 match).
+    """
+    import re
+    from pathlib import Path
+
+    # Fichiers littéralement mentionnés dans modifications (prioritaires)
+    literal_files = set()
+    for m in re.finditer(r"([\w./\\-]+\.html)\b", modifications, re.IGNORECASE):
+        name = m.group(1).replace("\\", "/").split("/")[-1]
+        literal_files.add(name.lower())
+
+    # Tokens IDs/classes (minimum 3 chars pour éviter bruit)
+    tokens = set()
+    for m in re.finditer(r"[#.]([A-Za-z][\w-]{2,})", modifications):
+        tokens.add(m.group(1))
+
+    scores: dict[str, int] = {}
+    for f in target.rglob("*.html"):
+        if not f.is_file():
+            continue
+        rel = str(f.relative_to(target)).replace("\\", "/")
+        name_lower = f.name.lower()
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        score = 0
+        # Fichier littéralement mentionné → score très élevé
+        if name_lower in literal_files:
+            score += 1000
+        # Compter tokens présents
+        for tok in tokens:
+            if f'id="{tok}"' in text or f"id='{tok}'" in text:
+                score += 10
+            if f'class="{tok}"' in text or f'class="' in text and tok in text:
+                # Vérif plus stricte pour class
+                if re.search(rf'class\s*=\s*["\'][^"\']*\b{re.escape(tok)}\b', text):
+                    score += 5
+        if score > 0:
+            scores[rel] = score
+
+    if not scores:
+        return []
+    # Tri décroissant
+    return [name for name, _ in sorted(scores.items(), key=lambda x: x[1], reverse=True)]
+
+
 def _read_project_files(target: "Path", max_total_chars: int = 16000) -> str:
     """Lit tous les fichiers HTML/CSS/JS du projet et retourne leur contenu formaté."""
     _WEB_SUFFIXES = {".html", ".css", ".js", ".json", ".svg"}
@@ -222,19 +277,43 @@ async def _edit_website_via_codeagent(
             len(files_dump),
         )
 
+        # Détecter le(s) fichier(s) HTML cible(s) à partir des sélecteurs/mentions
+        target_files = _detect_target_html_files(target, modifications)
+        if target_files:
+            primary = target_files[0]
+            logger.info(
+                "[edit_website] Fichier(s) HTML cible détecté(s): {} (primaire: {})",
+                target_files, primary,
+            )
+            target_hint = (
+                f"\n## 🎯 FICHIER CIBLE PRINCIPAL : `{primary}`\n"
+                f"Les sélecteurs/IDs/classes présents dans les modifications "
+                f"correspondent à ce fichier. **Édite `{primary}` en priorité**, "
+                f"PAS les autres fichiers HTML.\n"
+            )
+            if len(target_files) > 1:
+                target_hint += f"(Fichiers secondaires potentiellement impactés : {', '.join(target_files[1:])})\n"
+        else:
+            target_hint = ""
+
         description = (
-            f"Modifie le site web dans le dossier '{target}'.\n\n"
+            f"Modifie le site web dans le dossier '{target}'.\n"
+            f"{target_hint}\n"
             f"## Modifications demandées\n{modifications}\n\n"
             f"## Fichiers ACTUELS du projet (contenu complet)\n"
             f"Utilise TOUJOURS les chemins ABSOLUS (ex: '{target}/index.html') "
             f"pour str_replace ou write_file.\n"
             f"{files_dump}\n\n"
             f"{_LUMENA_SELF_CONTEXT}\n"
-            "## Instructions\n"
-            "1. Tu as DÉJÀ le contenu de tous les fichiers ci-dessus. NE FAIS PAS de read_file/list_files.\n"
-            "2. Utilise str_replace ou edit_lines pour appliquer les modifications.\n"
-            "3. Vérifie la cohérence HTML↔CSS↔JS après modification.\n"
-            "4. Quand tu as fini, utilise ACTION: done."
+            "## Instructions STRICTES\n"
+            "1. Tu as DÉJÀ le contenu complet de tous les fichiers ci-dessus. "
+            "**NE FAIS AUCUN `read_file` ni `list_files`** — c'est une perte de temps.\n"
+            "2. Commence DIRECTEMENT par `str_replace` ou `edit_lines` sur le FICHIER CIBLE indiqué ci-dessus.\n"
+            "3. Si un sélecteur CSS n'existe pas dans le fichier cible, crée-le avec la structure demandée.\n"
+            "4. Vérifie la cohérence HTML↔CSS↔JS après modification.\n"
+            "5. Quand tu as fini, utilise ACTION: done.\n"
+            "⚠️ Toute action `read_file` sur un fichier déjà dumpé ci-dessus sera considérée "
+            "comme une erreur et pénalisée."
         )
         context = {
             "project_dir": str(target),
@@ -262,7 +341,7 @@ async def _edit_website_via_codeagent(
 
 async def edit_website_handler(
     ctx: HandlerContext,
-    modifications: str = "",
+    modifications="",
     project_name: str = "",
     directory: str = "",
 ) -> HandlerResult:
@@ -271,6 +350,20 @@ async def edit_website_handler(
     try:
         from loguru import logger
         from pathlib import Path
+        import json as _json
+
+        # Fix: le LLM envoie souvent `modifications` en liste/dict structuré
+        # (format naturel pour des hunks multi-fichiers). On sérialise en texte
+        # pour que le CodeAgent (qui attend une string) puisse l'exploiter.
+        if isinstance(modifications, (list, dict)):
+            try:
+                modifications = _json.dumps(modifications, ensure_ascii=False, indent=2)
+            except Exception:
+                modifications = str(modifications)
+        elif modifications is None:
+            modifications = ""
+        elif not isinstance(modifications, str):
+            modifications = str(modifications)
 
         # Résoudre le répertoire cible
         if directory:
@@ -347,11 +440,19 @@ async def check_web_project_handler(
     from pathlib import Path
 
     # Résoudre le répertoire
+    from ...utils.paths import WORKSPACE_DIR
     if project_dir:
-        base = Path(ctx.lumena_root) / project_dir if not Path(project_dir).is_absolute() else Path(project_dir)
+        if Path(project_dir).is_absolute():
+            base = Path(project_dir)
+        else:
+            # Essayer d'abord sous lumena_root, puis sous WORKSPACE_DIR
+            base = Path(ctx.lumena_root) / project_dir
+            if not base.exists():
+                ws_candidate = WORKSPACE_DIR / project_dir
+                if ws_candidate.exists():
+                    base = ws_candidate
     else:
         # Chercher le dernier projet web généré dans workspace/
-        from ...utils.paths import WORKSPACE_DIR
         ws = WORKSPACE_DIR
         candidates = sorted(
             [d for d in ws.rglob("index.html") if d.is_file()],

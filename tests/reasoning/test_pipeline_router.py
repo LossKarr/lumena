@@ -207,3 +207,74 @@ class TestRunPipeline:
             await run_pipeline(pipe, "déploie sur openlumena.com", mock_registry)
         call_args = mock_registry.execute.call_args
         assert call_args[0][1].get("site") == "openlumena.com"
+
+
+# ──────────────────────────────────────────────────────────
+# P0 Fix: intent destructif + deploy-as-noun guards
+# ──────────────────────────────────────────────────────────
+
+class TestDestructiveIntentGuard:
+    """Requêtes de suppression/retrait ne doivent JAMAIS déclencher un pipeline."""
+
+    def test_supprime_section_deploiement(self):
+        """Bug prod: 'supprime la partie Déploiement Automatique' déclenchait deploy_only."""
+        assert not _match_deploy_only("supprime la partie Déploiement Automatique sur le site")
+        assert match_pipeline("supprime la partie Déploiement Automatique sur le site") is None
+
+    def test_enleve_section_deploy(self):
+        assert not _match_edit_and_deploy("enlève la section deploy du site et redéploie")
+        assert not _match_deploy_only("enlève la section deploy")
+
+    def test_retire_module(self):
+        assert match_pipeline("retire le module de déploiement du site web") is None
+
+    def test_efface_page(self):
+        assert match_pipeline("efface la page de déploiement du site") is None
+
+    def test_delete_deploy_section(self):
+        assert match_pipeline("delete the deployment section from the website") is None
+
+    def test_remove_deploy(self):
+        assert match_pipeline("remove the deploy page from my site") is None
+
+    def test_supprime_sans_deploy_site(self):
+        """Supprime sans contexte site → pas de pipeline (aucun matcher)."""
+        assert match_pipeline("supprime ce fichier") is None
+
+    def test_desactive_deploiement(self):
+        assert match_pipeline("désactive le déploiement automatique sur le site") is None
+
+    def test_nettoie_site(self):
+        assert match_pipeline("nettoie le site web et enlève les sections inutiles") is None
+
+
+class TestDeployAsNounGuard:
+    """'Déploiement' comme nom de section ≠ verbe 'déploie'."""
+
+    def test_partie_deploiement(self):
+        """'la partie Déploiement' → noun, pas un verbe."""
+        assert not _match_deploy_only("modifie la partie Déploiement Automatique")
+
+    def test_section_deploy(self):
+        assert not _match_deploy_only("la section de déploiement est obsolète")
+
+    def test_titre_deploiement(self):
+        assert not _match_deploy_only("change le titre déploiement continu")
+
+    def test_vrai_verbe_deploie_toujours(self):
+        """Un vrai verbe 'déploie' continue de matcher."""
+        assert _match_deploy_only("déploie le site sur IONOS")
+
+    def test_upload_toujours(self):
+        """'upload' est toujours un verbe d'action."""
+        assert _match_deploy_only("upload les fichiers sur SFTP")
+
+    def test_publie_toujours(self):
+        assert _match_deploy_only("publie mon site web")
+
+    def test_edit_and_deploy_still_works(self):
+        """Les vrais edit+deploy continuent de fonctionner."""
+        assert _match_edit_and_deploy("améliore mon site web et déploie sur IONOS")
+
+    def test_edit_only_still_works(self):
+        assert _match_edit_website_only("améliore mon site web")

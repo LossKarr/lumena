@@ -220,8 +220,8 @@ class TestNoDuplicates:
         Si ce nombre change, il faut mettre à jour ce test
         (et comprendre pourquoi).
         """
-        assert len(ALL_HDEFS) == 229, (
-            f"Attendu 229 handlers, trouvé {len(ALL_HDEFS)}. "
+        assert len(ALL_HDEFS) == 230, (
+            f"Attendu 230 handlers, trouvé {len(ALL_HDEFS)}. "
             f"Mettre à jour ce test si ajout/suppression intentionnel."
         )
 

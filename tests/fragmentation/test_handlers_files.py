@@ -198,7 +198,7 @@ class TestViewOutline:
 class TestHandlerDefs:
     def test_all_defs_have_required_fields(self):
         defs = get_file_handler_defs()
-        assert len(defs) == 18  # 18 tools (14 originaux + create_directory + file_crawl_campaign + file_crawl_campaign_status + file_crawl_campaign_export)
+        assert len(defs) == 19  # +insert_at_anchor (18 → 19)
         for d in defs:
             assert d.name
             assert d.description

@@ -164,6 +164,8 @@ class AgentService:
             "nvidia v3.2": "nvidia-deepseek-v3.2",
             "nvidia v3.1": "nvidia-deepseek-v3.1",
             "nvidia glm": "nvidia-glm-4.7",
+            "glm 5": "nvidia-glm-4.7",
+            "glm5": "nvidia-glm-4.7",
             "glm 4.7": "nvidia-glm-4.7",
             "glm4.7": "nvidia-glm-4.7",
             "glm 9b": "nvidia-glm-4.7",

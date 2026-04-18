@@ -159,6 +159,7 @@ class ToolRegistry:
             (".handlers.remotion",       "get_video_handler_defs",         "video"),
             (".handlers.ionos",          "get_ionos_handler_defs",         "ionos"),
             (".handlers.image_gen",     "get_image_gen_handler_defs",     "image"),
+            (".handlers.batch",          "get_batch_handler_defs",         "files"),
         ]
 
         import importlib
@@ -986,6 +987,26 @@ class ToolRegistry:
                     k for k, v in tool_schema.items()
                     if isinstance(v, dict) and v.get("required", False)
                 ]
+            # --- Alias communs LLM→handler (anti-frustration : task↔description, etc.) ---
+            _GENERIC_PARAM_ALIASES = {
+                "task": "description",
+                "instruction": "description",
+                "instructions": "description",
+                "query": "description",
+                "prompt": "description",
+                "msg": "message",
+                "text": "message",
+                "filepath": "path",
+                "file_path": "path",
+                "filename": "path",
+            }
+            for _alias, _canonical in _GENERIC_PARAM_ALIASES.items():
+                if (
+                    _alias in args
+                    and _canonical in _required_params
+                    and _canonical not in args
+                ):
+                    args[_canonical] = args.pop(_alias)
             _missing = [p for p in _required_params if p not in args or args[p] is None]
             if _missing:
                 return Observation(
@@ -1085,12 +1106,23 @@ class ToolRegistry:
 
                 folded_variants = [_fold_status_text(v) for v in variants]
 
+                # FIX: n'analyser que le PRÉFIXE (200 premiers chars) pour éviter
+                # les faux positifs sur un payload légitime (doc, code) qui
+                # contient par hasard les mots "validation/failed/invalid/…".
+                # Un vrai message d'erreur commence toujours par l'erreur.
+                folded_prefixes = [text[:200] for text in folded_variants]
+
+                # FIX: sortie volumineuse (>1500 chars) = payload de données, pas
+                # une erreur (les erreurs sont courtes). On skip la détection par
+                # mots-clés pour ces cas.
+                is_large_payload = len(raw) >= 1500
+
                 starts_with_error = any(
                     text.startswith(prefix)
-                    for text in folded_variants
+                    for text in folded_prefixes
                     for prefix in ("error", "erreur", "echec", "failed", "failure", "timeout")
                 )
-                validation_failure = any(
+                validation_failure = (not is_large_payload) and any(
                     "validation" in text
                     and any(
                         token in text
@@ -1102,16 +1134,14 @@ class ToolRegistry:
                             "invalid",
                             "invalide",
                             "interdit",
-                            "vide",
-                            "empty",
                         )
                     )
-                    for text in folded_variants
+                    for text in folded_prefixes
                 )
-                missing_param_error = any(
+                missing_param_error = (not is_large_payload) and any(
                     ("parametre" in text or "parameter" in text or "argument" in text)
                     and any(token in text for token in ("missing", "manquant", "required", "requis"))
-                    for text in folded_variants
+                    for text in folded_prefixes
                 )
 
                 # Vérifier aussi les marqueurs unicode d'erreur dans le texte brut

@@ -91,9 +91,9 @@ class TestV2RegistrationP2:
         assert not missing, f"Handlers P1 disparus: {missing}"
 
     def test_total_count(self, v2_registry):
-        """Le registre contient bien P1 files (18) + system + memory (11) + web (10) = 45."""
+        """Le registre contient bien P1 files (19) + system + memory (11) + web (10) = 46."""
         count = len(v2_registry.tool_names)
-        assert count == 45, f"Attendu 45, obtenu {count}"
+        assert count == 46, f"Attendu 46, obtenu {count}"
 
     def test_parity_report_p1_p2(self, v2_registry):
         """Le rapport de parité montre 100% pour tous les outils P1+P2."""

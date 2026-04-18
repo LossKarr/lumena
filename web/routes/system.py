@@ -30,7 +30,7 @@ router = APIRouter()
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 _web_dir = Path(__file__).resolve().parent.parent
-from src.utils.paths import ROOT_DIR, RECEIVED_DOCS_DIR
+from src.utils.paths import ROOT_DIR, RECEIVED_DOCS_DIR, JOURNAL_JSON, ALERTS_DIR, SCHEDULER_DIR
 _PROJECT_ROOT = ROOT_DIR
 _UPLOAD_DIR = RECEIVED_DOCS_DIR
 _UPLOAD_MAX_SIZE = 20 * 1024 * 1024  # 20MB
@@ -66,6 +66,8 @@ def _default_llm_meta() -> Dict[str, Any]:
         "continuation_used": False,
         "continuation_steps": 0,
         "finish_reason": None,
+        "prompt_tokens": None,
+        "completion_tokens": None,
     }
 
 
@@ -729,6 +731,45 @@ async def get_status():
     if deps.lumena.instinct_system:
         inst_stats = deps.lumena.instinct_system.get_stats()
         stats["instincts_count"] = inst_stats["total_instincts"]
+
+    # Tool count
+    _ts = getattr(deps.lumena, "tool_system", None)
+    if _ts:
+        try:
+            stats["tool_count"] = _ts.tool_count
+        except Exception:
+            pass
+
+    # Journal total (lightweight: count entries without parsing content)
+    try:
+        if JOURNAL_JSON.exists():
+            _jdata = json.loads(JOURNAL_JSON.read_text(encoding="utf-8", errors="replace"))
+            stats["journal_total"] = len(_jdata) if isinstance(_jdata, list) else 0
+    except Exception:
+        pass
+
+    # Scheduler tasks count (active = not cancelled)
+    try:
+        _conv_path = SCHEDULER_DIR / "conversation_tasks.json"
+        if _conv_path.exists():
+            _tdata = json.loads(_conv_path.read_text(encoding="utf-8", errors="replace"))
+            _raw = _tdata.get("tasks", {}) if isinstance(_tdata, dict) else {}
+            stats["scheduler_tasks_active"] = sum(
+                1 for t in _raw.values()
+                if isinstance(t, dict) and not t.get("cancelled_at")
+            )
+    except Exception:
+        pass
+
+    # Alerts count
+    try:
+        _alert_path = ALERTS_DIR / "critical_alerts.log"
+        _alert_count = 0
+        if _alert_path.exists():
+            _alert_count = sum(1 for ln in _alert_path.read_text(encoding="utf-8", errors="replace").splitlines() if ln.strip())
+        stats["alerts_total"] = _alert_count
+    except Exception:
+        pass
 
     return stats
 

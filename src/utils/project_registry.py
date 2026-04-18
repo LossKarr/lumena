@@ -234,6 +234,30 @@ def find_project(query: str) -> Optional[Path]:
         _q_all_words = set(re.sub(r"[^a-z0-9\s]", " ", _q_normalized).split())
         _q_all_words -= {""}
 
+        # Pré-calculer les projets "racine" (directement sous workspace/, pas dans un
+        # dossier daté) pour détecter les doublons-miroirs (ex: `2026-04-17/projet-web-foo/
+        # SITE WEB LUMENA/` est un miroir du vrai `SITE WEB LUMENA/` racine).
+        _root_project_names: set[str] = set()
+        try:
+            for _d in WORKSPACE_DIR.iterdir():
+                if _d.is_dir() and not re.match(r"\d{4}-\d{2}-\d{2}$", _d.name) \
+                        and not _d.name.startswith(("_", ".")):
+                    _root_project_names.add(_d.name.lower())
+        except OSError:
+            pass
+
+        def _is_mirror_of_root(proj_dir: Path) -> bool:
+            """True si proj_dir contient un sous-dossier nommé comme un projet racine."""
+            if not _root_project_names:
+                return False
+            try:
+                for sub in proj_dir.iterdir():
+                    if sub.is_dir() and sub.name.lower() in _root_project_names:
+                        return True
+            except OSError:
+                pass
+            return False
+
         def _score_dir(proj_dir: Path) -> float:
             _slug = proj_dir.name
             # Blacklist : dossiers système → score 0
@@ -259,7 +283,11 @@ def find_project(query: str) -> Optional[Path]:
                     _base += 0.1
             except OSError:
                 pass
-            return _base
+            # Pénalité C: dossier-miroir (contient un sous-dossier identique à un
+            # projet racine) → on réduit fort pour laisser gagner l'original.
+            if _is_mirror_of_root(proj_dir):
+                _base -= 0.5
+            return max(0.0, _base)
 
         try:
             for _date_dir in sorted(WORKSPACE_DIR.iterdir(), reverse=True):

@@ -37,6 +37,8 @@ class ChatResponse(BaseModel):
     continuation_used: bool = False
     continuation_steps: int = 0
     finish_reason: Optional[str] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
     agent_output_incomplete: bool = False
     agent_output_warning: Optional[str] = None
     agent_repair_attempts: int = 0

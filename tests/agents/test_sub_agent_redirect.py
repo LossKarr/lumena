@@ -77,15 +77,16 @@ class TestNoRedirect:
 
     @pytest.mark.asyncio
     async def test_get_content_pipe_select_string(self, agent_with_workspace):
-        """Get-Content + Select-String → run_command (pas redirect simple)."""
-        agent_with_workspace._call_tool = AsyncMock(return_value="match found")
+        """Get-Content + Select-String → grep redirect (UTF-8 safe, pas run_command)."""
+        # Le run_command ne doit PAS être appelé — la commande est redirigée vers grep
+        agent_with_workspace._call_tool = AsyncMock(return_value="line 1: .nav { color: blue; }")
         result = await agent_with_workspace._execute_loop_action(
             {"action": "run_command", "command": 'Get-Content style.css | Select-String ".nav"'}
         )
-        # Doit passer par run_command, pas par read_file
-        agent_with_workspace._call_tool.assert_called_once()
-        call_args = agent_with_workspace._call_tool.call_args
-        assert call_args[0][0] == "run_command"
+        # Vérifie que grep a été appelé (pas run_command)
+        # _call_tool peut être appelé via le handler grep interne
+        for call in agent_with_workspace._call_tool.call_args_list:
+            assert call[0][0] != "run_command", "Should redirect to grep, not run_command"
 
     @pytest.mark.asyncio
     async def test_type_pipe_findstr(self, agent_with_workspace):

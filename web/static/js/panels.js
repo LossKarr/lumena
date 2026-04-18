@@ -415,34 +415,48 @@ function _renderFtModels(models){
     return;
   }
 
+  // Group: installed first, then by category
+  const installed=models.filter(m=>m.already_installed);
+  const notInstalled=models.filter(m=>!m.already_installed);
+
+  const sections=[];
+  if(installed.length){
+    sections.push({label:'INSTALLÉS',items:installed});
+  }
   const cats={llm:[],code:[],vision:[]};
-  for(const m of models){const c=m.category||'llm';if(!cats[c])cats[c]=[];cats[c].push(m);}
+  for(const m of notInstalled){const c=m.category||'llm';if(!cats[c])cats[c]=[];cats[c].push(m);}
+  for(const [cat,items] of Object.entries(cats)){
+    if(items.length)sections.push({label:cat.toUpperCase(),items});
+  }
 
   let firstPicked=false;
-  for(const [cat,items] of Object.entries(cats)){
-    if(!items.length)continue;
-    const lbl=document.createElement('div');lbl.className='ft-select-group-label';lbl.textContent=cat.toUpperCase();
+  for(const sec of sections){
+    const lbl=document.createElement('div');lbl.className='ft-select-group-label';lbl.textContent=sec.label;
     dropdown.appendChild(lbl);
-    for(const m of items){
+    for(const m of sec.items){
       const opt=document.createElement('div');opt.className='ft-select-option';
       const val=m.hf_id_4bit||m.hf_id_full||m.ollama_id;
       opt.dataset.value=val;
       opt.dataset.ollamaTag=m.ollama_id;
       const tags=[];
-      if(m.already_installed)tags.push('installe');
-      if(m.fits_vram===false)tags.push('VRAM insuffisante');
-      const tagStr=tags.length?` (${tags.join(', ')})`:'';
-      opt.textContent=`${m.ollama_id} — ${m.params} — ${m.vram_ft_min_gb} Go VRAM${tagStr}`;
-      if(m.fits_vram===false)opt.classList.add('dimmed');
+      if(m.already_installed)tags.push('\u2705 installé');
+      if(m.auto_detected)tags.push('auto-détecté');
+      if(m.fits_vram===false)tags.push('\u26a0 VRAM insuffisante');
+      const tagStr=tags.length?` [${tags.join(' | ')}]`:'';
+      const vramStr=m.vram_ft_min_gb>0?` — ${m.vram_ft_min_gb} Go VRAM`:'';
+      const paramsStr=m.params&&m.params!=='?'?` — ${m.params}`:'';
+      opt.textContent=`${m.ollama_id}${paramsStr}${vramStr}${tagStr}`;
+      if(m.fits_vram===false&&!m.already_installed)opt.classList.add('dimmed');
       opt.addEventListener('click',()=>_ftSelectOption(wrap,opt));
       dropdown.appendChild(opt);
-      if(!firstPicked&&(m.fits_vram||m.already_installed)){
+      if(!firstPicked&&m.already_installed){
         _ftSelectOption(wrap,opt,true);firstPicked=true;
       }
     }
   }
   if(!firstPicked){
-    const first=dropdown.querySelector('.ft-select-option');
+    // Pick first fitting model
+    const first=dropdown.querySelector('.ft-select-option:not(.dimmed)')||dropdown.querySelector('.ft-select-option');
     if(first)_ftSelectOption(wrap,first,true);
   }
 

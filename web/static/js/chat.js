@@ -476,6 +476,7 @@ export function buildMetaHtml(meta){
   if(!meta)return'';
   const pills=[];
   if(meta.provider_used||meta.model_used)pills.push(`<span class="meta-pill">🤖 ${esc(meta.provider_used||'?')} / ${esc(meta.model_used||'?')}</span>`);
+  if(meta.prompt_tokens!=null||meta.completion_tokens!=null){const _in=meta.prompt_tokens!=null?meta.prompt_tokens:'?';const _out=meta.completion_tokens!=null?meta.completion_tokens:'?';const _total=(typeof meta.prompt_tokens==='number'&&typeof meta.completion_tokens==='number')?(meta.prompt_tokens+meta.completion_tokens):null;pills.push(`<span class="meta-pill">📊 ${_in} in / ${_out} out${_total!=null?' (Σ'+_total+')':''}</span>`)}
   if(meta.fallback_used)pills.push(`<span class="meta-pill warn">⚠️ fallback: ${esc(meta.fallback_reason||'?')}</span>`);
   if(meta.continuation_used)pills.push(`<span class="meta-pill">↩️ continuation x${meta.continuation_steps||0}</span>`);
   if(meta.finish_reason&&meta.finish_reason!=='stop')pills.push(`<span class="meta-pill warn">finish: ${esc(meta.finish_reason)}</span>`);

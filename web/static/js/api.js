@@ -8,10 +8,16 @@ export async function loadStatus(){
     const res=await fetch(`${API_BASE}/api/status`,{headers:_sh});const d=await res.json();
     if(d.status_poll_recommended_ms>0)statusPollRecommendedMs=Math.round(d.status_poll_recommended_ms);
 
-    if(d.tool_count)setText('stat-tools',d.tool_count);
+    if(d.tool_count!=null)setText('stat-tools',d.tool_count);
     setText('stat-memories',d.memory_count||'—');
     setText('stat-symbols',d.symbols_count||'—');
-    if(d.tool_count)setText('badge-tools',d.tool_count);
+    if(d.tool_count!=null)setText('badge-tools',d.tool_count);
+
+    // Journal badge
+    if(d.journal_total!=null){
+      const jb=document.getElementById('badge-journal');
+      if(jb){jb.textContent=d.journal_total;jb.style.background=d.journal_total>0?'var(--accent)':'var(--muted)'}
+    }
 
     const skills=typeof d.skills_loaded==='number'?d.skills_loaded:0;
     const skillsEl=document.getElementById('stat-skills');
@@ -63,10 +69,18 @@ export async function loadStatus(){
     // Badge files
     if(d.symbols_count)setText('badge-files',d.symbols_count);
 
-    // Tasks badge
+    // Tasks badge (scheduler tasks + orchestrator active)
     const tasksBadge=document.getElementById('badge-tasks');
-    const runningTasksCount=(d.tasks_backlog||0)+(d.tasks_waiting_io||0);
-    if(tasksBadge){tasksBadge.textContent=runningTasksCount;tasksBadge.style.background=runningTasksCount>0?'var(--ok)':'var(--muted)'}
+    const schedTasks=d.scheduler_tasks_active||0;
+    const orchTasks=(d.tasks_backlog||0)+(d.tasks_waiting_io||0);
+    const totalActiveTasks=schedTasks+orchTasks;
+    if(tasksBadge){tasksBadge.textContent=totalActiveTasks;tasksBadge.style.background=totalActiveTasks>0?'var(--ok)':'var(--muted)'}
+
+    // Alerts badge
+    if(d.alerts_total!=null){
+      const ab=document.getElementById('badge-alerts');
+      if(ab){ab.textContent=d.alerts_total;ab.style.background=d.alerts_total>0?'var(--danger)':'var(--muted)'}
+    }
 
     lastStatusData=d;
     checkHealth();
