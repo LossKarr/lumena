@@ -68,6 +68,11 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("ReAct / Outils (avancé)", "LUMENA_MAX_REACT_ITERATIONS_IDE", "35", "Max itérations ReAct mode IDE"),
     ("ReAct / Outils (avancé)", "LUMENA_REACT_TIMEOUT_IDE", "", "Timeout ReAct mode IDE (sec, vide = fallback)"),
     ("ReAct / Outils (avancé)", "LUMENA_REACT_HISTORY_OBS_CHARS_IDE", "12000", "Chars obs historique ReAct IDE"),
+    ("ReAct / Outils (avancé)", "LUMENA_REACT_OBS_LIMIT", "", "Override global budget observation (chars). Vide = auto calibré par modèle"),
+    ("ReAct / Outils (avancé)", "LUMENA_REACT_OBS_CLAMP", "", "Clamp min:max du budget obs (ex '4000:64000'). Vide = pas de clamp"),
+    ("ReAct / Outils (avancé)", "LUMENA_REACT_PROTECT_LAST_READ", "1", "Protège la dernière obs d'un outil lecteur (read_file, grep, web_fetch...) de la microcompaction"),
+    ("ReAct / Outils (avancé)", "LUMENA_OLLAMA_PROBE", "1", "Active le probe /api/show pour auto-détecter context_length réel des modèles Ollama"),
+    ("ReAct / Outils (avancé)", "LUMENA_OLLAMA_PROBE_TTL", "86400", "TTL (sec) du cache de probes Ollama. 86400 = 24h"),
     ("ReAct / Outils (avancé)", "LUMENA_MODEL", "", "Alias legacy modèle (fallback)"),
     # --- Instance (avancé) ---
     ("Instance (avancé)", "LUMENA_MAX_CONTEXTS_PER_PLATFORM", "500", "Nombre max de contextes par plateforme (Telegram, Discord, etc.)"),
@@ -208,6 +213,28 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("Clés API (non-wizard)", "OLLAMA_HOST", "http://localhost:11434", "URL Ollama (legacy, utiliser LUMENA_OLLAMA_HOST)"),
     ("Clés API (non-wizard)", "GEMINI_API_KEY", "", "Alias GOOGLE_API_KEY (Gemini)"),
     ("Clés API (non-wizard)", "DEFAULT_MODEL", "", "Alias legacy modèle par défaut"),
+    # --- PLAN_SUPREME_CODEAGENT — Feature flags (P0-P11) ---
+    # Tous opt-OUT (default=true), DESTRUCTIVE_CONFIRM unique opt-IN.
+    ("CodeAgent (flags)", "LUMENA_PROVIDER_PROMPTS", "true", "P0 — Prompts adaptés par provider"),
+    ("CodeAgent (flags)", "LUMENA_TOOL_HINTS", "true", "P0b — Descriptions détaillées par outil"),
+    ("CodeAgent (flags)", "LUMENA_FUZZY_REPLACE", "true", "P1 — Fuzzy matching multi-passes str_replace/apply_patch"),
+    ("CodeAgent (flags)", "LUMENA_COMPACTION_PRUNE", "true", "P2 — Compaction progressive avec pruning intelligent"),
+    ("CodeAgent (flags)", "LUMENA_PLAN_MODE", "true", "P3 — Mode plan (read-only puis exécution)"),
+    ("CodeAgent (flags)", "LUMENA_TRUNCATION_SAVE", "true", "P4 — Sauvegarde outputs tronqués dans data/logs/codeagent/"),
+    ("CodeAgent (flags)", "LUMENA_MAX_STEPS_GRACEFUL", "true", "P5 — Escalation graceful avant max_iter"),
+    ("CodeAgent (flags)", "LUMENA_AUTO_FORMAT", "true", "P6 — Auto-format (ruff/prettier) post-edit"),
+    ("CodeAgent (flags)", "LUMENA_REACT_QUALITY_GATES", "true", "P7 — Quality gates ReAct (parité CodeAgent)"),
+    ("CodeAgent (flags)", "LUMENA_DID_YOU_MEAN", "true", "P8 — Suggestion outil similaire si nom invalide"),
+    ("CodeAgent (flags)", "LUMENA_MODEL_TEMPERATURES", "true", "P8 — Températures adaptées par provider"),
+    ("CodeAgent (flags)", "LUMENA_COMPACTION_REPLAY", "true", "P8 — Replay derniers turns après compaction"),
+    ("CodeAgent (flags)", "LUMENA_INVALID_TOOL_CATCH", "true", "P8 — Catch + correction outils inconnus"),
+    ("CodeAgent (flags)", "LUMENA_CRLF_NORMALIZE", "true", "P8 — Normalisation CR/LF Windows<->Unix"),
+    ("CodeAgent (flags)", "LUMENA_ENV_CONTEXT", "true", "P8 — Inject OS/shell/cwd dans system prompt"),
+    ("CodeAgent (flags)", "LUMENA_SSE_TIMEOUT", "true", "P8 — Timeout adaptatif streaming SSE"),
+    ("CodeAgent (flags)", "LUMENA_PROMPT_CACHE", "true", "P8 — Prompt caching Anthropic/DeepSeek"),
+    ("CodeAgent (flags)", "LUMENA_CODING_METRICS", "true", "P10 — Métriques coding -> data/logs/codeagent/metrics.jsonl"),
+    ("CodeAgent (flags)", "LUMENA_DESTRUCTIVE_CONFIRM", "false", "P11 — OPT-IN: confirmation rm/git push --force/etc."),
+    ("CodeAgent (flags)", "LUMENA_FRENCH_ERRORS", "true", "P11 — Messages d'erreur en français"),
 ]
 
 

@@ -1,0 +1,17 @@
+## write_file — Créer un nouveau fichier
+
+**When to use:**
+- Créer un fichier qui N'EXISTE PAS encore
+- Fournir le contenu COMPLET en une seule fois
+
+**When NOT to use:**
+- Le fichier existe déjà → utilise edit_lines / str_replace / apply_patch (JAMAIS write_file)
+- Écraser un fichier fonctionnel = destruction de code → INTERDIT
+- Pour créer un dossier : pas besoin, write_file crée les parents automatiquement
+
+**Good:**
+`{"action": "write_file", "path": "src/utils/new_helper.py", "content": "def helper():\n    return 42\n"}`
+
+**Bad:**
+`{"action": "write_file", "path": "src/core.py", "content": "..."}` ← INTERDIT si src/core.py existe
+`{"action": "run_command", "command": "mkdir css && echo ... > css/style.css"}` ← INTERDIT (write_file suffit)

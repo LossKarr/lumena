@@ -83,6 +83,26 @@ def _invalidate_read_cache(file_path: Path) -> None:
     except Exception:
         pass
 
+
+async def _append_syntax_warning(message: str, target_path: Path, workspace_root: Optional[Path] = None) -> str:
+    """P7 — Append un warning de syntaxe à un message de succès si applicable.
+
+    Gardé par le flag REACT_QUALITY_GATES (opt-OUT).
+    Ne modifie jamais le message en cas d'erreur (best-effort).
+    """
+    try:
+        from src.config.codeagent_flags import REACT_QUALITY_GATES
+        if not REACT_QUALITY_GATES:
+            return message
+        from src.utils.syntax_check import check_syntax
+        warn = await check_syntax(target_path, workspace_root=workspace_root)
+        if warn:
+            return f"{message}\n\n⚠️ Syntaxe/lint : {warn}"
+    except Exception as exc:
+        logger.debug(f"[P7 syntax_check] skip: {exc}")
+    return message
+
+
 def _record_file_edit(
     ctx: HandlerContext,
     *,
@@ -151,6 +171,152 @@ def _before_snapshot(resolved: Path):
         else None
     )
     return existed, content
+
+
+# ─── P1: Destructive write guard (anti-CSS-catastrophe) ────────────────────
+
+# Seuil de réduction qui déclenche le blocage (60% = garde-fou strict).
+# Ex: 1392 lignes → 212 lignes = 85% de réduction = BLOQUÉ.
+_DESTRUCTIVE_REDUCTION_THRESHOLD = 0.60
+# Taille minimale du fichier existant pour activer le guard (évite faux-positifs sur petits fichiers)
+_DESTRUCTIVE_MIN_SIZE_CHARS = 400
+
+
+def _auto_backup_before_write(target_path: Path, before_content: Optional[str]) -> Optional[Path]:
+    """Crée un backup timestampé dans .backups/ AVANT toute écriture destructrice.
+
+    Retourne le chemin du backup ou None si non applicable.
+    Best-effort : silencieux en cas d'échec (ne bloque JAMAIS l'écriture).
+    """
+    try:
+        if not target_path.exists() or before_content is None:
+            return None
+        from datetime import datetime as _dt
+        backup_dir = target_path.parent / ".backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"{target_path.name}.{ts}"
+        backup_path.write_text(before_content, encoding="utf-8", errors="replace")
+        logger.info("💾 [write_file] Backup auto → {}", backup_path)
+        return backup_path
+    except Exception as exc:
+        logger.debug("Backup skipped: {}", exc)
+        return None
+
+
+def _check_destructive_write(
+    target_path: Path,
+    before_content: Optional[str],
+    new_content: str,
+    force_rewrite: bool,
+    rewrite_reason: str,
+) -> Optional[str]:
+    """Retourne un message d'erreur si l'écriture est jugée destructrice et non autorisée.
+
+    Règles :
+    - Si fichier n'existait pas → pas de garde
+    - Si before_content est None ou trop petit → pas de garde
+    - Si new_size < before_size * (1 - seuil) → destructeur
+    - force_rewrite=True + rewrite_reason non vide → autorisé (mais backup requis côté appelant)
+    """
+    if before_content is None or not target_path.exists():
+        return None
+    before_size = len(before_content)
+    if before_size < _DESTRUCTIVE_MIN_SIZE_CHARS:
+        return None
+    new_size = len(new_content or "")
+    if new_size >= before_size * (1 - _DESTRUCTIVE_REDUCTION_THRESHOLD):
+        return None  # Réduction acceptable
+    reduction_pct = int((1 - new_size / before_size) * 100) if before_size else 0
+    if force_rewrite and str(rewrite_reason or "").strip():
+        # Autorisé mais loggé fort
+        logger.warning(
+            "⚠️ [write_file] Écriture destructrice AUTORISÉE sur {} "
+            "({}→{} chars, -{}%) — motif: {}",
+            target_path.name, before_size, new_size, reduction_pct,
+            str(rewrite_reason).strip()[:120],
+        )
+        return None
+    return (
+        f"❌ REFUS écriture destructrice: {target_path.name} passerait de "
+        f"{before_size} → {new_size} caractères (-{reduction_pct}%). "
+        f"Seuil critique : {int(_DESTRUCTIVE_REDUCTION_THRESHOLD*100)}%.\n"
+        f"Pour écrire quand même, utilise force_rewrite=true ET rewrite_reason='motif explicite'.\n"
+        f"💡 Préfère edit_file / apply_patch / str_replace pour des modifications ciblées."
+    )
+
+
+# ─── P1: Destructive write guard (anti-CSS-catastrophe) ────────────────────
+
+# Seuil de réduction qui déclenche le blocage (60% = garde-fou strict).
+# Ex: 1392 lignes → 212 lignes = 85% de réduction = BLOQUÉ.
+_DESTRUCTIVE_REDUCTION_THRESHOLD = 0.60
+# Taille minimale du fichier existant pour activer le guard (évite faux-positifs sur petits fichiers)
+_DESTRUCTIVE_MIN_SIZE_CHARS = 400
+
+
+def _auto_backup_before_write(target_path: Path, before_content: Optional[str]) -> Optional[Path]:
+    """Crée un backup timestampé dans .backups/ AVANT toute écriture destructrice.
+
+    Retourne le chemin du backup ou None si non applicable.
+    Best-effort : silencieux en cas d'échec (ne bloque JAMAIS l'écriture).
+    """
+    try:
+        if not target_path.exists() or before_content is None:
+            return None
+        from datetime import datetime as _dt
+        backup_dir = target_path.parent / ".backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = backup_dir / f"{target_path.name}.{ts}"
+        backup_path.write_text(before_content, encoding="utf-8", errors="replace")
+        logger.info("💾 [write_file] Backup auto → {}", backup_path)
+        return backup_path
+    except Exception as exc:
+        logger.debug("Backup skipped: {}", exc)
+        return None
+
+
+def _check_destructive_write(
+    target_path: Path,
+    before_content: Optional[str],
+    new_content: str,
+    force_rewrite: bool,
+    rewrite_reason: str,
+) -> Optional[str]:
+    """Retourne un message d'erreur si l'écriture est jugée destructrice et non autorisée.
+
+    Règles :
+    - Si fichier n'existait pas → pas de garde
+    - Si before_content est None ou trop petit → pas de garde
+    - Si new_size < before_size * (1 - seuil) → destructeur
+    - force_rewrite=True + rewrite_reason non vide → autorisé (mais backup requis côté appelant)
+    """
+    if before_content is None or not target_path.exists():
+        return None
+    before_size = len(before_content)
+    if before_size < _DESTRUCTIVE_MIN_SIZE_CHARS:
+        return None
+    new_size = len(new_content or "")
+    if new_size >= before_size * (1 - _DESTRUCTIVE_REDUCTION_THRESHOLD):
+        return None  # Réduction acceptable
+    reduction_pct = int((1 - new_size / before_size) * 100) if before_size else 0
+    if force_rewrite and str(rewrite_reason or "").strip():
+        # Autorisé mais loggé fort
+        logger.warning(
+            "⚠️ [write_file] Écriture destructrice AUTORISÉE sur {} "
+            "({}→{} chars, -{}%) — motif: {}",
+            target_path.name, before_size, new_size, reduction_pct,
+            str(rewrite_reason).strip()[:120],
+        )
+        return None
+    return (
+        f"❌ REFUS écriture destructrice: {target_path.name} passerait de "
+        f"{before_size} → {new_size} caractères (-{reduction_pct}%). "
+        f"Seuil critique : {int(_DESTRUCTIVE_REDUCTION_THRESHOLD*100)}%.\n"
+        f"Pour écrire quand même, utilise force_rewrite=true ET rewrite_reason='motif explicite'.\n"
+        f"💡 Préfère edit_file / apply_patch / str_replace pour des modifications ciblées."
+    )
 
 
 def _after_snapshot(resolved: Path) -> Optional[str]:
@@ -479,6 +645,17 @@ async def write_file_handler(
                 handler_name="write_file",
             )
 
+        # ── P1: Garde-fou destructif (anti-CSS-catastrophe) ──
+        # Bloque les réductions massives (>60%) sauf force_rewrite + rewrite_reason
+        _destructive_err = _check_destructive_write(
+            target_path, before_content, content, force_rewrite, rewrite_reason,
+        )
+        if _destructive_err:
+            return HandlerResult.ok(_destructive_err, handler_name="write_file")
+        # Backup auto avant toute écriture écrasant un fichier existant
+        if existed_before:
+            _auto_backup_before_write(target_path, before_content)
+
         if ide_runtime and ide_direct_path:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(content, encoding="utf-8")
@@ -527,6 +704,10 @@ async def write_file_handler(
             workspace_relative=write_workspace_relative or resolved_workspace_relative,
         )
         _invalidate_read_cache(write_file_path)
+        # P7 — syntax/lint warning (opt-OUT via LUMENA_REACT_QUALITY_GATES)
+        write_message = await _append_syntax_warning(
+            write_message, write_file_path, workspace_root=ctx.lumena_root,
+        )
         return HandlerResult.ok(write_message, handler_name="write_file")
     except Exception as e:
         return HandlerResult.fail(f"Erreur ecriture: {e}", handler_name="write_file")
@@ -683,6 +864,29 @@ async def edit_file_handler(
         )
         result_text = str(result)
         if result_text.strip().startswith(("❌", "Erreur")):
+            # P7 — auto-relecture si le contenu n'a pas été trouvé : aide le LLM au tour suivant
+            try:
+                from src.config.codeagent_flags import REACT_QUALITY_GATES
+                _lower = result_text.lower()
+                _not_found = any(
+                    s in _lower for s in ("non trouv", "pas trouv", "not found", "introuvable")
+                )
+                if REACT_QUALITY_GATES and _not_found and resolved.exists():
+                    try:
+                        _current = resolved.read_text(encoding="utf-8", errors="ignore")
+                        _preview = "\n".join(
+                            f"{i+1:>4} | {line}" for i, line in enumerate(_current.splitlines()[:80])
+                        )
+                        result = (
+                            f"{result_text}\n\n"
+                            f"💡 Contenu actuel de {resolved.name} (80 premières lignes) — "
+                            "copie les lignes EXACTES pour ton prochain edit_file :\n"
+                            f"{_preview}"
+                        )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             return HandlerResult.ok(result, handler_name="edit_file")
 
         if ctx.file_guardrails is not None:
@@ -710,7 +914,11 @@ async def edit_file_handler(
             workspace_relative=(_compute_workspace_relative(resolved, ctx.lumena_root)
                                 if _compute_workspace_relative else None),
         )
-        return HandlerResult.ok(result, handler_name="edit_file")
+        # P7 — syntax/lint warning post-edit
+        result_str = await _append_syntax_warning(
+            str(result), resolved, workspace_root=ctx.lumena_root,
+        )
+        return HandlerResult.ok(result_str, handler_name="edit_file")
     except Exception as e:
         return HandlerResult.fail(f"❌ Erreur edit_file: {e}", handler_name="edit_file")
 
@@ -972,6 +1180,10 @@ async def apply_patch_handler(
                     )
                 except Exception as e:
                     logger.debug("[files] apply_patch learn: %s", e)
+                # P7 — syntax/lint warning post-patch
+                result = await _append_syntax_warning(
+                    result_text, resolved, workspace_root=ctx.lumena_root,
+                )
             return HandlerResult.ok(result, handler_name="apply_patch")
 
         # Fallback: self_improve pour le code source Lumena

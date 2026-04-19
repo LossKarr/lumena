@@ -872,63 +872,309 @@ def _ollama_key(model_id: str) -> str:
 
 
 def register_ollama_models(installed_ids: list[str]) -> int:
-    """Enregistre dynamiquement les modèles Ollama installés dans AVAILABLE_MODELS.
+    """Enregistre dynamiquement les modèles Ollama installés dans AVAILABLE_MODELS."""
+    return _register_ollama_models_impl(installed_ids)
+
+
+def _ollama_host() -> str:
+    """Retourne l'URL de base du démon Ollama (sans slash final)."""
+    return os.environ.get(
+        "LUMENA_OLLAMA_HOST",
+        os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+    ).rstrip("/")
+
+
+# Cache probe persistent — évite d'appeler /api/show à chaque boot.
+_PROBE_CACHE_PATH = "data/model_registry_cache.json"
+_PROBE_CACHE_TTL = int(os.environ.get("LUMENA_OLLAMA_PROBE_TTL", "86400") or "86400")
+
+
+def _load_probe_cache() -> Dict[str, Dict[str, Any]]:
+    """Charge le cache JSON {model_id: {ts, ctx, caps, family, params_b}}."""
+    try:
+        import json, time
+        from pathlib import Path
+        p = Path(_PROBE_CACHE_PATH)
+        if not p.is_file():
+            return {}
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        # Purge des entrées expirées (évite cache empoisonné)
+        now = int(time.time())
+        return {
+            mid: info for mid, info in data.items()
+            if isinstance(info, dict) and (now - int(info.get("ts", 0))) < _PROBE_CACHE_TTL
+        }
+    except Exception:
+        return {}
+
+
+def _save_probe_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    try:
+        import json
+        from pathlib import Path
+        p = Path(_PROBE_CACHE_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logger.debug("[ollama.probe] cache save échoué: {}", exc)
+
+
+def _probe_ollama_model(model_id: str, *, timeout: float = 4.0) -> Dict[str, Any]:
+    """Interroge ``/api/show`` pour récupérer context_length réel + capabilities.
+
+    Retourne un dict {ctx, caps, family, params_b, ok} avec :
+        - ctx : int (context_length détecté, 0 si inconnu)
+        - caps : list[str] (ex ["completion","tools","vision"])
+        - family : str (architecture ex "qwen2","llama","phi3"…)
+        - params_b : float | None (taille en milliards, parsée si dispo)
+        - ok : bool (True si l'appel a réussi)
+    """
+    import httpx
+    info: Dict[str, Any] = {"ctx": 0, "caps": [], "family": "", "params_b": None, "ok": False}
+    try:
+        resp = httpx.post(
+            f"{_ollama_host()}/api/show",
+            json={"name": model_id},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return info
+        data = resp.json() or {}
+    except Exception as exc:
+        logger.debug("[ollama.probe] /api/show {} KO : {}", model_id, exc)
+        return info
+
+    info["ok"] = True
+    caps = data.get("capabilities") or []
+    if isinstance(caps, list):
+        info["caps"] = [str(c).lower() for c in caps if c]
+
+    mi = data.get("model_info") or {}
+    if isinstance(mi, dict):
+        family = str(mi.get("general.architecture") or "").lower()
+        info["family"] = family
+        # Clé dynamique "<family>.context_length"
+        for k, v in mi.items():
+            if not isinstance(k, str):
+                continue
+            if k.endswith(".context_length") and isinstance(v, (int, float)):
+                info["ctx"] = max(info["ctx"], int(v))
+        # Taille paramètres en milliards
+        pc = mi.get("general.parameter_count")
+        if isinstance(pc, (int, float)) and pc > 0:
+            info["params_b"] = round(float(pc) / 1e9, 2)
+
+    # Fallback ctx via champ "parameters" (ancien format)
+    if info["ctx"] == 0:
+        params_str = str(data.get("parameters") or "")
+        import re
+        m = re.search(r"num_ctx\s+(\d+)", params_str)
+        if m:
+            info["ctx"] = int(m.group(1))
+
+    return info
+
+
+def _params_b_from_tag(model_id: str) -> float | None:
+    """Extrait la taille en milliards depuis un tag style ``qwen3:14b`` → 14.0."""
+    import re
+    m = re.search(r":(\d+(?:\.\d+)?)b\b", model_id.lower())
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            return None
+    # Format sans ":" (ex "phi4-mini", "codestral") → inconnu
+    return None
+
+
+def _category_from_name(model_id: str, caps: list[str]) -> str:
+    """Déduit la catégorie (llm/code/vision/embedding/reasoning) d'après le nom + caps."""
+    mid = model_id.lower()
+    if "vision" in caps:
+        return "vision"
+    # Embedding
+    if any(t in mid for t in ("embed", "nomic-embed", "mxbai-embed", "bge-")):
+        return "embedding"
+    # Vision
+    if any(t in mid for t in ("llava", "minicpm-v", "moondream", "bakllava", "-vl", "vision", "gemma4")):
+        return "vision"
+    # Code
+    if any(t in mid for t in ("coder", "code-", "codegemma", "codestral", "codellama", "starcoder", "deepseek-coder")):
+        return "code"
+    # Reasoning (signals via nom)
+    if any(t in mid for t in ("thinking", "reasoner", "r1", "qwq", "o1-")):
+        return "reasoning"
+    return "llm"
+
+
+def _infer_skills_for_custom(model_id: str, params_b: float | None, category: str) -> Dict[str, int]:
+    """Génère un entry MODEL_SKILLS pour un modèle Ollama custom.
+
+    Scoring basé sur la taille (params_b) + bonus par catégorie. Conservateur
+    (local < cloud en règle générale).
+    """
+    # Base par taille
+    if params_b is None:
+        code, speed, reasoning, creative, research = 55, 75, 55, 52, 48
+    elif params_b < 3:
+        code, speed, reasoning, creative, research = 40, 92, 32, 38, 30
+    elif params_b < 8:
+        code, speed, reasoning, creative, research = 55, 80, 55, 50, 45
+    elif params_b < 14:
+        code, speed, reasoning, creative, research = 65, 72, 62, 55, 52
+    elif params_b < 32:
+        code, speed, reasoning, creative, research = 74, 58, 70, 62, 60
+    elif params_b < 70:
+        code, speed, reasoning, creative, research = 82, 45, 80, 72, 70
+    else:
+        code, speed, reasoning, creative, research = 88, 32, 86, 78, 78
+
+    vision = 0
+    web = max(20, research - 15)  # local → pas d'accès web natif
+
+    # Bonus par catégorie
+    if category == "code":
+        code = min(92, code + 12)
+        reasoning = min(88, reasoning + 3)
+    elif category == "vision":
+        vision = 65 if params_b and params_b < 10 else 75
+        creative = min(85, creative + 5)
+    elif category == "reasoning":
+        reasoning = min(90, reasoning + 12)
+        speed = max(20, speed - 12)
+    elif category == "embedding":
+        code = speed = reasoning = creative = research = web = 0  # jamais routé
+
+    return {
+        "code": code, "speed": speed, "reasoning": reasoning,
+        "creative": creative, "research": research, "vision": vision, "web": web,
+    }
+
+
+def _register_ollama_models_impl(installed_ids: list[str]) -> int:
+    """Implémentation — enregistre dynamiquement les modèles Ollama.
+
+    Stratégie :
+        1. Probe ``/api/show`` (cache TTL 24h) pour obtenir context_length réel
+           + capabilities officielles (``completion``, ``tools``, ``vision``).
+        2. Fallback sur le catalogue statique ``OLLAMA_CATALOG``.
+        3. Fallback sur heuristique nom-based (catégorie + taille).
+        4. Auto-insertion dans ``MODEL_SKILLS`` pour que le router puisse
+           sélectionner le modèle custom.
 
     Args:
-        installed_ids: liste de model_id retournés par Ollama /api/tags
-                       (ex: ["gemma4:26b", "qwen3:8b", "deepseek-r1:7b"])
+        installed_ids: liste de model_id retournés par Ollama /api/tags.
 
     Returns:
         Nombre de nouveaux modèles enregistrés.
     """
+    probe_enabled = os.environ.get("LUMENA_OLLAMA_PROBE", "1").strip() in ("1", "true", "yes", "on")
+    cache = _load_probe_cache() if probe_enabled else {}
+    cache_dirty = False
     registered = 0
+    # Fast-fail : si le daemon est injoignable au premier probe, on désactive
+    # les probes suivants pour éviter N × timeouts au boot quand Ollama est down.
+    daemon_dead = False
+
     for mid in installed_ids:
         key = _ollama_key(mid)
         if key in AVAILABLE_MODELS:
             continue  # déjà déclaré manuellement
 
         cat_entry = _CATALOG_BY_ID.get(mid, {})
-        category = cat_entry.get("category", "llm")
-        is_vision = category in _VISION_CATEGORIES
-        is_code = category in _CODE_CATEGORIES
-
-        # Déterminer le context_window d'après le catalogue ou valeur par défaut
-        ctx = 32768
+        catalog_category = cat_entry.get("category", "")
+        catalog_ctx = 0
+        catalog_params = cat_entry.get("params", "")
         desc = cat_entry.get("desc", mid)
-        params = cat_entry.get("params", "")
 
-        # Gemma 4 medium/large → 256K context
+        # Heuristiques connues (legacy — conservées pour fallback)
         if "gemma4" in mid and any(s in mid for s in ("26b", "31b")):
-            ctx = 262144
+            catalog_ctx = 262144
         elif "gemma4" in mid:
-            ctx = 131072
-        elif "qwen" in mid and any(s in params for s in ("14B", "32B", "235B")):
-            ctx = 131072
+            catalog_ctx = 131072
+        elif "qwen" in mid and any(s in catalog_params for s in ("14B", "32B", "235B")):
+            catalog_ctx = 131072
         elif "llama3.3:70b" in mid:
-            ctx = 131072
+            catalog_ctx = 131072
 
-        capabilities = {"tool_calling", "cheap_text"}
+        # 1. Probe (si activé & daemon vivant)
+        probe: Dict[str, Any] = {}
+        if probe_enabled and not daemon_dead:
+            probe = cache.get(mid) or {}
+            if not probe:
+                probe = _probe_ollama_model(mid, timeout=2.5)
+                if probe.get("ok"):
+                    import time
+                    cache[mid] = {**probe, "ts": int(time.time())}
+                    cache_dirty = True
+                elif not registered:
+                    # Premier échec + rien d'enregistré encore → daemon probablement down
+                    daemon_dead = True
+                    logger.debug("[ollama.probe] daemon injoignable, fallback heuristique pour tous")
+
+        # 2. Context window : probe > catalogue > defaut
+        ctx = int(probe.get("ctx") or 0) or catalog_ctx or 32768
+
+        # 3. Capabilities
+        probe_caps = probe.get("caps") or []
+        category = catalog_category or _category_from_name(mid, probe_caps)
+        is_vision = (category == "vision") or ("vision" in probe_caps)
+        is_code = category == "code"
+        is_embedding = category == "embedding"
+        supports_tools = True
+        if probe_caps and "tools" not in probe_caps and "completion" in probe_caps:
+            # Modèle text-only strict (rare mais possible)
+            supports_tools = False
+
+        # 4. Taille paramètres (pour scoring skills)
+        params_b = probe.get("params_b") or _params_b_from_tag(mid)
+
+        capabilities = {"tool_calling", "cheap_text"} if supports_tools else {"cheap_text"}
         if is_vision:
             capabilities.add("vision_describe")
         if is_code:
             capabilities.add("code")
+        if is_embedding:
+            capabilities = {"embedding"}
+            supports_tools = False
 
-        display = cat_entry.get("desc", mid) if cat_entry else mid
+        # max_output_tokens : min(ctx/4, 16k) mais au moins 2k pour les gros ctx
+        max_out = max(2048, min(ctx // 4, 16384)) if not is_embedding else 512
+
         AVAILABLE_MODELS[key] = ModelConfig(
             name=key,
             display_name=f"{mid} (Local Ollama)",
             provider=ProviderType.OLLAMA,
             model_id=mid,
             context_window=ctx,
-            max_output_tokens=min(ctx // 4, 16384),
+            max_output_tokens=max_out,
             supports_vision=is_vision,
-            supports_tools=True,
+            supports_tools=supports_tools,
             cost_per_million_tokens=0.0,
             description=desc,
             capabilities=frozenset(capabilities),
         )
+
+        # 5. Auto-scoring MODEL_SKILLS si custom (hors catalogue + pas déjà scoré)
+        if key not in MODEL_SKILLS and not is_embedding:
+            MODEL_SKILLS[key] = _infer_skills_for_custom(mid, params_b, category)
+            logger.debug(
+                "[ollama.auto] {} → skills auto (params={}B, cat={}, ctx={})",
+                key, params_b, category, ctx,
+            )
+
         registered += 1
-        logger.debug(f"Modèle Ollama enregistré dynamiquement: {key} (vision={is_vision})")
+        logger.info(
+            "🔄 Ollama auto-config: {} (ctx={}k, cat={}, vision={}, tools={}{})",
+            key, ctx // 1024, category, is_vision, supports_tools,
+            ", probe=ok" if probe.get("ok") else ", probe=fallback",
+        )
+
+    if cache_dirty:
+        _save_probe_cache(cache)
 
     return registered
 
@@ -940,13 +1186,8 @@ def sync_ollama_models() -> int:
     """
     import httpx
 
-    ollama_host = os.environ.get(
-        "LUMENA_OLLAMA_HOST",
-        os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-    ).rstrip("/")
-
     try:
-        resp = httpx.get(f"{ollama_host}/api/tags", timeout=5)
+        resp = httpx.get(f"{_ollama_host()}/api/tags", timeout=5)
         if resp.status_code != 200:
             return 0
         data = resp.json()

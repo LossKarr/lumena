@@ -99,6 +99,21 @@ class PlaywrightBrowser:
         self._network_listening: bool = False
         self._extra_headers: Dict[str, str] = {}
 
+        # ── Phase 4 — Dialogs (alert/confirm/prompt) ──
+        # Policy: "auto_accept" | "auto_dismiss" | "manual"
+        self._dialog_policy: str = os.getenv("LUMENA_BROWSER_DIALOG_POLICY", "auto_accept").lower()
+        self._dialog_prompt_text: str = ""  # Texte par défaut pour prompt()
+        self._dialog_log: List[Dict[str, Any]] = []
+        self._dialog_listening: bool = False
+
+        # ── Phase 4 — Downloads ──
+        from src.utils.paths import DATA_DIR
+        self._downloads_dir: Path = DATA_DIR / "browser_downloads"
+        self._downloads_dir.mkdir(parents=True, exist_ok=True)
+        self._downloads: List[Dict[str, Any]] = []  # {filename, path, url, size, state}
+        self._download_listening: bool = False
+        self._download_waiters: List[asyncio.Future] = []
+
     def _tabs(self) -> List[Page]:
         if not self._context:
             return []
@@ -337,6 +352,9 @@ class PlaywrightBrowser:
                 self._session_start = datetime.now()
                 # Stocker les extra headers pour les nouvelles pages
                 self._extra_headers = extra_headers
+                # Installer les listeners dialog + download (Phase 4)
+                self._install_dialog_listener()
+                self._install_download_listener()
                 return True
                 
             except Exception as e:
@@ -689,7 +707,26 @@ class PlaywrightBrowser:
             return {"success": False, "error": "Page non chargée"}
         
         try:
-            result = await self._page.evaluate(script)
+            # Auto-wrap en IIFE si 'return' détecté au top-level ou statements multiples.
+            # Playwright/V8 n'accepte `return` que dans une fonction. On enrobe donc
+            # automatiquement le script si l'utilisateur l'a écrit en style impératif.
+            script_to_run = script
+            try:
+                stripped = script.strip()
+                # Heuristique simple : présence de 'return ' hors d'une fonction déclarée.
+                # Si le script contient 'return' et n'est pas déjà une expression fléchée/IIFE.
+                needs_wrap = (
+                    "return " in stripped
+                    and not stripped.startswith("(")
+                    and not stripped.startswith("async (")
+                    and not stripped.startswith("function")
+                    and not stripped.startswith("async function")
+                )
+                if needs_wrap:
+                    script_to_run = f"(async () => {{\n{script}\n}})()"
+            except Exception:
+                script_to_run = script
+            result = await self._page.evaluate(script_to_run)
             return {"success": True, "result": result}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -2005,6 +2042,551 @@ class PlaywrightBrowser:
             except Exception:
                 pass
             return {"success": False, "error": str(e)}
+
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Phase 4 — Dialogs (alert / confirm / prompt) ──
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _install_dialog_listener(self) -> None:
+        """Auto-gère les dialogs natifs (alert/confirm/prompt) selon la policy."""
+        if not self._page or self._dialog_listening:
+            return
+
+        async def _on_dialog(dialog):
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "type": dialog.type,
+                "message": dialog.message,
+                "default_value": getattr(dialog, "default_value", "") or "",
+                "action": None,
+            }
+            try:
+                policy = self._dialog_policy
+                if policy == "auto_dismiss":
+                    await dialog.dismiss()
+                    entry["action"] = "dismissed"
+                elif policy == "manual":
+                    # Policy manuelle = on laisse pendant 30s puis dismiss par sécurité
+                    # (l'agent doit appeler handle_dialog pendant ce délai)
+                    # Implémentation simple : on accept direct pour éviter blocage
+                    await dialog.accept(self._dialog_prompt_text or "")
+                    entry["action"] = "accepted_manual_timeout"
+                else:  # auto_accept (défaut)
+                    if dialog.type == "prompt":
+                        await dialog.accept(self._dialog_prompt_text or "")
+                        entry["action"] = f"accepted_with:{self._dialog_prompt_text or '(empty)'}"
+                    else:
+                        await dialog.accept()
+                        entry["action"] = "accepted"
+            except Exception as e:
+                entry["action"] = f"error:{e}"
+            self._dialog_log.append(entry)
+            if len(self._dialog_log) > 100:
+                self._dialog_log.pop(0)
+            logger.info(f"💬 Dialog {dialog.type}: {dialog.message[:60]} → {entry['action']}")
+
+        self._page.on("dialog", lambda d: asyncio.create_task(_on_dialog(d)))
+        self._dialog_listening = True
+
+    async def set_dialog_policy(self, policy: str = "auto_accept",
+                                 prompt_text: str = "") -> Dict[str, Any]:
+        """Configure la gestion automatique des dialogs natifs.
+
+        Args:
+            policy: 'auto_accept' (défaut), 'auto_dismiss', ou 'manual'.
+            prompt_text: Texte par défaut pour les prompt() (mode auto_accept).
+
+        Returns:
+            Dict avec la policy appliquée.
+        """
+        valid = {"auto_accept", "auto_dismiss", "manual"}
+        if policy not in valid:
+            return {"success": False, "error": f"Policy invalide. Choisir: {valid}"}
+        self._dialog_policy = policy
+        self._dialog_prompt_text = prompt_text or ""
+        self._install_dialog_listener()
+        return {
+            "success": True,
+            "policy": policy,
+            "prompt_text": prompt_text,
+        }
+
+    def get_dialog_log(self, limit: int = 20) -> Dict[str, Any]:
+        """Retourne l'historique des dialogs interceptés."""
+        return {
+            "success": True,
+            "count": len(self._dialog_log),
+            "policy": self._dialog_policy,
+            "dialogs": self._dialog_log[-limit:],
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Phase 4 — Drag & Drop ──
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def drag(self, source_selector: str, target_selector: str,
+                    by: str = "css", target_by: Optional[str] = None,
+                    hold_delay_ms: int = 100) -> Dict[str, Any]:
+        """Drag & drop d'un élément source vers une cible.
+
+        Args:
+            source_selector: Sélecteur source (CSS/XPath/text)
+            target_selector: Sélecteur cible (CSS/XPath/text)
+            by: Type de sélecteur source ('css', 'xpath', 'text')
+            target_by: Type cible (défaut = même que `by`)
+            hold_delay_ms: Pause au milieu du drag (réalisme)
+
+        Returns:
+            Dict avec succès + distance parcourue.
+        """
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        try:
+            src = self._build_selector(source_selector, by)
+            dst = self._build_selector(target_selector, target_by or by)
+            # Playwright drag_and_drop haut niveau (fait le hover+mousedown+move+up)
+            try:
+                await self._page.drag_and_drop(src, dst, timeout=10000)
+                return {
+                    "success": True,
+                    "source": source_selector,
+                    "target": target_selector,
+                    "method": "drag_and_drop",
+                }
+            except Exception:
+                # Fallback manuel : mouse down → move steps → up
+                src_handle = await self._page.wait_for_selector(src, timeout=5000)
+                dst_handle = await self._page.wait_for_selector(dst, timeout=5000)
+                src_box = await src_handle.bounding_box()
+                dst_box = await dst_handle.bounding_box()
+                if not src_box or not dst_box:
+                    return {"success": False, "error": "bounding_box indisponible"}
+                sx = src_box["x"] + src_box["width"] / 2
+                sy = src_box["y"] + src_box["height"] / 2
+                dx = dst_box["x"] + dst_box["width"] / 2
+                dy = dst_box["y"] + dst_box["height"] / 2
+                await self._page.mouse.move(sx, sy)
+                await self._page.mouse.down()
+                # Move en 10 étapes pour déclencher les events dragover
+                for i in range(1, 11):
+                    await self._page.mouse.move(
+                        sx + (dx - sx) * i / 10,
+                        sy + (dy - sy) * i / 10,
+                        steps=2,
+                    )
+                await self._page.wait_for_timeout(hold_delay_ms)
+                await self._page.mouse.up()
+                return {
+                    "success": True,
+                    "source": source_selector,
+                    "target": target_selector,
+                    "method": "manual_mouse",
+                    "distance_px": round(((dx - sx) ** 2 + (dy - sy) ** 2) ** 0.5, 1),
+                }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def drag_at(self, from_x: int, from_y: int, to_x: int, to_y: int,
+                       steps: int = 10, hold_delay_ms: int = 100) -> Dict[str, Any]:
+        """Drag par coordonnées souris."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        try:
+            await self._page.mouse.move(from_x, from_y)
+            await self._page.mouse.down()
+            for i in range(1, steps + 1):
+                await self._page.mouse.move(
+                    from_x + (to_x - from_x) * i / steps,
+                    from_y + (to_y - from_y) * i / steps,
+                    steps=2,
+                )
+            await self._page.wait_for_timeout(hold_delay_ms)
+            await self._page.mouse.up()
+            return {
+                "success": True,
+                "from": [from_x, from_y],
+                "to": [to_x, to_y],
+                "distance_px": round(((to_x - from_x) ** 2 + (to_y - from_y) ** 2) ** 0.5, 1),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Phase 4 — Downloads ──
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    def _install_download_listener(self) -> None:
+        """Intercepte les downloads du contexte et les sauve dans data/browser_downloads/."""
+        if not self._context or self._download_listening:
+            return
+
+        async def _on_download(download):
+            try:
+                suggested = download.suggested_filename or f"download_{int(datetime.now().timestamp())}"
+                # Sanitize pour éviter path traversal
+                safe_name = "".join(c for c in suggested if c.isalnum() or c in "._- ")
+                if not safe_name:
+                    safe_name = f"download_{int(datetime.now().timestamp())}"
+                target = self._downloads_dir / safe_name
+                # Éviter collision
+                if target.exists():
+                    stem, ext = target.stem, target.suffix
+                    target = self._downloads_dir / f"{stem}_{int(datetime.now().timestamp())}{ext}"
+                await download.save_as(str(target))
+                entry = {
+                    "timestamp": datetime.now().isoformat(),
+                    "filename": safe_name,
+                    "path": str(target),
+                    "url": download.url,
+                    "size": target.stat().st_size if target.exists() else 0,
+                    "state": "completed",
+                }
+                self._downloads.append(entry)
+                if len(self._downloads) > 200:
+                    self._downloads.pop(0)
+                logger.info(f"⬇️  Download: {safe_name} ({entry['size']} bytes)")
+                # Notifier les waiters
+                for fut in list(self._download_waiters):
+                    if not fut.done():
+                        fut.set_result(entry)
+                self._download_waiters.clear()
+            except Exception as e:
+                logger.error(f"Erreur download: {e}")
+                err_entry = {
+                    "timestamp": datetime.now().isoformat(),
+                    "filename": getattr(download, "suggested_filename", "?"),
+                    "url": getattr(download, "url", ""),
+                    "state": "failed",
+                    "error": str(e),
+                }
+                self._downloads.append(err_entry)
+                for fut in list(self._download_waiters):
+                    if not fut.done():
+                        fut.set_exception(e)
+                self._download_waiters.clear()
+
+        self._context.on("download", lambda d: asyncio.create_task(_on_download(d)))
+        self._download_listening = True
+
+    async def wait_for_download(self, timeout_ms: int = 30000) -> Dict[str, Any]:
+        """Attend le prochain download terminé.
+
+        Args:
+            timeout_ms: Timeout en millisecondes.
+
+        Returns:
+            Dict avec filename, path, size.
+        """
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        self._install_download_listener()
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._download_waiters.append(fut)
+        try:
+            entry = await asyncio.wait_for(fut, timeout=timeout_ms / 1000.0)
+            return {"success": True, **entry}
+        except asyncio.TimeoutError:
+            if fut in self._download_waiters:
+                self._download_waiters.remove(fut)
+            return {"success": False, "error": f"Timeout ({timeout_ms}ms) sans download"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def list_downloads(self, limit: int = 20) -> Dict[str, Any]:
+        """Liste les downloads interceptés dans cette session."""
+        return {
+            "success": True,
+            "count": len(self._downloads),
+            "downloads_dir": str(self._downloads_dir),
+            "downloads": self._downloads[-limit:],
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Phase 4 — Frames / iframes ──
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def list_frames(self) -> Dict[str, Any]:
+        """Liste toutes les frames (main + iframes)."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        try:
+            frames_info = []
+            for i, frame in enumerate(self._page.frames):
+                try:
+                    name = frame.name or ""
+                    url = frame.url or ""
+                    is_main = frame == self._page.main_frame
+                    frames_info.append({
+                        "index": i,
+                        "name": name,
+                        "url": url[:200],
+                        "is_main": is_main,
+                        "is_detached": frame.is_detached(),
+                    })
+                except Exception:
+                    continue
+            return {"success": True, "count": len(frames_info), "frames": frames_info}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _get_frame(self, frame_ref: str):
+        """Résout une référence frame en objet Frame.
+
+        Args:
+            frame_ref: nom de frame, '#<index>', URL partielle, ou '' pour main.
+        """
+        if not self._page:
+            return None
+        if not frame_ref or frame_ref == "main":
+            return self._page.main_frame
+        # Index explicite
+        if frame_ref.startswith("#"):
+            try:
+                idx = int(frame_ref[1:])
+                frames = list(self._page.frames)
+                if 0 <= idx < len(frames):
+                    return frames[idx]
+            except ValueError:
+                pass
+        # Par nom exact
+        frame = self._page.frame(name=frame_ref)
+        if frame:
+            return frame
+        # Par URL partielle
+        for f in self._page.frames:
+            if frame_ref.lower() in (f.url or "").lower():
+                return f
+        return None
+
+    async def frame_click(self, frame_ref: str, selector: str,
+                           by: str = "css") -> Dict[str, Any]:
+        """Clique un élément à l'intérieur d'une frame."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        frame = self._get_frame(frame_ref)
+        if not frame:
+            return {"success": False, "error": f"Frame introuvable: {frame_ref}"}
+        try:
+            sel = self._build_selector(selector, by)
+            await frame.click(sel, timeout=8000)
+            return {"success": True, "frame": frame_ref, "selector": selector}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def frame_type(self, frame_ref: str, selector: str, text: str,
+                          by: str = "css", delay: int = 0) -> Dict[str, Any]:
+        """Tape du texte dans un champ à l'intérieur d'une frame."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        frame = self._get_frame(frame_ref)
+        if not frame:
+            return {"success": False, "error": f"Frame introuvable: {frame_ref}"}
+        try:
+            sel = self._build_selector(selector, by)
+            await frame.fill(sel, text, timeout=8000)
+            return {"success": True, "frame": frame_ref, "chars": len(text)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def frame_evaluate(self, frame_ref: str, script: str) -> Dict[str, Any]:
+        """Exécute du JS dans une frame spécifique."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        frame = self._get_frame(frame_ref)
+        if not frame:
+            return {"success": False, "error": f"Frame introuvable: {frame_ref}"}
+        try:
+            result = await frame.evaluate(script)
+            return {"success": True, "result": result}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def frame_content(self, frame_ref: str, max_chars: int = 5000) -> Dict[str, Any]:
+        """Récupère le texte d'une frame."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        frame = self._get_frame(frame_ref)
+        if not frame:
+            return {"success": False, "error": f"Frame introuvable: {frame_ref}"}
+        try:
+            text = await frame.evaluate("() => document.body ? document.body.innerText : ''")
+            return {
+                "success": True,
+                "frame": frame_ref,
+                "url": frame.url,
+                "content": (text or "")[:max_chars],
+                "truncated": len(text or "") > max_chars,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Phase 4 — Performance Metrics (Core Web Vitals) ──
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def get_metrics(self) -> Dict[str, Any]:
+        """Retourne les métriques de performance de la page (Core Web Vitals)."""
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+        try:
+            metrics = await self._page.evaluate("""() => {
+                const nav = performance.getEntriesByType('navigation')[0] || {};
+                const paints = performance.getEntriesByType('paint') || [];
+                const fp = paints.find(p => p.name === 'first-paint');
+                const fcp = paints.find(p => p.name === 'first-contentful-paint');
+                const resources = performance.getEntriesByType('resource') || [];
+                let totalBytes = 0;
+                for (const r of resources) {
+                    totalBytes += (r.transferSize || 0);
+                }
+                return {
+                    dom_content_loaded_ms: nav.domContentLoadedEventEnd || null,
+                    load_complete_ms: nav.loadEventEnd || null,
+                    response_time_ms: nav.responseEnd ? (nav.responseEnd - nav.requestStart) : null,
+                    ttfb_ms: nav.responseStart ? (nav.responseStart - nav.requestStart) : null,
+                    first_paint_ms: fp ? Math.round(fp.startTime) : null,
+                    first_contentful_paint_ms: fcp ? Math.round(fcp.startTime) : null,
+                    transfer_size_kb: Math.round(totalBytes / 1024),
+                    resources_count: resources.length,
+                    dom_nodes: document.querySelectorAll('*').length,
+                    js_heap_mb: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
+                };
+            }""")
+            # Tentative LCP via PerformanceObserver (non-bloquant, best-effort)
+            try:
+                lcp = await self._page.evaluate("""() => new Promise(resolve => {
+                    try {
+                        let lcpValue = null;
+                        const po = new PerformanceObserver(list => {
+                            const entries = list.getEntries();
+                            if (entries.length) lcpValue = Math.round(entries[entries.length - 1].startTime);
+                        });
+                        po.observe({type: 'largest-contentful-paint', buffered: true});
+                        setTimeout(() => { po.disconnect(); resolve(lcpValue); }, 300);
+                    } catch(e) { resolve(null); }
+                })""")
+                metrics["largest_contentful_paint_ms"] = lcp
+            except Exception:
+                metrics["largest_contentful_paint_ms"] = None
+            return {
+                "success": True,
+                "url": self._page.url,
+                "metrics": metrics,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── Phase 4 — Click Smart (self-healing selectors via vision) ──
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def click_smart(self, hint: str, selector: str = "",
+                           by: str = "css", timeout_ms: int = 3000) -> Dict[str, Any]:
+        """Clic robuste avec fallback intelligent.
+
+        Stratégies en cascade :
+          1. Sélecteur CSS/XPath/text si fourni
+          2. Recherche par texte accessible (role+name)
+          3. Recherche par index DOM approximatif (hint match dans label)
+
+        Args:
+            hint: Description textuelle de l'élément visé (ex: 'bouton connexion').
+            selector: Sélecteur exact (prioritaire si fourni).
+            by: Type de sélecteur.
+            timeout_ms: Timeout par stratégie.
+
+        Returns:
+            Dict avec succès + stratégie utilisée.
+        """
+        if not self.is_running:
+            return {"success": False, "error": "Navigateur non démarré"}
+
+        # Stratégie 1 : sélecteur direct
+        if selector:
+            try:
+                sel = self._build_selector(selector, by)
+                await self._page.click(sel, timeout=timeout_ms)
+                return {"success": True, "strategy": "selector", "selector": selector}
+            except Exception as e1:
+                logger.debug(f"click_smart S1 failed: {e1}")
+
+        hint_lower = (hint or "").strip().lower()
+
+        # Stratégie 2 : get_by_role / get_by_text (Playwright accessible locators)
+        if hint_lower:
+            for role in ("button", "link", "tab", "menuitem", "option", "checkbox", "radio"):
+                try:
+                    loc = self._page.get_by_role(role, name=hint, exact=False)
+                    count = await loc.count()
+                    if count > 0:
+                        await loc.first.click(timeout=timeout_ms)
+                        return {
+                            "success": True,
+                            "strategy": "accessible_role",
+                            "role": role,
+                            "matches": count,
+                        }
+                except Exception:
+                    continue
+            # Fallback : get_by_text
+            try:
+                loc = self._page.get_by_text(hint, exact=False)
+                count = await loc.count()
+                if count > 0:
+                    await loc.first.click(timeout=timeout_ms)
+                    return {
+                        "success": True,
+                        "strategy": "text_match",
+                        "matches": count,
+                    }
+            except Exception:
+                pass
+
+        # Stratégie 3 : scan DOM interactif + fuzzy match
+        if hint_lower:
+            try:
+                target = await self._page.evaluate("""(hint) => {
+                    const sel = 'a, button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick]';
+                    const els = document.querySelectorAll(sel);
+                    const hint_l = hint.toLowerCase();
+                    let best = null, bestScore = 0;
+                    for (const el of els) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width < 5 || rect.height < 5) continue;
+                        const txt = ((el.textContent || '') + ' ' +
+                                     (el.getAttribute('aria-label') || '') + ' ' +
+                                     (el.getAttribute('placeholder') || '') + ' ' +
+                                     (el.getAttribute('title') || '') + ' ' +
+                                     (el.getAttribute('name') || '')).trim().toLowerCase();
+                        if (!txt) continue;
+                        let score = 0;
+                        if (txt.includes(hint_l)) score = 100 - Math.abs(txt.length - hint_l.length) * 0.5;
+                        else {
+                            const words = hint_l.split(/\\s+/);
+                            for (const w of words) if (w && txt.includes(w)) score += 30;
+                        }
+                        if (score > bestScore) { bestScore = score; best = { x: rect.left + rect.width/2, y: rect.top + rect.height/2, txt: txt.slice(0, 60), score }; }
+                    }
+                    return best;
+                }""", hint)
+                if target and target.get("score", 0) >= 30:
+                    await self._page.mouse.click(target["x"], target["y"])
+                    return {
+                        "success": True,
+                        "strategy": "fuzzy_dom_scan",
+                        "matched_text": target["txt"],
+                        "score": target["score"],
+                    }
+            except Exception as e3:
+                logger.debug(f"click_smart S3 failed: {e3}")
+
+        return {
+            "success": False,
+            "error": f"Aucun élément trouvé pour '{hint}' (selector='{selector}')",
+            "tried": ["selector", "accessible_role", "text_match", "fuzzy_dom_scan"],
+        }
 
 
 # Singleton global

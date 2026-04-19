@@ -378,37 +378,101 @@ _MODIFY_KW = re.compile(
     r'|modifie|modifier|am[eé]liore|ameliorer|termine|terminer|finis|finir'
     r'|ach[eè]ve|achever|debug|update|upgrade|improve|restructur'
     r'|compl[eè]te|compl[eé]ter|complete|casser|cass[eé]|broken|bug'
-    r'|ajout|ajouter|add|change|enl[eè]ve|enlever|remove|supprime|supprimer)',
+    r'|ajout|ajouter|add|change|changer|enl[eè]ve|enlever|remove|supprime|supprimer'
+    r'|transforme|transformer|transform|refond|refonte|refactor|refactoris'
+    r'|remplace|remplacer|replace|renomme|renommer|rename|d[eé]place|deplacer'
+    r'|convertis|convertir|adapt|adapter)',
+    re.IGNORECASE,
+)
+
+# Racines tolérantes aux fautes de frappe (détectées par préfixe sur stem normalisé).
+# Ordre : plus spécifique → plus générique pour éviter les faux positifs.
+_MODIFY_TYPO_STEMS = (
+    "transfo",   # trnasforme, transfrome, transfome → transforme
+    "modif",     # modife, modiffie → modifie
+    "corrig",    # corige, corriger → corrige
+    "repar",     # repare, réparer
+    "ajout",     # ajoute, rajout
+    "suppri",    # supprime
+    "enlev",     # enlève
+    "remplac",   # remplace
+    "renom",     # renomme
+    "refact",    # refactor
+    "refon",     # refonte, refond
+    "ameli",     # améliore
+    "complet",   # complete
+    "termin",    # termine
+    "achev",     # achève
+    "chang",     # change
+    "reprend",   # reprend
+    "contin",    # continue
+    "debug",
+    "update",
+    "upgrad",
+    "improv",
+    "adapt",
+)
+
+# Pronoms/articles + noms de ressource projet : indiquent anaphoriquement qu'on
+# modifie quelque chose d'EXISTANT (pas création from scratch).
+# Ex: "transforme la nouvelle page contact en..." → modify (référence à "la page" existante).
+_ANAPHORIC_RE = re.compile(
+    r'\b(?:la|le|les|ma|ta|sa|mon|ton|son|ces|cette|ce|cet|cela|ça|ca)\s+'
+    r'(?:nouvelle?\s+|ancien+ne?\s+|dernie?re?\s+|pr[eé]c[eé]dente?\s+)?'
+    r'(?:page|section|site|projet|fichier|file|composant|page|html|css|js|module|'
+    r'classe|class|fonction|function|m[eé]thode|method|bouton|menu|nav|header|footer|'
+    r'formulaire|form|modal|popup|hero|footer|card|liste|list|tableau|table)\b',
     re.IGNORECASE,
 )
 
 
 def _generate_slug(query: str) -> str:
-    """Génère un slug court depuis une requête utilisateur."""
+    """Génère un slug court depuis une requête utilisateur.
+
+    Retourne ``projet-<2-3 mots significatifs>`` (max 40 chars).
+    """
     _STOPWORDS = {
+        # Verbes d'action
         "creer", "cree", "create", "genere", "generer", "fais", "faire", "make",
         "build", "construis", "construire", "developpe", "ecris", "ecrire", "write",
+        # Pronoms / articles / prépositions
         "donne", "moi", "tu", "il", "elle", "nous", "vous", "ils", "elles", "on",
         "un", "une", "des", "le", "la", "les", "de", "du", "en", "pour", "avec",
+        "qui", "que", "ce", "ca", "se", "sa", "son", "ses", "ma", "mon", "mes",
+        "ta", "ton", "tes", "au", "aux", "par", "dans", "sur", "est", "sont",
+        # Mots conversationnels FR (cause du bug "okay-va-vraiment")
+        "okay", "ok", "oui", "non", "bah", "bon", "bien", "allez", "aller",
+        "vas", "va", "vraiment", "genre", "tiens", "tien", "voila", "voici",
+        "alors", "donc", "mais", "quand", "comment", "deja", "encore", "aussi",
+        "juste", "seulement", "peut", "peux", "veux", "veut", "faut", "dois",
+        "doit", "sais", "sait", "dit", "dire", "comme", "tout", "tous", "toute",
+        "rien", "jamais", "toujours", "assez", "trop", "tres", "plus", "moins",
+        "pas", "nan", "ouais", "hein", "quoi", "hop",
+        # Qualificatifs génériques
         "complet", "complete", "simple", "parfait", "parfaite", "nouveau", "nouvelle",
-        "jeu", "jeux", "application", "app", "site", "page", "bah", "veux", "fait",
-        "please", "just", "me", "a", "an", "the", "of", "with", "and", "qui", "que",
-        "truc", "chose", "petit", "petite", "grand", "grande", "super", "top",
-        "sympa", "cool", "vite", "rapide", "entier", "entiere",
+        "petit", "petite", "grand", "grande", "super", "top", "sympa", "cool",
+        "vite", "rapide", "entier", "entiere", "beau", "belle", "joli", "jolie",
+        # Termes génériques projet
+        "jeu", "jeux", "application", "app", "site", "page", "projet", "project",
+        "truc", "chose", "fait", "bah",
+        # Anglais courant
+        "please", "just", "me", "a", "an", "the", "of", "with", "and",
     }
     raw = re.sub(r'[^a-zA-Z0-9\s]', ' ', _norm(query)).lower().split()
-    kept = [w for w in raw if w not in _STOPWORDS and len(w) > 1][:6]
+    kept = [w for w in raw if w not in _STOPWORDS and len(w) > 2][:3]
     slug = '-'.join(kept) if kept else "projet"
-    return f"projet-{slug[:45]}"
+    return f"projet-{slug[:40]}"
 
 
 def _detect_intent(query: str) -> str:
     """Détecte l'intention : 'modify', 'create', ou 'unknown'.
 
-    Regarde les ~500 premiers caractères (instruction + début de contexte).
-    Les très longs prompts contiennent souvent du texte descriptif, mais 200
-    était trop court : pour une requête de 400 chars dont le verbe d'action
-    est en 2e moitié, la troncature à 200 → "unknown" → faux positif routage.
+    Cascade :
+    1. Regex stricte _MODIFY_KW / _CREATE_KW (verbes bien orthographiés)
+    2. Typo-tolérance : stems (trnasforme → transfo, modife → modif, ...)
+    3. Heuristique anaphorique : "transforme LA PAGE contact" → modify même si
+       le verbe n'est pas détecté, car le déterminant + nom de ressource
+       implique qu'on parle d'un existant.
     """
     check_text = query[:500] if len(query) > 500 else query
     has_modify = bool(_MODIFY_KW.search(check_text))
@@ -416,7 +480,26 @@ def _detect_intent(query: str) -> str:
     if has_modify and not has_create:
         return "modify"
     if has_create and not has_modify:
+        # Toujours "create" littéral ; le routage verra si un projet existant
+        # matche et convertira éventuellement en modify (ajout à existant).
         return "create"
+
+    # ── 2. Typo-tolérance sur les racines de verbes de modification ──
+    if not has_modify and not has_create:
+        _tokens = re.sub(r"[^a-z0-9\s]", " ", _norm(check_text)).split()
+        for _tok in _tokens:
+            if len(_tok) < 5:
+                continue
+            for _stem in _MODIFY_TYPO_STEMS:
+                # Tolérance : le stem apparaît comme préfixe OU comme sous-chaîne
+                # d'un token de ≤ 12 chars (évite les faux positifs sur longs mots).
+                if _tok.startswith(_stem) or (len(_tok) <= 12 and _stem in _tok):
+                    return "modify"
+
+    # ── 3. Heuristique anaphorique : déterminant + ressource = modify ──
+    if not has_create and _ANAPHORIC_RE.search(check_text):
+        return "modify"
+
     # Les deux ou aucun → heuristique : si un projet existe, c'est modification
     return "unknown"
 
@@ -467,10 +550,35 @@ def resolve_workspace(
     found = find_project(query)
     if found and found.is_dir():
         effective_intent = "modify" if intent == "unknown" else intent
-        # Si l'intent est clairement "create", ne PAS réutiliser un match faible.
-        # L'utilisateur veut un NOUVEAU projet, pas un vieux dossier.
-        if intent == "create":
-            logger.info("[resolve_workspace] Intent=create, match existant ignoré: {}", found)
+        _is_fallback = _is_fallback_match(query, found)
+
+        # ── Biais "projet très récemment accédé" (<10 min) ──
+        # Si le match est un fallback MAIS le projet a été touché il y a très peu,
+        # c'est probablement la suite de la conversation en cours ("transforme la
+        # nouvelle page" 2 min après l'avoir créée). On bascule l'intent en modify
+        # pour éviter de créer un projet orphelin.
+        _recently_active = False
+        if _is_fallback:
+            try:
+                for _p in load_registry():
+                    if Path(_p.get("path", "")).resolve() == found.resolve():
+                        _last = _p.get("last_accessed", "")
+                        if _last:
+                            _delta = (datetime.now() - datetime.fromisoformat(_last)).total_seconds()
+                            if 0 <= _delta <= 600:  # 10 min
+                                _recently_active = True
+                        break
+            except Exception:
+                pass
+
+        # Si l'intent est clairement "create" ET que le match n'est qu'un fallback
+        # (= "projet le plus récent" sans correspondance par nom), ignorer le match :
+        # l'utilisateur veut un NOUVEAU projet, pas un vieux dossier.
+        # MAIS si le match est RÉEL (nom/keywords matchent la query) OU si le projet
+        # a été touché très récemment (suite de conversation), on garde :
+        # "crée une page AU site canapé" = ajout à projet existant, pas nouveau projet.
+        if intent == "create" and _is_fallback and not _recently_active:
+            logger.info("[resolve_workspace] Intent=create + fallback match ignoré: {}", found)
             # Fall through to creation (step 4)
         else:
             # Quand l'intent est "unknown" (aucun verbe d'action dans la query),
@@ -478,16 +586,27 @@ def resolve_workspace(
             # sur des messages purement conversationnels ("ca va ?", "bah alors").
             # Le seuil du fast-route est 0.7 — intent explicite ("modify") garde 0.8.
             #
-            # Fallback (projet le plus récent, aucun match réel) → conf 0.4 max
+            # Fallback pur (aucun match réel, pas récemment actif) → conf 0.4 max
             # pour ne JAMAIS déclencher le fast-route sur une requête sans rapport.
-            _is_fallback = _is_fallback_match(query, found)
-            if _is_fallback:
+            if _is_fallback and not _recently_active:
                 _conf = 0.4
+            elif _is_fallback and _recently_active:
+                # Projet récemment actif = suite de conversation → conf 0.75
+                _conf = 0.75
             elif intent == "unknown":
                 _conf = 0.5
             else:
                 _conf = 0.8
-            logger.info("[resolve_workspace] Projet trouvé via registre: {} (intent={}, conf={:.1f}, fallback={})", found, effective_intent, _conf, _is_fallback)
+            # intent "create" sur match réel OU projet récemment actif → traité comme "modify"
+            if intent == "create" and (not _is_fallback or _recently_active):
+                effective_intent = "modify"
+                _why = "match réel" if not _is_fallback else "projet récemment actif (<10min)"
+                logger.info("[resolve_workspace] Intent=create sur {} → traité comme modify (ajout à projet existant)", _why)
+            # intent "unknown" + projet récemment actif → modify (suite de conversation)
+            elif intent == "unknown" and _recently_active:
+                effective_intent = "modify"
+                logger.info("[resolve_workspace] Intent=unknown + projet récemment actif → traité comme modify")
+            logger.info("[resolve_workspace] Projet trouvé via registre: {} (intent={}, conf={:.1f}, fallback={}, recent={})", found, effective_intent, _conf, _is_fallback, _recently_active)
             return WorkspaceResolution(path=found, intent=effective_intent, source="registry", confidence=_conf)
 
     # ── 4. Création si intention détectée et aucun projet existant ──

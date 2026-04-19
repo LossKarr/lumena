@@ -166,13 +166,13 @@ async function _loadPreflight() {
     const optional = (data.components || []).filter(c => c.details?.required === false);
     let html = '';
     for (const c of critical) {
-      const icon = c.healthy ? '✅' : '❌';
+      const icon = c.healthy ? '<span style="color:var(--ok)">✓</span>' : '<span style="color:var(--danger)">×</span>';
       html += `<div>${icon} ${c.message}</div>`;
     }
     if (optional.length) {
       html += '<div style="margin-top:.5em"><small style="opacity:.6">Composants optionnels :</small></div>';
       for (const c of optional) {
-        const icon = c.healthy ? '✅' : 'ℹ️';
+        const icon = c.healthy ? '<span style="color:var(--ok)">✓</span>' : '<span style="color:var(--muted)">—</span>';
         const hint = (!c.healthy && c.details?.hint) ? ` <span style="opacity:.5;font-size:.85em">— ${c.details.hint}</span>` : '';
         html += `<div>${icon} ${c.message}${hint}</div>`;
       }
@@ -1514,7 +1514,7 @@ function _renderBrainsStep(cont, step) {
         <div style="font-size:11px;color:var(--muted,#8c8c9a)">${_esc(info.desc || '')}</div></div>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px">
-        <button data-brain-val="auto" data-brain-key="${_esc(f.key)}" style="padding:4px 10px;border-radius:12px;border:1px solid ${autoSel ? 'rgba(245,159,74,.5)' : 'rgba(255,255,255,.15)'};background:${autoSel ? 'rgba(245,159,74,.18)' : 'rgba(255,255,255,.05)'};color:${autoSel ? '#f59f4a' : 'var(--text,#e6e6e6)'};font-size:11px;font-weight:${autoSel ? '700' : '500'};cursor:pointer">auto ✨</button>
+        <button data-brain-val="auto" data-brain-key="${_esc(f.key)}" style="padding:4px 10px;border-radius:12px;border:1px solid ${autoSel ? 'rgba(245,159,74,.5)' : 'rgba(255,255,255,.15)'};background:${autoSel ? 'rgba(245,159,74,.18)' : 'rgba(255,255,255,.05)'};color:${autoSel ? '#f59f4a' : 'var(--text,#e6e6e6)'};font-size:11px;font-weight:${autoSel ? '700' : '500'};cursor:pointer">auto</button>
         ${pillHtml(top)}
       </div>
       ${topFree.length ? `<div style="font-size:10px;color:var(--muted,#8c8c9a);margin-bottom:5px;letter-spacing:.4px">GRATUITS (NVIDIA NIM)</div><div style="display:flex;flex-wrap:wrap;gap:6px">${pillHtml(topFree)}</div>` : ''}

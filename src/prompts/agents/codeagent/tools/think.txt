@@ -1,0 +1,17 @@
+## think — Raisonnement explicite
+
+**When to use:**
+- Avant une modification complexe multi-fichiers
+- Pour formuler une hypothèse (debugging)
+- Quand tu es bloqué et dois changer d'approche
+
+**When NOT to use:**
+- Tâche simple évidente ← un `thought` dans l'action suffit
+- 2 think consécutifs ← tu dois AGIR, pas philosopher
+
+**Good:**
+`{"action": "think", "thought": "L'erreur vient de b.py L42. Je vais lire b.py, puis patcher la signature, puis relancer les tests."}`
+
+**Bad:**
+`{"action": "think", "thought": "Je réfléchis."}` ← vide
+3× think consécutifs sans action intermédiaire ← boucle stérile

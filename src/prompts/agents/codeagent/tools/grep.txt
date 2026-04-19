@@ -1,0 +1,18 @@
+## grep — Chercher un motif texte
+
+**When to use:**
+- Trouver les occurrences d'une fonction / classe / variable avant rename
+- Localiser rapidement une erreur ("TODO", "FIXME", "raise ValueError")
+- Explorer un projet dont tu ne connais pas la structure
+
+**When NOT to use:**
+- Lire un fichier entier → `read_file`
+- Vérifier l'existence d'un fichier → `list_files`
+
+**Good:**
+`{"action": "grep", "pattern": "def process_data", "path": "src/"}`
+`{"action": "grep", "pattern": "TODO", "path": "."}`
+
+**Bad:**
+`{"action": "run_command", "command": "grep -r pattern src/"}` ← utilise l'action grep
+`{"action": "grep", "pattern": "a", "path": "."}` ← motif trop large, résultat inutile

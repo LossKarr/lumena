@@ -23,8 +23,8 @@ export async function loadStartupModels(attempt = 1){
            id="smodel-${m.name}">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <div>
-            <div style="font-weight:500;color:var(--text)">${m.is_local?'💻':'☁️'} ${esc(m.display_name)}</div>
-            <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(m.description)} ${m.is_free?'🟢 Gratuit':'💰 Payant'}</div>
+            <div style="font-weight:500;color:var(--text)">${esc(m.display_name)}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:4px">${esc(m.description)} <span style="color:${m.is_free?'var(--ok)':'var(--warn)'}">${m.is_free?'Gratuit':'Payant'}</span> · <span style="color:var(--muted)">${m.is_local?'Local':'Cloud'}</span></div>
           </div>
           ${!m.available?'<span style="font-size:11px;color:var(--warn)">Cle manquante</span>':''}
         </div>
@@ -34,7 +34,7 @@ export async function loadStartupModels(attempt = 1){
     if(pref)selectStartupModel(pref.name);
   }catch(e){
     if(attempt >= MAX){
-      document.getElementById('startup-models').innerHTML='<div style="color:var(--danger);padding:20px">❌ Serveur inaccessible — relancez START.bat</div>';
+      document.getElementById('startup-models').innerHTML='<div style="color:var(--danger);padding:20px">Serveur inaccessible — relancez START.bat</div>';
       return;
     }
     document.getElementById('startup-models').innerHTML=`<div style="color:var(--muted);padding:20px">Connexion... (${attempt}/${MAX})</div>`;
@@ -51,7 +51,7 @@ export function selectStartupModel(name){
 export async function startLumena(){
   if(!selectedModel)return;
   const btn=document.getElementById('startup-btn');
-  btn.textContent='⏳ Initialisation...';btn.disabled=true;
+  btn.textContent='Initialisation...';btn.disabled=true;
   try{
     const cur=allModels.find(m=>m.current);
     if(!cur||cur.name!==selectedModel){
@@ -139,8 +139,8 @@ function _badgeClass(b){
 function _renderCard(m, color){
   const ctx = _ctxLabel(m.context_window||0);
   const tags = [];
-  if(m.supports_vision) tags.push('<span class="mpicker-tag">👁 Vision</span>');
-  if(m.is_local) tags.push('<span class="mpicker-tag tag-local">💻 Local</span>');
+  if(m.supports_vision) tags.push('<span class="mpicker-tag">Vision</span>');
+  if(m.is_local) tags.push('<span class="mpicker-tag tag-local">Local</span>');
   tags.push(`<span class="mpicker-tag">${ctx} ctx</span>`);
   const badge = m.badge ? `<span class="mpicker-badge ${_badgeClass(m.badge)}">${esc(m.badge)}</span>` : '';
   const nameParts = m.display_name.split(' (');
@@ -238,9 +238,9 @@ export async function switchModel(name){
     if(!r.ok){const err=await r.json();throw new Error(err.detail)}
     const d=await r.json();
     document.getElementById('current-model-name').textContent=d.display_name.split(' (')[0];
-    logC(`✅ ${d.message}`,'success');loadStatus();loadModels();
-    addMsg('assistant',`🧠 **Modele change** : J'utilise maintenant **${esc(d.display_name)}** !`);
-  }catch(e){logC(`❌ ${e.message}`,'error');loadModels()}
+    logC(d.message,'success');loadStatus();loadModels();
+    addMsg('assistant',`**Modele change** : J'utilise maintenant **${esc(d.display_name)}** !`);
+  }catch(e){logC(e.message,'error');loadModels()}
 }
 
 export function toggleAgent(){

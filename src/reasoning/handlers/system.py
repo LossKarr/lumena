@@ -173,6 +173,17 @@ async def run_command_handler(
             _touch_m = _re_cmd.match(r'^touch\s+(.+)$', command.strip())
             if _touch_m:
                 command = f'type nul > "{_touch_m.group(1).strip()}"'
+            # P4: start <path with spaces> → start "" "<path>"
+            # La commande 'start' sous cmd/Windows consomme le 1er argument quoté comme
+            # titre de fenêtre. Un path non-quoté avec espaces est tronqué au 1er espace.
+            # Ex: "start C:\a\SITE WEB\i.html" → lance "C:\a\SITE" (plante).
+            _start_m = _re_cmd.match(r'^start\s+(?!"")(.+)$', command.strip(), _re_cmd.IGNORECASE)
+            if _start_m:
+                _start_arg = _start_m.group(1).strip()
+                # Si pas déjà quoté et contient espace → auto-quote
+                if ' ' in _start_arg and not (_start_arg.startswith('"') and _start_arg.rstrip().endswith('"')):
+                    command = f'start "" "{_start_arg}"'
+                    logger.info("[run_command] auto-quote 'start' avec path espacé → {}", command[:120])
             # Inject -Encoding UTF8 pour les cmdlets fichier PowerShell sans -Encoding
             # (PS 5.1 : Get-Content lit en ANSI, Set-Content/Out-File écrit ANSI/UTF-16)
             # Vérification par segment (→ prochain | ou ;) pour ne pas confondre

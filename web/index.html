@@ -15,6 +15,7 @@
 <link rel="stylesheet" href="/static/css/thinking.css?v=3">
 <link rel="stylesheet" href="/static/css/setup.css?v=7">
 <link rel="stylesheet" href="/static/css/product-docs.css?v=1">
+<link rel="stylesheet" href="/static/css/config-panel.css?v=1">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -238,10 +239,6 @@
             <span class="nav-item-icon"><i data-lucide="zap"></i></span>
             <span class="nav-item-label">Providers LLM</span>
           </div>
-          <div class="nav-item" data-panel="config">
-            <span class="nav-item-icon"><i data-lucide="settings"></i></span>
-            <span class="nav-item-label">Configuration</span>
-          </div>
           <div class="nav-item" data-panel="ionos">
             <span class="nav-item-icon"><i data-lucide="server"></i></span>
             <span class="nav-item-label">IONOS</span>
@@ -250,10 +247,6 @@
           <div class="nav-item" data-panel="docs">
             <span class="nav-item-icon"><i data-lucide="file-text"></i></span>
             <span class="nav-item-label">Fichiers</span>
-          </div>
-          <div class="nav-item" data-panel="product-docs">
-            <span class="nav-item-icon"><i data-lucide="book-open-check"></i></span>
-            <span class="nav-item-label">Documentation</span>
           </div>
         </div>
       </div>
@@ -283,12 +276,29 @@
           </div>
         </div>
       </div>
+
+      <!-- Système -->
+      <div class="nav-section">
+        <div class="nav-section-title" data-action="toggleSection">
+          <span>Système</span><span class="chevron">▾</span>
+        </div>
+        <div class="nav-section-items">
+          <div class="nav-item" data-panel="config">
+            <span class="nav-item-icon"><i data-lucide="settings"></i></span>
+            <span class="nav-item-label">Configuration</span>
+          </div>
+          <div class="nav-item" data-panel="product-docs">
+            <span class="nav-item-icon"><i data-lucide="book-open-check"></i></span>
+            <span class="nav-item-label">Documentation</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <button class="nav-collapse-toggle" data-action="toggleNavCollapse" title="Replier/Deplier"><i data-lucide="chevron-left"></i></button>
 
     <div class="nav-mood" id="nav-mood">
-      <span class="nav-mood-emoji" id="mood-emoji">😊</span>
+      <span class="nav-mood-emoji" id="mood-emoji"><i data-lucide="heart" style="width:18px;height:18px;color:var(--accent)"></i></span>
       <div>
         <div class="nav-mood-label">Humeur</div>
         <div class="nav-mood-value" id="mood-value">neutral</div>
@@ -994,23 +1004,34 @@
 
     <!-- ======= CONFIGURATION ======= -->
     <div class="panel" id="panel-config">
-      <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span><i data-lucide="settings"></i> Configuration Lumena</span>
-          <div style="display:flex;gap:8px">
-            <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadConfig">Rafraichir</button>
-            <button class="btn primary" style="font-size:11px;padding:4px 14px" data-action="saveConfig"><i data-lucide="save"></i> Sauvegarder</button>
+      <div class="cfg-layout">
+        <nav class="cfg-sidebar">
+          <div class="cfg-sidebar-header">
+            <i data-lucide="settings"></i>
+            <span>Configuration</span>
           </div>
-        </div>
-        <div class="card-content" style="padding-bottom:0">
-          <p style="color:var(--muted);font-size:12px">Modifiez les paramètres du .env en temps réel. Les clés API ne sont pas exposées.</p>
-          <div id="config-save-msg" style="display:none;margin-top:8px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
-        </div>
+          <div class="cfg-sidebar-nav" id="cfg-nav"></div>
+          <div class="cfg-sidebar-footer">
+            <button class="btn primary" style="width:100%;font-size:12px;padding:8px 0" data-action="saveConfig"><i data-lucide="save" style="width:14px;height:14px"></i> Sauvegarder</button>
+          </div>
+        </nav>
+        <main class="cfg-main" id="cfg-main">
+          <div class="cfg-main-header">
+            <div>
+              <h2 id="cfg-group-title" style="margin:0;font-size:20px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:10px">Configuration Lumena</h2>
+              <p style="color:var(--muted);font-size:12px;margin:4px 0 0">Modifiez les paramètres du .env en temps réel.</p>
+            </div>
+            <button class="btn" style="font-size:11px;padding:4px 10px;flex-shrink:0" data-action="loadConfig"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraichir</button>
+          </div>
+          <div id="config-save-msg" style="display:none;margin:0 32px;padding:8px 14px;border-radius:8px;font-size:12px"></div>
+          <div id="config-groups" class="cfg-content">
+            <div class="cfg-loading">Chargement de la configuration...</div>
+          </div>
+        </main>
       </div>
-      <div id="config-groups" style="display:flex;flex-direction:column;gap:12px;margin-top:12px"></div>
     </div>
 
-    <!-- ======= FICHIERS (lumena_rules / README / HEARTBEAT) ======= -->
+    <!-- ======= FICHIERS (lumena_rules / HEARTBEAT) ======= -->
     <div class="panel" id="panel-docs">
       <div class="card" style="margin-bottom:12px;flex-shrink:0">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -1021,7 +1042,6 @@
           <p style="color:var(--muted);font-size:12px">Modifiez directement les fichiers de pilotage de Lumena. Les changements sont pris en compte au prochain redémarrage du daemon.</p>
           <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
             <button class="btn" id="doc-tab-lumena_rules" data-action="switchDoc" data-arg="lumena_rules" style="font-size:11px"><i data-lucide="scroll-text"></i> .lumena_rules</button>
-            <button class="btn" id="doc-tab-readme" data-action="switchDoc" data-arg="readme" style="font-size:11px"><i data-lucide="book-open"></i> README.md</button>
             <button class="btn" id="doc-tab-heartbeat" data-action="switchDoc" data-arg="heartbeat" style="font-size:11px"><i data-lucide="heart-pulse"></i> HEARTBEAT.md</button>
           </div>
           <div id="doc-save-msg" style="display:none;margin-top:8px;padding:6px 12px;border-radius:6px;font-size:12px"></div>

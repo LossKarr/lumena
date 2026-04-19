@@ -50,6 +50,11 @@ from .prompt_builder import (
     is_project_creation_request, is_web_request,
     looks_code_like_or_structured, looks_incomplete_final_answer,
 )
+from .history_formatter import (
+    compute_obs_limit_from_runtime,
+    should_protect_observation,
+    split_head_tail,
+)
 
 # Sanitization, plan regex, tool hints et model hints dans react_config.py
 
@@ -57,13 +62,28 @@ from .prompt_builder import (
 def _generate_project_slug(query: str) -> str:
     """Génère un slug court à partir de la requête utilisateur pour nommer le dossier projet."""
     _NOISE = {
-        "creer", "cree", "créer", "crée", "moi", "un", "une", "le", "la", "les",
-        "de", "du", "des", "pour", "ma", "mon", "mes", "et", "il", "me", "faut",
-        "dans", "ton", "site", "web", "page", "fait", "faire", "fais", "avec",
-        "qui", "que", "je", "tu", "nous", "vous", "sur", "en", "pas", "son",
-        "create", "make", "build", "the", "a", "an", "my", "for", "with", "and",
-        "in", "on", "new", "nouveau", "nouvelle", "photos", "photo", "images",
-        "image", "dedans", "besoin", "sit", "workspace",
+        # Verbes d'action
+        "creer", "cree", "creer", "creee", "moi", "fait", "faire", "fais",
+        "genere", "generer", "developpe", "ecris", "ecrire", "construis",
+        "create", "make", "build", "write", "generate",
+        # Articles / pronoms / prépositions
+        "un", "une", "le", "la", "les", "de", "du", "des", "pour", "avec",
+        "ma", "mon", "mes", "et", "il", "me", "je", "tu", "nous", "vous",
+        "qui", "que", "ce", "ca", "se", "sa", "son", "ses", "ta", "ton", "tes",
+        "dans", "sur", "en", "pas", "au", "aux", "par", "est", "sont",
+        "the", "a", "an", "my", "for", "with", "and", "in", "on",
+        # Mots conversationnels FR
+        "okay", "ok", "oui", "non", "bah", "bon", "bien", "allez", "aller",
+        "vas", "va", "vraiment", "genre", "tiens", "voila", "alors", "donc",
+        "mais", "quand", "comment", "juste", "peut", "peux", "veux", "veut",
+        "faut", "dois", "doit", "comme", "tout", "tous", "rien", "jamais",
+        "pas", "nan", "ouais", "hop", "hein", "quoi", "deja", "encore",
+        # Qualificatifs génériques
+        "new", "nouveau", "nouvelle", "complet", "complete", "simple",
+        "parfait", "petit", "grand", "super", "top", "cool", "beau",
+        # Termes génériques projet
+        "site", "web", "page", "photos", "photo", "images", "image",
+        "dedans", "besoin", "sit", "workspace", "projet", "project",
     }
     text = unicodedata.normalize("NFKD", query.lower())
     text = re.sub(r"[^\w\s]", "", text)
@@ -125,6 +145,9 @@ class ReActLoop:
         self._last_action_signature = None  # Phase 2.2: signature de la dernière action
         self._pending_loop_guidance: Optional[str] = None  # guidance injectée dans prochaine observation
         self._last_auto_advance_iter: int = -1  # garde: max 1 auto-avancement par itération
+        # ── Anti-aveuglement browser : track dernière itération où le modèle a "vu" ──
+        self._last_browser_visual_iter: int = -1  # dernier iter avec screenshot ou dom_state
+        self._browser_blind_streak: int = 0  # nb actions browser consécutives sans voir
         self.llm_meta_getter = llm_meta_getter
         self.max_final_repair_attempts = max(0, int(max_final_repair_attempts))
         self._final_repair_attempts = 0
@@ -200,18 +223,15 @@ class ReActLoop:
         return max(30, parsed)
 
     def _history_observation_limit(self) -> int:
+        # IDE runtime : valeur spécifique conservée (boucle Desktop courte).
         if self._is_ide_runtime():
             return self._env_int("LUMENA_REACT_HISTORY_OBS_CHARS_IDE", 12000, minimum=500)
-        # Phase 7.1 améliorée : obs_limit dynamique selon les capacités du modèle actif
-        # Formule calibrée pour les modèles à gros contexte (128k+)
+        # Phase 7.2 : calibration réelle basée sur le catalogue Lumena.
+        #   cf. src/reasoning/history_formatter.py (paliers 2k/8k/24k/32k/40k/48k)
+        #   override possible via LUMENA_REACT_OBS_LIMIT / LUMENA_REACT_OBS_CLAMP.
         if self.runtime_ctx is not None:
-            max_out = getattr(self.runtime_ctx, "max_output_tokens", 0) or 0
-            max_ctx = getattr(self.runtime_ctx, "max_context_window", 0) or 0
-            if max_out > 0 and max_ctx > 0:
-                # Formule : max_context // 20 clampé [4000, 16000]
-                # 128k context → 6400 chars, 64k → 3200 (clampé 4000), 200k → 10000
-                dynamic = max(4000, min(max_ctx // 20, 16000))
-                return dynamic
+            return compute_obs_limit_from_runtime(self.runtime_ctx)
+        # Legacy fallback (aucun runtime_ctx) : lit LUMENA_REACT_HISTORY_OBS_CHARS.
         return self._env_int("LUMENA_REACT_HISTORY_OBS_CHARS", 8000, minimum=300)
 
     def _orchestrator_enabled(self) -> bool:
@@ -463,6 +483,22 @@ class ReActLoop:
             logger.debug("[ReAct] Auto-route skip: requête service/config détectée → ReAct loop")
             return None
 
+        # ── Guard 5 : requêtes recherche/apprentissage autonome → ReAct ──
+        # Ces tâches (souvent planifiées) visent la recherche web, pas le code.
+        # Sans ce guard, le FAST-ROUTE matche un ancien projet par erreur.
+        import re as _re_learn
+        _RESEARCH_RE = _re_learn.compile(
+            r'\b(apprentissage|apprends?|apprendre|[eé]tudie[rz]?|[eé]tude|'
+            r'recherche[rz]?\s+(les|des|un|le|la|sur)|actualit[eé]s|tendances?|'
+            r'march[eé]s?\s+financ|crypto|forex|devises?|'
+            r'check\s+d.actualit|explore[rz]?\s+(le\s+web|bri[eè]vement)|'
+            r'cours\s+(du|de\s+la)\s+bourse|bourse|trading)\b',
+            _re_learn.IGNORECASE,
+        )
+        if _RESEARCH_RE.search(query):
+            logger.debug("[ReAct] Auto-route skip: requête recherche/apprentissage détectée → ReAct loop")
+            return None
+
         # ── FAST-ROUTE : resolve_workspace haute confiance ──
         # Source unique d'intent : si resolve_workspace est confiant
         # (conf>=0.7 avec intent modify/create), on route directement.
@@ -494,7 +530,7 @@ class ReActLoop:
             r"g[eé]n[eè]re?[sz]?|builds?|programm[eè]?[sz]?|r[eé]alise?[sz]?|"
             r"construi[st]?|fini[rst]?\w*|termin[eè]?\w*|compl[eè]te?[sz]?|"
             r"modifie?[sz]?|change?[sz]?|remplace?[sz]?|"
-            r"ajoute?[sz]?|ajout|retire?[sz]?|enl[eè]ve?[sz]?|supprime?[sz]?|"
+            r"r?ajoute?[sz]?|r[eé]ajoute?[sz]?|ajout|rajout|retire?[sz]?|enl[eè]ve?[sz]?|supprime?[sz]?|"
             r"am[eé]liore?[sz]?|refactor\w*|renomme?[sz]?|"
             r"mets?\s+[aà]\s+jour|maj|met[sz]?\s+en\s+place|"
             r"corrige?[sz]?|r[eé]pare?[sz]?|fixe?[sz]?|debug\w*|"
@@ -507,15 +543,17 @@ class ReActLoop:
             r"pong|todo|calculator|serveur|server|"
             r"bug|erreur|fonction|classe|m[eé]thode|variable|import|"
             r"favicon|footer|header|navbar|menu|lien|liens|bouton|"
-            r"couleur|style|css|html|js|typo|texte|titre|page)\b|\.\w{2,4}\b",
+            r"couleur|style|css|html|js|typo|texte|titre|page|"
+            r"blog|article|post|news|newsletter|cat[eé]gorie|section|formulaire|form)\b|\.\w{2,4}\b",
             _re_code.IGNORECASE,
         )
         _FIX_WITH_FILE_RE = _re_code.compile(
             r"\b(corrige[sz]?|r[eé]pare[sz]?|fixe[sz]?|debug(gue[sz]?)?|"
             r"modifie[sz]?|change[sz]?|remplace[sz]?|retire[sz]?|supprime[sz]?|"
-            r"ajoute[sz]?|am[eé]liore[sz]?)\b.{0,80}(\.\w{2,4}\b|"
+            r"r?ajoute[sz]?|am[eé]liore[sz]?)\b.{0,80}(\.\w{2,4}\b|"
             r"\b(bug|lien|liens|favicon|footer|header|fonction|classe|"
-            r"couleur|style|titre|bouton|page|projet|site)\b)",
+            r"couleur|style|titre|bouton|page|projet|site|"
+            r"blog|article|post|news|newsletter|cat[eé]gorie|section)\b)",
             _re_code.IGNORECASE | _re_code.DOTALL,
         )
         _pf_is_feedback = bool(_FEEDBACK_FRAME_RE.match(query))
@@ -526,7 +564,9 @@ class ReActLoop:
         _NON_CODE_KW_RE = _re_code.compile(
             r"\b(r[eé]sum[eé]|rapport|pdf|document|facture|devis|contrat|mail|email|"
             r"vid[eé]o|remotion|photo|image|musique|spotify|discord|telegram|"
-            r"whatsapp|cherche|recherche|analyse|explique|raconte|parle)\b",
+            r"whatsapp|cherche|recherche|analyse|explique|raconte|parle|"
+            r"apprentissage|apprends?|apprendre|[eé]tudie[rz]?|actualit[eé]s|"
+            r"tendances?|march[eé]s?\s+financ|crypto|forex|bourse|trading)\b",
             _re_code.IGNORECASE,
         )
         _pf_has_non_code = bool(_NON_CODE_KW_RE.search(query))
@@ -646,10 +686,26 @@ class ReActLoop:
         if resolution is not None and getattr(resolution, "path", None):
             context["workspace_path"] = str(resolution.path)
             context["project_dir"] = str(resolution.path)
+            # Propage l'intent résolu → permet à CodeAgent de déclencher la phase Architect
+            # sans avoir à ré-appeler resolve_workspace (qui est skippé quand workspace_path
+            # est déjà fourni par ReAct).
+            context["intent"] = getattr(resolution, "intent", "unknown")
             try:
-                context["project_files"] = [
-                    f.name for f in resolution.path.iterdir() if f.is_file()
-                ]
+                # rglob('*') pour inclure les subdirs (css/style.css, js/script.js, etc.)
+                # → nécessaire pour que la Phase Architect du CodeAgent se déclenche
+                # (condition: len(project_files) > 2). iterdir() ne listait que le top-level.
+                _excluded = ("__pycache__", ".git", "node_modules", ".venv", "venv")
+                _files: List[str] = []
+                for _item in resolution.path.rglob("*"):
+                    if not _item.is_file():
+                        continue
+                    _rel = str(_item.relative_to(resolution.path)).replace("\\", "/")
+                    if any(_ex in _rel for _ex in _excluded):
+                        continue
+                    _files.append(_rel)
+                    if len(_files) >= 100:  # cap de sécurité
+                        break
+                context["project_files"] = _files
             except Exception:
                 pass
             logger.info(
@@ -858,6 +914,44 @@ class ReActLoop:
 
         # Outils (filtrage contextuel applique ailleurs dans _run_internal)
         tools_desc = self.tools.get_tools_description()
+
+        # ── Protocole browser (See-Think-Act) : injecté quand des outils browser_* sont dispo ──
+        browser_protocol_section = ""
+        if "browser_" in tools_desc:
+            browser_protocol_section = (
+                "\n## 🌐 PROTOCOLE BROWSER (OBLIGATOIRE quand tu pilotes le navigateur) :\n"
+                "Tu contrôles un vrai navigateur. TU NE CLIQUES JAMAIS À L'AVEUGLE.\n"
+                "\n"
+                "Cycle strict :\n"
+                "  1. VOIR  → `browser_screenshot` APRÈS chaque navigate ou changement d'état majeur\n"
+                "  2. LIRE  → `browser_dom_state` pour la liste indexée des éléments cliquables\n"
+                "  3. AGIR  → UNE action (click/type) puis re-screenshot pour vérifier\n"
+                "  4. SCROLL → sur une page liste (Airbnb, Amazon, Google Results, Booking…) :\n"
+                "              `browser_scroll` 3-5 fois AVANT de conclure — lazy-load oblige\n"
+                "\n"
+                "Interdits :\n"
+                "  ❌ 2 clics consécutifs sans `browser_screenshot` entre les deux\n"
+                "  ❌ Le même index cliqué 3× (= preuve que tu n'as pas compris l'état)\n"
+                "  ❌ Conclure « je n'ai pas trouvé X » sans avoir scrollé en bas de page\n"
+                "  ❌ Remplir un formulaire sans avoir screenshot le résultat après chaque champ\n"
+                "\n"
+                "Astuce URL-builder (économise 10 itérations) :\n"
+                "  Pour Airbnb/Booking/Amazon, construis directement l'URL de recherche\n"
+                "  avec les query params (`?checkin=…&adults=…&price_max=…`) au lieu de\n"
+                "  remplir le formulaire à la main.\n"
+                "\n"
+                "⚠️ Règle BUDGET (lire attentivement) :\n"
+                "  « budget X-Y€ » ou « entre X et Y » = **plafond maximum Y**, pas plancher X.\n"
+                "  L'utilisateur dit combien il est prêt à DÉPENSER AU MAX.\n"
+                "  → Utilise UNIQUEMENT `price_max=Y` dans l'URL. N'AJOUTE JAMAIS `price_min=X`.\n"
+                "  → price_min ne s'utilise QUE si l'utilisateur dit explicitement « au minimum X ».\n"
+                "  Exemple : « budget 300-500 » → `price_max=500` (et c'est tout).\n"
+                "\n"
+                "Popups/cookies :\n"
+                "  Si tu vois un popup/modal qui bloque (cookies, newsletter, « dernière minute »),\n"
+                "  appelle `browser_dismiss_popups` AVANT toute autre action.\n"
+            )
+
         if getattr(self.tools, "_allowed_tools", None) is not None:
             _total = len(self.tools.tools)
             _visible = len(self.tools._allowed_tools)
@@ -1103,8 +1197,39 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
         from datetime import datetime as _dt_now
         _today = _dt_now.now().strftime("%A %d %B %Y")
 
+        # P7 — Provider-specific hints (opt-OUT via LUMENA_REACT_QUALITY_GATES)
+        _provider_hint_block = ""
+        try:
+            from src.config.codeagent_flags import REACT_QUALITY_GATES
+            if REACT_QUALITY_GATES and _active_model_id:
+                from src.prompts.agents.sub_agent_prompts import _load_provider_prompt
+                _hint = _load_provider_prompt(_active_model_id)
+                if _hint:
+                    # On ne prend que le bloc PERSÉVÉRANCE + ENVIRONNEMENT (court)
+                    # pour ne pas exploser la taille du prompt ReAct.
+                    _lines = _hint.splitlines()
+                    _keep: list[str] = []
+                    _in_useful = False
+                    for _line in _lines:
+                        _upper = _line.upper()
+                        if ("PERSÉVÉRANCE" in _upper or "PERSEVERANCE" in _upper
+                                or "ENVIRONNEMENT" in _upper or "STYLE DIRECT" in _upper):
+                            _in_useful = True
+                        elif _line.startswith("==") and _in_useful:
+                            _in_useful = False
+                        if _in_useful:
+                            _keep.append(_line)
+                    if _keep:
+                        _provider_hint_block = (
+                            "\n## HINTS PROVIDER ("
+                            + _active_model_id[:30] + "):\n"
+                            + "\n".join(_keep[:25]) + "\n"
+                        )
+        except Exception:
+            pass
+
         return f"""Tu es LUMENA, une IA qui reflechit etape par etape avant d'agir.
-{agent_mode_notice}
+{agent_mode_notice}{_provider_hint_block}
 ## Date actuelle: {_today}
 ## OS: {OS_NAME}
 {formality_section}
@@ -1120,6 +1245,7 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
 {_recent_failures_section}
 ## Outils disponibles :
 {tools_desc}
+{browser_protocol_section}
 {few_shot_section}
 {model_specific_hints}
 
@@ -1259,6 +1385,7 @@ Maintenant, reflechis et reponds:"""
         # Compaction: seules les 3 dernières étapes gardent l'observation complète
         # Les plus anciennes sont résumées en 1 ligne pour économiser des tokens
         compact_count = max(0, len(recent_steps) - 3)
+        last_index = len(recent_steps) - 1
         for i, step in enumerate(recent_steps):
             thought_text = step.thought.content or ""
             # Tronquer les THOUGHT excessivement longs (ex: Kimi MULTI-ACTION leak)
@@ -1267,28 +1394,38 @@ Maintenant, reflechis et reponds:"""
             if len(thought_text) > thought_limit:
                 thought_text = thought_text[:thought_limit] + " [... tronqué ...]"
             formatted.append(f"THOUGHT: {thought_text}")
-            formatted.append(f"ACTION: {step.action.tool_name or 'FINAL'}")
+            tool_name = step.action.tool_name or "FINAL"
+            formatted.append(f"ACTION: {tool_name}")
             if step.observation:
                 observation_text = step.observation.content or ""
                 if i < compact_count:
                     # Étapes semi-récentes: résumé compact (300 chars — assez pour garder les noms clés)
-                    tool = step.action.tool_name or "FINAL"
                     summary = observation_text[:300].replace("\n", " ").strip()
-                    formatted.append(f"OBSERVATION: → [{tool}] {summary}...")
+                    formatted.append(f"OBSERVATION: → [{tool_name}] {summary}...")
                 else:
-                    # Étapes récentes: observation complète (microcompaction si besoin)
-                    if len(observation_text) > obs_limit:
-                        # Microcompaction : garder début + fin
-                        # pour ne pas perdre les headers ET les résultats récents
-                        head_size = obs_limit * 3 // 5  # 60% pour le début
-                        tail_size = obs_limit - head_size - 60  # 40% pour la fin
-                        observation_text = (
-                            observation_text[:head_size]
-                            + f"\n\n[... {len(observation_text) - head_size - tail_size} chars omis ...]\n\n"
-                            + observation_text[-tail_size:]
+                    # Étapes récentes: observation complète (microcompaction si besoin).
+                    # La DERNIÈRE étape, si elle provient d'un outil lecteur (read_file,
+                    # grep_search, web_fetch…), est protégée : on garde l'observation
+                    # brute pour que le modèle raisonne sur les faits complets.
+                    is_last = (i == last_index)
+                    protect = is_last and should_protect_observation(tool_name)
+                    if protect:
+                        if len(observation_text) > obs_limit * 4:
+                            # Garde-fou absolu : même en mode protégé, on limite à 4× le budget
+                            # pour éviter un OOM prompt si un read_file retourne 1 Mo.
+                            logger.debug(
+                                "[history] protect_last_read actif pour {} ({} chars, cap à {})",
+                                tool_name, len(observation_text), obs_limit * 4,
+                            )
+                            observation_text = observation_text[: obs_limit * 4]
+                    elif len(observation_text) > obs_limit:
+                        logger.debug(
+                            "[history] microcompact {} : {} → ~{} chars",
+                            tool_name, len(observation_text), obs_limit,
                         )
+                        observation_text = split_head_tail(observation_text, obs_limit, head_ratio=0.5)
                     formatted.append(f"OBSERVATION: {observation_text}")
-        
+
         return "\n".join(formatted)
 
     def _extract_balanced_json(self, text: str, start_index: int) -> Optional[tuple[str, int]]:
@@ -2085,6 +2222,38 @@ Maintenant, reflechis et reponds:"""
                         logger.warning("⚠️ Stagnation critique ({}) — bypass PLAN GUARD pour débloquer FINAL", _stagnation_streak)
                         # NE PAS mentir sur l'état des tâches — juste bypasser le guard
                         self._plan_guard_retries = 3  # Empêche PLAN GUARD de bloquer
+                    # P3 HARD: Après 5 stagnations consécutives ET actions identiques → FORCER FINAL synthétique
+                    # Une progression légitime (lectures séquentielles avec args différents) est tolérée.
+                    _actions_are_redundant = False
+                    if _stagnation_streak >= 5 and len(self.history) >= 3:
+                        _recent_actions = self.history[-3:]
+                        _sig = (action.tool_name, str(action.tool_args))
+                        _recent_sigs = [(h.action.tool_name, str(h.action.tool_args)) for h in _recent_actions]
+                        # Si les 3 dernières actions + l'actuelle sont toutes identiques → vrai blocage
+                        _actions_are_redundant = all(s == _sig for s in _recent_sigs)
+                    if _stagnation_streak >= 5 and _actions_are_redundant:
+                        logger.error(
+                            "🛑 Stagnation HARD ({}× consécutives, action identique) — FORCE FINAL synthétique",
+                            _stagnation_streak,
+                        )
+                        _forced_answer = (
+                            "Je stagne depuis 5 tours consécutifs sur le même raisonnement "
+                            "ET la même action, sans progresser. Je m'arrête pour éviter une boucle inutile.\n\n"
+                            "Résumé de ce que j'ai exploré :\n"
+                            f"- Dernière pensée : {thought.content[:200]}\n"
+                            f"- Action tentée : {action.action_type.value}"
+                            + (f" ({action.tool_name})" if action.tool_name else "")
+                            + "\n\n"
+                            "👉 Peux-tu reformuler ta demande ou me donner une instruction "
+                            "plus précise ? Si tu veux que j'agisse, dis-le explicitement "
+                            "(ex: \"modifie X\", \"écris Y\", \"lance Z\")."
+                        )
+                        action = Action(
+                            action_type=ActionType.FINAL_ANSWER,
+                            answer=_forced_answer,
+                        )
+                        thought = Thought(content="Stagnation critique détectée — arrêt forcé.")
+                        _stagnation_streak = 0  # Reset pour ne pas rebloquer le prochain tour
                 else:
                     _stagnation_streak = 0  # Reset si la pensée change
 
@@ -2510,6 +2679,36 @@ Maintenant, reflechis et reponds:"""
                             f"Cette approche ne retourne pas les informations dont tu as besoin. "
                             f"Essaie impérativement une COMMANDE DIFFÉRENTE pour atteindre ton objectif."
                         )
+
+                    # ── Détecteur anti-aveuglement browser ──
+                    # Si 3+ actions browser_* consécutives SANS screenshot ni dom_state → forcer à "voir"
+                    _tool = action.tool_name or ""
+                    _iter_now = len(self.history)
+                    _BROWSER_VISUAL = {"browser_screenshot", "browser_dom_state", "browser_get_content"}
+                    _BROWSER_ACTION = {
+                        "browser_click", "browser_click_index", "browser_click_smart",
+                        "browser_click_at", "browser_type", "browser_type_index",
+                        "browser_navigate", "browser_hover", "browser_select",
+                        "browser_keyboard_press", "browser_drag", "browser_drag_at",
+                    }
+                    if _tool in _BROWSER_VISUAL:
+                        self._last_browser_visual_iter = _iter_now
+                        self._browser_blind_streak = 0
+                    elif _tool in _BROWSER_ACTION:
+                        self._browser_blind_streak += 1
+                        if self._browser_blind_streak >= 3:
+                            logger.warning(
+                                "⚠️ Aveuglement browser: {} actions consécutives sans voir — guidance injectée",
+                                self._browser_blind_streak,
+                            )
+                            self._pending_loop_guidance = (
+                                "⚠️ GUIDANCE VISION: Tu viens d'enchaîner "
+                                f"{self._browser_blind_streak} actions browser_* sans prendre de screenshot "
+                                "ni relire le DOM. Tu agis à l'aveugle. "
+                                "APPELLE MAINTENANT `browser_screenshot` pour voir l'état réel de la page "
+                                "avant ta prochaine action. Le DOM a probablement changé."
+                            )
+                            self._browser_blind_streak = 0  # reset après injection
 
                     if self._consecutive_same_action >= 3:
                         logger.warning(f"⚠️ Boucle détectée: {action.tool_name} appelé 3x identiquement - forçage FINAL_ANSWER")

@@ -32,7 +32,7 @@ export function startActivityFeed(){
   activityElapsedTimer=setInterval(updateActivityStats,1000);
 }
 
-export function pushActivity(type,icon,text){
+export function pushActivity(type,_icon,text){
   const feed=document.getElementById('activity-feed');
   if(!feed)return;
   const item=document.createElement('div');
@@ -40,9 +40,11 @@ export function pushActivity(type,icon,text){
   const now=new Date();
   const ts=String(now.getHours()).padStart(2,'0')+':'+String(now.getMinutes()).padStart(2,'0')+':'+String(now.getSeconds()).padStart(2,'0');
   const safeText=(text||'').length>400?(text.substring(0,400)+'…'):text;
-  item.innerHTML=`<div class="activity-icon">${icon}</div><div class="activity-body"><div class="activity-label">${esc(type.toUpperCase())}</div><div class="activity-text">${safeText}</div></div><div class="activity-time">${ts}</div>`;
+  const _typeIcon={checkpoint:'check-circle-2',tool:'wrench',observation:'eye',action:'bot',error:'alert-circle',warning:'alert-triangle','file-edit':'pencil'};
+  const iconName=_typeIcon[type]||'circle';
+  item.innerHTML=`<div class="activity-icon"><i data-lucide="${iconName}" style="width:14px;height:14px"></i></div><div class="activity-body"><div class="activity-label">${esc(type.toUpperCase())}</div><div class="activity-text">${safeText}</div></div><div class="activity-time">${ts}</div>`;
   feed.appendChild(item);
-  // Limit to 300 items
+  if(window.lucide)window.lucide.createIcons({nodes:[feed.lastElementChild.querySelector('.activity-icon')]});
   while(feed.children.length>300)feed.removeChild(feed.firstChild);
   feed.scrollTop=feed.scrollHeight;
 }

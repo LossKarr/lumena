@@ -1,0 +1,21 @@
+## read_file — Lire un fichier
+
+**When to use:**
+- Tu as besoin de voir le contenu AVANT de modifier
+- Le fichier n'est PAS déjà dans ton contexte (section "FICHIERS EN MÉMOIRE")
+- Tu veux les numéros de ligne pour un edit_lines précis
+
+**When NOT to use:**
+- Le fichier a déjà été lu (cache) → édite directement
+- Le contenu apparaît dans "FICHIERS EN MÉMOIRE" → il est DÉJÀ LU
+- Pour explorer un dossier → utilise `list_files`
+- Pour chercher du texte → utilise `grep`
+
+**Good:**
+`{"action": "read_file", "path": "src/core.py"}` (tout le fichier avec numéros)
+`{"action": "read_file", "path": "src/core.py", "start_line": 100, "end_line": 200}` (plage)
+
+**Bad:**
+`{"action": "read_file", "path": "src/core.py", "start_line": 1, "end_line": 100}` puis
+`{"action": "read_file", "path": "src/core.py", "start_line": 101, "end_line": 200}` ← INTERDIT (pagination inutile)
+`{"action": "run_command", "command": "cat src/core.py"}` ← INTERDIT (utilise read_file)

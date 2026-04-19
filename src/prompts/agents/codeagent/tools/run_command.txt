@@ -1,0 +1,23 @@
+## run_command — Exécuter une commande shell
+
+**When to use:**
+- EXÉCUTION UNIQUEMENT : node, python, npm, pip, git, pytest, build, lint
+- Lancer un script qui produit un résultat
+
+**When NOT to use (INTERDIT):**
+- LIRE un fichier → `read_file` (pas cat/type/Get-Content)
+- CHERCHER du texte → `grep` (pas findstr/Select-String/grep unix)
+- LISTER un dossier → `list_files` (pas dir/ls/Get-ChildItem)
+- COMPTER des lignes → `read_file` puis compter mentalement (pas wc -l / Measure-Object)
+- Démarrer un serveur HTTP / web si la tâche est déjà terminée
+- Commandes destructrices sans raison (rm -rf, del /S, Remove-Item -Recurse)
+
+**Good:**
+`{"action": "run_command", "command": "python -m pytest tests/test_core.py -x"}`
+`{"action": "run_command", "command": "npm install"}`
+`{"action": "run_command", "command": "git status"}`
+
+**Bad:**
+`{"action": "run_command", "command": "cat src/core.py"}` ← utilise read_file
+`{"action": "run_command", "command": "findstr /R \"def \" src\\*.py"}` ← utilise grep
+`{"action": "run_command", "command": "dir css"}` ← utilise list_files

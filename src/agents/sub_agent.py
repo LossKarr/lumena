@@ -12,8 +12,25 @@ from datetime import datetime
 from pathlib import Path
 import asyncio
 import json
+import time
 from loguru import logger
 from ..utils.persistence import atomic_write_text
+from src.prompts.agents.sub_agent_prompts import (
+    _CODE_AGENT_SYSTEM,
+    _SHORT_EXAMPLE,
+    _LONG_EXAMPLE,
+    _PROMPT_WEB_SECTION,
+    _PROMPT_PYTHON_SECTION,
+    _PROMPT_GENERAL_SECTION,
+    _MODIFICATION_INSTRUCTIONS,
+    _CREATION_INSTRUCTIONS,
+    _ARCHITECT_PROMPT,
+    _DEBUG_SYSTEM_PROMPT,
+    _REFACTOR_SYSTEM_PROMPT,
+    PLAN_SYSTEM_PROMPT,
+    _load_provider_prompt,
+    _load_tool_descriptions,
+)
 
 
 def get_lumena():
@@ -307,6 +324,31 @@ class SubAgent:
         from ..llm.multi_provider import MultiProviderLLM
 
         core = get_lumena()
+
+        # ── Override per-agent (panel config / env) ──
+        # LUMENA_AGENT_{CODE|RESEARCH|FILE|BROWSER|DEBUG|REFACTOR|PLANNER|GENERAL}_MODEL
+        # "auto" (défaut) = comportement identique à aujourd'hui (routing orchestrateur + DeepSeek logic)
+        # Valeur explicite = force ce modèle pour cet AgentType uniquement.
+        try:
+            _agent_key = self.agent_type.value.upper()
+        except Exception:
+            _agent_key = ""
+        if _agent_key:
+            _override = (os.getenv(f"LUMENA_AGENT_{_agent_key}_MODEL", "auto") or "auto").strip()
+            if _override and _override.lower() != "auto":
+                try:
+                    logger.debug(
+                        "\U0001f3af [{}] LLM override per-agent: {} \u2192 {} (LUMENA_AGENT_{}_MODEL)",
+                        self.name, core.llm.model_name, _override, _agent_key,
+                    )
+                    return MultiProviderLLM(model_name=_override)
+                except Exception as exc:
+                    logger.warning(
+                        "\U0001f916 [{}] Override per-agent '{}' a \u00e9chou\u00e9, fallback core.llm: {}",
+                        self.name, _override, exc,
+                    )
+                    return core.llm
+
         # Utiliser le mod\u00e8le d\u00e9j\u00e0 r\u00e9solu par l'orchestrateur (mis dans context)
         best = (task.context or {}).get("_best_model") if task else None
 
@@ -582,153 +624,6 @@ class ActionResult:
             d = f"{head}\n\n[... {len(self.detail) - max_detail} chars tronqués ...]\n\n{tail}"
         return f"{self.summary}\n---\n{d}"
 
-_CODE_AGENT_SYSTEM = """\
-Tu es CodeAgent, un agent de développement autonome et itératif.
-Tu résous la tâche étape par étape en choisissant UNE action à chaque tour.
-Avant d'agir, décris ton plan en 2-3 étapes dans ton THOUGHT.
-
-== RÈGLES ABSOLUES (violation = échec) ==
-1. Si la description contient "🎯 FICHIER CIBLE PRINCIPAL : X" → ÉDITE X, pas un autre fichier.
-2. Si la description contient les fichiers en clair ("## Fichiers ACTUELS" ou "FICHIERS EN MÉMOIRE")
-   → ILS SONT DÉJÀ LUS. N'utilise PAS read_file dessus. Passe directement à str_replace/edit_lines.
-3. Budget d'exploration MAX : 3 lectures consécutives (read_file/grep/list_files) sans édition.
-   À la 4e, tu recevras un warning. À la 6e, la tâche sera terminée DE FORCE (échec).
-4. Si str_replace échoue "non trouvé", relis UNE fois le fichier, puis utilise edit_lines
-   (numéros de ligne) — jamais deux str_replace avec le même old_str.
-5. N'utilise JAMAIS run_command pour lire/chercher (findstr, Select-String, Get-Content, cat) :
-   utilise read_file + grep. run_command = EXÉCUTION uniquement (node, python, npm, git).
-
-== EFFICACITÉ MAXIMALE ==
-- La liste des fichiers du projet est DÉJÀ dans ton contexte → PAS BESOIN de list_files
-- Commence TOUJOURS par une ACTION PRODUCTIVE (str_replace ou edit_lines), pas par une lecture
-- Ne lis PAS 5 fichiers avant d'agir. Lis 1 fichier → modifie → lis le suivant si besoin
-- Après la dernière modification réussie (✅), utilise immédiatement "done" avec un résumé
-
-== ENVIRONNEMENT ==
-Tu tournes sur WINDOWS (cmd.exe / PowerShell 5.1). Aide-mémoire :
-- Les commandes Linux (cat, ls, rm, cp, mv, mkdir -p, etc.) sont AUTO-CONVERTIES en Windows — tu peux écrire en Linux
-- Pour LIRE un fichier → action read_file (start_line/end_line optionnels pour des plages)
-- Pour LISTER un dossier → action list_files (PLUS RAPIDE que dir/ls via run_command)
-- Pour CHERCHER du texte → action grep (PLUS RAPIDE que findstr/Select-String via run_command)
-- ⚠️ INTERDIT d'utiliser run_command pour lire/chercher : Get-Content, Select-String,
-  Select-Object, Measure-Object, findstr, cat, type → utilise read_file et grep directement.
-- run_command = EXÉCUTION UNIQUEMENT (node, python, npm, pip, git, build, etc.)
-- PowerShell 5.1 (PAS 7!) : certaines syntaxes PS7 ne marchent pas (Select-Object -Index 130..150)
-- write_file crée automatiquement les dossiers parents — PAS BESOIN de mkdir avant write_file
-- Si le dossier du projet est indiqué dans la tâche, il EXISTE DÉJÀ — ne tente pas de le créer
-
-== CHEMINS DE FICHIERS ==
-- Utilise des chemins relatifs SIMPLES depuis la racine du projet : index.html, css/style.css, js/app.js
-- NE JAMAIS préfixer avec workspace/ — le répertoire de travail est déjà configuré
-- write_file crée automatiquement tous les sous-dossiers (css/, js/, images/) — PAS BESOIN de mkdir
-
-Actions disponibles (réponds UNIQUEMENT en JSON valide, rien d'autre) :
-IMPORTANT: Ajoute TOUJOURS un champ "thought" (2-3 phrases) expliquant ton raisonnement dans CHAQUE action.
-
-{"action": "plan", "thought": "Je dois d'abord comprendre la structure du projet...", "steps": ["étape 1", "étape 2", "étape 3"]}
-{"action": "think", "thought": "raisonnement explicite avant une action complexe"}
-{"action": "read_file", "thought": "Je lis ce fichier pour comprendre...", "path": "chemin/relatif", "start_line": 10, "end_line": 50}
-{"action": "edit_lines", "thought": "Je modifie les lignes 5-10 pour corriger...", "path": "chemin/relatif", "start_line": 5, "end_line": 10, "content": "nouveau contenu\nlignes multiples"}
-{"action": "str_replace", "thought": "Je remplace cette section pour...", "path": "chemin/relatif", "old_str": "texte EXACT copié depuis read_file (3-5 lignes de contexte)", "new_str": "version modifiée"}
-{"action": "insert_at_anchor", "thought": "J'insère une nouvelle section avant </main> (marche en HTML/Python/JS/Java/C#/CSS...)", "path": "chemin/relatif", "anchor": "</main>", "content": "<section>...</section>", "position": "before", "occurrence": "first"}
-{"action": "undo_edit", "thought": "L'edit précédent a cassé le fichier, je restaure", "path": "chemin/relatif"}
-{"action": "write_file", "thought": "Je crée ce fichier avec...", "path": "chemin/relatif", "content": "contenu complet du fichier"}
-{"action": "list_files", "thought": "Je vérifie la structure du dossier", "path": "répertoire"}
-{"action": "apply_patch", "thought": "J'applique ce patch pour...", "patch": "*** Begin Patch\n*** Update File: path\n@@ context\n- old\n+ new\n*** End File\n*** End Patch"}
-{"action": "run_command", "thought": "Je lance cette commande pour...", "command": "commande shell"}
-{"action": "run_tests", "thought": "Je vérifie que mes changements n'ont rien cassé", "test_path": "tests/test_xxx.py"}
-{"action": "grep", "thought": "Je cherche les occurrences de...", "pattern": "motif", "path": "répertoire"}
-{"action": "read_files_batch", "thought": "Je lis N fichiers en UN SEUL appel (parallèle + cache)", "paths": ["a.html", "b.css", "c.js"], "start_line": 1, "end_line": 200}
-{"action": "apply_patches", "thought": "J'applique tous les edits multi-fichiers ATOMIQUEMENT (rollback si un seul échoue)", "patches": [{"file": "a.html", "old": "texte exact", "new": "remplacement"}, {"file": "b.css", "old": "...", "new": "..."}]}
-{"action": "lint", "path": "chemin/relatif.py"}
-{"action": "done", "summary": "résumé complet de ce qui a été fait"}
-
-Règles STRICTES :
-- UNE SEULE action par réponse, JSON uniquement
-- Lis toujours un fichier AVANT de le modifier (read_file puis édition)
-- MODIFIER un fichier existant → edit_lines EN PREMIER (numéros de ligne = zéro ambiguïté), sinon str_replace
-- CRÉER un nouveau fichier → write_file avec le contenu complet
-- NE JAMAIS utiliser write_file sur un fichier existant — ça écrase tout le code fonctionnel
-- edit_lines : numéros de ligne affichés par read_file (format "  N | code") — recommandé car jamais de problème de matching
-- str_replace : "old_str" = texte EXACT copié-collé depuis read_file (3-5 lignes de contexte), "new_str" = version modifiée
-- apply_patch : pour des éditions multi-fichiers ou multi-hunks
-- undo_edit : annule la dernière modification d'un fichier (si ton edit a cassé quelque chose)
-- think : utilise avant toute modification complexe pour planifier ton approche
-- Après edit/apply_patch/write_file, la syntaxe est vérifiée automatiquement — corrige immédiatement toute erreur détectée
-- Si run_command ou run_tests échoue, analyse l'erreur COMPLÈTE et corrige au lieu de réessayer la même chose
-- run_tests supporte les node IDs pytest: {"action": "run_tests", "test_path": "tests/test_x.py::TestClass::test_method"} pour cibler un test précis
-- Utilise des chemins COMPLETS depuis la racine du projet (ex: src/core.py, tests/test_x.py)
-- Quand la tâche est terminée (ou impossible), utilise "done" avec un résumé clair
-- Si les contenus des fichiers apparaissent dans ton contexte (section "FICHIERS EN MÉMOIRE"), tu les as DÉJÀ LUS avec les numéros de ligne — NE LES RELIS PAS. Utilise directement edit_lines ou str_replace
-- Après un edit réussi, le contenu mis à jour est automatiquement rechargé dans ta mémoire — NE RELIS PAS le fichier
-- Ne boucle JAMAIS sur la même action — si elle échoue 2 fois, change d'approche totalement
-- Si str_replace échoue (contenu non trouvé), relis le fichier avec read_file pour obtenir le contenu exact, puis utilise edit_lines
-- Si tu es bloqué, utilise list_files pour explorer la structure du projet
-- Après chaque edit, une validation syntaxique automatique est lancée (Python: ruff, JS: node --check, HTML/CSS: bracket balance). Corrige IMMÉDIATEMENT toute erreur signalée
-- Quand la tâche est TERMINÉE (toutes modifications faites, pas d'erreur), utilise IMMÉDIATEMENT "done". Ne lance PAS de serveur HTTP
-"""
-
-_SHORT_EXAMPLE = """
-EXEMPLE (workflow minimal) :
-Tour 1: {"action": "read_file", "path": "src/utils/helpers.py"}
-→ Résultat:    1 | def add(a, b):
-               2 |     return a + b
-
-Tour 2: {"action": "edit_lines", "path": "src/utils/helpers.py", "start_line": 2, "end_line": 2, "content": "    return int(a) + int(b)"}
-→ Résultat: ✅ Modifié src/utils/helpers.py L2-L2
-
-Tour 3: {"action": "done", "summary": "Ajouté conversion int() dans add() pour gérer les inputs string."}
-
-⛔ ANTI-PATTERN À NE JAMAIS FAIRE ⛔
-Tour 1: {"action": "read_file", "path": "index.html", "start_line": 1, "end_line": 100}
-Tour 2: {"action": "read_file", "path": "index.html", "start_line": 101, "end_line": 200}  ← INTERDIT
-Tour 3: {"action": "read_file", "path": "index.html", "start_line": 201, "end_line": 300}  ← INTERDIT
-→ RAISON : un seul read_file SANS start/end_line te donne TOUT le fichier avec numéros de ligne.
-   Si tu as déjà lu un fichier, il est en cache — édite directement avec edit_lines / str_replace / apply_patches.
-
-✅ BON PATTERN MULTI-FICHIERS ✅
-Tour 1: {"action": "read_files_batch", "paths": ["index.html", "documentation.html", "css/style.css"]}
-Tour 2: {"action": "apply_patches", "patches": [
-          {"file": "index.html", "old": "<a href=\\"#blog\\">Blog</a>", "new": ""},
-          {"file": "documentation.html", "old": "v1.0", "new": "v1.2"}
-        ]}
-Tour 3: {"action": "done", "summary": "2 fichiers corrigés en 2 tours"}
-
-⛔ INSERTION — NE JAMAIS grep+read pour trouver une ancre ⛔
-✅ 1 SEUL tour via insert_at_anchor (HTML/Python/JS/Java/C#/Go/CSS/...) :
-  {"action": "insert_at_anchor", "path": "x", "anchor": "</main>", "position": "before", "content": "<section>...</section>"}
-  Anchors: "</main>" (HTML), "# END IMPORTS" (Py), "export default" (JS), "} // end class" (Java), "func main()" (Go).
-"""
-
-_LONG_EXAMPLE = """
-EXEMPLE (debug avec tests) :
-Tour 1: {"action": "plan", "steps": ["Lire le fichier source", "Corriger le bug", "Lancer les tests", "Corriger si nécessaire"]}
-→ Plan noté (4 étapes). Commence par l'étape 1.
-
-Tour 2: {"action": "read_file", "path": "src/core.py"}
-→ Résultat:    1 | def process(data):
-               2 |     result = data.split(",")
-               3 |     return result[1]
-
-Tour 3: {"action": "edit_lines", "path": "src/core.py", "start_line": 3, "end_line": 3, "content": "    return result[1] if len(result) > 1 else None"}
-→ ✅ Modifié src/core.py L3-L3
-
-Tour 4: {"action": "run_tests", "test_path": "tests/test_core.py"}
-→ ❌ 1 failed: test_empty_input
-
-Tour 5: {"action": "read_file", "path": "src/core.py"}
-→    1 | def process(data):
-     2 |     result = data.split(",")
-     3 |     return result[1] if len(result) > 1 else None
-
-Tour 6: {"action": "edit_lines", "path": "src/core.py", "start_line": 2, "end_line": 3, "content": "    if not data:\\n        return None\\n    result = data.split(\\",\\")\\n    return result[1] if len(result) > 1 else None"}
-→ ✅ Modifié src/core.py L2-L3
-
-Tour 7: {"action": "run_tests", "test_path": "tests/test_core.py"}
-→ ✅ 3 passed, 0 failed
-
-Tour 8: {"action": "done", "summary": "Corrigé IndexError dans process() — ajouté guard pour data vide et len check."}
-"""
 
 _COMPLEX_KEYWORDS = {"test", "debug", "fix", "erreur", "refactor", "bug", "error", "crash", "fail"}
 
@@ -901,96 +796,7 @@ def _estimate_tokens(messages: list[dict]) -> int:
 
 
 # ── P4 Supreme: Sections de prompt par domaine ──
-_PROMPT_WEB_SECTION = """
-== SPÉCIFIQUE WEB ==
-- Pour les projets web : index.html, css/style.css, js/app.js sont les fichiers typiques
-- Utilise des URLs externes pour les images (https://picsum.photos/, https://via.placeholder.com/)
-- NE PAS utiliser d'images locales (./img/photo.jpg) sauf si elles existent déjà
-- Assure la cohérence des sélecteurs JS ↔ HTML (class/id dans le HTML = querySelector dans le JS)
-- Évite les event listeners en double (pas 2x addEventListener sur le même bouton)
-- Si le projet utilise des bibliothèques npm (three.js, chart.js, gsap, etc.) sans CDN : génère package.json EN PREMIER (iter=1) avec les deps détectées
-- Pour les projets vanilla HTML/CSS/JS utilisant uniquement des CDN : package.json optionnel
-"""
 
-_PROMPT_PYTHON_SECTION = """
-== SPÉCIFIQUE PYTHON ==
-- Après chaque modification, la syntaxe est vérifiée automatiquement (ruff + mypy)
-- Corrige immédiatement toute erreur de syntaxe ou de type signalée
-- Lance run_tests après les modifications pour vérifier la non-régression
-- Utilise des imports relatifs si tu modifies un package existant
-- Préfère les f-strings aux .format() et % formatting
-- Si le projet contient des imports tiers (flask, fastapi, requests, etc.) : génère requirements.txt EN PREMIER (iter=1) avec une lib par ligne
-- Format requirements.txt : nom exact du package pip, sans version pin sauf si la version est critique
-- Pour générer des PDF : utilise UNIQUEMENT reportlab (disponible, fonctionne sur Windows). NE JAMAIS utiliser weasyprint (incompatible Windows, manque gobject-2.0).
-- Pour tout print() avec des emojis/caractères spéciaux : ajoute `# -*- coding: utf-8 -*-` en tête de fichier ET utilise sys.stdout.reconfigure(encoding='utf-8') si nécessaire.
-"""
-
-_PROMPT_GENERAL_SECTION = """
-== GÉNÉRAL ==
-- Adapte-toi au langage et framework du projet
-- Si tu ne connais pas la structure, utilise list_files pour explorer
-- Vérifie les dépendances (package.json, requirements.txt) avant d'utiliser une librairie
-"""
-
-_MODIFICATION_INSTRUCTIONS = """
-== MODE MODIFICATION D'UN PROJET EXISTANT ==
-
-Tu modifies un projet qui FONCTIONNE déjà. Le code existant est PRÉCIEUX.
-
-STRATÉGIE D'ÉDITION — ordre de priorité OBLIGATOIRE :
-
-⚡ MODE MULTI-FICHIERS (2+ fichiers à modifier) — OBLIGATOIRE pour l'efficacité :
-  A. Lis TOUS les fichiers d'un coup via read_files_batch (1 appel au lieu de N)
-  B. Applique TOUS les edits d'un coup via apply_patches (atomique, rollback auto si un échoue)
-  → Évite totalement le ping-pong read→edit→read→edit. 2 tours au lieu de 2N.
-  Exemple :
-     {"action": "read_files_batch", "paths": ["index.html", "documentation.html", "css/style.css"]}
-     {"action": "apply_patches", "patches": [
-        {"file": "index.html", "old": "<title>Old</title>", "new": "<title>New</title>"},
-        {"file": "documentation.html", "old": "v1.0", "new": "v2.0"},
-        {"file": "css/style.css", "old": "color: red", "new": "color: blue"}
-     ]}
-
-🔧 MODE MONO-FICHIER :
-1. LIS d'abord le fichier complet (read_file) → les numéros de ligne sont affichés
-2. ÉDITE via edit_lines EN PREMIER (numéros de ligne = jamais de problème de matching) :
-   {"action": "edit_lines", "path": "fichier", "start_line": 42, "end_line": 44, "content": "nouveau contenu"}
-3. Si tu ne connais pas les numéros → utilise str_replace (copie 3-5 lignes EXACTES depuis read_file) :
-   {"action": "str_replace", "path": "fichier", "old_str": "texte exact\ntel que\nlu dans le fichier", "new_str": "remplacement"}
-4. Dernier recours si multi-fichiers hors simples str_replace → apply_patch (format diff)
-
-RÈGLES CRITIQUES :
-- NE JAMAIS utiliser write_file sur un fichier existant — ça écrase tout
-- NE JAMAIS réécrire un fichier complet pour changer 3 lignes
-- COPIE-COLLE le texte EXACT depuis la sortie read_file (ne le retape PAS de mémoire)
-- Chaque action doit cibler le MINIMUM de lignes nécessaires
-- Si str_replace échoue 2× → utilise edit_lines avec les numéros de ligne vus dans read_file
-- Utilise think avant toute modification complexe multi-fichiers
-"""
-
-_CREATION_INSTRUCTIONS = """
-== MODE CRÉATION D'UN NOUVEAU PROJET ==
-
-Tu crées un projet from scratch. Procède dans l'ordre logique.
-
-STRATÉGIE :
-1. Crée d'abord les fichiers de base (index.html, main.py, etc.) avec write_file
-2. Crée ensuite les fichiers de dépendances (package.json, requirements.txt)
-3. Enrichis ensuite avec edit_lines ou str_replace si tu dois ajuster
-4. Teste à la fin avec run_command ou run_tests
-
-Pour créer un fichier → write_file avec le contenu COMPLET dès le premier essai.
-"""
-
-_ARCHITECT_PROMPT = """\
-Tu es un architecte logiciel. Analyse le code existant et planifie les modifications.
-Pour chaque changement :
-1. Identifie le FICHIER et la SECTION exacte à modifier
-2. Explique POURQUOI cette modification est nécessaire
-3. Donne l'ANCIEN code exact (copié-collé depuis le fichier)
-4. Donne le NOUVEAU code qui le remplace
-NE produis PAS de JSON d'action. Décris en langage naturel.
-"""
 
 _WEB_SIGNALS = (".html", ".css", ".js", ".ts", "website", "site web", "page web",
                 "frontend", "landing", "bootstrap", "tailwind", "react", "vue")
@@ -1002,17 +808,43 @@ def _build_system_prompt(
     workspace_files: list[str] | None = None,
     *,
     mode: str = "auto",
+    model_name: str = "",
 ) -> str:
     """Compose le prompt système avec exemples conditionnels + section domaine.
     mode = 'create' | 'modify' | 'auto'
+    model_name : si fourni et flag PROVIDER_PROMPTS actif, prepend le prompt provider-specific.
     """
     if mode == "auto":
         mode = "modify" if workspace_files else "create"
 
-    prompt = _CODE_AGENT_SYSTEM + _SHORT_EXAMPLE
+    # ── P0 Plan Suprême : prompt provider-specific (additif, opt-out via flag) ──
+    _provider_prefix = _load_provider_prompt(model_name) if model_name else ""
+    # ── P8.ENV_CONTEXT : injection du contexte environnement (OS, Python, cwd, git) ──
+    try:
+        from src.utils.env_context import build_env_context_block
+        _env_block = build_env_context_block()
+    except Exception:
+        _env_block = ""
+    _env_prefix = (_env_block + "\n") if _env_block else ""
+    if _provider_prefix:
+        prompt = (
+            _env_prefix
+            + "== PROVIDER-SPECIFIC HINTS ==\n"
+            + _provider_prefix.rstrip()
+            + "\n\n== CORE INSTRUCTIONS ==\n"
+            + _CODE_AGENT_SYSTEM
+            + _SHORT_EXAMPLE
+        )
+    else:
+        prompt = _env_prefix + _CODE_AGENT_SYSTEM + _SHORT_EXAMPLE
     desc_lower = task_description.lower()
     if any(kw in desc_lower for kw in _COMPLEX_KEYWORDS):
         prompt += _LONG_EXAMPLE
+
+    # ── P0b Plan Suprême : guide des outils (when/when-not/good/bad) ──
+    _tool_hints = _load_tool_descriptions()
+    if _tool_hints:
+        prompt += _tool_hints
 
     # Injecter les instructions spécifiques au mode
     if mode == "modify":
@@ -1125,6 +957,7 @@ class CodeAgent(SubAgent):
             "files_read": {},    # path → summary (200 chars)
             "errors_seen": [],   # erreurs clés
             "edits_done": [],    # "path: action"
+            "grep_zero_results": {},  # (pattern, path) → count (tracking 0-result repeats)
         }
         self._session_memory_last_used: float = 0.0
         self._SESSION_MEMORY_TTL = 4 * 3600  # 4 heures
@@ -1134,6 +967,15 @@ class CodeAgent(SubAgent):
         self._self_repair_count: int = 0
         # P_ANTI_REREAD: nb de read_file par chemin (reset par tâche, pas par tentative)
         self._read_count_per_file: dict[str, int] = {}
+        # OBS: compteurs pour metrics.jsonl (reset par tâche)
+        self._reflexion_generated_count: int = 0
+        self._grep_zero_repeats: int = 0
+        self._applied_reflexion_ids: list[str] = []
+        # P1/P2 : SuccessStore + auto-eval post-succès
+        self._applied_success_ids: list[str] = []
+        self._success_generated_count: int = 0
+        self._tools_used_this_task: list[str] = []
+        self._auto_eval_triggered: bool = False
 
     async def _execute_task(self, task: AgentTask) -> "str | AgentResult":
         """Exécute une tâche de code."""
@@ -1196,27 +1038,60 @@ class CodeAgent(SubAgent):
         Outer loop jusqu'à _CODE_AGENT_MAX_OUTER_RETRIES,
         boucle interne jusqu'à _CODE_AGENT_MAX_ITER.
         """
+        import time as _time_metrics
+        _metrics_start = _time_metrics.perf_counter()
+        _metrics_attempts = 0
         llm = self._get_llm(task)
 
-        # ── Auto-swap deepseek-chat → deepseek-reasoner (32K output) ──
-        # Uniquement si le modèle de base est deepseek (pas déjà reasoner)
+        # ── Pattern Architect+Executor (best-in-class, cf. Aider/Cline) ──
+        # • Boucle d'exécution = deepseek-chat (rapide, tool-calling natif, 50 iters)
+        # • Phase Architect (dans _single_code_attempt) = deepseek-reasoner (1 appel, CoT long)
+        # Raison : Reasoner perd son CoT entre tours (doc officielle) → mauvais pour boucles,
+        # mais excellent pour planifier UNE fois. Chat exécute ensuite en suivant le plan.
         _model = getattr(llm, "model_name", "") or ""
-        if "deepseek" in _model.lower() and "reasoner" not in _model.lower():
+        if "deepseek" in _model.lower() and "reasoner" in _model.lower():
+            # L'utilisateur a explicitement demandé reasoner → on le ramène à chat pour la boucle
             try:
                 from ..llm.multi_provider import MultiProviderLLM
-                llm = MultiProviderLLM(model_name="deepseek-reasoner")
+                llm = MultiProviderLLM(model_name="deepseek-chat")
                 logger.info(
-                    "🎯 [CodeAgent] Auto-swap {} → deepseek-reasoner (32K output)",
-                    _model,
+                    "🎯 [CodeAgent] Boucle exec → deepseek-chat (rapide). "
+                    "Architect utilisera reasoner 1× pour planifier.",
                 )
             except Exception as exc:
-                logger.warning("[CodeAgent] Swap reasoner échoué ({}), garde {}", exc, _model)
+                logger.warning("[CodeAgent] Swap chat échoué ({}), garde {}", exc, _model)
 
         prior_failures: list[str] = []
         last_result: AgentResult | None = None
         # Reset compteur anti-relecture pour cette tâche (survit aux outer retries
         # → si attempt 1 a déjà lu un fichier 3×, attempt 2 ne le relira pas non plus)
         self._read_count_per_file = {}
+        # FIX garde session : reset files_read à chaque nouvelle tâche.
+        # Sinon les fichiers lus en tâche N bloquent le read_file en tâche N+1
+        # (cf. log 20:41:51 "BLOQUÉ iter=1: read_file sur index.html refusé").
+        # On garde edits_done/errors_seen/grep_zero_results qui restent utiles
+        # comme contexte inter-tâches sans bloquer.
+        try:
+            if isinstance(self._session_memory, dict):
+                self._session_memory["files_read"] = {}
+        except Exception:
+            pass
+        # Reset WorldModel pour ce workspace (structure repart à zéro par tâche)
+        try:
+            from src.context.world_model import reset_world_model
+            _wm_ws = self._task_workspace_root or Path.cwd()
+            reset_world_model(_wm_ws)
+        except Exception:
+            pass
+        # OBS: reset compteurs observabilité pour cette tâche
+        self._reflexion_generated_count = 0
+        self._grep_zero_repeats = 0
+        self._applied_reflexion_ids = []
+        # P1/P2 : SuccessStore + auto-eval
+        self._applied_success_ids = []
+        self._success_generated_count = 0
+        self._tools_used_this_task = []
+        self._auto_eval_triggered = False
 
         for attempt in range(1, _CODE_AGENT_MAX_OUTER_RETRIES + 1):
             # P2 : Au dernier retry, simplifier la description pour aider à converger
@@ -1233,6 +1108,30 @@ class CodeAgent(SubAgent):
                 max_iter=_CODE_AGENT_MAX_ITER,
             )
             if last_result.success:
+                # P1 : capture pattern de réussite (fire-and-forget)
+                try:
+                    _iter_count = int((getattr(last_result, "meta", {}) or {}).get("iterations", 0))
+                    _outcome = str(getattr(last_result, "output", "") or "")[:600]
+                    asyncio.create_task(
+                        self._maybe_generate_success_pattern(
+                            task_description=getattr(task, "description", "") or "",
+                            tools_used=list(self._tools_used_this_task),
+                            iterations=_iter_count,
+                            outcome_summary=_outcome,
+                        )
+                    )
+                except Exception:
+                    pass
+                # P2 : auto-évaluation critique post-succès (fire-and-forget)
+                try:
+                    asyncio.create_task(
+                        self._maybe_auto_evaluate_success(
+                            task_description=getattr(task, "description", "") or "",
+                            edits_done=list(self._session_memory.get("edits_done", [])),
+                        )
+                    )
+                except Exception:
+                    pass
                 # Git commit initial après succès CodeAgent (optionnel — jamais bloquant)
                 if self._task_workspace_root and self._task_workspace_root.exists():
                     try:
@@ -1276,9 +1175,9 @@ class CodeAgent(SubAgent):
                         )
                     except Exception:
                         pass  # jamais bloquant
-                return last_result
+                return self._finalize_metrics(last_result, task, llm, _metrics_start, attempt)
             if not is_stuck or attempt >= _CODE_AGENT_MAX_OUTER_RETRIES:
-                return last_result
+                return self._finalize_metrics(last_result, task, llm, _metrics_start, attempt)
             # Bloqué mais on peut encore retry
             prior_failures.append(
                 f"Tentative {attempt} : {last_result.output[:300]}"
@@ -1288,14 +1187,59 @@ class CodeAgent(SubAgent):
                 attempt, attempt + 1,
             )
 
-        return last_result  # type: ignore[return-value]
+        return self._finalize_metrics(last_result, task, llm, _metrics_start, _CODE_AGENT_MAX_OUTER_RETRIES)  # type: ignore[return-value]
+
+    def _finalize_metrics(self, result, task, llm, start_t: float, attempt: int):
+        """P10 — enregistre les métriques CodeAgent (best-effort)."""
+        try:
+            import time as _t
+            from src.utils.metrics import record_task_metrics
+            # OBS: enrichir avec stats WorldModel + Reflexion + grep
+            _wm_files = 0
+            try:
+                from src.context.world_model import get_world_model
+                _wm_ws = self._task_workspace_root or Path.cwd()
+                _wm_files = len(get_world_model(_wm_ws).active_files())
+            except Exception:
+                pass
+            _refl_applied = len(getattr(self, "_applied_reflexion_ids", []) or [])
+            _refl_generated = int(getattr(self, "_reflexion_generated_count", 0) or 0)
+            _grep_repeats = int(getattr(self, "_grep_zero_repeats", 0) or 0)
+            _succ_applied = len(getattr(self, "_applied_success_ids", []) or [])
+            _succ_generated = int(getattr(self, "_success_generated_count", 0) or 0)
+            _auto_eval = bool(getattr(self, "_auto_eval_triggered", False))
+            record_task_metrics(
+                task_id=getattr(task, "task_id", "") or "",
+                model_name=str(getattr(llm, "model_name", "") or ""),
+                attempt=int(attempt),
+                iterations=int((getattr(result, "meta", {}) or {}).get("iterations", 0)),
+                success=bool(getattr(result, "success", False)),
+                status_code=str(getattr(result, "status_code", "")),
+                duration_s=_t.perf_counter() - start_t,
+                extra={
+                    "stuck": bool((getattr(result, "meta", {}) or {}).get("stuck", False)),
+                    "reflexions_applied": _refl_applied,
+                    "reflexions_generated": _refl_generated,
+                    "world_model_files": _wm_files,
+                    "grep_zero_repeats": _grep_repeats,
+                    "successes_applied": _succ_applied,
+                    "successes_generated": _succ_generated,
+                    "auto_eval": _auto_eval,
+                },
+            )
+        except Exception:
+            pass
+        return result
 
     def _refresh_session_memory(self) -> None:
         """Reset session memory si TTL expiré."""
         import time
         now = time.time()
         if self._session_memory_last_used and (now - self._session_memory_last_used) > self._SESSION_MEMORY_TTL:
-            self._session_memory = {"files_read": {}, "errors_seen": [], "edits_done": []}
+            self._session_memory = {
+                "files_read": {}, "errors_seen": [], "edits_done": [],
+                "grep_zero_results": {},
+            }
         self._session_memory_last_used = now
 
     def _get_session_memory_text(self) -> str:
@@ -1357,7 +1301,15 @@ class CodeAgent(SubAgent):
     def _record_session_read(self, path: str, content: str) -> None:
         """Stocke le contenu complet du fichier pour éviter les relectures.
         Web files (.html/.js/.css): 12000 chars. Autres: 4000 chars.
-        Éviction LRU : le fichier le moins récemment accédé est supprimé."""
+        Éviction LRU : le fichier le moins récemment accédé est supprimé.
+        N'enregistre PAS les lectures de sauvegarde (.backups/) — ce ne sont
+        pas des fichiers réels du projet, et les confondre avec l'original par
+        basename bloque à tort les relectures légitimes.
+        """
+        # Filtre : ignorer .backups/, .git/, node_modules/, __pycache__/
+        _p_norm = str(path).replace("\\", "/").lower()
+        if any(_seg in _p_norm for _seg in ("/.backups/", "/.git/", "/node_modules/", "/__pycache__/", "/.venv/")):
+            return
         files = self._session_memory["files_read"]
         # LRU: si déjà présent, supprimer pour réinsérer en fin (= accès récent)
         if path in files:
@@ -1382,6 +1334,548 @@ class CodeAgent(SubAgent):
             if len(errors) > 10:
                 errors.pop(0)
             errors.append(short)
+
+    def _record_grep_zero_result(self, pattern: str, path: str) -> int:
+        """Enregistre un grep 0-result. Retourne le nombre d'occurrences pour ce (pattern, path).
+
+        Utilisé dans _post_action_hooks pour détecter les répétitions de grep
+        qui ne trouvent rien — ce qui indique un pattern inadapté et gaspille
+        des itérations LLM (vu en prod sur recherches de commentaires CSS).
+        """
+        if not pattern:
+            return 0
+        # S'assure que la clé existe (session memory ancienne pourrait en manquer)
+        store = self._session_memory.setdefault("grep_zero_results", {})
+        key = f"{pattern}|{path or '.'}"
+        store[key] = int(store.get(key, 0)) + 1
+        return store[key]
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Architect Plan → TODO_STATE SSE (affichage UI style ReAct)
+    # ─────────────────────────────────────────────────────────────────────
+    def _parse_architect_plan(self, text: str) -> list[dict]:
+        """Parse un plan Architect en items TODO_STATE.
+
+        Stratégie :
+        1. Chercher un bloc <plan>...</plan> JSON (format canonique demandé au LLM).
+           Si présent et valide → retourne items structurés {id, title, file, action, status}.
+        2. Fallback : regex tolérante multi-format + filtre anti-commentaire strict.
+        """
+        if not text or not str(text).strip():
+            return []
+        import re as _re_plan
+        import json as _json_plan
+        text_str = str(text)
+
+        # ── 1. Bloc <plan>...</plan> (JSON strict) ──
+        _m_block = _re_plan.search(r"<plan>\s*(\{.*?\})\s*</plan>", text_str, _re_plan.DOTALL | _re_plan.IGNORECASE)
+        if not _m_block:
+            # Tolérance : ```json ... ``` avec "steps"
+            _m_block = _re_plan.search(r"```(?:json)?\s*(\{[^`]*?\"steps\"[^`]*?\})\s*```", text_str, _re_plan.DOTALL)
+        if _m_block:
+            try:
+                _obj = _json_plan.loads(_m_block.group(1))
+                _steps = _obj.get("steps") if isinstance(_obj, dict) else None
+                if isinstance(_steps, list) and _steps:
+                    items: list[dict] = []
+                    seen_titles: set[str] = set()
+                    for _s in _steps[:12]:
+                        if not isinstance(_s, dict):
+                            continue
+                        _title = str(_s.get("title") or "").strip()
+                        if not _title or len(_title) < 4:
+                            continue
+                        _key = _title.lower()
+                        if _key in seen_titles:
+                            continue
+                        seen_titles.add(_key)
+                        items.append({
+                            "id": len(items) + 1,
+                            "title": _title[:120],
+                            "file": str(_s.get("file") or "").strip().replace("\\", "/").lower(),
+                            "action": str(_s.get("action") or "").strip().lower(),
+                            "status": "not-started",
+                        })
+                    if items:
+                        return items
+            except (ValueError, TypeError):
+                pass  # Fallback regex
+
+        # ── 2. Fallback regex + filtre anti-commentaire ──
+        items: list[dict] = []
+        seen_titles: set[str] = set()
+
+        patterns = [
+            _re_plan.compile(r"^\s*#{1,4}\s*(?:[ÉéEe]tape\s+)?(\d+)\s*[\.\):\-]\s*(.+?)\s*$"),
+            _re_plan.compile(r"^\s*\*\*\s*(?:[ÉéEe]tape\s+)?(\d+)\s*[\.\):\-]\s*\*\*\s*(.+?)\s*$"),
+            _re_plan.compile(r"^\s*(\d+)\s*[\.\)\/:\-]\s+(.+?)\s*$"),
+            _re_plan.compile(r"^\s*[-•*→]\s+(.+?)\s*$"),
+        ]
+
+        # Filtres anti-commentaire : rejeter les lignes qui ressemblent à du raisonnement
+        # plutôt qu'à une action concrète.
+        _COMMENTARY_STARTS = (
+            "votre ", "ton ", "ta ", "vos ", "tes ",
+            "une ", "un ", "cela ", "ça ", "on ",
+            "actuellement", "résultat", "résultats", "resultat",
+            "sur ", "dans ", "pour ", "car ", "parce ",
+            "note :", "note:", "remarque", "attention",
+            "exemple", "par exemple",
+        )
+        _CODE_MARKERS = ("document.", "getelementbyid", "queryselector", "href=", "id=\"", "class=\"", "<div", "<span", "<p ", "<a ")
+
+        # Verbes d'action acceptés en début de title (forme impérative FR/EN)
+        _ACTION_VERBS = (
+            "créer", "creer", "créé", "cree", "ajouter", "ajoute", "modifier", "modifie",
+            "mettre", "mets", "mise à jour", "mise a jour", "mettre à jour", "mettre a jour",
+            "supprimer", "supprime", "renommer", "renomme", "déplacer", "deplacer",
+            "corriger", "corrige", "refactor", "refactoriser", "refactorise",
+            "tester", "teste", "vérifier", "verifier", "valider", "remplacer", "remplace",
+            "implémenter", "implementer", "implemente", "installer", "installe",
+            "configurer", "configure", "initialiser", "initialise", "extraire", "extrait",
+            "transformer", "transforme", "finaliser", "finalise", "optimiser", "optimise",
+            "create", "add", "update", "remove", "delete", "rename", "move", "fix",
+            "refactor", "test", "verify", "replace", "implement", "install", "configure",
+            "extract", "transform", "finalize", "optimize",
+        )
+
+        def _is_commentary(title: str) -> bool:
+            _t = title.lower().strip()
+            if len(_t) < 8 or len(_t) > 160:
+                return True
+            if _t.startswith(_COMMENTARY_STARTS):
+                return True
+            if any(_c in _t for _c in _CODE_MARKERS):
+                return True
+            # Lignes terminées par ":" = souvent titre de section, pas action
+            if title.endswith(":") and len(title) < 40:
+                return True
+            # Vérif verbe d'action dans les 3 premiers mots
+            _first_words = " ".join(_t.split()[:3])
+            if not any(_v in _first_words for _v in _ACTION_VERBS):
+                return True
+            return False
+
+        for line in text_str.splitlines():
+            line = line.strip()
+            if not line or len(line) < 6:
+                continue
+            matched = False
+            for pat in patterns:
+                m = pat.match(line)
+                if m:
+                    title = m.group(m.lastindex).strip()
+                    title = _re_plan.sub(r"\*\*(.+?)\*\*", r"\1", title)
+                    title = _re_plan.sub(r"\*(.+?)\*", r"\1", title)
+                    title = _re_plan.sub(r"`(.+?)`", r"\1", title)
+                    title = title.rstrip(":.-").strip()
+                    if _is_commentary(title):
+                        matched = True
+                        break
+                    if title.lower() not in seen_titles:
+                        seen_titles.add(title.lower())
+                        items.append({
+                            "id": len(items) + 1,
+                            "title": title[:120],
+                            "file": "",
+                            "action": "",
+                            "status": "not-started",
+                        })
+                    matched = True
+                    break
+            if matched and len(items) >= 10:
+                break
+
+        return items
+
+    def _emit_architect_plan(self, current_tool: str = "") -> None:
+        """Émet le plan Architect au format TODO_STATE pour l'affichage SSE."""
+        items = getattr(self, "_architect_plan_items", None)
+        if not items:
+            return
+        cursor = getattr(self, "_architect_plan_cursor", 0)
+        total = len(items)
+        payload = []
+        for idx, it in enumerate(items):
+            if idx < cursor:
+                status = "completed"
+            elif idx == cursor and cursor < total:
+                status = "in-progress"
+            else:
+                status = "not-started"
+            entry = {"id": it["id"], "title": it["title"], "status": status}
+            if status == "in-progress" and current_tool:
+                entry["current_tool"] = current_tool
+            payload.append(entry)
+        try:
+            import json as _json_plan
+            state = _json_plan.dumps(payload, ensure_ascii=False)
+            # Déduplication
+            if getattr(self, "_architect_plan_last_state", None) == state:
+                return
+            self._architect_plan_last_state = state
+            logger.info("TODO_STATE:" + state)
+        except Exception:
+            pass
+
+    def _advance_architect_plan(self, current_tool: str = "", file_path: str = "") -> None:
+        """Avance le cursor du plan Architect.
+
+        File-aware : si ``file_path`` est fourni et qu'un step (non-terminé) cible
+        ce fichier, on saute DIRECTEMENT à ce step (marque les précédents completed),
+        puis on le laisse "in-progress". Sinon, avance naïvement de 1.
+        """
+        items = getattr(self, "_architect_plan_items", None)
+        if not items:
+            return
+        cursor = getattr(self, "_architect_plan_cursor", 0)
+        total = len(items)
+        if cursor >= total:
+            return
+
+        # ── File-aware : chercher un step pas encore completed dont le file match ──
+        if file_path:
+            _fp_norm = file_path.strip().replace("\\", "/").lower()
+            _fp_basename = _fp_norm.rsplit("/", 1)[-1]
+            target_idx: Optional[int] = None
+            for idx in range(cursor, total):
+                _step_file = (items[idx].get("file") or "").strip().lower()
+                if not _step_file:
+                    continue
+                if _step_file == _fp_norm or _step_file == _fp_basename:
+                    target_idx = idx
+                    break
+                # Match par basename si l'un est un path relatif
+                _step_basename = _step_file.rsplit("/", 1)[-1]
+                if _step_basename and _step_basename == _fp_basename:
+                    target_idx = idx
+                    break
+            if target_idx is not None:
+                # Marquer les steps [cursor..target_idx-1] comme completed,
+                # mettre target_idx en "in-progress". Au prochain appel sur un
+                # autre file, target_idx passera completed naturellement.
+                self._architect_plan_cursor = target_idx
+                self._emit_architect_plan(current_tool=current_tool)
+                # Ensuite avancer de 1 pour que ce step soit comptabilisé completed
+                # au prochain émit (sauf si c'est le dernier → on le laisse in-progress).
+                if target_idx < total - 1:
+                    self._architect_plan_cursor = target_idx + 1
+                return
+
+        # ── Fallback naïf : avance de 1 (laisse dernier in-progress jusqu'à done) ──
+        if cursor < total - 1:
+            self._architect_plan_cursor = cursor + 1
+            self._emit_architect_plan(current_tool=current_tool)
+
+    def _finalize_architect_plan(self) -> None:
+        """Marque toutes les étapes du plan Architect comme completed."""
+        items = getattr(self, "_architect_plan_items", None)
+        if not items:
+            return
+        self._architect_plan_cursor = len(items)  # au-delà du dernier → tout completed
+        self._emit_architect_plan()
+
+    def _enrich_summary(self, llm_summary: str) -> str:
+        """Enrichit le résumé du LLM avec la liste concrète des actions effectuées.
+
+        Le LLM fournit souvent un résumé vague ("C'est fait"). Cette méthode
+        ajoute automatiquement les fichiers modifiés, lus et erreurs rencontrées
+        depuis _session_memory pour que le parent (ReAct loop) sache exactement
+        ce qui a été fait — et puisse le rapporter à l'utilisateur.
+        """
+        # Finaliser le plan Architect (affichage UI) — tous steps → completed
+        try:
+            self._finalize_architect_plan()
+        except Exception:
+            pass
+
+        parts = [llm_summary.rstrip()]
+        mem = self._session_memory
+
+        edits = mem.get("edits_done", [])
+        if edits:
+            parts.append("\n📝 Fichiers modifiés:")
+            for entry in edits[-20:]:
+                parts.append(f"  - {entry}")
+
+        reads = mem.get("files_read", {})
+        if reads:
+            names = list(reads.keys())[-10:]
+            parts.append(f"\n📖 Fichiers lus: {', '.join(names)}")
+
+        errors = mem.get("errors_seen", [])
+        if errors:
+            parts.append(f"\n⚠️ Erreurs rencontrées ({len(errors)}):")
+            for err in errors[-5:]:
+                parts.append(f"  - {err[:120]}")
+
+        result = "\n".join(parts)
+        return result[:3000]
+
+    async def _maybe_generate_reflexion(
+        self,
+        signal: str,
+        context_tail: str,
+        task_hint: str = "",
+    ) -> None:
+        """Déclenche la génération async d'une Reflexion (leçon apprise).
+
+        Fire-and-forget : toute exception est avalée. Appelé depuis
+        _post_action_hooks quand un pattern d'échec répété est détecté.
+        Utilise un LLM léger (température basse, max_tokens court) pour
+        extraire une leçon actionnable et la persister dans le store.
+        """
+        # Anti-spam : max 1 génération par 60 s et par session
+        try:
+            now = time.time()
+            last = getattr(self, "_last_reflexion_ts", 0.0)
+            if now - last < 60.0:
+                return
+            self._last_reflexion_ts = now
+        except Exception:
+            pass
+
+        try:
+            from src.learning.reflexion_store import (
+                build_reflexion_prompt,
+                parse_reflexion_llm_response,
+                get_reflexion_store,
+            )
+        except Exception as exc:
+            logger.debug(f"[Reflexion] import failed: {exc}")
+            return
+
+        ctx = f"Task: {task_hint[:300]}\n\nTrace récente:\n{context_tail[:1500]}"
+        messages = build_reflexion_prompt(signal=signal, context=ctx)
+
+        try:
+            # Utilise le client LLM du sub_agent (OpenAI-compatible)
+            client = getattr(self, "client", None) or getattr(self, "_client", None)
+            if client is None:
+                return
+            # Appel non bloquant, paramètres conservateurs
+            model = getattr(self, "reflexion_model", None) or getattr(self, "model", "deepseek-chat")
+            loop = asyncio.get_event_loop()
+
+            def _call() -> str:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    max_tokens=350,
+                    stream=False,
+                )
+                return (resp.choices[0].message.content or "").strip()
+
+            raw = await loop.run_in_executor(None, _call)
+            parsed = parse_reflexion_llm_response(raw)
+            if not parsed:
+                logger.debug("[Reflexion] LLM response could not be parsed")
+                return
+            store = get_reflexion_store()
+            r = store.add(
+                triggered_by=parsed["triggered_by"],
+                root_cause=parsed["root_cause"],
+                lesson=parsed["lesson"],
+                apply_when=parsed["apply_when"],
+                confidence=parsed.get("confidence", 0.7),
+                tags=parsed.get("tags", []),
+            )
+            try:
+                self._reflexion_generated_count += 1
+            except Exception:
+                pass
+            logger.info(f"[Reflexion] nouvelle leçon apprise: {r.id} — {r.lesson[:80]}")
+        except Exception as exc:
+            logger.debug(f"[Reflexion] generation skipped: {exc}")
+
+    async def _maybe_generate_success_pattern(
+        self,
+        task_description: str,
+        tools_used: List[str],
+        iterations: int,
+        outcome_summary: str,
+    ) -> None:
+        """P1 — Capture un pattern de réussite dans le SuccessStore (fire-and-forget).
+
+        Anti-spam : 1 seule génération par tâche, skip si description trop courte.
+        Toute exception est avalée (best-effort).
+        """
+        try:
+            if not task_description or len(task_description.strip()) < 12:
+                return
+            if getattr(self, "_success_generated_count", 0) > 0:
+                return
+        except Exception:
+            return
+
+        try:
+            from src.learning.success_store import (
+                build_success_prompt,
+                parse_success_llm_response,
+                get_success_store,
+            )
+        except Exception as exc:
+            logger.debug(f"[Success] import failed: {exc}")
+            return
+
+        try:
+            client = getattr(self, "client", None) or getattr(self, "_client", None)
+            if client is None:
+                return
+            model = getattr(self, "reflexion_model", None) or getattr(self, "model", "deepseek-chat")
+            messages = build_success_prompt(
+                task_description=task_description,
+                tools_used=list(tools_used or []),
+                iterations=int(iterations or 0),
+                outcome_summary=outcome_summary or "",
+            )
+            loop = asyncio.get_event_loop()
+
+            def _call() -> str:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    max_tokens=350,
+                    stream=False,
+                )
+                return (resp.choices[0].message.content or "").strip()
+
+            raw = await loop.run_in_executor(None, _call)
+            parsed = parse_success_llm_response(raw)
+            if not parsed:
+                logger.debug("[Success] LLM response could not be parsed")
+                return
+            store = get_success_store()
+            p = store.add(
+                task_type=parsed.get("task_type", "other"),
+                summary=parsed["summary"],
+                approach=parsed["approach"],
+                tools_used=list(tools_used or [])[:10],
+                iterations=int(iterations or 0),
+                apply_when=parsed.get("apply_when", ""),
+                confidence=parsed.get("confidence", 0.7),
+                tags=parsed.get("tags", []),
+            )
+            try:
+                self._success_generated_count += 1
+            except Exception:
+                pass
+            logger.info(f"[Success] nouveau pattern capturé: {p.id} — {p.summary[:80]}")
+        except Exception as exc:
+            logger.debug(f"[Success] generation skipped: {exc}")
+
+    async def _maybe_auto_evaluate_success(
+        self,
+        task_description: str,
+        edits_done: List[str],
+    ) -> None:
+        """P2 — Auto-évaluation critique post-succès (fire-and-forget).
+
+        Relit un diff résumé des fichiers modifiés et demande au LLM de chercher
+        dette / edge cases / style. Si un problème non trivial est identifié,
+        une Reflexion préventive est générée. Anti-spam : 1 fois par tâche.
+        """
+        try:
+            if getattr(self, "_auto_eval_triggered", False):
+                return
+            self._auto_eval_triggered = True
+            if not edits_done:
+                return
+        except Exception:
+            return
+
+        try:
+            client = getattr(self, "client", None) or getattr(self, "_client", None)
+            if client is None:
+                return
+            model = getattr(self, "reflexion_model", None) or getattr(self, "model", "deepseek-chat")
+            # Résumé ultra-compact des fichiers modifiés (chemin + extrait fin)
+            snippets: list[str] = []
+            for _p in list(edits_done)[-5:]:
+                try:
+                    _abs = self._resolve_path(_p) if hasattr(self, "_resolve_path") else Path(_p)
+                    if _abs.exists() and _abs.is_file():
+                        _content = _abs.read_text(encoding="utf-8", errors="replace")
+                        _excerpt = _content[-1200:] if len(_content) > 1200 else _content
+                        snippets.append(f"### {_p}\n```\n{_excerpt}\n```")
+                except Exception:
+                    continue
+            if not snippets:
+                return
+            system = (
+                "Tu es un reviewer de code senior. On vient de résoudre une tâche avec succès "
+                "(tests passent). Examine RAPIDEMENT le diff ci-dessous pour détecter UN SEUL "
+                "problème non-trivial restant : edge case ignoré, dette technique introduite, "
+                "ou violation de style/sécurité.\n\n"
+                "Format JSON STRICT, rien d'autre :\n"
+                "{\n"
+                '  "has_issue":   <true|false>,\n'
+                '  "issue":       "<1 phrase, vide si has_issue=false>",\n'
+                '  "severity":    "<low|medium|high>",\n'
+                '  "lesson":      "<leçon générale réutilisable, vide si has_issue=false>"\n'
+                "}\n"
+                "Sois SÉVÈRE sur la pertinence : ne signale RIEN si le code est simplement correct."
+            )
+            user = f"TÂCHE :\n{task_description[:400]}\n\nFICHIERS MODIFIÉS :\n" + "\n\n".join(snippets)
+            loop = asyncio.get_event_loop()
+
+            def _call() -> str:
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=0.2,
+                    max_tokens=300,
+                    stream=False,
+                )
+                return (resp.choices[0].message.content or "").strip()
+
+            raw = await loop.run_in_executor(None, _call)
+            import json as _json_ae
+            import re as _re_ae
+            _m = _re_ae.search(r"\{.*\}", raw, _re_ae.DOTALL) if raw else None
+            if not _m:
+                return
+            try:
+                data = _json_ae.loads(_m.group(0))
+            except Exception:
+                return
+            if not data.get("has_issue"):
+                return
+            issue = str(data.get("issue", "")).strip()
+            severity = str(data.get("severity", "medium")).lower().strip()
+            lesson = str(data.get("lesson", "")).strip()
+            if not issue:
+                return
+            logger.warning(
+                "[AutoEval] problème détecté post-succès ({}): {}",
+                severity, issue[:120],
+            )
+            # Si sévérité medium/high et leçon valide ⇒ Reflexion préventive
+            if lesson and severity in ("medium", "high"):
+                try:
+                    from src.learning.reflexion_store import get_reflexion_store
+                    _rs = get_reflexion_store()
+                    _rs.add(
+                        triggered_by=f"auto-eval post-succès ({severity})",
+                        root_cause=issue[:400],
+                        lesson=lesson[:400],
+                        apply_when=(task_description or "")[:200],
+                        confidence=0.6 if severity == "medium" else 0.75,
+                        tags=["auto-eval", severity],
+                    )
+                    try:
+                        self._reflexion_generated_count += 1
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug(f"[AutoEval] skipped: {exc}")
 
     def _build_actions_recap(self) -> str:
         """Récap court de ce que l'agent a déjà fait (injecté quand il boucle sur les reads).
@@ -1460,6 +1954,69 @@ class CodeAgent(SubAgent):
         session_mem = self._get_session_memory_text()
         if session_mem:
             parts.append(f"--- Mémoire de session ---\n{session_mem}")
+        # WorldModel : structure live des fichiers modifiés cette session
+        try:
+            from src.context.world_model import get_world_model
+            _ws_root = self._task_workspace_root or Path.cwd()
+            _wm_text = get_world_model(_ws_root).get_compact(max_files=10, max_tokens=800)
+            if _wm_text:
+                parts.append(_wm_text)
+        except Exception:
+            pass
+        # Reflexion Store : leçons apprises des sessions précédentes (RAG léger)
+        try:
+            from src.learning.reflexion_store import get_reflexion_store
+            _rstore = get_reflexion_store()
+            if len(_rstore) > 0:
+                _query_refl = task_description
+                if target_files:
+                    _query_refl += " " + " ".join(target_files[:3])
+                _hits = _rstore.retrieve(_query_refl, k=3, min_score=0.12)
+                if _hits:
+                    parts.append(_rstore.format_for_prompt(_hits))
+                    # Marque ces réflexions comme appliquées (best-effort)
+                    try:
+                        self._applied_reflexion_ids = [r.id for r in _hits]
+                        logger.info(
+                            "[Reflexion] {} leçon(s) appliquée(s): {}",
+                            len(_hits), ", ".join(r.id for r in _hits),
+                        )
+                        # Incrémente l'usage (persisté sur disque)
+                        for _r in _hits:
+                            try:
+                                _rstore.increment_uses(_r.id)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        # Success Store : patterns de réussite historiques (RAG léger)
+        try:
+            from src.learning.success_store import get_success_store
+            _sstore = get_success_store()
+            if len(_sstore) > 0:
+                _query_succ = task_description
+                if target_files:
+                    _query_succ += " " + " ".join(target_files[:3])
+                _shits = _sstore.retrieve(_query_succ, k=2, min_score=0.12)
+                if _shits:
+                    parts.append(_sstore.format_for_prompt(_shits))
+                    try:
+                        self._applied_success_ids = [p.id for p in _shits]
+                        logger.info(
+                            "[Success] {} pattern(s) appliqué(s): {}",
+                            len(_shits), ", ".join(p.id for p in _shits),
+                        )
+                        for _p in _shits:
+                            try:
+                                _sstore.increment_uses(_p.id)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         # P9: inject project memory (persistent cross-session)
         try:
             from src.agents.project_memory import get_project_memory
@@ -1484,7 +2041,10 @@ class CodeAgent(SubAgent):
         Une tentative de la boucle interne (orchestrateur).
         Retourne (result, is_stuck) ou is_stuck=True -> retry externe souhaite.
         """
-        messages, _target_files_seen, _project_files = self._build_initial_messages(task, prior_failures, attempt)
+        _model_name_for_prompt = str(getattr(llm, "model_name", "") or "")
+        messages, _target_files_seen, _project_files = self._build_initial_messages(
+            task, prior_failures, attempt, model_name=_model_name_for_prompt,
+        )
 
         # Réinitialiser les compteurs d'état par tentative
         self._edit_fail_for_path = {}
@@ -1502,47 +2062,313 @@ class CodeAgent(SubAgent):
         _model_name_lc = str(getattr(llm, "model_name", "") or "").lower()
         if "deepseek" in _model_name_lc:
             temperature = min(temperature, 0.1)
+        # ── P8.MODEL_TEMPERATURES : override par modèle si flag actif ──
+        try:
+            from src.utils.model_temperatures import get_model_temperature
+            _model_full = str(getattr(llm, "model_name", "") or "")
+            _override = get_model_temperature(_model_full, fallback=temperature)
+            # On respecte la progression attempt (≥2) en ajoutant +0.05 par retry
+            if attempt > 1:
+                _override = min(1.0, _override + (attempt - 1) * 0.05)
+            temperature = _override
+        except Exception:
+            pass
 
-        # ── P2 : Phase Architect (avant la boucle, mode modify + tâche complexe) ──
+        # ── Phase Architect (UNIQUEMENT sur attempt 1, utilise Reasoner pour planifier) ──
+        # Pattern industry-standard : Reasoner réfléchit 1× (CoT long, 64K output), Chat exécute.
+        # Skip sur retries (re-plan inutile si la 1ère exec a produit des observations concrètes).
         _mode_attempt = getattr(self, '_resolved_intent', 'auto')
         _workspace_path = getattr(self, '_task_workspace_root', None)
         _files_listing = "\n".join(f"  - {f}" for f in (_project_files or [])[:50]) or "(vide)"
+        _architect_injected_keys: set[str] = set()  # fichiers dont le contenu est déjà dans les messages
+        # Déclenchement Architect :
+        # - intent "modify" classique (corrige, refactor, fix...)
+        # - intent "create" SI projet existe déjà (= ajout de page/section, pas création from scratch)
+        # - seuil description abaissé à 40 chars pour couvrir les requêtes courtes comme
+        #   "crée une page contact au site X" ou "ajoute une section panier"
+        _project_exists = bool(_project_files and len(_project_files) > 2)
         _is_complex_modify = (
-            _mode_attempt == "modify"
-            and _project_files and len(_project_files) > 2
-            and len(task.description) > 60
+            _mode_attempt in ("modify", "create")
+            and _project_exists
+            and len(task.description) > 40
         )
-        if _is_complex_modify:
+        if _is_complex_modify and attempt == 1:
             try:
+                # ── Injection du CONTENU des fichiers cibles dans le prompt Architect ──
+                # Sans ça, l'Architect hallucine les classes CSS, les textes, les chiffres.
+                # On cible :
+                #   1) Les fichiers mentionnés explicitement dans la description (blog.html, etc.)
+                #   2) Sinon, les 3 fichiers web/code les plus pertinents du projet
+                import re as _re_arch
+                _desc_lower = task.description.lower()
+                _candidates: list[str] = []
+                for _pf in (_project_files or []):
+                    _pf_lower = _pf.lower()
+                    _stem = _pf_lower.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+                    if _stem and _stem in _desc_lower:
+                        _candidates.append(_pf)
+                # Heuristique sémantique : si mention "blog/article" → inclure blog.html et les articles
+                _semantic_hints = {
+                    "blog": ("blog", "article"),
+                    "newsletter": ("blog", "newsletter", "index", "footer"),
+                    "catégorie": ("blog", "category"),
+                    "categorie": ("blog", "category"),
+                    "index": ("index", "home", "accueil"),
+                    "accueil": ("index", "home", "accueil"),
+                    "navigation": ("index", "nav", "header"),
+                    "menu": ("index", "nav", "header"),
+                    "pricing": ("pricing", "price", "tarif"),
+                    "tarif": ("pricing", "price", "tarif"),
+                }
+                _hint_keys: set[str] = set()
+                for _trigger, _hints in _semantic_hints.items():
+                    if _trigger in _desc_lower:
+                        _hint_keys.update(_hints)
+                if _hint_keys:
+                    for _pf in (_project_files or []):
+                        _pf_low = _pf.lower()
+                        if _pf in _candidates:
+                            continue
+                        if any(_h in _pf_low for _h in _hint_keys):
+                            _candidates.append(_pf)
+                # ── Max fichiers injectés pour l'Architect (configurable via panel/env) ──
+                try:
+                    _arch_max_files = int(os.getenv("LUMENA_ARCHITECT_MAX_FILES", "4"))
+                except (TypeError, ValueError):
+                    _arch_max_files = 4
+                _arch_max_files = max(1, min(_arch_max_files, 20))
+                if not _candidates:
+                    # Fallback : heuristique par extension pertinente — priorité aux noms communs
+                    _preferred_ext = (".html", ".css", ".js", ".py", ".ts", ".tsx", ".jsx", ".vue")
+                    _all_matching = [f for f in (_project_files or []) if f.lower().endswith(_preferred_ext)]
+                    # Tri : entry points en premier (index, main, app, blog, home)
+                    _priority_names = ("index", "main", "app", "home", "blog")
+                    _all_matching.sort(key=lambda f: (
+                        0 if any(p in f.lower().rsplit("/", 1)[-1] for p in _priority_names) else 1,
+                        f.lower(),
+                    ))
+                    _candidates = _all_matching[:_arch_max_files]
+                _target_content_blocks: list[str] = []
+                _ws_for_read = _workspace_path
+                for _cand in _candidates[:_arch_max_files]:
+                    try:
+                        _cand_path = Path(str(_ws_for_read)) / _cand if _ws_for_read else Path(_cand)
+                        if _cand_path.exists() and _cand_path.is_file():
+                            _txt = _cand_path.read_text(encoding="utf-8", errors="replace")
+                            _lines_c = _txt.split("\n")
+                            _numbered = [f"{i+1:4d} | {l}" for i, l in enumerate(_lines_c[:400])]
+                            _truncated = len(_lines_c) > 400
+                            _target_content_blocks.append(
+                                f"=== {_cand} ({len(_lines_c)} lignes"
+                                f"{', tronqué aux 400 premières' if _truncated else ''}) ===\n"
+                                + "\n".join(_numbered)
+                            )
+                    except Exception:
+                        continue
+                _content_section = ""
+                if _target_content_blocks:
+                    _content_section = (
+                        "\n\n## CONTENU EXACT DES FICHIERS CIBLES (avec numéros de ligne)\n"
+                        "Utilise CE contenu pour citer le code à remplacer — ne devine rien.\n\n"
+                        + "\n\n".join(_target_content_blocks)
+                        + "\n"
+                    )
                 _architect_messages = [
                     {"role": "system", "content": _ARCHITECT_PROMPT},
                     {"role": "user", "content": (
                         f"Contexte : modification du projet dans {_workspace_path}.\n\n"
                         f"Fichiers du projet :\n{_files_listing}\n\n"
-                        f"Tâche : {task.description}\n\n"
+                        f"Tâche : {task.description}\n"
+                        f"{_content_section}\n"
                         "Décris PRÉCISÉMENT quelles modifications faire dans quels fichiers. "
-                        "Pour chaque modification, cite le code EXACT à remplacer (avec 3-5 lignes de contexte)."
+                        "Pour chaque modification, cite le code EXACT à remplacer (avec 3-5 lignes de contexte). "
+                        "Liste-les comme un plan d'action numéroté que l'exécuteur pourra suivre étape par étape."
                     )},
                 ]
-                _llm_for_arch = self._get_llm(task)
+                # Architect = Reasoner UNIQUEMENT si le modèle par défaut est DeepSeek.
+                # Sinon (Opus, GPT-5, Gemini, etc.) → utiliser le modèle courant pour architecter
+                # (ces modèles n'ont pas besoin de swap reasoner, ils raisonnent nativement).
+                try:
+                    _arch_max_tokens = int(os.getenv("LUMENA_ARCHITECT_MAX_TOKENS", "12000"))
+                except (TypeError, ValueError):
+                    _arch_max_tokens = 12000
+                _current_model_name = (getattr(llm, "model_name", "") or "").lower()
+                _is_deepseek_default = ("deepseek" in _current_model_name)
+                _llm_for_arch = None
+                if _is_deepseek_default:
+                    try:
+                        from ..llm.multi_provider import MultiProviderLLM
+                        _llm_for_arch = MultiProviderLLM(model_name="deepseek-reasoner")
+                        logger.info(
+                            "[CodeAgent] Architect = deepseek-reasoner (CoT 1×, max_tokens={}, {} fichier(s) cible(s) injecté(s))",
+                            _arch_max_tokens, len(_target_content_blocks),
+                        )
+                    except Exception:
+                        _llm_for_arch = llm
+                else:
+                    _llm_for_arch = llm
+                    logger.info(
+                        "[CodeAgent] Architect = {} (modèle par défaut non-DeepSeek, max_tokens={}, {} fichier(s) cible(s) injecté(s))",
+                        _current_model_name or "modèle courant", _arch_max_tokens, len(_target_content_blocks),
+                    )
+                # ── Timeout Architect (configurable via panel/env) ──
+                try:
+                    _arch_timeout = float(os.getenv("LUMENA_ARCHITECT_TIMEOUT", "600"))
+                except (TypeError, ValueError):
+                    _arch_timeout = 600.0
+                _arch_timeout = max(60.0, min(_arch_timeout, 3600.0))
                 _architect_plan = await asyncio.wait_for(
-                    _llm_for_arch.chat(messages=_architect_messages, temperature=0.1, max_tokens=2000),
-                    timeout=30.0,
+                    _llm_for_arch.chat(messages=_architect_messages, temperature=0.1, max_tokens=_arch_max_tokens),
+                    timeout=_arch_timeout,  # Reasoner CoT : jusqu'à 10min pour requêtes vagues multi-fichiers complexes
                 )
                 if _architect_plan and str(_architect_plan).strip():
+                    # ── Injection du CONTENU brut dans les messages du Chat (pas seulement le plan) ──
+                    # Sans ça, le Chat relit blog.html, le cache kicks in, et il boucle en pensant
+                    # que "le cache est corrompu". On lui donne le contenu directement + on le
+                    # pré-enregistre dans la session cache pour que la résolution de path marche.
+                    if _target_content_blocks:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "📄 CONTENU ACTUEL DES FICHIERS CIBLES (déjà lu pour toi — "
+                                "NE LANCE PAS read_file dessus) :\n\n"
+                                + "\n\n".join(_target_content_blocks[:_arch_max_files])
+                            ),
+                        })
+                        # Pré-remplir la session cache pour que les éventuels read_file tombent
+                        # directement sur du contenu frais (pas de warning "cache corrompu").
+                        for _cand in _candidates[:_arch_max_files]:
+                            try:
+                                _cand_path = Path(str(_ws_for_read)) / _cand if _ws_for_read else Path(_cand)
+                                if _cand_path.exists() and _cand_path.is_file():
+                                    _txt_seed = _cand_path.read_text(encoding="utf-8", errors="replace")
+                                    _norm_seed = str(_cand_path.resolve()).replace("\\", "/")
+                                    if hasattr(self, "_record_session_read"):
+                                        self._record_session_read(_norm_seed, _txt_seed)
+                            except Exception:
+                                pass
+                    # ── Garde-fou dur : tracker les fichiers injectés pour bloquer read_file/grep ──
+                    # au début de la boucle si le LLM ignore les règles (cf. log 2026-04-19 13:50).
+                    for _cand in _candidates[:_arch_max_files]:
+                        try:
+                            _cand_path = Path(str(_ws_for_read)) / _cand if _ws_for_read else Path(_cand)
+                            _architect_injected_keys.add(_cand.lower().replace("\\", "/"))
+                            _architect_injected_keys.add(_cand.lower().rsplit("/", 1)[-1])
+                            if _cand_path.exists():
+                                _architect_injected_keys.add(str(_cand_path.resolve()).lower().replace("\\", "/"))
+                                _architect_injected_keys.add(_cand_path.name.lower())
+                        except Exception:
+                            continue
                     messages.append({
                         "role": "user",
                         "content": (
-                            f"Plan de l'architecte (analyse préalable du projet) :\n{str(_architect_plan)[:3000]}\n\n"
-                            "Exécute ces modifications une par une avec edit_lines ou str_replace. "
-                            "NE RÉÉCRIS PAS les fichiers complets."
+                            f"📋 PLAN DE L'ARCHITECTE (analyse préalable avec le contenu réel — suis-le étape par étape) :\n\n"
+                            f"{str(_architect_plan)[:8000]}\n\n"
+                            "⚠️ RÈGLES STRICTES POUR TOI :\n"
+                            "1. Le contenu des fichiers cibles est DÉJÀ dans tes messages précédents.\n"
+                            "2. NE RELIS PAS ces fichiers (read_file interdit sur eux au 1er tour).\n"
+                            "3. Commence DIRECTEMENT par edit_lines ou str_replace selon le plan.\n"
+                            "4. NE RÉÉCRIS PAS les fichiers complets avec write_file.\n"
+                            "5. Quand toutes les étapes sont faites, appelle `done` avec un summary."
                         ),
                     })
-                    logger.info("[CodeAgent] Phase Architect injectée ({} chars)", len(str(_architect_plan)))
+                    logger.info(
+                        "[CodeAgent] Phase Architect injectée ({} chars plan + {} fichier(s) cible(s) en contexte)",
+                        len(str(_architect_plan)), len(_target_content_blocks),
+                    )
+                    # ── Plan Architect → TODO_STATE SSE (affichage UI) ──
+                    try:
+                        _plan_items_ui = self._parse_architect_plan(str(_architect_plan))
+                        if _plan_items_ui:
+                            self._architect_plan_items = _plan_items_ui
+                            self._architect_plan_cursor = 0
+                            self._architect_plan_last_state = None
+                            self._emit_architect_plan()
+                            logger.info(
+                                "[CodeAgent] Plan UI émis: {} étapes",
+                                len(_plan_items_ui),
+                            )
+                        else:
+                            # Diagnostic : montrer les 20 premières lignes du plan pour
+                            # comprendre le format et ajuster le parser si nécessaire.
+                            _preview = "\n".join(str(_architect_plan).splitlines()[:20])
+                            logger.warning(
+                                "[CodeAgent] Plan UI: 0 étapes parsées. Preview du plan:\n{}",
+                                _preview[:1500],
+                            )
+                    except Exception as _plan_ui_exc:
+                        logger.debug(
+                            "[CodeAgent] Plan UI emit échoué: {}",
+                            _plan_ui_exc,
+                        )
             except Exception as _arch_exc:
-                logger.warning("[CodeAgent] Phase Architect échouée ({}), continue sans", _arch_exc)
+                logger.warning(
+                    "[CodeAgent] Phase Architect échouée ({}: {!r}), fallback salvage content-injection",
+                    type(_arch_exc).__name__, str(_arch_exc) or "no message",
+                )
+                # ── SALVAGE : même si l'Architect timeout, on injecte le contenu des fichiers cibles
+                # + pré-seed session cache + on marque les clés pour le guard anti-relecture.
+                # Bénéfice : le Chat executor évite la relecture en boucle, économisant 3-10 iter.
+                try:
+                    if _target_content_blocks:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "⚠️ Architect indisponible (timeout). Voici le CONTENU ACTUEL DES FICHIERS CIBLES "
+                                "(déjà lu pour toi — NE LANCE PAS read_file dessus) :\n\n"
+                                + "\n\n".join(_target_content_blocks[:_arch_max_files])
+                                + "\n\nAnalyse directement ce contenu et applique les modifications via edit_lines/str_replace."
+                            ),
+                        })
+                        _ws_for_read2 = _workspace_path
+                        for _cand in _candidates[:_arch_max_files]:
+                            try:
+                                _cand_path = Path(str(_ws_for_read2)) / _cand if _ws_for_read2 else Path(_cand)
+                                if _cand_path.exists() and _cand_path.is_file():
+                                    _txt_seed = _cand_path.read_text(encoding="utf-8", errors="replace")
+                                    _norm_seed = str(_cand_path.resolve()).replace("\\", "/")
+                                    if hasattr(self, "_record_session_read"):
+                                        self._record_session_read(_norm_seed, _txt_seed)
+                                _architect_injected_keys.add(_cand.lower().replace("\\", "/"))
+                                _architect_injected_keys.add(_cand.lower().rsplit("/", 1)[-1])
+                                if _cand_path.exists():
+                                    _architect_injected_keys.add(str(_cand_path.resolve()).lower().replace("\\", "/"))
+                                    _architect_injected_keys.add(_cand_path.name.lower())
+                            except Exception:
+                                continue
+                        logger.info(
+                            "[CodeAgent] Salvage post-timeout : {} fichier(s) injecté(s) + cache pré-seedé",
+                            len(_target_content_blocks[:_arch_max_files]),
+                        )
+                except Exception as _salvage_exc:
+                    logger.debug("[CodeAgent] Salvage failed: {}", _salvage_exc)
 
         for iteration in range(1, max_iter + 1):
+            # ── WorldModel : exposer l'itération courante aux hooks ──
+            self._current_iter = iteration
+            # ── P5: escalation warning à 80% du budget ──
+            try:
+                from src.config.codeagent_flags import MAX_STEPS_GRACEFUL
+                if MAX_STEPS_GRACEFUL:
+                    _warn_threshold = max(1, int(max_iter * 0.8))
+                    if iteration == _warn_threshold:
+                        _last_user_msg = next(
+                            (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                            "",
+                        )
+                        if "BUDGET ITÉRATIONS" not in str(_last_user_msg):
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"⚠️ BUDGET ITÉRATIONS : tu as utilisé {iteration}/{max_iter} "
+                                    f"itérations ({int(iteration*100/max_iter)}%). "
+                                    "Concentre-toi maintenant sur la convergence : "
+                                    "finalise la tâche puis utilise `done` avec un summary clair. "
+                                    "Si la tâche est trop vaste, livre ce qui est fait et explique ce qui reste."
+                                ),
+                            })
+            except Exception:
+                pass
             # ── ANTI-RELECTURE PRÉEMPTIVE (utile surtout pour DeepSeek) ──
             # Avant chaque appel LLM, on rappelle CONCRÈTEMENT quels fichiers sont déjà
             # en mémoire. DeepSeek suit le contexte récent mieux que les règles abstraites
@@ -1574,11 +2400,25 @@ class CodeAgent(SubAgent):
                 except Exception:
                     pass
             try:
-                raw = await llm.chat(
+                # ── P8.SSE_TIMEOUT : wrapper timeout sur l'appel LLM ──
+                # Auto-switch autorisé : deepseek-chat peut basculer vers reasoner
+                # si le routeur heuristique détecte code_task (plus de tokens/contexte).
+                # Les garde-fous (Architect injection, anti-relecture, re-injection post-edit)
+                # sont model-agnostic et restent actifs.
+                _chat_coro = llm.chat(
                     messages=messages,
                     temperature=temperature,
                     max_tokens=getattr(llm, "max_output_tokens", 65536),
                 )
+                try:
+                    from src.config.codeagent_flags import SSE_TIMEOUT
+                    if SSE_TIMEOUT:
+                        _sse_timeout_s = float(os.environ.get("LUMENA_SSE_TIMEOUT_SECONDS", "300"))
+                        raw = await asyncio.wait_for(_chat_coro, timeout=_sse_timeout_s)
+                    else:
+                        raw = await _chat_coro
+                except ImportError:
+                    raw = await _chat_coro
                 raw_text = str(raw).strip()
             except Exception as exc:
                 category, action_class = _classify_llm_error(exc)
@@ -1604,7 +2444,7 @@ class CodeAgent(SubAgent):
             if tag == "continue":
                 continue
             if tag == "success_text":
-                return self._result_success(task, raw_text, iterations=iteration), False
+                return self._result_success(task, self._enrich_summary(raw_text), iterations=iteration), False
             if tag == "done":
                 action = payload
                 summary = action.get("summary", "Tâche terminée.")
@@ -1628,17 +2468,171 @@ class CodeAgent(SubAgent):
                         except Exception:
                             pass  # jamais bloquant
                 report.append(f"[iter {iteration}] done")
+                # P3: sortie du plan mode si actif
+                if getattr(self, "_plan_mode_read_only", False):
+                    self._plan_mode_read_only = False
                 return AgentResult(
                     task_id=task.task_id,
                     success=True,
-                    output=summary,
+                    output=self._enrich_summary(summary),
                     status_code=StatusCode.SUCCESS,
                     meta={"iterations": iteration, "attempt": attempt, "trace": report},
                 ), False
 
             action = payload
             action_type = action["action"]
+            # P1 : track des outils utilisés cette tâche (pour SuccessStore)
+            try:
+                if action_type and action_type not in self._tools_used_this_task:
+                    self._tools_used_this_task.append(action_type)
+            except Exception:
+                pass
+            # ── Garde-fou dur : bloquer les re-lectures du même fichier ──
+            # Deux niveaux :
+            #   (a) Fichiers injectés par Architect → refus dès la 1re relecture
+            #   (b) Tout fichier déjà lu ≥ 1 fois dans la session → refus dès la 2e tentative
+            # Se lève dès qu'un edit réussit sur le fichier (le nouveau contenu est re-injecté
+            # dans l'observation, cf. bloc plus bas).
+            # Évite la boucle "je lis, je re-lis" (logs 2026-04-19 13:50 & 14:28, 15 iter gaspillées).
+            if action_type in ("read_file", "grep", "cat", "read_files_batch"):
+                _probe_path = ""
+                if isinstance(action, dict):
+                    _probe_path = str(action.get("path") or action.get("file") or "")
+                    if not _probe_path and action_type == "read_files_batch":
+                        _pl = action.get("paths") or action.get("files") or []
+                        if isinstance(_pl, list) and _pl:
+                            _probe_path = str(_pl[0])
+                _pk = _probe_path.lower().replace("\\", "/")
+                _pk_base = _pk.rsplit("/", 1)[-1]
+
+                # Ignorer les probes sur .backups/ — ce sont des fichiers de
+                # sauvegarde, pas les fichiers réels du projet.
+                _is_backup_probe = any(
+                    _seg in _pk for _seg in ("/.backups/", "/.git/", "/node_modules/")
+                )
+
+                # Résolution absolue du probe (pour matching strict par path, pas basename)
+                _pk_abs = ""
+                if _pk and not _is_backup_probe:
+                    try:
+                        _ws_root = self._task_workspace_root or Path.cwd()
+                        _probe_p = Path(_probe_path)
+                        if not _probe_p.is_absolute():
+                            _probe_p = _ws_root / _probe_p
+                        _pk_abs = str(_probe_p.resolve()).replace("\\", "/").lower()
+                    except Exception:
+                        _pk_abs = _pk
+
+                _blocked_reason = ""
+                # (a) Architect-injected check
+                if _architect_injected_keys and _pk and (
+                    _pk in _architect_injected_keys or _pk_base in _architect_injected_keys
+                ) and not _is_backup_probe:
+                    _blocked_reason = "contenu déjà injecté par l'Architect au début de la session"
+                # (b) Session cache check : match STRICT par chemin absolu résolu.
+                # On ne match PLUS par basename seul, car `.backups/contact.html`
+                # et `contact.html` sont deux fichiers différents (cf. logs 2026-04-19 20:09).
+                elif _pk and _pk_abs and not _is_backup_probe:
+                    _files_read = self._session_memory.get("files_read", {})
+                    for _cached_key in _files_read.keys():
+                        _ck_raw = str(_cached_key).replace("\\", "/")
+                        _ck = _ck_raw.lower()
+                        # Ignorer les clés de backup dans le cache
+                        if any(_seg in _ck for _seg in ("/.backups/", "/.git/", "/node_modules/")):
+                            continue
+                        # Résolution absolue de la clé cache
+                        try:
+                            _ck_p = Path(_ck_raw)
+                            if not _ck_p.is_absolute():
+                                _ws_root2 = self._task_workspace_root or Path.cwd()
+                                _ck_p = _ws_root2 / _ck_p
+                            _ck_abs = str(_ck_p.resolve()).replace("\\", "/").lower()
+                        except Exception:
+                            _ck_abs = _ck
+                        if _ck_abs == _pk_abs:
+                            _blocked_reason = f"déjà lu dans cette session ({_cached_key})"
+                            break
+
+                if _blocked_reason:
+                    # Tenter de récupérer le contenu déjà en cache pour l'injecter dans le refus
+                    _cached_txt = ""
+                    try:
+                        _files_read = self._session_memory.get("files_read", {})
+                        for _ck, _cv in _files_read.items():
+                            _cks = str(_ck).lower().replace("\\", "/")
+                            if _cks == _pk or _cks.endswith("/" + _pk_base):
+                                _cached_txt = str(_cv)[:4000]
+                                break
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "[CodeAgent] BLOQUÉ iter={}: {} sur {} refusé ({})",
+                        iteration, action_type, _probe_path, _blocked_reason,
+                    )
+                    report.append(f"[iter {iteration}] {action_type} bloqué ({_probe_path}: {_blocked_reason})")
+                    messages.append({"role": "assistant", "content": raw_text})
+                    _refusal = (
+                        f"⛔ ACTION REFUSÉE : `{action_type}` sur `{_probe_path}` est bloqué.\n\n"
+                        f"Raison : {_blocked_reason}.\n\n"
+                        "ACTION ATTENDUE : utilise DIRECTEMENT `edit_lines` ou `str_replace` en te basant sur "
+                        "le contenu déjà en contexte. Si tu ne trouves pas la chaîne à remplacer, "
+                        "c'est qu'elle n'existe pas sous cette forme — adapte ta recherche au contenu réel ci-dessous. "
+                        "Si tu as fini, appelle `done` avec un summary."
+                    )
+                    if _cached_txt:
+                        _refusal += f"\n\n📄 RAPPEL du contenu de `{_probe_path}` (extrait):\n{_cached_txt}"
+                    messages.append({"role": "user", "content": _refusal})
+                    continue
             observation = await self._execute_loop_action(action, snapshots=_session_snapshots)
+
+            # ── Lever le garde-fou + re-injecter le contenu après un edit réussi ──
+            # Dès qu'un edit (str_replace/edit_lines/apply_patch/write_file) réussit sur un
+            # fichier précédemment injecté par l'Architect, on retire sa clé du set (le LLM
+            # pourra alors relire s'il veut voir la version modifiée) ET on ré-injecte
+            # directement le nouveau contenu dans l'observation pour éviter la re-lecture.
+            if (
+                _architect_injected_keys
+                and action_type in ("str_replace", "edit_lines", "apply_patch", "write_file", "edit_file", "insert_at_anchor")
+                and isinstance(action, dict)
+            ):
+                _edit_path_clear = str(action.get("path") or action.get("file") or "")
+                _obs_head = str(observation)[:20]
+                if _edit_path_clear and "✅" in _obs_head:
+                    _ek = _edit_path_clear.lower().replace("\\", "/")
+                    _ek_base = _ek.rsplit("/", 1)[-1]
+                    _was_tracked = _ek in _architect_injected_keys or _ek_base in _architect_injected_keys
+                    if _was_tracked:
+                        # Retirer toutes les variantes de clé pour ce fichier
+                        for _k in list(_architect_injected_keys):
+                            if _k == _ek or _k == _ek_base or _k.endswith("/" + _ek_base):
+                                _architect_injected_keys.discard(_k)
+                        # Re-injecter le contenu frais dans l'observation
+                        try:
+                            _abs = Path(str(_ws_for_read)) / _edit_path_clear if _ws_for_read else Path(_edit_path_clear)
+                            if _abs.exists() and _abs.is_file():
+                                _new_txt = _abs.read_text(encoding="utf-8", errors="replace")
+                                _new_lines = _new_txt.split("\n")
+                                _new_numbered = "\n".join(f"{i+1:4d} | {l}" for i, l in enumerate(_new_lines[:400]))
+                                _more = f"\n... ({len(_new_lines) - 400} lignes supplémentaires non affichées)" if len(_new_lines) > 400 else ""
+                                _fresh_block = (
+                                    f"\n\n📄 NOUVEAU CONTENU de {_edit_path_clear} ({len(_new_lines)} lignes) — "
+                                    f"utilise CE contenu pour les edits suivants, NE RELIS PAS :\n"
+                                    f"{_new_numbered}{_more}"
+                                )
+                                # Append au résultat de l'observation
+                                if isinstance(observation, ActionResult):
+                                    observation = ActionResult(observation.summary, (observation.detail or "") + _fresh_block)
+                                else:
+                                    observation = str(observation) + _fresh_block
+                                # Mettre à jour la session cache
+                                if hasattr(self, "_record_session_read"):
+                                    self._record_session_read(str(_abs.resolve()).replace("\\", "/"), _new_txt)
+                                logger.info(
+                                    "[CodeAgent] Post-edit: {} retiré du guard + nouveau contenu injecté ({} lignes)",
+                                    _edit_path_clear, len(_new_lines),
+                                )
+                        except Exception as _ri_exc:
+                            logger.debug("[CodeAgent] Re-injection post-edit skipped: {}", _ri_exc)
 
             # ── Détection boucle (post-exécution) ──
             _obs_for_loop = str(observation)[:500]
@@ -1650,10 +2644,25 @@ class CodeAgent(SubAgent):
                 if _session_snapshots:
                     n = self._rollback_session(_session_snapshots)
                     report.append(f"[rollback] {n} fichier(s) restauré(s)")
+                # P3 : déclenche génération de leçon sur boucle détectée (fire-and-forget)
+                try:
+                    _trace_tail = "\n".join(
+                        f"[{m.get('role','?')}] {str(m.get('content',''))[:180]}"
+                        for m in messages[-4:]
+                    )
+                    asyncio.create_task(
+                        self._maybe_generate_reflexion(
+                            signal=f"LoopDetector stuck: {stuck_reason}",
+                            context_tail=_trace_tail,
+                            task_hint=getattr(task, "description", "") or "",
+                        )
+                    )
+                except Exception:
+                    pass
                 return AgentResult(
                     task_id=task.task_id,
                     success=False,
-                    output=f"CodeAgent bloqué ({stuck_reason}):\n" + "\n".join(report[-5:]),
+                    output=self._enrich_summary(f"CodeAgent bloqué ({stuck_reason}):\n" + "\n".join(report[-5:])),
                     status_code=StatusCode.PARTIAL,
                     meta={"iterations": iteration, "stuck": True, "attempt": attempt},
                 ), True
@@ -1675,7 +2684,7 @@ class CodeAgent(SubAgent):
                 return AgentResult(
                     task_id=task.task_id,
                     success=False,
-                    output=(
+                    output=self._enrich_summary(
                         "CodeAgent arrêté : trop de lectures consécutives sans édition. "
                         "Aucune modification effectuée.\n" + "\n".join(report[-8:])
                     ),
@@ -1699,6 +2708,12 @@ class CodeAgent(SubAgent):
 
             messages.append({"role": "assistant", "content": raw_text})
             obs_text = observation.full() if isinstance(observation, ActionResult) else str(observation)
+            # ── P11.FRENCH_ERRORS : traduire messages d'erreur techniques ──
+            try:
+                from src.utils.french_errors import translate_error
+                obs_text = translate_error(obs_text)
+            except Exception:
+                pass
             # ── Hint contextuel anti-boucle ──
             _hint = ""
             if loop_detector.node_check_passed and action_type == "run_command":
@@ -1713,18 +2728,79 @@ class CodeAgent(SubAgent):
                     "run_command est réservé à l'EXÉCUTION (node, python, npm)."
                 )
                 self._redirect_count = 0
+            # ── P4: Truncation save (dynamique, calibré par modèle actif) ──
+            # Seuils calculés via src/reasoning/history_formatter (paliers 2k…48k).
+            # Les outils "lecteurs" (read_file, grep, web_fetch…) ne sont pas
+            # tronqués tant que la taille reste sous 4× le budget, pour garder
+            # les faits complets dans le raisonnement.
+            try:
+                from src.utils.truncation_save import save_and_truncate
+                from src.reasoning.history_formatter import (
+                    compute_obs_limit as _compute_obs_limit,
+                    should_protect_observation as _should_protect,
+                )
+                _max_ctx = int(getattr(llm, "context_window", 0) or 0)
+                _budget = _compute_obs_limit(_max_ctx)
+                _is_reader = _should_protect(action_type)
+                _threshold = _budget * 4 if _is_reader else _budget
+                _head = int(_budget * 0.55)
+                _tail = max(500, _budget - _head - 60)
+                _obs_injected = save_and_truncate(
+                    obs_text,
+                    task_id=task.task_id,
+                    iteration=iteration,
+                    threshold=_threshold,
+                    head_chars=_head,
+                    tail_chars=_tail,
+                )
+            except Exception:
+                _obs_injected = obs_text[:8000]
             messages.append({
                 "role": "user",
-                "content": f"Résultat de l'action:\n{obs_text[:8000]}{_hint}",
+                "content": f"Résultat de l'action:\n{_obs_injected}{_hint}",
             })
+
+        # ── P5: résumé final gracieux plutôt qu'un abort brutal ──
+        _graceful_output = (
+            f"CodeAgent: {max_iter} itérations sans conclusion "
+            f"(tentative {attempt}).\n" + "\n".join(report[-5:])
+        )
+        try:
+            from src.config.codeagent_flags import MAX_STEPS_GRACEFUL
+            if MAX_STEPS_GRACEFUL:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        "⛔ BUDGET ÉPUISÉ : aucune nouvelle action ne peut être exécutée.\n"
+                        "Produit MAINTENANT, en texte libre (pas de JSON), un résumé final :\n"
+                        "1) Ce qui a été accompli\n"
+                        "2) Ce qu'il reste à faire\n"
+                        "3) Recommandation concrète pour la suite\n"
+                        "Sois factuel et concis (max 15 lignes)."
+                    ),
+                })
+                try:
+                    _final_raw = await llm.chat(
+                        messages=messages,
+                        temperature=0.0,
+                        max_tokens=1024,
+                    )
+                    _final_text = str(_final_raw).strip()
+                    if _final_text:
+                        _graceful_output = (
+                            f"CodeAgent — budget épuisé ({max_iter} itérations).\n\n"
+                            f"Résumé final :\n{_final_text}\n\n"
+                            f"Trace (5 dernières étapes) :\n" + "\n".join(report[-5:])
+                        )
+                except Exception as _exc:
+                    logger.debug("[CodeAgent] graceful final summary failed: {}", _exc)
+        except Exception:
+            pass
 
         return AgentResult(
             task_id=task.task_id,
             success=False,
-            output=(
-                f"CodeAgent: {max_iter} itérations sans conclusion "
-                f"(tentative {attempt}).\n" + "\n".join(report[-5:])
-            ),
+            output=self._enrich_summary(_graceful_output),
             status_code=StatusCode.PARTIAL,
             meta={"iterations": max_iter, "attempt": attempt, "trace": report},
         ), True
@@ -1733,11 +2809,18 @@ class CodeAgent(SubAgent):
 
     def _build_initial_messages(
         self, task: AgentTask, prior_failures: list[str], attempt: int,
+        *, model_name: str = "",
     ) -> tuple[list[dict[str, str]], list[str], list[str] | None]:
         """Construit les messages initiaux + target_files. Extrait du setup de _single_code_attempt."""
         _ws = (task.context or {}).get("workspace_path") or (task.context or {}).get("project_dir")
         if _ws:
             self._task_workspace_root = Path(str(_ws))
+            # Intent déjà résolu par l'appelant (ReAct) ? On le récupère pour que la phase
+            # Architect puisse se déclencher (sinon getattr('_resolved_intent', 'auto')
+            # renvoie 'auto' et _is_complex_modify reste toujours False).
+            _ctx_intent = (task.context or {}).get("intent")
+            if _ctx_intent in ("create", "modify", "unknown"):
+                self._resolved_intent = _ctx_intent
         else:
             # ── Résolution centralisée via resolve_workspace ──
             # Plus AUCUNE création à l'aveugle ici — tout passe par le registre.
@@ -1856,7 +2939,9 @@ class CodeAgent(SubAgent):
         if _prompt_override:
             _system_content = _CODE_AGENT_SYSTEM + _prompt_override
         else:
-            _system_content = _build_system_prompt(task.description, workspace_files=_ws_files, mode=_mode)
+            _system_content = _build_system_prompt(
+                task.description, workspace_files=_ws_files, mode=_mode, model_name=model_name,
+            )
         messages: list[dict[str, str]] = [
             {"role": "system", "content": _system_content},
             {"role": "user", "content": user_content},
@@ -1884,6 +2969,19 @@ class CodeAgent(SubAgent):
             return ("continue", None)
 
         action = _parse_action_json(raw_text)
+
+        # ── P8.INVALID_TOOL_CATCH : récupérer depuis clés alias (tool/name/function) ──
+        try:
+            from src.config.codeagent_flags import INVALID_TOOL_CATCH
+            if INVALID_TOOL_CATCH and isinstance(action, dict) and "action" not in action:
+                for _alias in ("tool", "name", "function", "tool_name", "command_name"):
+                    _val = action.get(_alias)
+                    if isinstance(_val, str) and _val.strip():
+                        action["action"] = _val.strip()
+                        logger.debug("[CodeAgent] INVALID_TOOL_CATCH: '{}' → action", _alias)
+                        break
+        except Exception:
+            pass
 
         if not action or "action" not in action:
             _looks_truncated = (
@@ -1929,8 +3027,51 @@ class CodeAgent(SubAgent):
             self._record_session_read(action.get("path", ""), _read_content)
         elif action_type in ("edit_file", "edit_lines", "write_file", "str_replace"):
             self._record_session_edit(action.get("path", ""), action_type)
+            # ── Plan Architect UI : avancer le cursor à chaque édition réussie ──
+            if "❌" not in str(observation)[:10]:
+                try:
+                    self._advance_architect_plan(
+                        current_tool=action_type,
+                        file_path=action.get("path", "") or "",
+                    )
+                except Exception:
+                    pass
         elif action_type == "run_tests" and "❌" in obs_summary:
             self._record_session_error(obs_summary[:200])
+
+        # ── WorldModel : maintenir la structure live des fichiers édités ──
+        if (
+            action_type in ("write_file", "edit_file", "str_replace", "edit_lines", "apply_patch")
+            and "❌" not in str(observation)[:10]
+        ):
+            _wm_path = action.get("path", "") or ""
+            if _wm_path:
+                try:
+                    from src.context.world_model import get_world_model
+                    from src.context.ast_parser import get_ast_parser
+                    _ws_root = self._task_workspace_root or Path.cwd()
+                    _wm = get_world_model(_ws_root)
+                    _cur_iter = int(getattr(self, "_current_iter", 0) or 0)
+                    # Récupère le contenu actuel pour reparser la structure
+                    _content_after: Optional[str] = None
+                    try:
+                        _wm_abs = self._resolve_path(_wm_path)
+                        if _wm_abs.exists() and _wm_abs.is_file():
+                            _content_after = _wm_abs.read_text(encoding="utf-8", errors="replace")
+                    except Exception:
+                        _content_after = None
+                    if action_type == "write_file" and _content_after is not None:
+                        _wm.update_from_write(_wm_path, _content_after, iter_num=_cur_iter, action=action_type)
+                    else:
+                        _wm.update_from_edit(_wm_path, iter_num=_cur_iter,
+                                              content_after=_content_after, action=action_type)
+                    # Invalide caches AST/RepoMap pour ce fichier
+                    try:
+                        get_ast_parser().invalidate(Path(_wm_path))
+                    except Exception:
+                        pass
+                except Exception as _wm_exc:
+                    logger.debug(f"[WorldModel] skip update {_wm_path}: {_wm_exc}")
 
         # ── P2: enrichir contexte dynamiquement après read_file ──
         if action_type == "read_file":
@@ -1942,6 +3083,43 @@ class CodeAgent(SubAgent):
                     context_cache[read_path] = delta_ctx or ""
                 if context_cache[read_path] and "Imports du fichier cible" in context_cache[read_path]:
                     observation += f"\n\n{context_cache[read_path]}"
+
+        # ── Grep 0-result : tracker et warner en cas de répétition ──
+        _obs_for_grep = str(observation)
+        if action_type in ("grep", "grep_search") and ("Aucun résultat" in _obs_for_grep or "aucun resultat" in _obs_for_grep.lower() or "no results" in _obs_for_grep.lower()):
+            _gp = str(action.get("pattern", ""))
+            _gpath = str(action.get("path", ".") or ".")
+            if _gp:
+                _gcount = self._record_grep_zero_result(_gp, _gpath)
+                if _gcount >= 2:
+                    self._grep_zero_repeats += 1
+                    logger.info(
+                        "[GrepTrack] pattern répété sans résultat ({}×): {!r} dans {}",
+                        _gcount, _gp[:60], _gpath,
+                    )
+                    observation += (
+                        f"\n\n⚠️ STRATÉGIE À CHANGER : le pattern `{_gp[:80]}` a déjà renvoyé "
+                        f"0 résultat {_gcount}× dans `{_gpath}`. N'insiste pas. Essaye :\n"
+                        "  • un pattern plus court / plus générique\n"
+                        "  • un autre fichier ou élargir le path\n"
+                        "  • `read_file` direct si tu connais la structure (voir WorldModel ci-dessus)"
+                    )
+                    # P3 : 3ème répétition ⇒ déclenche une leçon Reflexion (fire-and-forget)
+                    if _gcount >= 3:
+                        try:
+                            _trace_tail = "\n".join(
+                                f"[{m.get('role','?')}] {str(m.get('content',''))[:180]}"
+                                for m in messages[-4:]
+                            )
+                            asyncio.create_task(
+                                self._maybe_generate_reflexion(
+                                    signal=f"grep pattern {_gp[:60]!r} 0 résultat {_gcount}× dans {_gpath}",
+                                    context_tail=_trace_tail,
+                                    task_hint=getattr(task, "description", "") or "",
+                                )
+                            )
+                        except Exception:
+                            pass
 
         # ── Auto-reread si edit_file/str_replace echoue (contenu non trouve) ──
         obs_str = str(observation)
@@ -1968,6 +3146,22 @@ class CodeAgent(SubAgent):
                             ),
                         })
                         self._edit_fail_for_path[re_path] = 0  # reset après escalade
+                    except Exception:
+                        pass
+                    # Reflexion : déclenche génération async d'une leçon (fire-and-forget)
+                    try:
+                        _trace_tail = "\n".join(
+                            f"[{m.get('role','?')}] {str(m.get('content',''))[:200]}"
+                            for m in messages[-4:]
+                        )
+                        _signal = f"str_replace échoué {_fail_count}× sur {re_path} ({action_type})"
+                        asyncio.create_task(
+                            self._maybe_generate_reflexion(
+                                signal=_signal,
+                                context_tail=_trace_tail,
+                                task_hint=getattr(task, "description", "") or "",
+                            )
+                        )
                     except Exception:
                         pass
 
@@ -2158,10 +3352,51 @@ class CodeAgent(SubAgent):
         _compact_ratio = 0.60 if _mode_compact == "modify" else _COMPACTION_RATIO
         _est_tokens = _estimate_tokens(messages)
         if len(messages) > _MIN_COMPACTION_MESSAGES and _est_tokens > _CONTEXT_WINDOW_TOKENS * _compact_ratio:
+            # ── P2 Plan Suprême : pruning progressif des observations anciennes ──
+            # Pass 1 (cheap) : truncate old tool outputs head+tail. Si ça suffit, on évite le LLM summary.
+            try:
+                from src.tools.compaction import prune_large_observations
+                pruned_messages, pruned_n = prune_large_observations(messages)
+                if pruned_n > 0:
+                    new_est = _estimate_tokens(pruned_messages)
+                    if new_est <= _CONTEXT_WINDOW_TOKENS * _compact_ratio:
+                        report.append(f"[compact] {pruned_n} observation(s) pruned ({_est_tokens}→{new_est} tokens)")
+                        return pruned_messages
+                    # Pruning pas suffisant — continuer sur le LLM summary avec les messages pruned
+                    messages = pruned_messages
+            except Exception as _prune_exc:
+                logger.warning("[CodeAgent] prune_large_observations failed: {}", _prune_exc)
+
             kept_head = messages[:2]
             kept_tail = messages[-6:]
             msgs_to_compact = messages[2:-6]
             dropped = len(msgs_to_compact)
+
+            # ── P8.COMPACTION_REPLAY : sauvegarde pré-compaction pour audit/replay ──
+            try:
+                from src.config.codeagent_flags import COMPACTION_REPLAY
+                if COMPACTION_REPLAY and dropped > 0:
+                    import json
+                    import time
+                    from src.utils.paths import LOGS_DIR
+                    _task_id = getattr(self, "_current_task_id", "session")
+                    _safe_id = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(_task_id))[:80] or "session"
+                    _replay_dir = LOGS_DIR / "codeagent" / _safe_id
+                    _replay_dir.mkdir(parents=True, exist_ok=True)
+                    _replay_file = _replay_dir / f"compaction_{int(time.time() * 1000)}.json"
+                    _replay_file.write_text(
+                        json.dumps({
+                            "dropped_count": dropped,
+                            "tokens_before": _est_tokens,
+                            "head_count": len(kept_head),
+                            "tail_count": len(kept_tail),
+                            "messages": msgs_to_compact,
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    report.append(f"[compact] replay save: {_replay_file.name}")
+            except Exception as _rep_exc:
+                logger.debug("[CodeAgent] compaction_replay save failed: {}", _rep_exc)
 
             llm_summary = await self._summarize_for_compaction(msgs_to_compact, llm)
             if llm_summary:
@@ -2437,7 +3672,23 @@ class CodeAgent(SubAgent):
                 _bracket_detail = _locate_bracket_errors(content, _ext)
                 if _bracket_detail:
                     _trunc_warn = f"\n{_bracket_detail}\nUtilise str_replace ou edit_lines pour corriger les lignes indiquées ci-dessus."
-            abs_path.write_text(content, encoding="utf-8")
+            # ── P8.CRLF_NORMALIZE : normaliser les fins de ligne pour fichiers texte ──
+            _crlf_normalized = False
+            try:
+                from src.config.codeagent_flags import CRLF_NORMALIZE
+                if CRLF_NORMALIZE and _ext in (
+                    ".py", ".js", ".ts", ".jsx", ".tsx", ".css", ".html",
+                    ".json", ".md", ".yml", ".yaml", ".txt", ".sh",
+                ):
+                    content = content.replace("\r\n", "\n").replace("\r", "\n")
+                    _crlf_normalized = True
+            except Exception:
+                pass
+            if _crlf_normalized:
+                # Écrire en binaire pour préserver les LF (write_text sur Windows traduit en CRLF)
+                abs_path.write_bytes(content.encode("utf-8"))
+            else:
+                abs_path.write_text(content, encoding="utf-8")
             syntax_err = await self._check_python_syntax(file_path)
             web_err = await self._check_web_syntax(file_path)
             msg = f"✅ Fichier écrit: {file_path} ({len(content)} chars)"
@@ -2511,9 +3762,32 @@ class CodeAgent(SubAgent):
             if path:
                 self._snapshot_file(snapshots, path)
         try:
+            # ── P3: Plan mode read-only gate ──
+            # Si plan_mode_read_only est actif, on bloque toute action mutante
+            # jusqu'à ce qu'un nouveau plan (read_only=false) ou un "done" l'annule.
+            try:
+                from src.config.codeagent_flags import PLAN_MODE
+            except Exception:
+                PLAN_MODE = False
+            _MUTATING = {"edit_file", "edit_lines", "write_file", "apply_patch",
+                         "apply_patches", "str_replace", "insert_at_anchor",
+                         "run_command", "run_tests"}
+            if PLAN_MODE and getattr(self, "_plan_mode_read_only", False) and act in _MUTATING:
+                return ActionResult(
+                    f"🔒 Plan mode read-only actif — action `{act}` bloquée. "
+                    "Rappelle un plan avec `read_only=false` pour reprendre l'édition, "
+                    "ou utilise `done` pour sortir.",
+                )
             if act == "plan":
                 steps = action.get("steps", [])
-                return ActionResult(f"Plan noté ({len(steps)} étapes). Commence par l'étape 1.")
+                # P3: gère l'entrée/sortie du read-only mode
+                if PLAN_MODE:
+                    _ro = bool(action.get("read_only", False))
+                    self._plan_mode_read_only = _ro
+                    _ro_note = " [mode lecture seule activé]" if _ro else ""
+                else:
+                    _ro_note = ""
+                return ActionResult(f"Plan noté ({len(steps)} étapes).{_ro_note} Commence par l'étape 1.")
             elif act == "read_file":
                 _raw_path = action.get("path", "")
                 _norm_key = str(_raw_path or "").replace("\\", "/").strip()
@@ -2535,6 +3809,52 @@ class CodeAgent(SubAgent):
                 #   • 3ème+ lecture : on renvoie le cache (toutes lignes déjà dispo) +
                 #     consigne d'action concrète (le LLM a tout, qu'il édite ou grep)
                 abs_path = self._resolve_path(_raw_path)
+                # ── HARD STOP : 5+ lectures IDENTIQUES SANS modification du fichier entre-temps
+                # • gros fichiers OK : nouvelles plages = clés différentes
+                # • petits fichiers OK : après un edit, le mtime change → compteur reset auto
+                # • seuil 5 (et non 3) : laisse P3 anti-stagnation + cache servi faire leur
+                #   travail en premier ; ce hard stop devient un vrai dernier recours
+                _args_sig = f"{_norm_key}::{_req_start}::{_req_end}"
+                _identical_args_state = getattr(self, "_read_identical_args_state", None)
+                if _identical_args_state is None:
+                    _identical_args_state = {}
+                    try:
+                        self._read_identical_args_state = _identical_args_state
+                    except Exception:
+                        pass
+                try:
+                    _current_mtime = abs_path.stat().st_mtime_ns if abs_path.exists() else 0
+                except Exception:
+                    _current_mtime = 0
+                _prev_state = _identical_args_state.get(_args_sig)
+                if _prev_state and _prev_state.get("mtime") == _current_mtime:
+                    _identical_count = _prev_state.get("count", 0)
+                else:
+                    _identical_count = 0  # mtime changé (édition) ou première fois → reset
+                if _identical_count >= 5:
+                    logger.error(
+                        "[CodeAgent] read_file({} L{}-{}) BLOQUÉ — {}× lectures identiques sans modif",
+                        _raw_path, _req_start, _req_end, _identical_count,
+                    )
+                    return ActionResult(
+                        f"🛑 REFUS: {_identical_count}× lectures identiques sans modif entre-temps",
+                        (
+                            f"Tu as lu `{_raw_path}` (lignes {_req_start}-{_req_end}) "
+                            f"{_identical_count} fois et le fichier n'a pas été modifié depuis. "
+                            "Le contenu est IDENTIQUE. ARRÊTE DE RELIRE.\n\n"
+                            "👉 Actions possibles MAINTENANT (choisis-en UNE) :\n"
+                            "  • `edit_lines` ou `str_replace` pour MODIFIER le fichier\n"
+                            "  • `grep` pour chercher une section précise\n"
+                            "  • Lire une AUTRE plage (start_line / end_line différents)\n"
+                            "  • Passer à un AUTRE fichier\n"
+                            "  • Donner ta réponse FINALE si la tâche est terminée\n\n"
+                            "Note : si tu édites le fichier, le compteur se réinitialise automatiquement."
+                        ),
+                    )
+                _identical_args_state[_args_sig] = {
+                    "count": _identical_count + 1,
+                    "mtime": _current_mtime,
+                }
                 if _prev_reads >= 2:
                     _sess_mem = getattr(self, "_session_memory", None)
                     _cached_content = ""
@@ -2743,6 +4063,17 @@ class CodeAgent(SubAgent):
                             f"\nCorrige cette erreur avant de continuer."
                         )
                         summary += " ⚠️ web"
+                    # ── P6 Plan Suprême : auto-format (ruff) si Python OK ──
+                    if not syntax_err and not web_err:
+                        try:
+                            from src.utils.auto_format import auto_format_file
+                            fmt_msg = await auto_format_file(
+                                action.get("path", ""), self._task_workspace_root
+                            )
+                            if fmt_msg:
+                                detail += f"\n{fmt_msg}"
+                        except Exception:
+                            pass
                 return ActionResult(summary, detail)
             elif act == "str_replace":
                 # Outil principal de modification : old_str/new_str
@@ -2784,8 +4115,26 @@ class CodeAgent(SubAgent):
                             _sr_msg += f"\n\n⚠️ Erreur web:\n{_sr_web}\nCorrige avant de continuer."
                         return ActionResult(_sr_msg.split("\n")[0], _sr_msg)
                     except ValueError:
+                        # ── P1 Plan Suprême : fuzzy_replace ultime fallback ──
+                        try:
+                            from src.tools.fuzzy_replace import fuzzy_replace as _fuzzy_repl
+                            _sr_full2 = self._resolve_path(_sr_path)
+                            _sr_content2 = _sr_full2.read_text(encoding="utf-8")
+                            _fm = _fuzzy_repl(_sr_content2, _old_str, _new_str)
+                            if _fm is not None:
+                                _sr_full2.write_text(_fm.new_content, encoding="utf-8")
+                                _msg = f"✅ str_replace (fuzzy_replace {_fm.method}) réussi dans {_sr_path}"
+                                _sr_syn2 = await self._check_python_syntax(_sr_path)
+                                if _sr_syn2:
+                                    _msg += f"\n\n⚠️ Syntaxe Python:\n{_sr_syn2}\nCorrige avant de continuer."
+                                _sr_web2 = await self._check_web_syntax(_sr_path)
+                                if _sr_web2:
+                                    _msg += f"\n\n⚠️ Erreur web:\n{_sr_web2}\nCorrige avant de continuer."
+                                return ActionResult(_msg.split("\n")[0], _msg)
+                        except Exception:
+                            pass
                         return ActionResult(
-                            f"❌ str_replace: old_str non trouvé dans {_sr_path} (même avec seek_sequence 4-pass).\n"
+                            f"❌ str_replace: old_str non trouvé dans {_sr_path} (même avec seek_sequence 4-pass + fuzzy_replace 8-pass).\n"
                             "Relis le fichier avec read_file et copie les lignes EXACTES à modifier, "
                             "puis utilise edit_lines avec les numéros de ligne."
                         )
@@ -2834,6 +4183,17 @@ class CodeAgent(SubAgent):
                             f"\nCorrige cette erreur avant de continuer."
                         )
                         summary += " ⚠️ web"
+                    # ── P6 Plan Suprême : auto-format post-edit_lines ──
+                    if not web_err and _raw_el_path.endswith(".py"):
+                        try:
+                            from src.utils.auto_format import auto_format_file
+                            fmt_msg = await auto_format_file(
+                                _raw_el_path, self._task_workspace_root
+                            )
+                            if fmt_msg:
+                                detail += f"\n{fmt_msg}"
+                        except Exception:
+                            pass
                 return ActionResult(summary, detail)
             elif act == "insert_at_anchor":
                 # Action 1-shot : insère du contenu autour d'une ancre textuelle.
@@ -2912,6 +4272,36 @@ class CodeAgent(SubAgent):
                 return ActionResult(result.split("\n")[0] if result else "apply_patch", detail)
             elif act == "run_command":
                 _cmd = action.get("command", "").strip()
+
+                # ── P11.DESTRUCTIVE_CONFIRM : bloquer commandes destructives ──
+                try:
+                    from src.config.codeagent_flags import DESTRUCTIVE_CONFIRM
+                    if DESTRUCTIVE_CONFIRM and _cmd:
+                        import re as _re_destr
+                        _destructive_patterns = (
+                            r"\brm\s+-rf?\b",
+                            r"\brmdir\s+/[sq]",
+                            r"\bRemove-Item\b.*-Recurse.*-Force",
+                            r"\bgit\s+push\s+.*--force\b",
+                            r"\bgit\s+reset\s+--hard\b",
+                            r"\bgit\s+clean\s+-[a-zA-Z]*f",
+                            r"\bdrop\s+table\b",
+                            r"\bdrop\s+database\b",
+                            r"\bdel\s+/[sq]",
+                            r"\bformat\s+[a-z]:",
+                            r":>\s*/dev/[a-z]+",
+                            r"\bdd\s+.*of=/dev/",
+                            r"\bmkfs\b",
+                        )
+                        for _pat in _destructive_patterns:
+                            if _re_destr.search(_pat, _cmd, _re_destr.IGNORECASE):
+                                return ActionResult(
+                                    f"🔒 Commande destructive bloquée (DESTRUCTIVE_CONFIRM actif) : `{_cmd[:120]}`.\n"
+                                    f"Si vraiment voulue, l'utilisateur doit la lancer manuellement ou désactiver "
+                                    f"LUMENA_DESTRUCTIVE_CONFIRM=false."
+                                )
+                except Exception:
+                    pass
 
                 # ── Smart redirect: commandes de lecture → read_file (plus rapide) ──
                 import re as _re_cmd
@@ -3222,7 +4612,25 @@ class CodeAgent(SubAgent):
                 _detail = (result or "") + (_extra if _extra else "")
                 return ActionResult(_first, _detail)
             else:
-                return ActionResult(f"Action inconnue: {act}")
+                # ── P8.DID_YOU_MEAN : suggérer une action proche ──
+                _suggestion = ""
+                try:
+                    from src.config.codeagent_flags import DID_YOU_MEAN
+                    if DID_YOU_MEAN:
+                        import difflib
+                        _known = [
+                            "read_file", "write_file", "list_files", "edit_file",
+                            "edit_lines", "str_replace", "insert_at_anchor",
+                            "apply_patch", "apply_patches", "read_files_batch",
+                            "run_command", "run_tests", "grep", "lint",
+                            "think", "plan", "undo_edit", "done",
+                        ]
+                        _matches = difflib.get_close_matches(str(act), _known, n=1, cutoff=0.5)
+                        if _matches:
+                            _suggestion = f" — voulais-tu dire `{_matches[0]}` ?"
+                except Exception:
+                    pass
+                return ActionResult(f"❌ Action inconnue: {act}{_suggestion}")
         except Exception as exc:
             return ActionResult(f"❌ Erreur lors de {act}: {exc}")
 
@@ -3369,26 +4777,6 @@ class FileAgent(SubAgent):
         )
 
 
-_DEBUG_SYSTEM_PROMPT = """
-Tu es DebugAgent, spécialiste du debugging chirurgical.
-Tu reçois un stack trace et/ou un message d'erreur. Tu trouves la cause racine et tu corriges.
-
-STRATÉGIE OBLIGATOIRE (dans cet ordre) :
-1. think → formule une hypothèse sur la CAUSE RACINE avant d'agir
-2. read_file sur le fichier indiqué dans le stack trace (autour de la ligne exacte)
-3. Si plusieurs fichiers dans le stack trace → lire d'abord le plus profond (cause réelle)
-4. Corrige CHIRURGICALEMENT avec str_replace ou edit_lines (1-3 lignes max)
-5. run_tests immédiatement → si passent : done
-6. Si toujours cassé → nouvelle hypothèse, recommence depuis l'étape 1
-
-RÈGLES ABSOLUES :
-- NE JAMAIS réécrire un fichier complet (write_file interdit sur fichiers existants)
-- Modifier le MINIMUM de lignes nécessaires
-- done UNIQUEMENT quand les tests passent (ou si le bug est hors périmètre)
-- Si grep révèle que le bug est dans plusieurs fichiers → corriger tous
-"""
-
-
 class DebugAgent(CodeAgent):
     """Agent spécialisé pour le debugging — boucle LLM itérative complète."""
 
@@ -3427,30 +4815,6 @@ class DebugAgent(CodeAgent):
             },
         )
         return await self._iterative_code_loop(enriched)
-
-
-_REFACTOR_SYSTEM_PROMPT = """
-Tu es RefactorAgent. Tu améliores la structure du code SANS changer son comportement.
-
-STRATÉGIE OBLIGATOIRE (dans cet ordre) :
-1. think → analyse ce qui doit être refactorisé, liste les fichiers concernés
-2. grep → trouve TOUTES les occurrences (si rename : cherche dans src/ entier)
-3. read_file sur chaque fichier concerné
-4. Applique avec str_replace ou edit_lines (chirurgical, minimum de lignes)
-5. run_tests → vérifie zéro régression
-6. done avec résumé des changements structurels
-
-TYPES DE REFACTORING :
-- rename    : grep d'abord pour trouver toutes occurrences dans TOUS les fichiers, rename partout
-- extract   : identifie le bloc répété, crée la fonction, remplace les appels
-- simplify  : réduit if/else imbriqués (early return, guard clauses)
-- split     : découpe un fichier >500 lignes en modules logiques
-
-RÈGLES ABSOLUES :
-- NE JAMAIS réécrire un fichier complet (write_file interdit sur fichiers existants)
-- run_tests DOIT passer avant done
-- Si rename multi-fichiers : modifier TOUS les fichiers trouvés par grep
-"""
 
 
 class RefactorAgent(CodeAgent):
@@ -3549,32 +4913,6 @@ class PlannerAgent(SubAgent):
     Utilise le LLM pour raisonner sur la décomposition.
     """
 
-    PLAN_SYSTEM_PROMPT = """Tu es un planificateur de tâches pour Lumena.
-
-Décompose l'objectif donné en étapes concrètes.
-Chaque étape doit être assignable à un agent spécialisé.
-
-Agents disponibles :
-- code : lire/modifier/tester du code Python
-- research : chercher en mémoire ou sur le web
-- file : lire/écrire/lister/supprimer des fichiers
-- browser : naviguer et extraire du contenu web
-- debug : analyser et corriger des erreurs
-- refactor : renommer, simplifier, restructurer du code
-
-Réponds UNIQUEMENT en JSON valide, format :
-[
-  {"id": "s1", "description": "...", "agent_type": "code", "context": {"file_path": "..."}},
-  {"id": "s2", "description": "...", "agent_type": "file", "context": {"path": "..."}, "depends_on": ["s1"]}
-]
-
-Règles :
-- Chaque step a un id unique (s1, s2, ...)  
-- depends_on est optionnel, liste les ids des étapes prérequises
-- context contient les paramètres concrets pour l'agent
-- Sois concis, 3-8 étapes max
-- Ne mets RIEN avant ou après le JSON
-"""
 
     def __init__(self):
         super().__init__(
@@ -3597,7 +4935,7 @@ Règles :
 
             raw_text = await llm.chat(
                 messages=[
-                    {"role": "system", "content": self.PLAN_SYSTEM_PROMPT},
+                    {"role": "system", "content": PLAN_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,

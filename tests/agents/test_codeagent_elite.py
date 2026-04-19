@@ -467,13 +467,13 @@ class TestFewShotExamples:
         assert "debug avec tests" not in prompt
 
     def test_system_prompt_token_budget(self):
-        """Le prompt < 3000 tokens dans tous les cas."""
+        """Le prompt < 7000 tokens dans tous les cas (provider hints + tool guide P0b inclus)."""
         from src.agents.sub_agent import _build_system_prompt
 
         simple = _build_system_prompt("rename x")
         complex_ = _build_system_prompt("fix bug in test_core")
-        assert len(simple) // 4 < 3000
-        assert len(complex_) // 4 < 3000
+        assert len(simple) // 4 < 7000
+        assert len(complex_) // 4 < 7000
 
 
 class TestPlanAction:

@@ -1,0 +1,18 @@
+## apply_patch — Appliquer un patch multi-hunk
+
+**When to use:**
+- Édition multi-hunk dans un même fichier (plusieurs sections non-contiguës)
+- Format diff style git
+
+**When NOT to use:**
+- 1 seule modification simple → str_replace ou edit_lines
+- Multi-fichiers → `apply_patches` (pluriel, atomique)
+
+**Good:**
+```json
+{"action": "apply_patch", "patch": "*** Begin Patch\n*** Update File: src/app.py\n@@ def foo():\n-    return 1\n+    return 2\n@@ def bar():\n-    pass\n+    return None\n*** End File\n*** End Patch"}
+```
+
+**Bad:**
+Patch format invalide (manque Begin/End Patch, @@, indicateurs -/+) ← respecte le format exact
+Pour 1 ligne → apply_patch est surdimensionné, préfère str_replace

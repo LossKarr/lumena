@@ -1,0 +1,19 @@
+## run_tests — Lancer pytest
+
+**When to use:**
+- Après une modification Python : vérifier zéro régression
+- Après 3 edits consécutifs sans test (auto-rappel)
+- Valider avant `done`
+
+**When NOT to use:**
+- Projets JS/HTML pur : utilise `run_command` avec vitest/jest
+- Tests existent pas → ne pas les inventer, écris-les d'abord avec write_file
+
+**Good:**
+`{"action": "run_tests", "test_path": "tests/test_core.py"}` (un fichier)
+`{"action": "run_tests", "test_path": "tests/test_core.py::TestClass::test_specific"}` (node ID)
+`{"action": "run_tests", "test_path": "tests/"}` (tout un dossier)
+
+**Bad:**
+`{"action": "run_tests"}` sans test_path → ambigu
+Relancer les mêmes tests après chaque petit edit sans avoir corrigé ← boucle infinie

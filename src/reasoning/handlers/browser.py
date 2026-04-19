@@ -22,6 +22,7 @@ Chaque handler est une fonction async standalone:
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -29,6 +30,69 @@ from loguru import logger
 from .context import HandlerContext
 from .contracts import HandlerResult
 from .registry_v2 import HandlerDef
+
+
+# ─── Auto-visual enrichment (post-action screenshot + description) ──────────
+
+async def _auto_visual_enrich(ctx: HandlerContext, result: HandlerResult,
+                              action_label: str = "") -> HandlerResult:
+    """Prend un screenshot et ajoute une description vision à l'observation.
+
+    Activé par `LUMENA_BROWSER_AUTO_SCREENSHOT` (défaut: 1). Désactivable.
+    Cascade vision : Ollama local → Gemini Flash → fallback payant (cf.
+    `MultiProviderLLM.describe_image_cascade`). 100% gratuit si Ollama
+    vision installé ou clé Gemini présente (free tier).
+
+    N'échoue jamais : si la capture ou la description plante, retourne
+    le `result` original inchangé. Greffé uniquement sur actions majeures
+    (navigate, click) pour limiter la latence.
+    """
+    if os.getenv("LUMENA_BROWSER_AUTO_SCREENSHOT", "1") not in ("1", "true", "True"):
+        return result
+    if not result.success:
+        return result
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not getattr(browser, "_page", None):
+            return result
+        shot = await browser.screenshot(full_page=False)
+        if not shot.get("success"):
+            return result
+        shot_path = shot.get("path") or ""
+
+        # Description vision (best-effort, ne bloque jamais)
+        description = ""
+        try:
+            llm = getattr(ctx.lumena, "llm", None) if ctx and ctx.lumena else None
+            if llm and hasattr(llm, "describe_image_cascade"):
+                description = await llm.describe_image_cascade(
+                    shot_path,
+                    prompt=(
+                        "Capture d'écran navigateur après une action. Décris en 3-4 lignes : "
+                        "que voit-on à l'écran maintenant ? Formulaires ouverts, popups, "
+                        "résultats visibles, état de chargement. Français, concis."
+                    ),
+                    max_chars=500,
+                )
+        except Exception as ve:
+            logger.debug(f"[auto-visual] describe_image_cascade: {ve}")
+
+        # Assembler l'observation enrichie
+        hint_lines = [f"📸 Screenshot: {shot_path}"]
+        if description:
+            hint_lines.append(f"👁️ Vue: {description.strip()}")
+        hint_block = "\n" + "\n".join(hint_lines)
+        return HandlerResult(
+            success=True,
+            output=(result.output or "") + hint_block,
+            error=None,
+            duration_ms=result.duration_ms,
+            handler_name=result.handler_name,
+        )
+    except Exception as e:
+        logger.debug(f"[auto-visual] skip ({action_label}): {e}")
+        return result
 
 
 # ─── Handlers ──────────────────────────────────────────────────────────────
@@ -69,7 +133,8 @@ async def browser_navigate(ctx: HandlerContext, *, url: str) -> HandlerResult:
                 await browser._page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass  # timeout acceptable, la page est déjà navigable
-            return HandlerResult.ok(f"✅ Navigué vers: {result['title']} ({result['url']})")
+            base = HandlerResult.ok(f"✅ Navigué vers: {result['title']} ({result['url']})")
+            return await _auto_visual_enrich(ctx, base, action_label="navigate")
         return HandlerResult.fail(f"Erreur: {result['error']}")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
@@ -451,9 +516,10 @@ async def browser_click_index(ctx: HandlerContext, *, index: int) -> HandlerResu
         cx, cy = center
         result = await browser.click_at(cx, cy)
         if result.get("success"):
-            return HandlerResult.ok(
+            base = HandlerResult.ok(
                 f"✅ Clic sur [{index}] {target.role} \"{target.name}\" a ({cx}, {cy})"
             )
+            return await _auto_visual_enrich(ctx, base, action_label="click_index")
         return HandlerResult.fail(f"Erreur clic: {result.get('error')}")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
@@ -514,6 +580,104 @@ async def browser_type_index(ctx: HandlerContext, *, index: int, text: str) -> H
 
 
 # ─── Phase 2.4 — Handlers évolués Playwright 1.58+ ────────────────────────────
+
+async def browser_dismiss_popups(ctx: HandlerContext) -> HandlerResult:
+    """Ferme les popups/modals/bannières courants (cookies, newsletters, overlays).
+
+    Essaye dans l'ordre : touche Escape, puis clics sur sélecteurs connus de
+    boutons de fermeture (aria-label, data-testid, class CSS). Ne plante jamais.
+    Retourne combien de tentatives ont cliqué quelque chose.
+    """
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running or not browser._page:
+            return HandlerResult.fail("Navigateur non demarre ou aucune page active")
+        page = browser._page
+        actions: list[str] = []
+
+        # 1) Escape (ferme la plupart des modals bien codés)
+        try:
+            await page.keyboard.press("Escape")
+            actions.append("Escape")
+        except Exception:
+            pass
+
+        # 2) Clics sur patterns de boutons de fermeture connus
+        selectors = [
+            '[aria-label*="fermer" i]',
+            '[aria-label*="close" i]',
+            '[aria-label*="dismiss" i]',
+            '[data-testid*="close" i]',
+            '[data-testid*="dismiss" i]',
+            'button[aria-label="Close"]',
+            'button[aria-label="Fermer"]',
+            'button.close',
+            'button[class*="close" i]',
+            # Cookies
+            '[id*="cookie" i] button',
+            '[class*="cookie" i] button[class*="accept" i]',
+            'button:has-text("Tout accepter")',
+            'button:has-text("Accepter tout")',
+            'button:has-text("J\'accepte")',
+            'button:has-text("OK")',
+            # Newsletters Airbnb-like
+            'button:has-text("Non merci")',
+            'button:has-text("Plus tard")',
+            'button:has-text("Ignorer")',
+        ]
+
+        script = """
+        (selectors) => {
+            let clicked = 0;
+            for (const sel of selectors) {
+                try {
+                    const els = document.querySelectorAll(sel);
+                    for (const el of els) {
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && el.offsetParent !== null) {
+                            el.click();
+                            clicked++;
+                            if (clicked >= 3) return clicked;
+                        }
+                    }
+                } catch (e) {}
+            }
+            return clicked;
+        }
+        """
+        try:
+            clicked = await page.evaluate(script, selectors)
+            if clicked:
+                actions.append(f"{clicked} bouton(s) de fermeture cliqué(s)")
+        except Exception as e:
+            logger.debug(f"[dismiss_popups] JS evaluate: {e}")
+
+        # 3) Clic sur overlay / backdrop (dernière tentative)
+        backdrop_script = """
+        () => {
+            const sels = ['.modal-backdrop', '[class*="backdrop" i]', '[class*="overlay" i]'];
+            for (const sel of sels) {
+                const el = document.querySelector(sel);
+                if (el && el.offsetParent !== null) {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }
+        """
+        try:
+            if await page.evaluate(backdrop_script):
+                actions.append("overlay cliqué")
+        except Exception:
+            pass
+
+        summary = ", ".join(actions) if actions else "aucune action (pas de popup détecté)"
+        return HandlerResult.ok(f"🚫 Popups: {summary}")
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
 
 async def browser_evaluate(ctx: HandlerContext, *, script: str) -> HandlerResult:
     """Exécute du JavaScript dans la page (retourne le résultat sérialisable)."""
@@ -941,6 +1105,253 @@ async def browser_screenshot_labels(
         return HandlerResult.fail(f"Erreur: {e}")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# ─── Phase 4 : Dialogs, Drag&Drop, Downloads, Frames, Metrics, Smart Click ───
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def browser_handle_dialog(ctx: HandlerContext, *, policy: str = "auto_accept",
+                                  prompt_text: str = "") -> HandlerResult:
+    """Configure la gestion automatique des dialogs natifs (alert/confirm/prompt)."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            await browser.start()
+        result = await browser.set_dialog_policy(policy=policy, prompt_text=prompt_text)
+        if result.get("success"):
+            return HandlerResult.ok(f"💬 Policy dialog = '{policy}' (prompt='{prompt_text}')")
+        return HandlerResult.fail(result.get("error", "échec"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_dialog_log(ctx: HandlerContext, *, limit: int = 20) -> HandlerResult:
+    """Affiche l'historique des dialogs interceptés."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        result = browser.get_dialog_log(limit=limit)
+        if not result.get("dialogs"):
+            return HandlerResult.ok("Aucun dialog intercepté. Policy actuelle: " + result.get("policy", "?"))
+        lines = [f"💬 {result['count']} dialog(s) interceptés (policy={result['policy']}):", ""]
+        for d in result["dialogs"]:
+            lines.append(f"  [{d['type']}] {d['message'][:80]} → {d['action']}")
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_drag(ctx: HandlerContext, *, source_selector: str, target_selector: str,
+                        by: str = "css") -> HandlerResult:
+    """Drag & drop d'un élément source vers une cible."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.drag(source_selector, target_selector, by=by)
+        if result.get("success"):
+            return HandlerResult.ok(
+                f"🖐️  Drag '{source_selector}' → '{target_selector}' "
+                f"(méthode={result.get('method')}, distance={result.get('distance_px', '?')}px)"
+            )
+        return HandlerResult.fail(result.get("error", "échec drag"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_drag_at(ctx: HandlerContext, *, from_x: int, from_y: int,
+                            to_x: int, to_y: int) -> HandlerResult:
+    """Drag souris par coordonnées."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.drag_at(from_x, from_y, to_x, to_y)
+        if result.get("success"):
+            return HandlerResult.ok(
+                f"🖐️  Drag ({from_x},{from_y})→({to_x},{to_y}) "
+                f"distance={result.get('distance_px')}px"
+            )
+        return HandlerResult.fail(result.get("error", "échec drag_at"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_wait_for_download(ctx: HandlerContext, *, timeout_ms: int = 30000) -> HandlerResult:
+    """Attend le prochain téléchargement et le sauve dans data/browser_downloads/."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.wait_for_download(timeout_ms=timeout_ms)
+        if result.get("success"):
+            return HandlerResult.ok(
+                f"⬇️  Download: {result['filename']} ({result['size']} bytes) → {result['path']}"
+            )
+        return HandlerResult.fail(result.get("error", "échec download"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_list_downloads(ctx: HandlerContext, *, limit: int = 20) -> HandlerResult:
+    """Liste les téléchargements de la session."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        result = browser.list_downloads(limit=limit)
+        if not result.get("downloads"):
+            return HandlerResult.ok(f"Aucun download. Dossier: {result['downloads_dir']}")
+        lines = [f"⬇️  {result['count']} download(s) — dossier: {result['downloads_dir']}", ""]
+        for d in result["downloads"]:
+            lines.append(f"  [{d.get('state', '?')}] {d.get('filename', '?')} "
+                         f"({d.get('size', 0)}B) ← {d.get('url', '')[:60]}")
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_frames(ctx: HandlerContext) -> HandlerResult:
+    """Liste toutes les frames/iframes de la page active."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.list_frames()
+        if not result.get("success"):
+            return HandlerResult.fail(result.get("error", "échec"))
+        lines = [f"🖼️  {result['count']} frame(s):", ""]
+        for f in result["frames"]:
+            tag = "MAIN" if f["is_main"] else (f"#{f['index']}")
+            name = f" name='{f['name']}'" if f["name"] else ""
+            lines.append(f"  [{tag}]{name} url={f['url']}")
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_frame_click(ctx: HandlerContext, *, frame: str, selector: str,
+                                by: str = "css") -> HandlerResult:
+    """Clique un élément dans une frame (référence par nom, '#index', ou URL partielle)."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.frame_click(frame, selector, by=by)
+        if result.get("success"):
+            return HandlerResult.ok(f"🖼️  Clic dans frame '{frame}' sur '{selector}'")
+        return HandlerResult.fail(result.get("error", "échec frame_click"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_frame_type(ctx: HandlerContext, *, frame: str, selector: str,
+                               text: str, by: str = "css") -> HandlerResult:
+    """Tape du texte dans un champ d'une frame."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.frame_type(frame, selector, text, by=by)
+        if result.get("success"):
+            return HandlerResult.ok(f"🖼️  Typed {result['chars']} chars dans frame '{frame}'")
+        return HandlerResult.fail(result.get("error", "échec frame_type"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_frame_content(ctx: HandlerContext, *, frame: str,
+                                  max_chars: int = 5000) -> HandlerResult:
+    """Récupère le contenu textuel d'une frame."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.frame_content(frame, max_chars=max_chars)
+        if result.get("success"):
+            trunc = " [tronqué]" if result.get("truncated") else ""
+            return HandlerResult.ok(
+                f"🖼️  Frame '{frame}' ({result['url']}){trunc}:\n\n{result['content']}"
+            )
+        return HandlerResult.fail(result.get("error", "échec frame_content"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_frame_evaluate(ctx: HandlerContext, *, frame: str, script: str) -> HandlerResult:
+    """Exécute du JavaScript dans une frame."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.frame_evaluate(frame, script)
+        if result.get("success"):
+            return HandlerResult.ok(f"🖼️  Frame '{frame}' result: {result.get('result')!r}")
+        return HandlerResult.fail(result.get("error", "échec frame_evaluate"))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_metrics(ctx: HandlerContext) -> HandlerResult:
+    """Retourne les métriques de performance (Core Web Vitals) de la page active."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.get_metrics()
+        if not result.get("success"):
+            return HandlerResult.fail(result.get("error", "échec metrics"))
+        m = result["metrics"]
+        lines = [
+            f"📊 Métriques — {result['url']}",
+            "",
+            f"  TTFB:                {m.get('ttfb_ms', '?')} ms",
+            f"  Response time:       {m.get('response_time_ms', '?')} ms",
+            f"  First Paint (FP):    {m.get('first_paint_ms', '?')} ms",
+            f"  First Contentful (FCP): {m.get('first_contentful_paint_ms', '?')} ms",
+            f"  Largest Contentful (LCP): {m.get('largest_contentful_paint_ms', '?')} ms",
+            f"  DOM Content Loaded:  {m.get('dom_content_loaded_ms', '?')} ms",
+            f"  Load Complete:       {m.get('load_complete_ms', '?')} ms",
+            "",
+            f"  DOM nodes:           {m.get('dom_nodes', '?')}",
+            f"  Resources loaded:    {m.get('resources_count', '?')}",
+            f"  Transfer size:       {m.get('transfer_size_kb', '?')} KB",
+            f"  JS heap:             {m.get('js_heap_mb', '?')} MB",
+        ]
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_click_smart(ctx: HandlerContext, *, hint: str, selector: str = "",
+                                by: str = "css") -> HandlerResult:
+    """Clic intelligent self-healing : essaye sélecteur → role+name → texte → fuzzy DOM scan."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        result = await browser.click_smart(hint=hint, selector=selector, by=by)
+        if result.get("success"):
+            base = HandlerResult.ok(
+                f"✨ click_smart réussi (stratégie={result['strategy']}) "
+                f"sur '{hint or selector}'"
+            )
+            return await _auto_visual_enrich(ctx, base, action_label="click_smart")
+        tried = ", ".join(result.get("tried", []))
+        return HandlerResult.fail(f"{result.get('error', 'échec')} — tried: {tried}")
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
 # ─── Handler Definitions ──────────────────────────────────────────────────────
 
 def get_browser_handler_defs() -> List[HandlerDef]:
@@ -1219,6 +1630,14 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             source_module="handlers.browser",
         ),
         # ─── Phase 2.4 — Handlers évolués Playwright 1.58+ ─────────────
+        HandlerDef(
+            name="browser_dismiss_popups",
+            description="Ferme cookies/newsletters/modals (Escape + patterns connus). À utiliser si popup bloque l'interaction.",
+            parameters={"properties": {}, "required": []},
+            handler=browser_dismiss_popups,
+            category="browser",
+            source_module="handlers.browser",
+        ),
         HandlerDef(
             name="browser_evaluate",
             description="Exécute du JavaScript dans la page et retourne le résultat (ex: lire DOM, manipuler état)",
@@ -1611,6 +2030,202 @@ def get_browser_handler_defs() -> List[HandlerDef]:
                 "required": [],
             },
             handler=browser_new_tab,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        # ── Phase 4 — Dialogs, Drag & Drop, Downloads, Frames, Metrics, Smart ──
+        HandlerDef(
+            name="browser_handle_dialog",
+            description=(
+                "Configure la gestion auto des dialogs natifs (alert/confirm/prompt). "
+                "Policy: 'auto_accept' (défaut, accepte tous), 'auto_dismiss' (refuse), "
+                "'manual'. prompt_text = texte par défaut pour les prompt()."
+            ),
+            parameters={
+                "properties": {
+                    "policy": {"type": "string", "description": "auto_accept|auto_dismiss|manual", "default": "auto_accept"},
+                    "prompt_text": {"type": "string", "description": "Texte de réponse pour les prompt()", "default": ""},
+                },
+                "required": [],
+            },
+            handler=browser_handle_dialog,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_dialog_log",
+            description="Historique des dialogs natifs interceptés (alert/confirm/prompt).",
+            parameters={
+                "properties": {
+                    "limit": {"type": "integer", "description": "Nombre max", "default": 20},
+                },
+                "required": [],
+            },
+            handler=browser_dialog_log,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_drag",
+            description=(
+                "Drag & drop d'un élément source vers une cible (CSS/XPath/text). "
+                "Essaye d'abord l'API native Playwright, puis fallback mouse manuel 10-steps."
+            ),
+            parameters={
+                "properties": {
+                    "source_selector": {"type": "string", "description": "Sélecteur source"},
+                    "target_selector": {"type": "string", "description": "Sélecteur cible"},
+                    "by": {"type": "string", "description": "css|xpath|text", "default": "css"},
+                },
+                "required": ["source_selector", "target_selector"],
+            },
+            handler=browser_drag,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_drag_at",
+            description="Drag souris par coordonnées (x,y) → (x,y).",
+            parameters={
+                "properties": {
+                    "from_x": {"type": "integer"},
+                    "from_y": {"type": "integer"},
+                    "to_x": {"type": "integer"},
+                    "to_y": {"type": "integer"},
+                },
+                "required": ["from_x", "from_y", "to_x", "to_y"],
+            },
+            handler=browser_drag_at,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_wait_for_download",
+            description=(
+                "Attend le prochain téléchargement et le sauve dans data/browser_downloads/. "
+                "Utile après un clic sur bouton 'Télécharger'."
+            ),
+            parameters={
+                "properties": {
+                    "timeout_ms": {"type": "integer", "description": "Timeout en ms", "default": 30000},
+                },
+                "required": [],
+            },
+            handler=browser_wait_for_download,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_list_downloads",
+            description="Liste les fichiers téléchargés pendant la session (data/browser_downloads/).",
+            parameters={
+                "properties": {
+                    "limit": {"type": "integer", "default": 20},
+                },
+                "required": [],
+            },
+            handler=browser_list_downloads,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_frames",
+            description="Liste toutes les frames/iframes de la page (main + sous-frames) avec leur URL.",
+            parameters={"properties": {}, "required": []},
+            handler=browser_frames,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_frame_click",
+            description=(
+                "Clique un élément DANS une iframe. "
+                "frame = nom, '#<index>', ou sous-chaîne d'URL ('' ou 'main' pour la frame principale)."
+            ),
+            parameters={
+                "properties": {
+                    "frame": {"type": "string", "description": "Référence de frame"},
+                    "selector": {"type": "string"},
+                    "by": {"type": "string", "default": "css"},
+                },
+                "required": ["frame", "selector"],
+            },
+            handler=browser_frame_click,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_frame_type",
+            description="Tape du texte dans un champ à l'intérieur d'une iframe.",
+            parameters={
+                "properties": {
+                    "frame": {"type": "string"},
+                    "selector": {"type": "string"},
+                    "text": {"type": "string"},
+                    "by": {"type": "string", "default": "css"},
+                },
+                "required": ["frame", "selector", "text"],
+            },
+            handler=browser_frame_type,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_frame_content",
+            description="Récupère le texte d'une iframe (frame = nom, '#index', ou URL partielle).",
+            parameters={
+                "properties": {
+                    "frame": {"type": "string"},
+                    "max_chars": {"type": "integer", "default": 5000},
+                },
+                "required": ["frame"],
+            },
+            handler=browser_frame_content,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_frame_evaluate",
+            description="Exécute du JavaScript dans une iframe spécifique.",
+            parameters={
+                "properties": {
+                    "frame": {"type": "string"},
+                    "script": {"type": "string", "description": "Expression JS à évaluer"},
+                },
+                "required": ["frame", "script"],
+            },
+            handler=browser_frame_evaluate,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_metrics",
+            description=(
+                "Métriques de performance de la page (Core Web Vitals): TTFB, FP, FCP, LCP, "
+                "DOMContentLoaded, Load Complete, DOM nodes, transfer size, JS heap."
+            ),
+            parameters={"properties": {}, "required": []},
+            handler=browser_metrics,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_click_smart",
+            description=(
+                "Clic intelligent self-healing : essaye plusieurs stratégies en cascade — "
+                "(1) sélecteur exact, (2) role+name accessible (get_by_role), "
+                "(3) texte visible (get_by_text), (4) fuzzy DOM scan pondéré sur le hint. "
+                "Idéal quand le sélecteur exact peut casser après une màj UI."
+            ),
+            parameters={
+                "properties": {
+                    "hint": {"type": "string", "description": "Description textuelle de l'élément (ex: 'bouton connexion')"},
+                    "selector": {"type": "string", "description": "Sélecteur exact (optionnel, tenté en premier)", "default": ""},
+                    "by": {"type": "string", "default": "css"},
+                },
+                "required": ["hint"],
+            },
+            handler=browser_click_smart,
             category="browser",
             source_module="handlers.browser",
         ),

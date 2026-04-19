@@ -1,0 +1,22 @@
+## apply_patches — Édits multi-fichiers atomiques
+
+**When to use:**
+- Modifier 2+ fichiers dans un même tour (rollback auto si un échoue)
+- Refactoring cross-fichier (rename, changement de signature propagé)
+- EFFICACITÉ MAX : remplace N tours par 1 tour
+
+**When NOT to use:**
+- Un seul fichier → apply_patch ou str_replace
+- Tu n'as pas encore lu les fichiers → `read_files_batch` d'abord
+
+**Good:**
+```json
+{"action": "apply_patches", "patches": [
+  {"file": "index.html", "old": "<title>Old</title>", "new": "<title>New</title>"},
+  {"file": "README.md", "old": "v1.0", "new": "v2.0"}
+]}
+```
+
+**Bad:**
+Patches avec old_str devinés (pas copiés de read_files_batch) ← échec garanti
+Un seul patch → utilise apply_patch (singulier) ou str_replace

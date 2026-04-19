@@ -80,6 +80,10 @@ class ToolRegistry:
         # Cache d'observations intra-session : évite les appels redondants (même outil + mêmes args)
         self._observation_cache: Dict[str, str] = {}
         self._OBS_CACHE_MAX = 200  # LRU simple — évite la fuite mémoire sur daemon 24/7
+        # P2: Compteur de hits par clé — force une invalidation après N hits pour éviter
+        # qu'un LLM voie la même réponse en boucle et se convainque qu'un fichier est vide.
+        self._observation_cache_hits: Dict[str, int] = {}
+        self._OBS_CACHE_MAX_HITS = 2  # Au-delà de 2 hits consécutifs → relecture fraîche forcée
         self._CACHEABLE_TOOLS = {
             "list_directory", "get_time", "read_file",
             "memory_search", "memory_stats", "memory_get", "read_journal",
@@ -1056,8 +1060,20 @@ class ToolRegistry:
                 except Exception:
                     cache_key = f"{name}::{args}"
                 if cache_key in self._observation_cache:
-                    logger.debug(f"Cache hit: {name}")
-                    return Observation(content=self._observation_cache[cache_key], success=True)
+                    # P2: Compte les hits pour éviter la "boucle du fichier figé"
+                    _hits = self._observation_cache_hits.get(cache_key, 0) + 1
+                    self._observation_cache_hits[cache_key] = _hits
+                    if _hits > self._OBS_CACHE_MAX_HITS:
+                        logger.warning(
+                            "♻️ Cache invalidé: {} servi {}× — relecture fraîche forcée",
+                            name, _hits,
+                        )
+                        self._observation_cache.pop(cache_key, None)
+                        self._observation_cache_hits.pop(cache_key, None)
+                        # Ne pas retourner : laisse tomber vers l'exécution réelle
+                    else:
+                        logger.debug(f"Cache hit: {name} (#{_hits})")
+                        return Observation(content=self._observation_cache[cache_key], success=True)
             
             try:
                 result = await handler(**args)
@@ -1079,6 +1095,7 @@ class ToolRegistry:
                           if k.startswith(("list_directory::", "read_file::"))]
                 for _sk in _stale:
                     del self._observation_cache[_sk]
+                    self._observation_cache_hits.pop(_sk, None)
                 if _stale:
                     logger.debug("Cache invalidé: {} entrées (après {})", len(_stale), name)
 
@@ -1088,8 +1105,11 @@ class ToolRegistry:
                 # Ne pas cacher les résultats paginés (contiennent "SUITE DISPONIBLE")
                 if cache_key is not None and len(raw) < 12000 and "SUITE DISPONIBLE" not in raw:
                     if len(self._observation_cache) >= self._OBS_CACHE_MAX:
-                        self._observation_cache.pop(next(iter(self._observation_cache)))
+                        _evicted = next(iter(self._observation_cache))
+                        self._observation_cache.pop(_evicted)
+                        self._observation_cache_hits.pop(_evicted, None)
                     self._observation_cache[cache_key] = raw
+                    self._observation_cache_hits[cache_key] = 0  # P2: reset du compteur à l'insertion
                 variants = {raw.lower()}
                 try:
                     repaired = raw.encode("latin-1", errors="ignore").decode("utf-8", errors="ignore").strip()

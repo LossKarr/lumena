@@ -47,9 +47,9 @@ function _buildWsCard(ws) {
     ? `<button class="btn primary" style="font-size:12px;padding:5px 12px" onclick="serveAndOpenWorkspace('${esc(ws.slug)}')">▶ Ouvrir</button>`
     : '';
   const continueBtn = `<button class="btn" style="font-size:12px;padding:5px 12px" onclick="continueWorkspace('${esc(ws.slug)}','${esc(ws.path.replace(/\\/g,'/'))}')">↩ Continuer</button>`;
-  const deleteBtn = `<button class="btn danger" style="font-size:12px;padding:5px 12px" onclick="deleteWorkspace('${esc(ws.slug)}')">🗑</button>`;
+  const deleteBtn = `<button class="btn danger" style="font-size:12px;padding:5px 12px" onclick="deleteWorkspace('${esc(ws.slug)}')"><i data-lucide="trash-2" style="width:13px;height:13px;pointer-events:none"></i></button>`;
   const openLiveBtn = ws.is_serving && ws.serve_url
-    ? `<a href="${esc(ws.serve_url)}" target="_blank" rel="noopener" class="btn ok" style="font-size:12px;padding:5px 12px;text-decoration:none">🌐 Voir</a>`
+    ? `<a href="${esc(ws.serve_url)}" target="_blank" rel="noopener" class="btn ok" style="font-size:12px;padding:5px 12px;text-decoration:none">Voir</a>`
     : '';
   const stopBtn = ws.is_serving
     ? `<button class="btn" style="font-size:12px;padding:5px 12px;background:var(--danger);color:#fff;border-color:var(--danger)" onclick="stopWorkspace('${esc(ws.slug)}')">⏹ Arrêter</button>`
@@ -86,10 +86,10 @@ export async function serveAndOpenWorkspace(slug) {
     }
     const data = await r.json();
     window.open(data.url, '_blank', 'noopener');
-    logC(`✅ Workspace servi sur ${data.url}`, 'success');
+    logC(`Workspace servi sur ${data.url}`, 'success');
     loadWorkspaces(); // refresh badge live
   } catch (e) {
-    logC(`❌ Erreur serve: ${e.message}`, 'error');
+    logC(`Erreur serve: ${e.message}`, 'error');
     alert(`Impossible de servir le workspace: ${e.message}`);
   }
 }
@@ -117,17 +117,17 @@ export async function stopWorkspace(slug) {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${r.status}`);
     }
-    logC(`✅ Serveur "${slug}" arrêté`, 'success');
+    logC(`Serveur "${slug}" arrêté`, 'success');
     loadWorkspaces(); // refresh pour retirer badge EN LIVE
   } catch (e) {
-    logC(`❌ Erreur arrêt: ${e.message}`, 'error');
+    logC(`Erreur arrêt: ${e.message}`, 'error');
     alert(`Impossible d'arrêter le serveur: ${e.message}`);
   }
 }
 
 export async function deleteWorkspace(slug) {
   if (!confirm(`Supprimer définitivement le workspace "${slug}" et tous ses fichiers ?`)) return;
-  logC(`🗑 Suppression workspace: ${slug}`, 'info');
+  logC(`Suppression workspace: ${slug}`, 'info');
   try {
     const r = await fetch(`${API_BASE}/api/workspaces/${encodeURIComponent(slug)}`, {
       method: 'DELETE',
@@ -137,7 +137,7 @@ export async function deleteWorkspace(slug) {
       const err = await r.json().catch(() => ({}));
       throw new Error(err.detail || `HTTP ${r.status}`);
     }
-    logC(`✅ Workspace "${slug}" supprimé`, 'success');
+    logC(`Workspace "${slug}" supprimé`, 'success');
     // Remove card from DOM
     const card = document.getElementById(`ws-card-${slug}`);
     if (card) card.remove();
@@ -145,7 +145,7 @@ export async function deleteWorkspace(slug) {
       _wsData.workspaces = (_wsData.workspaces || []).filter(w => w.slug !== slug);
     }
   } catch (e) {
-    logC(`❌ Erreur suppression: ${e.message}`, 'error');
+    logC(`Erreur suppression: ${e.message}`, 'error');
     alert(`Impossible de supprimer: ${e.message}`);
   }
 }

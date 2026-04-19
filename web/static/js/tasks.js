@@ -10,16 +10,16 @@ export async function createTask(){
   try{
     const h={'Content-Type':'application/json'};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
     const r=await fetch(`${API_BASE}/api/tasks/start`,{method:'POST',headers:h,body:JSON.stringify({conversation_id:convId,channel:'web',message_preview:desc,metadata:{source:'control_panel'}})});
-    if(!r.ok){const err=await r.json();logC(`❌ Task: ${err.detail||'erreur'}`,'error');return}
+    if(!r.ok){const err=await r.json();logC(`Task: ${err.detail||'erreur'}`,'error');return}
     const d=await r.json();
     const task=d.task||d;
     const tid=task.task_id||task.id||convId;
-    logC(`✅ Tache creee: ${tid}`,'success');
+    logC(`Tache creee: ${tid}`,'success');
     document.getElementById('task-description').value='';
     document.getElementById('new-task-form').style.display='none';
     if(tid){activeTasks.set(tid,{task_id:tid,description:desc,status:'pending',created_at:new Date().toISOString(),...task});startTaskPoll(tid)}
     renderTasks();
-  }catch(e){logC(`❌ ${e.message}`,'error')}
+  }catch(e){logC(e.message,'error')}
 }
 
 export function startTaskPoll(taskId){
@@ -36,8 +36,8 @@ export function startTaskPoll(taskId){
       const st=task.state||task.status||'';
       if(st==='done'||st==='failed'||st==='cancelled'){
         clearInterval(timer);taskPollTimers.delete(taskId);
-        logC(`📋 Tache ${taskId.substring(0,8)}: ${st}`,st==='done'?'success':'error');
-        if(st==='done'&&task.result_summary)addMsg('assistant',`📋 **Tache terminee**\n${task.result_summary}`);
+        logC(`Tache ${taskId.substring(0,8)}: ${st}`,st==='done'?'success':'error');
+        if(st==='done'&&task.result_summary)addMsg('assistant',`**Tache terminee**\n${task.result_summary}`);
       }
     }catch(e){clearInterval(timer);taskPollTimers.delete(taskId)}
   },1500);
@@ -48,8 +48,8 @@ export async function cancelTask(taskId){
   try{
     const h={'Content-Type':'application/json'};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
     const r=await fetch(`${API_BASE}/api/tasks/${encodeURIComponent(taskId)}/cancel`,{method:'POST',headers:h});
-    if(r.ok){logC(`✅ Tache annulee: ${taskId.substring(0,8)}`,'success');loadActiveTasks()}
-  }catch(e){logC(`❌ ${e.message}`,'error')}
+    if(r.ok){logC(`Tache annulee: ${taskId.substring(0,8)}`,'success');loadActiveTasks()}
+  }catch(e){logC(e.message,'error')}
 }
 
 export async function loadActiveTasks(){
@@ -91,13 +91,13 @@ export function renderTasks(){
     if(t.type==='scheduler'){
       const s=t.cancelled_at?'cancelled':t.run_count>0?'running':'queued';
       const sColor={running:'ok',queued:'warn',cancelled:'muted'};
-      const sIcon={running:'🔄',queued:'⏱️',cancelled:'🚫'};
+      const sIcon={running:'▶',queued:'·',cancelled:'×'};
       const sLabel={running:'actif',queued:'en attente',cancelled:'annulé'};
       const lastRun=t.last_run?(new Date(t.last_run)).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'jamais';
       return`<div class="list-item">
         <div style="flex:1">
           <div class="list-item-title">${sIcon[s]||'?'} ${esc(t.name||t.task_id)}</div>
-          <div class="list-item-sub">📅 ${esc(t.schedule||'—')}</div>
+          <div class="list-item-sub">Schedule: ${esc(t.schedule||'—')}</div>
           <div class="list-item-sub">Exécutions: ${t.run_count||0} | Dernière: ${esc(lastRun)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:4px;padding:6px 8px;background:rgba(0,0,0,0.15);border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(t.action||'')}">${esc((t.action||'').substring(0,120))}${(t.action||'').length>120?'…':''}</div>
         </div>
@@ -108,7 +108,7 @@ export function renderTasks(){
     }
     const s=t.state||t.status||'queued';
     const statusColors={running:'ok',queued:'warn',waiting_io:'accent',checkpointed:'accent',done:'ok',failed:'danger',cancelled:'muted'};
-    const statusIcons={running:'⏳',queued:'⏱️',waiting_io:'📡',checkpointed:'💾',done:'✅',failed:'❌',cancelled:'🚫'};
+    const statusIcons={running:'▶',queued:'·',waiting_io:'~',checkpointed:'·',done:'✓',failed:'×',cancelled:'×'};
     return`<div class="list-item">
       <div style="flex:1">
         <div class="list-item-title">${statusIcons[s]||'?'} ${esc(t.message_preview||t.description||(t.task_id||'').substring(0,12))}</div>
@@ -169,7 +169,7 @@ export function renderDaemon(){
   if(incidents.length){
     html+=`<div class="list-item" style="background:rgba(255,80,80,0.07);border-left:3px solid var(--danger)">
       <div style="flex:1">
-        <div class="list-item-title">🚨 Incidents aujourd'hui (${incidents.length})</div>
+        <div class="list-item-title">Incidents aujourd'hui (${incidents.length})</div>
         ${incidents.map(inc=>`<div class="list-item-sub" style="margin-top:4px">${esc((inc.time||'').substring(11,16))} — <span style="color:${inc.status==='critical'?'var(--danger)':'var(--warn)'}">${esc(inc.status)}</span>: ${esc((inc.alerts||[]).join(' | ').substring(0,120))}</div>`).join('')}
       </div>
     </div>`;
@@ -179,7 +179,7 @@ export function renderDaemon(){
   if(cEntries.length){
     html+=`<div class="list-item">
       <div style="flex:1">
-        <div class="list-item-title">📊 Compteurs aujourd'hui</div>
+        <div class="list-item-title">Compteurs aujourd'hui</div>
         <div class="list-item-sub">${cEntries.map(([k,v])=>`${esc(k)}: <b>${v}</b>`).join(' | ')}</div>
       </div>
     </div>`;
@@ -199,7 +199,7 @@ export function renderDaemon(){
       if(typeof h.scheduler_overdue==='number'&&h.scheduler_overdue>0) extra+=` | <span style="color:var(--warn)">En retard: ${h.scheduler_overdue}</span>`;
       return`<div class="list-item">
         <div style="flex:1">
-          <div class="list-item-title">${ok?'✅':'❌'} ${esc(name)}</div>
+          <div class="list-item-title" style="color:${ok?'var(--ok)':'var(--danger)'}">${esc(name)}</div>
           <div class="list-item-sub">Derniere exec: ${esc(ts)}${extra}</div>
           ${alerts.length?`<div class="list-item-sub" style="color:var(--warn);margin-top:3px">⚠ ${esc(alerts.join(' | ').substring(0,200))}</div>`:''}
           ${h.summary&&!alerts.length?`<div class="list-item-sub" style="margin-top:3px">${esc(h.summary.substring(0,150))}</div>`:''}
@@ -237,7 +237,7 @@ const SCHEDULED_TASKS=[
 export function renderScheduledTasks(){
   const el=document.getElementById('ov-scheduler');if(!el)return;
   const typeColors={ops:'accent',cron:'warn',routine:'ok'};
-  const typeIcons={ops:'⚙️',cron:'⏰',routine:'🔄'};
+  const typeIcons={ops:'ops',cron:'cron',routine:'routine'};
   el.innerHTML=SCHEDULED_TASKS.map(t=>`
     <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border)">
       <span style="font-size:12px">${typeIcons[t.type]||''} ${esc(t.name)}</span>
@@ -267,7 +267,7 @@ export function renderOverviewTraceFeed(){
     const hasTool=!!ev.tool_name;
     const color=isErr?'var(--danger)':hasTool?'var(--ok)':'var(--text)';
     return`<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border);font-size:11px">
-      <span style="color:${color}">${esc(ev.stage||'?')} ${hasTool?'🔧 '+esc(ev.tool_name):''} ${isErr?'❌':''}</span>
+      <span style="color:${color}">${esc(ev.stage||'?')} ${hasTool?esc(ev.tool_name):''} ${isErr?'[err]':''}</span>
       <span style="color:var(--muted)">${ev.duration_ms?Math.round(ev.duration_ms)+'ms':''} ${esc((ev.ts||'').substring(11,19))}</span>
     </div>`;
   }).join('');
@@ -289,7 +289,7 @@ export function renderTaskProgress(todos){
   if(fill)fill.style.width=Math.round((done/total)*100)+'%';
   if(count)count.textContent=`${done}/${total}`;
   list.innerHTML=todos.map(t=>{
-    const icon=t.status==='completed'?'✅':t.status==='in-progress'?'⏳':'○';
+    const icon=t.status==='completed'?'✓':t.status==='in-progress'?'▶':'○';
     const toolBadge=(t.status==='in-progress'&&t.current_tool&&t.current_tool!=='')
       ?` <span style="font-size:10px;color:var(--accent);font-family:var(--mono);opacity:.8">[${esc(t.current_tool)}]</span>`
       :'';
@@ -378,13 +378,13 @@ export function renderTodoList(){
   el.innerHTML=todos.map(t=>`
     <div class="list-item" style="opacity:${t.done?'0.5':'1'}">
       <div style="display:flex;align-items:center;gap:12px;flex:1;cursor:pointer" onclick="toggleTodo(${t.id})">
-        <span style="font-size:18px">${t.done?'✅':'⬜'}</span>
+        <span style="width:18px;height:18px;border-radius:4px;border:2px solid ${t.done?'var(--ok)':'var(--border)'};background:${t.done?'var(--ok)':'transparent'};display:inline-flex;align-items:center;justify-content:center;font-size:12px;color:white;flex-shrink:0">${t.done?'✓':''}</span>
         <div>
           <div class="list-item-title" style="${t.done?'text-decoration:line-through;color:var(--muted)':''}">${esc(t.text)}</div>
           <div class="list-item-sub">${esc(t.created.substring(0,16).replace('T',' '))}</div>
         </div>
       </div>
-      <button class="btn danger" style="font-size:11px;padding:4px 8px" onclick="deleteTodo(${t.id})">🗑️</button>
+      <button class="btn danger" style="font-size:11px;padding:4px 8px" onclick="deleteTodo(${t.id})"><i data-lucide="trash-2" style="width:13px;height:13px;pointer-events:none"></i></button>
     </div>
   `).join('');
 }

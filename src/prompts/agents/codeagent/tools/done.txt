@@ -1,0 +1,19 @@
+## done — Terminer la tâche
+
+**When to use:**
+- Toutes les modifications sont faites ET validées
+- run_tests passe (si pertinent)
+- Dernière action d'une session CodeAgent
+
+**When NOT to use:**
+- Des erreurs de syntaxe sont encore signalées → corrige d'abord
+- Tests échouent → corrige d'abord
+- Tâche abandonnée sans tenter → indique clairement dans summary pourquoi
+
+**Good:**
+`{"action": "done", "summary": "Corrigé IndexError dans process() : ajouté guard len()>1 et early return. 3 tests passent."}`
+
+**Bad:**
+`{"action": "done", "summary": "fait"}` ← trop vague
+`done` après un edit sans run_tests sur code Python critique ← vérifie d'abord
+Lancer un serveur HTTP après done ← INTERDIT, done clôt la session

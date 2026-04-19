@@ -676,31 +676,32 @@ export function renderLogs(){
    ============================================================ */
 let _configData=null;
 let _cfgLevel='simple'; // kept for backward compat
+let _cfgActiveGroup=null; // currently selected group in sidebar
 const _LEVEL_ORDER=['simple','avancé','expert'];
 
 // P5.1 — Ordre et niveau des groupes
 const _GROUP_ORDER=[
-  {name:'LLM',               level:'simple'},
-  {name:'Cerveaux Spécialisés',level:'simple'},
-  {name:'Préférences',       level:'simple'},
-  {name:'Voix',              level:'simple'},
-  {name:'Autonomie',         level:'simple'},
-  {name:'Alertes',           level:'simple'},
-  {name:'Clés API',          level:'simple'},
-  {name:'Telegram',          level:'simple'},
-  {name:'WhatsApp',          level:'simple'},
-  {name:'Serveur',           level:'avancé'},
-  {name:'Browser',           level:'avancé'},
-  {name:'Email',             level:'avancé'},
-  {name:'Paiements',         level:'avancé'},
-  {name:'Automation (n8n)',  level:'avancé'},
-  {name:'Vidéo',             level:'avancé'},
-  {name:'IONOS (Hébergement)',level:'avancé'},
-  {name:'Apprentissage',     level:'avancé'},
-  {name:'Ops',               level:'expert'},
-  {name:'SLO',               level:'expert'},
-  {name:'Système',           level:'expert'},
-  {name:'Instance',          level:'expert'},
+  {name:'LLM',               level:'simple',  icon:'brain'},
+  {name:'Cerveaux Spécialisés',level:'simple', icon:'cpu'},
+  {name:'Préférences',       level:'simple',   icon:'heart'},
+  {name:'Voix',              level:'simple',   icon:'mic'},
+  {name:'Autonomie',         level:'simple',   icon:'bot'},
+  {name:'Alertes',           level:'simple',   icon:'bell'},
+  {name:'Clés API',          level:'simple',   icon:'key'},
+  {name:'Telegram',          level:'simple',   icon:'send'},
+  {name:'WhatsApp',          level:'simple',   icon:'message-circle'},
+  {name:'Serveur',           level:'avancé',   icon:'server'},
+  {name:'Browser',           level:'avancé',   icon:'globe'},
+  {name:'Email',             level:'avancé',   icon:'mail'},
+  {name:'Paiements',         level:'avancé',   icon:'credit-card'},
+  {name:'Automation (n8n)',  level:'avancé',   icon:'workflow'},
+  {name:'Vidéo',             level:'avancé',   icon:'video'},
+  {name:'IONOS (Hébergement)',level:'avancé',  icon:'cloud'},
+  {name:'Apprentissage',     level:'avancé',   icon:'graduation-cap'},
+  {name:'Ops',               level:'expert',   icon:'activity'},
+  {name:'SLO',               level:'expert',   icon:'gauge'},
+  {name:'Système',           level:'expert',   icon:'terminal'},
+  {name:'Instance',          level:'expert',   icon:'box'},
 ];
 
 // P5.3 — Clés cachées dans le groupe Instance
@@ -721,11 +722,11 @@ function _renderCfgRow(it){
   }else if(it.type==='secret'){
     const uid='sec_'+it.key;
     const sbadge=it.has_value?`<span style="color:var(--ok);font-size:10px;margin-left:6px">&#9679; Configuré</span>`:`<span style="color:var(--danger);font-size:10px;margin-left:6px">&#9679; Absent</span>`;
-    input=`<div style="display:flex;align-items:center;gap:6px"><input type="password" id="${uid}" data-cfg="${esc(it.key)}" data-secret="1" class="input" style="height:32px;font-size:12px;padding:0 8px;width:280px;font-family:var(--mono)" value="${esc(val)}" readonly><button type="button" class="btn" style="font-size:14px;padding:4px 8px;min-width:34px" title="Voir / masquer" onclick="toggleSecret('${uid}')">&#128065;&#65039;</button>${sbadge}</div>`;
+    input=`<div style="display:flex;align-items:center;gap:6px"><input type="password" id="${uid}" data-cfg="${esc(it.key)}" data-secret="1" class="input" style="height:32px;font-size:12px;padding:0 8px;width:280px;font-family:var(--mono)" value="${esc(val)}" readonly><button type="button" class="btn" style="font-size:12px;padding:4px 8px;min-width:34px" title="Voir / masquer" onclick="toggleSecret('${uid}')"><i data-lucide="eye" style="width:14px;height:14px;pointer-events:none"></i></button>${sbadge}</div>`;
   }else{
     input=`<input type="text" data-cfg="${esc(it.key)}" class="input" style="height:32px;font-size:12px;padding:0 8px;min-width:240px" value="${esc(val)}">`;
   }
-  const restartBadge=it.restart?`<span style="font-size:9px;background:rgba(255,165,0,.12);color:orange;border-radius:3px;padding:1px 5px;margin-left:4px">&#8635; restart</span>`:'';
+  const restartBadge=it.restart?`<span style="font-size:9px;background:rgba(255,165,0,.12);color:orange;border-radius:3px;padding:1px 5px;margin-left:4px">restart</span>`:'';
   return`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div style="min-width:200px"><div style="font-size:13px;font-weight:500">${esc(it.label)}${restartBadge}</div><div style="font-size:10px;color:var(--muted);font-family:var(--mono)">${esc(it.key)}</div></div><div>${input}</div></div>`;
 }
 
@@ -743,39 +744,85 @@ function _renderGroupCard(name,items){
   }else{
     for(const it of items)rows+=_renderCfgRow(it);
   }
-  return`<div class="card"><div class="card-title">${esc(name)}</div><div class="card-content" style="padding:4px 0">${rows}</div></div>`;
+  return rows;
+}
+
+function _switchCfgGroup(name){
+  _cfgActiveGroup=name;
+  // Update sidebar active state
+  document.querySelectorAll('.cfg-nav-item').forEach(el=>{
+    el.classList.toggle('active',el.dataset.group===name);
+  });
+  // Render group content
+  const box=document.getElementById('config-groups');
+  const title=document.getElementById('cfg-group-title');
+  if(!box||!_configData)return;
+  const groups=_configData.groups||{};
+  const items=groups[name]||[];
+  const grp=_GROUP_ORDER.find(g=>g.name===name);
+  const iconName=grp?grp.icon:'settings';
+  if(title)title.innerHTML=`<i data-lucide="${iconName}"></i> ${esc(name)}`;
+  if(!items.length){
+    box.innerHTML=`<div class="cfg-empty">Aucun paramètre dans ce groupe.</div>`;
+  }else{
+    box.innerHTML=`<div class="cfg-group-content">${_renderGroupCard(name,items)}</div>`;
+  }
+  // Re-init lucide icons
+  if(window.lucide)window.lucide.createIcons();
 }
 
 function _renderConfig(){
-  const box=document.getElementById('config-groups');if(!box||!_configData)return;
+  const nav=document.getElementById('cfg-nav');
+  const box=document.getElementById('config-groups');
+  if(!nav||!box||!_configData)return;
   const groups=_configData.groups||{};
-  // P5.1 — groupes triés ; P5.2 — collapsible par niveau
+
+  // Build sidebar nav grouped by level
   const simple=[],avance=[],expert=[],seen=new Set();
-  for(const{name,level}of _GROUP_ORDER){
+  for(const{name,level,icon}of _GROUP_ORDER){
     seen.add(name);
-    const card=_renderGroupCard(name,groups[name]||[]);
-    if(!card)continue;
-    if(level==='simple')simple.push(card);
-    else if(level==='avancé')avance.push(card);
-    else expert.push(card);
+    if(!groups[name]||!groups[name].length)continue;
+    const count=groups[name].length;
+    const entry={name,icon,count};
+    if(level==='simple')simple.push(entry);
+    else if(level==='avancé')avance.push(entry);
+    else expert.push(entry);
   }
-  // Groupes inconnus → avancé par défaut
+  // Unknown groups → avancé
   for(const[name,items]of Object.entries(groups)){
     if(seen.has(name))continue;
-    const card=_renderGroupCard(name,items);
-    if(card)avance.push(card);
+    if(items&&items.length)avance.push({name,icon:'folder',count:items.length});
   }
-  const ds='border-top:1px solid var(--border);margin-top:8px;padding-top:4px';
-  const ss='cursor:pointer;padding:10px 4px;font-size:13px;font-weight:600;color:var(--text);list-style:none;display:flex;align-items:center;gap:8px;user-select:none';
-  let html=simple.join('');
+
+  let navHtml='';
+  const renderNavItem=({name,icon,count})=>`<div class="cfg-nav-item${_cfgActiveGroup===name?' active':''}" data-group="${esc(name)}" onclick="switchCfgGroup('${esc(name).replace(/'/g,"\\'")}')" title="${esc(name)}"><i data-lucide="${icon}" style="width:16px;height:16px;flex-shrink:0"></i><span class="cfg-nav-label">${esc(name)}</span><span class="cfg-nav-badge">${count}</span></div>`;
+
+  if(simple.length){
+    navHtml+=`<div class="cfg-nav-section">Général</div>`;
+    for(const e of simple)navHtml+=renderNavItem(e);
+  }
   if(avance.length){
-    html+=`<details id="cfg-avance" style="${ds}"><summary style="${ss}"><span>&#9881;&#65039; Options avanc\u00e9es</span><span style="font-size:10px;font-weight:400;color:var(--muted)">(${avance.length} groupes)</span></summary><div style="display:flex;flex-direction:column;gap:12px;padding-top:8px">${avance.join('')}</div></details>`;
+    navHtml+=`<div class="cfg-nav-section" style="margin-top:12px">Avancé</div>`;
+    for(const e of avance)navHtml+=renderNavItem(e);
   }
   if(expert.length){
-    html+=`<details id="cfg-expert" style="${ds}"><summary style="${ss}"><span>&#128295; Options expert</span><span style="font-size:10px;font-weight:400;color:var(--muted)">(${expert.length} groupes)</span></summary><div style="display:flex;flex-direction:column;gap:12px;padding-top:8px">${expert.join('')}</div></details>`;
+    navHtml+=`<div class="cfg-nav-section" style="margin-top:12px">Expert</div>`;
+    for(const e of expert)navHtml+=renderNavItem(e);
   }
-  box.innerHTML=html;
+  nav.innerHTML=navHtml;
+
+  // Select first group if none active or if active group no longer exists
+  const firstGroup=simple[0]||avance[0]||expert[0];
+  if(!_cfgActiveGroup||!groups[_cfgActiveGroup]){
+    _cfgActiveGroup=firstGroup?firstGroup.name:null;
+  }
+  if(_cfgActiveGroup)_switchCfgGroup(_cfgActiveGroup);
+  if(window.lucide)window.lucide.createIcons();
 }
+
+// Expose for inline onclick handlers
+window.switchCfgGroup=function(name){_switchCfgGroup(name);};
+window.toggleSecret=function(uid){toggleSecret(uid);};
 
 export async function loadConfig(){
   const box=document.getElementById('config-groups');if(!box)return;
@@ -914,7 +961,7 @@ export function loadOverview(){
   if(ovModel)ovModel.innerHTML=curModel?`
     <div style="font-size:16px;font-weight:600;color:var(--accent)">${esc(curModel.display_name)}</div>
     <div style="font-size:12px;color:var(--muted);margin-top:4px">Provider: ${esc(curModel.provider||'?')}</div>
-    <div style="font-size:12px;color:var(--muted);margin-top:2px">${curModel.is_local?'💻 Local':'☁️ Cloud'} ${curModel.is_free?'🟢 Gratuit':'💰 Payant'}</div>
+    <div style="font-size:12px;color:var(--muted);margin-top:2px">${curModel.is_local?'Local':'Cloud'} · <span style="color:${curModel.is_free?'var(--ok)':'var(--warn)'}">${curModel.is_free?'Gratuit':'Payant'}</span></div>
   `:'<div style="color:var(--muted)">Modele non charge</div>';
   const ovRes=document.getElementById('ov-resources');
   if(ovRes)ovRes.innerHTML=`

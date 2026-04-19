@@ -42,12 +42,11 @@ export async function sendMessage(){
 
   // Show user message with attachments
   const userExtra=attachmentInfos.length?'<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">'+attachmentInfos.map(a=>{
-    const isImg=a.type&&a.type.startsWith('image/');
-    return`<span style="font-size:11px;padding:3px 8px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm)">${isImg?'🖼️':'📄'} ${esc(a.name)}</span>`;
+    return`<span style="font-size:11px;padding:3px 8px;background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:var(--radius-sm)">${esc(a.name)}</span>`;
   }).join('')+'</div>':'';
   addMsg('user',message,null,userExtra);
   _pushChat('user',message);
-  logC(`📤 "${message.substring(0,50)}..."`,`info`);
+  logC(`"${message.substring(0,50)}..."`,`info`);
   input.value='';input.style.height='auto';
   isLoading=true;
 
@@ -71,7 +70,11 @@ export async function sendMessage(){
     body.querySelectorAll('.thinking-step.active').forEach(s=>{s.classList.remove('active');s.classList.add('done');const ic=s.querySelector('.thinking-step-icon');if(ic&&!ic.dataset.locked)ic.textContent='✓';});
     const step=document.createElement('div');
     step.className='thinking-step active '+cls;
-    step.innerHTML=`<span class="thinking-step-icon">${icon}</span><span class="thinking-step-text">${text}</span>`;
+    const _stepIconMap={'⚡':'zap','🔧':'wrench','📖':'eye','📄':'file-text','🖥️':'terminal','🤖':'bot','⏳':'loader','❌':'alert-circle','⚠️':'alert-triangle','✅':'check-circle-2','💭':'message-circle','📝':'pencil','🔄':'refresh-cw','▶':'play'};
+    const _lucideName=_stepIconMap[icon];
+    const _iconHtml=_lucideName?`<i data-lucide="${_lucideName}" style="width:13px;height:13px"></i>`:icon;
+    step.innerHTML=`<span class="thinking-step-icon">${_iconHtml}</span><span class="thinking-step-text">${text}</span>`;
+    if(_lucideName&&window.lucide)window.lucide.createIcons({nodes:[step.querySelector('.thinking-step-icon')]});
     body.appendChild(step);
     // Keep max 50 steps visible
     while(body.children.length>50)body.removeChild(body.firstChild);
@@ -90,7 +93,7 @@ export async function sendMessage(){
     hdr.className='file-block-header';
     const fname=filePath.split('/').pop()||filePath.split('\\').pop()||filePath;
     const ext=(fname.match(/\.([^.]+)$/)||[])[1]||'';
-    const langIcon={'html':'🌐','css':'🎨','js':'⚡','ts':'💠','py':'🐍','json':'📋','md':'📝','yaml':'📄','yml':'📄'}[ext]||'📄';
+    const langIcon=ext?ext.toUpperCase():'FILE';
     hdr.innerHTML=`<span class="file-icon">${langIcon}</span><span class="file-name">${esc(fname)}</span><span class="file-path">${esc(filePath)}</span>${linesInfo?`<span class="file-lines">${esc(linesInfo)}</span>`:''}`;
     hdr.style.cursor='pointer';
     // Collapsible content
@@ -173,9 +176,9 @@ export async function sendMessage(){
     const silence=Math.round((Date.now()-_lastEventTs)/1000);
     chrono.textContent=total+'s';
     if(apiStatus){
-      if(silence>=120){apiStatus.style.display='block';apiStatus.style.color='#e74c3c';apiStatus.textContent='🔴 API sans réponse depuis '+silence+'s — probable timeout';}
-      else if(silence>=45){apiStatus.style.display='block';apiStatus.style.color='#f39c12';apiStatus.textContent='⏳ En attente API depuis '+silence+'s...';}
-      else if(silence>=15){apiStatus.style.display='block';apiStatus.style.color='var(--muted)';apiStatus.textContent='↗️ Appel LLM en cours ('+silence+'s)';}
+      if(silence>=120){apiStatus.style.display='block';apiStatus.style.color='#e74c3c';apiStatus.textContent='API sans réponse depuis '+silence+'s — probable timeout';}
+      else if(silence>=45){apiStatus.style.display='block';apiStatus.style.color='#f39c12';apiStatus.textContent='En attente API depuis '+silence+'s...';}
+      else if(silence>=15){apiStatus.style.display='block';apiStatus.style.color='var(--muted)';apiStatus.textContent='Appel LLM en cours ('+silence+'s)';}
       else{apiStatus.style.display='none';}
     }
   },1000);
@@ -206,13 +209,13 @@ export async function sendMessage(){
           if(data.type!=='heartbeat')_lastEventTs=Date.now();
           if(data.type==='start'||data.type==='thinking'){
             addThinkingStep('⚡',esc(data.content||'Demarrage...'));
-            pushActivity('checkpoint','⚡',data.content||'Demarrage...');
+            pushActivity('checkpoint','',data.content||'Demarrage...');
             if(data.type==='start')resetTaskProgress();
           }
           else if(data.type==='thought'){
             activityCounts.thoughts++;
             addThinkingStep('💭','<em>'+esc(data.content)+'</em>');
-            pushActivity('thought','💭',data.content);
+            pushActivity('thought','',data.content);
           }
           else if(data.type==='action'){
             activityCounts.actions++;
@@ -229,55 +232,55 @@ export async function sendMessage(){
             activityCounts.tools++;
             const m=data.content.match(/Outil[:\s]*(\S+)/);
             addThinkingStep('🔧',esc(m?m[1]:data.content.substring(0,60)));
-            pushActivity('tool','🔧',data.content);
+            pushActivity('tool','',data.content);
             logC(data.content,'tool');
           }
           else if(data.type==='file_read'){
             activityCounts.obs++;
             openFileBlock(data.path||'',data.lines||'',data.content||'');
-            pushActivity('observation','📄',`Lecture: ${data.path||'?'} (${data.lines||'?'})`);
-            logC(`📄 Lecture: ${(data.path||'').substring(0,80)}`,'tool');
+            pushActivity('observation','',`Lecture: ${data.path||'?'} (${data.lines||'?'})`);
+            logC(`Lecture: ${(data.path||'').substring(0,80)}`,'tool');
           }
           else if(data.type==='observation'){
             activityCounts.obs++;
             addThinkingStep('📖','Observation: <span style="color:var(--muted)">'+esc((data.content||'').substring(0,120))+'</span>');
-            pushActivity('observation','📖',(data.content||'').substring(0,300));
-            logC('📖 Observation: '+(data.content||'').substring(0,80),'tool');
+            pushActivity('observation','',(data.content||'').substring(0,300));
+            logC('Observation: '+(data.content||'').substring(0,80),'tool');
           }
           else if(data.type==='terminal_open'){
             openTerminalBlock(data.content||'');
-            pushActivity('tool','🖥️',data.content||'');
-            logC('🖥️ Terminal: '+(data.content||'').substring(0,80),'tool');
+            pushActivity('tool','',data.content||'');
+            logC('Terminal: '+(data.content||'').substring(0,80),'tool');
           }
           else if(data.type==='terminal_output'){
             appendTerminalLine(data.content||'',data.stream||'stdout');
           }
           else if(data.type==='terminal_close'){
             closeTerminalBlock(data.content||'');
-            logC('🖥️ Terminal terminé: '+(data.content||''),'tool');
+            logC('Terminal terminé: '+(data.content||''),'tool');
           }
           else if(data.type==='agent_step'){
             // CodeAgent iteration detail — show action + path
             const detail=data.content||'';
             window._lastAgentStepDetail=detail;
             addThinkingStep('🤖',esc(detail));
-            pushActivity('action','🤖',detail);
-            logC(`🤖 CodeAgent: ${detail}`,'tool');
+            pushActivity('action','',detail);
+            logC(`Agent: ${detail}`,'tool');
           }
           else if(data.type==='checkpoint'){
             const cp=data.checkpoint||data;
             // Skip action_detail if it was already shown by a recent agent_step event
             if(cp.action_detail && cp.action_detail===window._lastAgentStepDetail){
-              logC(`⏳ Checkpoint (skip dup): ${cp.phase||'?'}`,'info');
+              logC(`Checkpoint (skip dup): ${cp.phase||'?'}`,'info');
             } else {
               let cpText=`Phase: ${esc(cp.phase||'processing')}`;
-              if(cp.action_detail)cpText=`🤖 ${esc(cp.action_detail)}`;
+              if(cp.action_detail)cpText=esc(cp.action_detail);
               else if(cp.thoughts)cpText+=` — ${cp.thoughts} pensees`;
               if(cp.file_edits)cpText+=` — ${cp.file_edits} edits`;
               if(cp.retry_count)cpText+=` — retry #${cp.retry_count}`;
               addThinkingStep('⏳',cpText);
-              pushActivity('checkpoint','⏳',cpText);
-              logC(`⏳ Checkpoint: ${cp.phase||'?'} ${cp.action_detail||''}`,'info');
+              pushActivity('checkpoint','',cpText);
+              logC(`Checkpoint: ${cp.phase||'?'} ${cp.action_detail||''}`,'info');
             }
           }
           else if(data.type==='todo_update'){renderTaskProgress(data.todos||[])}
@@ -299,22 +302,22 @@ export async function sendMessage(){
               pendingUndoAvailable=true;
               const fp=data.edit.workspace_relative||data.edit.file_path||'';
               addThinkingStep('📝',`${esc(data.edit.action||'updated')} <code>${esc(fp)}</code>`);
-              pushActivity('file-edit','📝',`${data.edit.action||'updated'} <code>${esc(fp)}</code>`);
-              logC(`📝 ${data.edit.action||'updated'} ${fp}`,'tool');
+              pushActivity('file-edit','',`${data.edit.action||'updated'}: ${fp}`);
+              logC(`${data.edit.action||'updated'} ${fp}`,'tool');
             }
           }
           else if(data.type==='error'){
             activityCounts.errors++;
             addThinkingStep('❌',esc(data.content),'error');
-            pushActivity('error','❌',data.content);
-            logC(`❌ ${data.content}`,'error');
+            pushActivity('error','',data.content);
+            logC(data.content,'error');
           }
           else if(data.type==='llm_retry'){
             addThinkingStep('🔄',esc(data.content));
             const apiStatus=thinking.querySelector('.thinking-api-status');
-            if(apiStatus){apiStatus.style.display='block';apiStatus.style.color='#f39c12';apiStatus.textContent='🔄 '+esc(data.content);}
-            pushActivity('thought','🔄',data.content);
-            logC(`🔄 LLM retry: ${data.content}`,'warning');
+            if(apiStatus){apiStatus.style.display='block';apiStatus.style.color='#f39c12';apiStatus.textContent='Retry: '+esc(data.content);}
+            pushActivity('thought','',data.content);
+            logC(`LLM retry: ${data.content}`,'warning');
             _lastEventTs=Date.now();
           }
           else if(data.type==='token'){
@@ -328,7 +331,8 @@ export async function sendMessage(){
                 const chev=thinking.querySelector('.thinking-header-chevron');
                 if(chev)chev.classList.remove('open');
               }
-              thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant" id="streaming-msg"><div class="msg-avatar">🌟</div><div class="msg-bubble streaming"><span class="streaming-text"></span><span class="streaming-cursor"></span></div></div>`);
+              thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant" id="streaming-msg"><div class="msg-avatar"><i data-lucide="sparkles" style="width:18px;height:18px;color:white"></i></div><div class="msg-bubble streaming"><span class="streaming-text"></span><span class="streaming-cursor"></span></div></div>`);
+              if(window.lucide)window.lucide.createIcons({nodes:[thread.querySelector('#streaming-msg .msg-avatar')]});
               window._streamingMsgEl=thread.querySelector('#streaming-msg .streaming-text');
               window._streamingRaw='';
               thread.scrollTop=thread.scrollHeight;
@@ -374,25 +378,26 @@ export async function sendMessage(){
       window._streamingRaw='';
       addMsg('assistant',finalResponse.response,finalResponse);
       _pushChat('assistant',finalResponse.response,finalResponse);
-      pushActivity('checkpoint','✅',`Reponse terminee — ${finalResponse.provider_used||'?'}/${finalResponse.model_used||'?'}`);
-      logC('✅ Reponse recue','success');
+      pushActivity('checkpoint','',`Reponse terminee — ${finalResponse.provider_used||'?'}/${finalResponse.model_used||'?'}`);
+      logC('Reponse recue','success');
       if(finalResponse.mood)setText('mood-value',finalResponse.mood);
-      logC(`🧠 ${finalResponse.provider_used||'?'} / ${finalResponse.model_used||'?'}`,'info');
-      if(finalResponse.fallback_used){pushActivity('error','⚠️',`Fallback: ${finalResponse.fallback_reason||'?'}`);logC(`⚠️ Fallback: ${finalResponse.fallback_reason||'?'}`,'warning')}
-      if(finalResponse.continuation_used){pushActivity('checkpoint','↩️',`Continuation x${finalResponse.continuation_steps||0}`);logC(`↩️ Continuation x${finalResponse.continuation_steps||0}`,'tool')}
-      if((finalResponse.agent_repair_attempts||0)>0)pushActivity('tool','🔧',`Auto-repair x${finalResponse.agent_repair_attempts}`);
+      logC(`${finalResponse.provider_used||'?'} / ${finalResponse.model_used||'?'}`,'info');
+      if(finalResponse.fallback_used){pushActivity('error','',`Fallback: ${finalResponse.fallback_reason||'?'}`);logC(`Fallback: ${finalResponse.fallback_reason||'?'}`,'warning')}
+      if(finalResponse.continuation_used){pushActivity('checkpoint','',`Continuation x${finalResponse.continuation_steps||0}`);logC(`Continuation x${finalResponse.continuation_steps||0}`,'tool')}
+      if((finalResponse.agent_repair_attempts||0)>0)pushActivity('tool','',`Auto-repair x${finalResponse.agent_repair_attempts}`);
     }else{
-      thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant"><div class="msg-avatar">🌟</div><div class="msg-bubble" style="display:flex;align-items:center;gap:12px"><span>❌ Pas de réponse reçue (timeout API).</span><button onclick="retryLastMessage()" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px">↺ Réessayer</button></div></div>`);
+      thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant"><div class="msg-avatar"><i data-lucide="sparkles" style="width:18px;height:18px;color:white"></i></div><div class="msg-bubble" style="display:flex;align-items:center;gap:12px"><span>Pas de réponse reçue (timeout API).</span><button onclick="retryLastMessage()" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px">↺ Réessayer</button></div></div>`);
+      if(window.lucide)window.lucide.createIcons({nodes:[thread.lastElementChild.querySelector('.msg-avatar')]});
       thread.scrollTop=thread.scrollHeight;
-      pushActivity('error','❌','Aucune reponse recue — cliquez Reessayer');
+      pushActivity('error','','Aucune reponse recue — cliquez Reessayer');
     }
     updateActivityStats();
   }catch(e){
     if(_thinkingTimer){clearInterval(_thinkingTimer);_thinkingTimer=null;}
     thinking.remove();stopActivityFeed();
-    addMsg('assistant','❌ Erreur de connexion.');
-    pushActivity('error','❌',e.message);
-    logC(`❌ ${e.message}`,'error');
+    addMsg('assistant','Erreur de connexion.');
+    pushActivity('error','',e.message);
+    logC(e.message,'error');
   }
   isLoading=false;
 }
@@ -409,7 +414,9 @@ export function retryLastMessage(){
    ============================================================ */
 export function addMsg(role,content,meta=null,extraHtml=''){
   const thread=document.getElementById('chat-thread');
-  const avatar=role==='assistant'?'🌟':'👤';
+  const avatar=role==='assistant'
+    ?'<i data-lucide="sparkles" style="width:18px;height:18px;color:white"></i>'
+    :'<i data-lucide="user" style="width:18px;height:18px;color:var(--accent)"></i>';
   const metaHtml=role==='assistant'?buildMetaHtml(meta):'';
   const fileEditsHtml=role==='assistant'?buildDiffViewerHtml(meta&&Array.isArray(meta.file_edits)?meta.file_edits:[],meta?meta.edit_session_id:null,meta?!!meta.undo_available:false):'';
   const documentsHtml=role==='assistant'?buildDocumentsHtml(meta):'';
@@ -434,6 +441,7 @@ export function addMsg(role,content,meta=null,extraHtml=''){
         <div class="msg-bubble">${extraHtml}${content}${metaHtml}</div>
       </div>`);
   }
+  if(window.lucide)window.lucide.createIcons({nodes:[thread.lastElementChild.querySelector('.msg-avatar')]});
   thread.scrollTop=thread.scrollHeight;
 }
 
@@ -475,13 +483,13 @@ function _renderMarkdown(text){
 export function buildMetaHtml(meta){
   if(!meta)return'';
   const pills=[];
-  if(meta.provider_used||meta.model_used)pills.push(`<span class="meta-pill">🤖 ${esc(meta.provider_used||'?')} / ${esc(meta.model_used||'?')}</span>`);
-  if(meta.prompt_tokens!=null||meta.completion_tokens!=null){const _in=meta.prompt_tokens!=null?meta.prompt_tokens:'?';const _out=meta.completion_tokens!=null?meta.completion_tokens:'?';const _total=(typeof meta.prompt_tokens==='number'&&typeof meta.completion_tokens==='number')?(meta.prompt_tokens+meta.completion_tokens):null;pills.push(`<span class="meta-pill">📊 ${_in} in / ${_out} out${_total!=null?' (Σ'+_total+')':''}</span>`)}
-  if(meta.fallback_used)pills.push(`<span class="meta-pill warn">⚠️ fallback: ${esc(meta.fallback_reason||'?')}</span>`);
-  if(meta.continuation_used)pills.push(`<span class="meta-pill">↩️ continuation x${meta.continuation_steps||0}</span>`);
+  if(meta.provider_used||meta.model_used)pills.push(`<span class="meta-pill">${esc(meta.provider_used||'?')} / ${esc(meta.model_used||'?')}</span>`);
+  if(meta.prompt_tokens!=null||meta.completion_tokens!=null){const _in=meta.prompt_tokens!=null?meta.prompt_tokens:'?';const _out=meta.completion_tokens!=null?meta.completion_tokens:'?';const _total=(typeof meta.prompt_tokens==='number'&&typeof meta.completion_tokens==='number')?(meta.prompt_tokens+meta.completion_tokens):null;pills.push(`<span class="meta-pill">${_in} in / ${_out} out${_total!=null?' (Σ'+_total+')':''}</span>`)}
+  if(meta.fallback_used)pills.push(`<span class="meta-pill warn">fallback: ${esc(meta.fallback_reason||'?')}</span>`);
+  if(meta.continuation_used)pills.push(`<span class="meta-pill">continuation x${meta.continuation_steps||0}</span>`);
   if(meta.finish_reason&&meta.finish_reason!=='stop')pills.push(`<span class="meta-pill warn">finish: ${esc(meta.finish_reason)}</span>`);
-  if(meta.agent_output_incomplete)pills.push(`<span class="meta-pill warn">🔍 ${esc(meta.agent_output_warning||'incomplete')}</span>`);
-  if((meta.agent_repair_attempts||0)>0)pills.push(`<span class="meta-pill">🔧 repair x${meta.agent_repair_attempts}</span>`);
+  if(meta.agent_output_incomplete)pills.push(`<span class="meta-pill warn">${esc(meta.agent_output_warning||'incomplete')}</span>`);
+  if((meta.agent_repair_attempts||0)>0)pills.push(`<span class="meta-pill">repair x${meta.agent_repair_attempts}</span>`);
   return pills.length?`<div class="msg-meta">${pills.join('')}</div>`:'';
 }
 
@@ -510,8 +518,7 @@ export function mergeEdits(base,extra){
 
 export function _diffFileIcon(path){
   const ext=(path||'').split('.').pop().toLowerCase();
-  const m={'js':'🟨','ts':'🔷','py':'🐍','html':'🌐','css':'🎨','json':'📦','md':'📝','svg':'🖼️','xml':'📄','txt':'📝','sh':'⚙️','yml':'⚙️','yaml':'⚙️'};
-  return m[ext]||'📄';
+  return ext?ext.toUpperCase():'FILE';
 }
 
 export function _parseDiffLines(preview){
@@ -592,7 +599,7 @@ export function buildDiffViewerHtml(edits,sessionId,undoAvail){
   const uid='dv_'+Math.random().toString(36).slice(2,8);
 
   let html=`<div class="diff-viewer-wrap" id="${uid}">`;
-  html+=`<div class="diff-viewer-summary"><span class="diff-summary-icon">📝</span><span class="diff-summary-title">${edits.length} fichier${edits.length>1?'s':''} modifie${edits.length>1?'s':''}</span><div class="diff-summary-stats"><span class="additions">+${totalAdd}</span><span class="deletions">-${totalDel}</span></div></div>`;
+  html+=`<div class="diff-viewer-summary"><span class="diff-summary-title">${edits.length} fichier${edits.length>1?'s':''} modifie${edits.length>1?'s':''}</span><div class="diff-summary-stats"><span class="additions">+${totalAdd}</span><span class="deletions">-${totalDel}</span></div></div>`;
 
   edits.forEach((e,idx)=>{
     const path=esc(e.workspace_relative||e.file_path||'(?)');
@@ -689,7 +696,7 @@ export function buildDocumentsHtml(meta){
     const name=esc(doc.name||doc.path||'document');
     const ext=(doc.name||doc.path||'').split('.').pop().toLowerCase();
     const isImg=['png','jpg','jpeg','gif','webp','svg'].includes(ext);
-    const icon=isImg?'🖼️':ext==='pdf'?'📕':ext==='md'?'📝':'📄';
+    const icon=ext?ext.toUpperCase():'FILE';
     let bodyHtml='';
     if(isImg&&doc.url){bodyHtml=`<img src="${esc(doc.url)}" alt="${name}" style="max-width:100%">`}
     else if(doc.content){bodyHtml=`<code>${esc(doc.content.substring(0,2000))}</code>`}
@@ -706,8 +713,8 @@ export async function undoSessionEdits(sid){
     const r=await fetch(`${API_BASE}/api/edits/undo`,{method:'POST',headers:h,body:JSON.stringify({session_id:sid})});
     const d=await r.json();
     if(!r.ok||!d.success){logC(`Undo failed: ${d.message||d.detail||'?'}`,'error');return}
-    logC(`✅ Undo session OK (${d.restored||0})`,'success');addMsg('assistant',`↩ Undo session: ${d.restored||0} restauration(s).`);
-  }catch(e){logC(`❌ ${e.message}`,'error')}
+    logC(`Undo session OK (${d.restored||0})`,'success');addMsg('assistant',`Undo session: ${d.restored||0} restauration(s).`);
+  }catch(e){logC(e.message,'error')}
 }
 
 export async function undoSingleFile(sid,fp){
@@ -717,8 +724,8 @@ export async function undoSingleFile(sid,fp){
     const r=await fetch(`${API_BASE}/api/edits/undo`,{method:'POST',headers:h,body:JSON.stringify({session_id:sid,file_path:fp})});
     const d=await r.json();
     if(!r.ok||!d.success){logC(`Undo failed: ${d.message||'?'}`,'error');return}
-    logC(`✅ Undo: ${fp}`,'success');addMsg('assistant',`↩ Undo: \`${fp}\``);
-  }catch(e){logC(`❌ ${e.message}`,'error')}
+    logC(`Undo: ${fp}`,'success');addMsg('assistant',`Undo: \`${fp}\``);
+  }catch(e){logC(e.message,'error')}
 }
 
 export function undoSessionEnc(enc){undoSessionEdits(decodeURIComponent(enc||''))}
@@ -777,7 +784,7 @@ export function renderAttachments(){
       const url=URL.createObjectURL(att.file);
       thumb=`<img src="${url}" alt="">`;
     }else{
-      thumb=`<span style="font-size:20px">📄</span>`;
+      thumb=`<span style="font-size:11px;padding:4px 6px;background:rgba(255,255,255,.06);border-radius:4px;color:var(--muted)">${(att.file.name.split('.').pop()||'file').toUpperCase()}</span>`;
     }
     return`<div class="attachment-preview">${thumb}<div><div class="attachment-name">${esc(att.file.name)}</div><div class="attachment-size">${sizeStr}</div></div><button class="attachment-remove" onclick="removeAttachment('${att.id}')">✕</button></div>`;
   }).join('');

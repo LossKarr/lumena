@@ -82,6 +82,90 @@ def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
     return sum(estimate_tokens(msg) for msg in messages)
 
 
+# ── P2 Plan Suprême : progressive tool-output pruning ────────────────────
+
+
+_OBSERVATION_PREFIXES = (
+    "Résultat de l'action:",
+    "Resultat de l'action:",
+    "OBSERVATION:",
+    "Observation:",
+    "Tool result:",
+    "Tool output:",
+)
+
+
+def _looks_like_observation(msg: Dict[str, Any]) -> bool:
+    """Heuristique : message user généré par une tool exec (pas une vraie question)."""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content", "")
+    if not isinstance(content, str):
+        return False
+    head = content.lstrip()[:80]
+    return any(head.startswith(p) for p in _OBSERVATION_PREFIXES)
+
+
+def prune_large_observations(
+    messages: List[Dict[str, Any]],
+    *,
+    max_obs_chars: int = 3000,
+    keep_recent: int = 3,
+    head_chars: int = 1500,
+    tail_chars: int = 500,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Réduit la taille des observations anciennes en gardant head + tail,
+    les récentes restent intactes. Opt-out via LUMENA_COMPACTION_PRUNE=0.
+
+    Args:
+        messages: liste à traiter (non modifiée)
+        max_obs_chars: seuil au-delà duquel une observation est considérée "large"
+        keep_recent: nb d'observations récentes à préserver intactes
+        head_chars: chars à garder en tête de l'observation pruned
+        tail_chars: chars à garder en queue de l'observation pruned
+
+    Returns:
+        (new_messages, pruned_count) — copie enrichie + compteur diagnostic.
+    """
+    try:
+        from src.config.codeagent_flags import COMPACTION_PRUNE
+        if not COMPACTION_PRUNE:
+            return list(messages), 0
+    except Exception:
+        return list(messages), 0
+
+    # Repérer les indices des observations
+    obs_indices = [i for i, m in enumerate(messages) if _looks_like_observation(m)]
+    if len(obs_indices) <= keep_recent:
+        return list(messages), 0
+
+    # Les dernières `keep_recent` observations restent intactes
+    protected = set(obs_indices[-keep_recent:])
+    out: List[Dict[str, Any]] = []
+    pruned_count = 0
+
+    for i, msg in enumerate(messages):
+        if i in protected or not _looks_like_observation(msg):
+            out.append(msg)
+            continue
+        content = msg.get("content", "")
+        if len(content) <= max_obs_chars:
+            out.append(msg)
+            continue
+        # Prune : head + marker + tail
+        removed = len(content) - head_chars - tail_chars
+        pruned_content = (
+            content[:head_chars]
+            + f"\n\n[... {removed} chars pruned (observation ancienne compactée) ...]\n\n"
+            + content[-tail_chars:]
+        )
+        out.append({**msg, "content": pruned_content})
+        pruned_count += 1
+
+    return out, pruned_count
+
+
 @dataclass
 class CompactionResult:
     """Résultat de la compaction."""

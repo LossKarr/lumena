@@ -1,0 +1,19 @@
+## list_files — Lister les fichiers d'un dossier
+
+**When to use:**
+- Découvrir la structure d'un projet inconnu
+- Vérifier qu'un fichier/dossier existe avant d'agir
+- Explorer un sous-dossier (css/, js/, tests/)
+
+**When NOT to use:**
+- Les fichiers du projet sont DÉJÀ listés dans le contexte → pas besoin
+- Pour trouver un fichier par nom → `grep` sur le pattern
+- run_command dir/ls/Get-ChildItem → INTERDIT, utilise list_files
+
+**Good:**
+`{"action": "list_files", "path": "src/utils"}`
+`{"action": "list_files", "path": "."}` (racine)
+
+**Bad:**
+`{"action": "run_command", "command": "dir /B"}` ← utilise list_files
+Lister un dossier 3× sans raison ← si déjà listé, c'est en cache

@@ -1,0 +1,24 @@
+## insert_at_anchor — Insérer à un point sémantique
+
+**When to use:**
+- Ajouter une section AVANT/APRÈS un repère (`</main>`, `# END IMPORTS`, `export default`)
+- Insertion sans remplacement (pur ajout)
+- Évite le combo grep + read_file + str_replace (3 tours → 1 tour)
+
+**When NOT to use:**
+- Remplacer du code existant → str_replace ou edit_lines
+- L'ancre n'existe pas dans le fichier ← lis d'abord pour confirmer
+
+**Good:**
+```json
+{"action": "insert_at_anchor", "path": "index.html", "anchor": "</main>",
+ "position": "before", "content": "<section id=\"new\">...</section>",
+ "occurrence": "first"}
+```
+
+Anchors typiques : `</main>`, `</body>` (HTML) | `# END IMPORTS`, `if __name__` (Py) |
+`export default`, `// end class` (JS) | `func main()` (Go)
+
+**Bad:**
+anchor = " " / vide / trop court ← match multiple imprévisible
+position = "inside" ← n'existe pas (before/after seulement)

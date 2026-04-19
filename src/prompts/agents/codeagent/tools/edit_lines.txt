@@ -1,0 +1,17 @@
+## edit_lines — Remplacer un bloc de lignes par numéro
+
+**When to use:**
+- Tu connais les numéros de ligne exacts (obtenus via read_file)
+- Méthode PRÉFÉRÉE pour modifier un fichier existant (pas d'ambiguïté de matching)
+- str_replace a échoué "non trouvé" → bascule sur edit_lines
+
+**When NOT to use:**
+- Fichier non lu → read_file d'abord
+- Insérer une section à un point sémantique (avant </main>, après import) → `insert_at_anchor`
+
+**Good:**
+`{"action": "edit_lines", "path": "src/core.py", "start_line": 42, "end_line": 44, "content": "def new_body():\n    return True"}`
+
+**Bad:**
+`{"action": "edit_lines", "path": "src/core.py", "start_line": 1, "end_line": 500, "content": "..."}` ← équivaut à write_file → INTERDIT
+Numéros de ligne inventés / devinés ← lis le fichier d'abord

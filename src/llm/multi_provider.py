@@ -2154,6 +2154,141 @@ class MultiProviderLLM:
             return ""
         return ""
 
+    async def _detect_ollama_vision_models(self) -> List[str]:
+        """Détecte les modèles vision locaux installés sur Ollama.
+
+        Retourne la liste des noms de modèles dont le nom contient un
+        pattern vision connu (llava, vision, vl, moondream, minicpm-v, bakllava…).
+        Préserve l'ordre d'installation Ollama (plus récent en premier côté API).
+        """
+        import os
+        host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+        try:
+            resp = await self._http.get(f"{host}/api/tags", timeout=5.0)
+            resp.raise_for_status()
+            models = resp.json().get("models", [])
+        except Exception:
+            return []
+        vision_patterns = ("llava", "vision", "-vl", ":vl", "moondream",
+                           "minicpm-v", "bakllava", "cogvlm", "qwen2-vl",
+                           "llama3.2-vision", "llama-3.2-vision", "pixtral", "gemma3")
+        result = []
+        for m in models:
+            name = (m.get("name") or "").lower()
+            if any(p in name for p in vision_patterns):
+                result.append(m.get("name"))
+        return result
+
+    async def describe_image_cascade(
+        self,
+        image_path: str,
+        prompt: str = "",
+        max_chars: int = 600,
+    ) -> str:
+        """Décrit une image via cascade GRATUIT → payant.
+
+        Ordre de fallback :
+          1. 🥇 Ollama local (auto-détection llava/moondream/qwen2-vl/minicpm-v…)
+          2. 🥈 Google Gemini Flash (free tier)
+          3. 🥉 describe_image() classique (tout autre provider configuré)
+
+        Retourne une description non-vide, ou "" si aucun provider n'est disponible.
+        Pilotable via LUMENA_VISION_CASCADE=0 pour désactiver (force describe_image).
+        """
+        import os, base64, mimetypes
+        from pathlib import Path as _P
+
+        if os.getenv("LUMENA_VISION_CASCADE", "1") not in ("1", "true", "True"):
+            return await self.describe_image(image_path, prompt)
+
+        p = _P(image_path)
+        if not p.exists():
+            return ""
+
+        user_prompt = prompt or (
+            "Décris cette capture d'écran en 3-5 lignes : que voit-on à l'écran ? "
+            "Éléments interactifs visibles, texte important, état de la page. "
+            "Réponds en français, concis."
+        )
+
+        try:
+            raw_bytes = p.read_bytes()
+            b64 = base64.b64encode(raw_bytes).decode()
+            mime, _ = mimetypes.guess_type(str(p))
+            mime = mime or "image/png"
+        except Exception as e:
+            logger.warning(f"[vision-cascade] lecture image: {e}")
+            return ""
+
+        # ── Tier 1 : Ollama local ──
+        try:
+            ollama_models = await self._detect_ollama_vision_models()
+        except Exception:
+            ollama_models = []
+        for model_name in ollama_models[:3]:  # max 3 tentatives locales
+            try:
+                host = os.getenv("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+                payload = {
+                    "model": model_name,
+                    "messages": [{
+                        "role": "user",
+                        "content": user_prompt,
+                        "images": [b64],
+                    }],
+                    "stream": False,
+                    "options": {"num_ctx": 4096, "num_predict": 400},
+                }
+                resp = await self._http.post(f"{host}/api/chat", json=payload, timeout=45.0)
+                resp.raise_for_status()
+                text = (resp.json().get("message") or {}).get("content", "").strip()
+                if text:
+                    logger.info(f"[vision-cascade] ✅ Ollama {model_name} ({len(text)} chars)")
+                    return text[:max_chars]
+            except Exception as e:
+                logger.debug(f"[vision-cascade] Ollama {model_name} échec: {e}")
+                continue
+
+        # ── Tier 2 : Gemini Flash (free tier) ──
+        try:
+            from .providers import get_api_key as _gk, ProviderType as _PT
+            gkey = _gk(_PT.GOOGLE)
+            if gkey:
+                payload = {
+                    "contents": [{
+                        "parts": [
+                            {"inline_data": {"mime_type": mime, "data": b64}},
+                            {"text": user_prompt},
+                        ]
+                    }]
+                }
+                resp = await self._http.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                    headers={"Content-Type": "application/json"},
+                    params={"key": gkey},
+                    json=payload,
+                    timeout=45.0,
+                )
+                resp.raise_for_status()
+                candidates = resp.json().get("candidates", [])
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    text = "".join(pt.get("text", "") for pt in parts).strip()
+                    if text:
+                        logger.info(f"[vision-cascade] ✅ Gemini Flash ({len(text)} chars)")
+                        return text[:max_chars]
+        except Exception as e:
+            logger.debug(f"[vision-cascade] Gemini échec: {e}")
+
+        # ── Tier 3 : fallback sur describe_image classique (provider payant éventuel) ──
+        try:
+            text = await self.describe_image(image_path, prompt=user_prompt)
+            if text:
+                return text[:max_chars]
+        except Exception as e:
+            logger.debug(f"[vision-cascade] describe_image échec: {e}")
+
+        return ""
+
     async def stream_chat(
         self,
         messages: List[Dict[str, str]],

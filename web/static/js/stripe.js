@@ -23,8 +23,8 @@ function _fmtDate(ts) {
 function _statusBadge(status) {
   const map = {
     succeeded: ['#22c55e', '✓ Réussi'],
-    requires_payment_method: ['#f59e0b', '⏳ En attente'],
-    requires_confirmation: ['#f59e0b', '⏳ Confirmation'],
+    requires_payment_method: ['#f59e0b', 'En attente'],
+    requires_confirmation: ['#f59e0b', 'Confirmation'],
     canceled: ['#ef4444', '✗ Annulé'],
     processing: ['#6366f1', '⟳ Traitement'],
     active: ['#22c55e', '● Actif'],

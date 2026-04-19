@@ -1,0 +1,18 @@
+## read_files_batch — Lire plusieurs fichiers en 1 appel
+
+**When to use:**
+- Tu dois modifier 2+ fichiers → lis-les TOUS d'un coup
+- Comprendre un flux cross-module (a.py appelle b.py qui utilise c.py)
+- Parallèle + cache → 1 tour au lieu de N
+
+**When NOT to use:**
+- Un seul fichier → `read_file` suffit
+- Les fichiers sont déjà dans "FICHIERS EN MÉMOIRE" ← déjà lus
+
+**Good:**
+`{"action": "read_files_batch", "paths": ["index.html", "css/style.css", "js/app.js"]}`
+`{"action": "read_files_batch", "paths": ["a.py", "b.py"], "start_line": 1, "end_line": 100}` (même plage)
+
+**Bad:**
+1 seul path → utilise read_file
+Lister 20 fichiers "au cas où" ← contexte explose, cible précisément

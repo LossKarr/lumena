@@ -233,13 +233,18 @@ PIPELINES: List[Pipeline] = [
         ],
         extract_extras=_extract_deploy_extras,
     ),
-    Pipeline(
-        name="edit_website_only",
-        matchers=[_match_edit_website_only],
-        steps=[
-            PipelineStep(tool="edit_website", build_args=_build_edit_website_args),
-        ],
-    ),
+    # ── Pipeline 'edit_website_only' DÉSACTIVÉ ──
+    # Les requêtes d'édition de site passent désormais par le chemin ReAct normal
+    # → CodeAgent (vrai subagent avec DelegationContext, planification native,
+    # Phase Architect, etc.). Le bypass pipeline à 1 step était trop rigide pour
+    # les requêtes composites (ex: "corrige + ajoute avis + ajoute panier").
+    # Pipeline(
+    #     name="edit_website_only",
+    #     matchers=[_match_edit_website_only],
+    #     steps=[
+    #         PipelineStep(tool="edit_website", build_args=_build_edit_website_args),
+    #     ],
+    # ),
     Pipeline(
         name="deploy_only",
         matchers=[_match_deploy_only],

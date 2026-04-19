@@ -24,8 +24,6 @@ export async function loadStatus(){
     if(skillsEl){skillsEl.textContent=skills;skillsEl.className='stat-value '+(d.skills_auto_activation?'ok':'warn')}
 
     setText('mood-value',d.mood||'neutral');
-    const moods={neutral:'😊',happy:'😄',excited:'🤩',curious:'🤔',bored:'😑',tired:'😴',proud:'😎',playful:'😜',thoughtful:'🤔'};
-    setText('mood-emoji',moods[d.mood]||'😊');
 
     // Skills actifs
     const activeSkills=Array.isArray(d.skills_last_active)?d.skills_last_active:[];
@@ -149,9 +147,7 @@ export async function loadEmotions(){
     const r=await fetch(`${API_BASE}/api/emotion`,{headers:_eh});
     if(!r.ok){el.innerHTML='<div style="color:var(--muted)">Systeme emotionnel indisponible</div>';return;}
     const d=await r.json();
-    const moodIcons={neutral:'😐',happy:'😊',curious:'🔍',excited:'🚀',thoughtful:'🤔',playful:'😏',tired:'😪',bored:'😴',proud:'😌',touched:'🥺'};
     const moodLabels={neutral:'Neutre',happy:'Heureuse',curious:'Curieuse',excited:'Excitee',thoughtful:'Pensive',playful:'Joueuse',tired:'Fatiguee',bored:'Ennuyee',proud:'Fiere',touched:'Touchee'};
-    const icon=moodIcons[d.mood]||'😐';
     const label=moodLabels[d.mood]||d.mood;
     const padBars=[
       {name:'Plaisir',key:'pleasure',color:'var(--ok,#22c55e)'},
@@ -160,7 +156,7 @@ export async function loadEmotions(){
     ];
     el.innerHTML=`
       <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px">
-        <div style="font-size:40px;line-height:1">${icon}</div>
+        <div style="width:48px;height:48px;border-radius:12px;background:rgba(245,159,74,.12);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i data-lucide="heart" style="width:24px;height:24px;color:var(--accent)"></i></div>
         <div>
           <div style="font-size:20px;font-weight:700;color:var(--text-strong)" id="emotion-mood-label">${esc(label)}</div>
           <div style="font-size:12px;color:var(--muted);margin-top:2px">Energie: ${esc(String(d.energy))}</div>
@@ -212,7 +208,7 @@ export async function loadVoiceStatus(){
 export async function toggleVoiceAssistant(){
   const btn=document.getElementById('voice-toggle-btn');btn.disabled=true;btn.textContent='...';
   try{const vh={};if(ADMIN_TOKEN)vh['Authorization']=`Bearer ${ADMIN_TOKEN}`;const r=await fetch(`${API_BASE}/api/voice/toggle`,{method:'POST',headers:vh});const d=await r.json();updateVoiceUI(d.running);logC(d.message,d.running?'success':'info')}
-  catch(e){logC(`❌ ${e.message}`,'error')}finally{btn.disabled=false}
+  catch(e){logC(e.message,'error')}finally{btn.disabled=false}
 }
 
 export function updateVoiceUI(running){
@@ -246,7 +242,7 @@ export async function loadRecentMemories(){
     const r=await fetch(`${API_BASE}/api/search/memory`,{method:'POST',headers:mh,body:JSON.stringify({query:"projet Charles Lumena",limit:15})});
     const d=await r.json();
     if(d.results&&d.results.length){
-      c.innerHTML=`<div style="margin-bottom:12px;color:var(--muted);font-size:13px">🧠 ${d.results.length} souvenirs recents</div>`+
+      c.innerHTML=`<div style="margin-bottom:12px;color:var(--muted);font-size:13px">${d.results.length} souvenirs recents</div>`+
         d.results.map(r=>`<div class="memory-item"><div style="font-size:11px;color:var(--accent);margin-bottom:4px">${esc(r.type)}</div><div style="font-size:13px">${esc(r.content)}</div>${r.timestamp?`<div style="font-size:10px;color:var(--muted);margin-top:4px">${esc(r.timestamp)}</div>`:''}</div>`).join('');
     }else c.innerHTML='<div style="color:var(--muted);padding:20px;text-align:center">Utilisez la recherche</div>';
   }catch(e){c.innerHTML='<div style="color:var(--danger)">Erreur</div>'}
@@ -274,7 +270,7 @@ export function initTraceStream(){
   fetch(`${API_BASE}/api/trace/stream`,{headers:h,signal:_traceAbort.signal})
     .then(res=>{
       if(!res.ok)throw new Error(res.status);
-      traceConnected=true;logC('📡 Trace stream connected','info');
+      traceConnected=true;logC('Trace stream connected','info');
       const td=document.getElementById('trace-dot');if(td)td.classList.add('ok');
       const tt=document.getElementById('trace-conn-text');if(tt){tt.textContent='Connecte';tt.style.color='var(--ok)'}
       const reader=res.body.getReader();

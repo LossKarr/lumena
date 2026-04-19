@@ -1,0 +1,22 @@
+## str_replace — Remplacer une chaîne exacte
+
+**When to use:**
+- Tu as le texte EXACT copié-collé depuis read_file (3-5 lignes de contexte)
+- Modification ponctuelle 1-10 lignes sans ambiguïté
+
+**When NOT to use:**
+- Texte retapé de mémoire → INTERDIT (utiliser edit_lines)
+- old_str n'apparaît qu'UNE seule fois dans le fichier ? Sinon → ajouter plus de contexte
+- str_replace a déjà échoué 1x avec le même old_str → bascule edit_lines
+
+**Good:**
+```json
+{"action": "str_replace", "path": "src/app.py",
+ "old_str": "def greet(name):\n    return f\"Hi {name}\"",
+ "new_str": "def greet(name):\n    return f\"Hello {name}!\""}
+```
+
+**Bad:**
+old_str avec 1 ligne sans contexte ← risque de match multiple
+old_str avec trailing whitespace / CRLF non visible ← préfère edit_lines
+2× str_replace consécutifs avec le même old_str → INTERDIT
