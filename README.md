@@ -5,7 +5,7 @@ Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore se
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Tests](https://img.shields.io/badge/tests-7536%20passed-brightgreen)
-![License](https://img.shields.io/badge/license-GPL--3.0-blue)
+![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
 ---
 
