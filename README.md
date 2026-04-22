@@ -4,14 +4,14 @@
 Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-6572%20passed-brightgreen)
-![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
+![Tests](https://img.shields.io/badge/tests-7536%20passed-brightgreen)
+![License](https://img.shields.io/badge/license-GPL--3.0-blue)
 
 ---
 
 ## Qu'est-ce que Lumena
 
-Lumena est une plateforme d'agent IA qui combine un **raisonnement ReAct** (Think → Act → Observe), **479 outils** intégrés, une **mémoire vectorielle** persistante (ChromaDB), et un **contrôle complet du PC** (clavier, souris, navigateur, apps).
+Lumena est une plateforme d'agent IA qui combine un **raisonnement ReAct** (Think → Act → Observe), **511 outils** intégrés répartis en 18 packs contextuels, une **mémoire vectorielle** persistante (ChromaDB), et un **contrôle complet du PC** (clavier, souris, navigateur, apps).
 
 Ce n'est pas un wrapper API. C'est un agent qui planifie, exécute, vérifie, et corrige ses propres erreurs.
 
@@ -19,19 +19,19 @@ Ce n'est pas un wrapper API. C'est un agent qui planifie, exécute, vérifie, et
 
 | Domaine | Détail |
 |---|---|
-| **LLM** | 9 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Moonshot, xAI, NVIDIA, MINIMAX — 46 modèles |
-| **Raisonnement** | Boucle ReAct avec plan auto, 8 types de sub-agents (code, research, debug, refactor, browser, planner, file, orchestrator), anti-hallucination |
-| **Outils** | 479 handlers V2 dans 34 modules : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE |
+| **LLM** | 10 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — fallback chaîné automatique |
+| **Raisonnement** | Boucle ReAct avec 18 packs d'outils contextuels, 8 types de sub-agents (code, research, debug, refactor, browser, planner, file, orchestrator), CodeAgent en arrière-plan avec progression temps réel |
+| **Outils** | 511 handlers V2 dans 18 packs : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use |
 | **Documents** | 36 handlers, 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
-| **Images** | 11 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax), 37 modèles, 13 handlers (generate, edit, compose, thumbnail, thumbnail-pro, headlines, upscale, logo, SVG, remove/replace background, sketch-to-image) |
+| **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 39 modèles, 13 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image) |
 | **Mémoire** | 4 niveaux : session, ChromaDB vectorielle, Knowledge Graph, BM25 — embedding cache, file watcher |
 | **Autonomie** | Scheduler CRON, goals auto-évalués, curiosité, self_improve, cycle quotidien de skills |
 | **Computer Use** | Cascade native CU (Anthropic→OpenAI→Google→fallback), pywinauto, vision (Gemini→Claude→Ollama→OCR) |
 | **Fine-tuning** | Pipeline local LoRA→GGUF→Ollama automatique, 30 modèles, détection GPU nvidia-smi |
-| **Voix** | STT (Whisper) + TTS (Coqui XTTS / Piper / pyttsx3) |
-| **Web** | FastAPI + interface Vite, chat temps réel (SSE), WebSocket IDE bridge, 77 endpoints API |
+| **Voix** | STT (faster-whisper GPU) + TTS (Coqui XTTS / Piper / pyttsx3) |
+| **Web** | FastAPI + interface admin complète, chat temps réel (SSE), WebSocket IDE bridge, panel workspaces CodeAgent |
 | **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard, rate limiter, path traversal guard |
-| **Tests** | 6 572 tests, 0 failed, ~90s sur Windows |
+| **Tests** | 7 536 tests, 0 failed, ~90s sur Windows |
 
 ---
 
@@ -129,62 +129,65 @@ docker-compose up -d
 
 ```
 src/
-├── core.py                 # LumenaCore — cerveau principal (1 083L)
+├── core.py                 # LumenaCore — cerveau principal (1 088L)
 ├── reasoning/
-│   ├── react.py            # Boucle ReAct façade (3 321L) + 4 modules extraits
+│   ├── react.py            # Boucle ReAct V4 (3 511L)
 │   ├── react_config.py     # Config, enums, constantes (373L)
-│   ├── tool_registry.py    # ToolRegistry complet (1 243L)
+│   ├── tool_registry.py    # ToolRegistry — 18 packs contextuels (1 583L)
+│   ├── intent_router.py    # Router LLM-first + fallback regex (533L)
 │   ├── response_parser.py  # Parsing ReAct pur (292L)
 │   ├── prompt_builder.py   # Heuristiques statiques (177L)
-│   └── handlers/           # 34 modules, 479 outils V2
-│       ├── browser.py      # Playwright stealth v2 (52 handlers)
+│   ├── caller_context.py   # Contexte appelant (injection sous-agents)
+│   ├── file_categories.py  # Catégorisation fichiers projet
+│   └── handlers/           # 18 packs, 511 outils V2
+│       ├── browser.py      # Playwright stealth v2 (54 handlers)
 │       ├── documents.py    # 36 handlers PDF/DOCX (factures, contrats…)
-│       ├── image_gen.py    # 13 handlers génération d'images (11 providers, 37 modèles)
-│       ├── ide.py          # 33 handlers IDE bridge
-│       ├── stripe_api.py   # 33 handlers Stripe
-│       ├── computer_use.py # 28 handlers CU
+│       ├── image_gen.py    # 13 handlers génération d'images (12 providers, 39 modèles)
+│       ├── ide.py          # 46 handlers IDE bridge
+│       ├── stripe_api.py   # 37 handlers Stripe
+│       ├── computer_use.py # 25 handlers CU
 │       ├── discord_admin.py # 25 handlers Discord
-│       └── ...             # + 27 autres modules
+│       └── ...             # + autres modules
 ├── llm/
-│   └── multi_provider.py   # 9 providers LLM, fallback chaîné, retry intra-provider
+│   └── multi_provider.py   # 10 providers LLM, fallback chaîné, retry intra-provider (3 268L)
 ├── memory/
-│   ├── chromadb_store.py   # Mémoire vectorielle persistante (962L)
-│   ├── knowledge_graph.py  # Relations entre entités (282L)
-│   ├── bm25_index.py       # Recherche textuelle classique (276L)
-│   └── embedding_cache.py  # Cache embeddings (269L)
+│   ├── chromadb_store.py   # Mémoire vectorielle persistante
+│   ├── knowledge_graph.py  # Relations entre entités
+│   ├── bm25_index.py       # Recherche textuelle classique
+│   └── embedding_cache.py  # Cache embeddings
 ├── autonomy/
-│   ├── scheduler.py        # Tâches CRON parallèles (1 430L)
-│   ├── daemon.py           # Boucle autonome 24/7 (713L)
-│   ├── goals.py            # Objectifs autonomes (391L)
-│   ├── curiosity.py        # Exploration thématique (440L)
-│   ├── self_improve.py     # Auto-amélioration (923L)
-│   └── ops_handlers.py     # 15+ handlers opérationnels (2 444L)
+│   ├── scheduler.py        # Tâches CRON parallèles
+│   ├── daemon.py           # Boucle autonome 24/7
+│   ├── goals.py            # Objectifs autonomes
+│   ├── curiosity.py        # Exploration thématique
+│   ├── self_improve.py     # Auto-amélioration
+│   └── ops_handlers.py     # 15+ handlers opérationnels
 ├── computer_use/
-│   ├── cu_router.py        # Router multi-provider (196L)
-│   ├── native_cu.py        # Cascade native Anthropic→OpenAI→Google (928L)
-│   ├── controller.py       # Souris, clavier, fenêtres pywinauto (1 165L)
-│   ├── vision.py           # Gemini → Claude → Ollama → OCR (1 270L)
-│   └── cu_agent_loop.py    # Boucle screenshot → LLM → action (1 023L)
+│   ├── cu_router.py        # Router multi-provider
+│   ├── native_cu.py        # Cascade native Anthropic→OpenAI→Google
+│   ├── controller.py       # Souris, clavier, fenêtres pywinauto
+│   ├── vision.py           # Gemini → Claude → Ollama → OCR
+│   └── cu_agent_loop.py    # Boucle screenshot → LLM → action
 ├── agents/
-│   └── sub_agent.py        # 8 types d'agents, 12 actions (3 856L)
+│   └── sub_agent.py        # 8 types d'agents, CodeAgent bg + progression temps réel (5 973L)
 ├── services/
-│   └── image_gen.py        # 11 providers image, 37 modèles, fallback auto (1 564L)
+│   └── image_gen.py        # 12 providers image, 39 modèles, fallback auto
 ├── training/               # Pipeline fine-tuning LoRA → GGUF → Ollama
 ├── perception/             # Lecture documents, knowledge extraction
-├── voice/                  # STT (Whisper) + TTS (Coqui XTTS / Piper)
+├── voice/                  # STT (faster-whisper GPU) + TTS (Coqui XTTS / Piper)
 ├── tools/                  # IDE bridge, compaction, code index
 ├── utils/                  # Docker sandbox, persistence, sanitizer, SSRF guard
-└── core_services/          # 12 services fragmentés du core
+└── core_services/          # Services fragmentés du core
 
 web/
 ├── server.py               # FastAPI + Uvicorn (port 8080)
-├── routes/                 # 14 fichiers, 77 endpoints API
-├── static/                 # 14 fichiers JS + 8 fichiers CSS
-└── index.html              # Interface Vite (vanilla JS)
+├── routes/                 # 15 fichiers routes API (workspaces, product_docs…)
+├── static/                 # JS + CSS modulaires (main.js, workspaces.js…)
+└── index.html              # Interface admin complète (vanilla JS ES modules)
 
 assets/templates/           # 13 templates Jinja2 (documents pro)
 models/                     # Modèles TTS Piper + pipeline fine-tuning
-tests/                      # 6 200+ tests pytest
+tests/                      # 7 536 tests pytest
 ```
 
 ---
@@ -201,11 +204,12 @@ Copier `.env.example` vers `.env`. Variables principales :
 | `ANTHROPIC_API_KEY` | Clé API Anthropic | — |
 | `GOOGLE_API_KEY` | Clé API Google (Gemini) | — |
 | `DEEPSEEK_API_KEY` | Clé API DeepSeek | — |
+| `ZAI_API_KEY` | Clé API Z.AI | — |
 | `TELEGRAM_TOKEN` | Token bot Telegram | — |
 | `LUMENA_SANDBOX_MODE` | Mode sandbox : `auto` / `always` / `never` | `auto` |
 | `LUMENA_AUTONOMY_EXECUTE_ACTIONS` | Autoriser les actions autonomes | `0` |
 
-Voir `.env.example` pour la liste complète (93 variables documentées, 19 groupes).
+Voir `.env.example` pour la liste complète (149 variables documentées, 23 groupes).
 
 ---
 
@@ -305,4 +309,4 @@ Ou depuis l'interface web : panneau **Fine-tuning** → **Installer les dépenda
 
 ## Licence
 
-GNU Affero General Public License v3.0 — Copyright (c) 2025-2026 LossKarr. Voir [LICENSE](LICENSE).
+GNU General Public License v3.0 — Copyright (c) 2025-2026 LossKarr. Voir [LICENSE](LICENSE).
