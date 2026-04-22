@@ -42,6 +42,7 @@ pywinauto>=0.6.8           # Windows UI Automation (contrôle par accessibilité
 
 # Browser Automation
 playwright>=1.40.0
+selenium>=4.20.0
 
 # Telegram
 python-telegram-bot>=20.0
