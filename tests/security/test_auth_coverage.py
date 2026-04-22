@@ -45,6 +45,8 @@ _PUBLIC_ROUTES = frozenset({
     "GET /api/ionos/sites",
     # Workspace file serving — needed for inline image rendering in chat UI
     "GET /api/files/workspace/{file_path:path}",
+    # Reliability metrics — read-only HUD feed (like /api/health)
+    "GET /api/system/reliability",
 })
 
 
@@ -150,4 +152,4 @@ class TestAuthCoverageExhaustive:
         # Current: 80+ total, 69+ protected, 11 public (emotion routes read-only ajoutées)
         assert len(routes) >= 73, f"Route count dropped to {len(routes)} — accidental deletion?"
         assert protected >= 62, f"Protected routes dropped to {protected} — auth removed?"
-        assert public <= 16, f"Public routes increased to {public} — review whitelist"
+        assert public <= 17, f"Public routes increased to {public} — review whitelist"

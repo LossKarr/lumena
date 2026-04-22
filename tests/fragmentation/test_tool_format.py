@@ -216,12 +216,12 @@ class TestNoDuplicates:
 
     def test_total_handler_count(self):
         """
-        Nombre total de handlers attendu : 134.
+        Nombre total de handlers attendu : 244.
         Si ce nombre change, il faut mettre à jour ce test
         (et comprendre pourquoi).
         """
-        assert len(ALL_HDEFS) == 230, (
-            f"Attendu 230 handlers, trouvé {len(ALL_HDEFS)}. "
+        assert len(ALL_HDEFS) == 245, (
+            f"Attendu 245 handlers, trouvé {len(ALL_HDEFS)}. "
             f"Mettre à jour ce test si ajout/suppression intentionnel."
         )
 

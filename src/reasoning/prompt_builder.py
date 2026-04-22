@@ -137,8 +137,25 @@ def is_video_request(query: str) -> bool:
     creation_verbs = [
         "cree", "crée", "creer", "créer", "genere", "génère",
         "build", "make", "fais", "faire", "fait", "produi", "réalis", "realis",
+        # Verbes d'édition vidéo → doivent aussi rester dans ReAct (handler edit_video)
+        "modifie", "modifier", "edite", "édite", "editer", "éditer",
+        "change", "changer", "retouche", "retoucher", "améliore", "ameliore",
+        "mets à jour", "met à jour", "update",
     ]
-    return any(k in q for k in video_keywords) and any(v in q for v in creation_verbs)
+    # Word-boundary matching pour éviter les faux positifs
+    # ex: "reel" dans "reellement", "short" dans "shorts", "clip" dans "cliparts".
+    import re as _re
+    def _has_word(terms: list[str], text: str) -> bool:
+        for t in terms:
+            # Les expressions multi-mots (ex: "motion design") gardent le simple "in"
+            if " " in t:
+                if t in text:
+                    return True
+                continue
+            if _re.search(r"(?<![a-zà-ÿ0-9])" + _re.escape(t) + r"(?![a-zà-ÿ0-9])", text):
+                return True
+        return False
+    return _has_word(video_keywords, q) and _has_word(creation_verbs, q)
 
 
 def looks_code_like_or_structured(text: str) -> bool:
@@ -152,9 +169,29 @@ def looks_code_like_or_structured(text: str) -> bool:
     return False
 
 
+# Détecte les "fausses promesses" : le LLM dit FINAL mais promet une action future
+# qu'il n'a pas encore exécutée ("je vais faire", "donne-moi quelques secondes", etc.)
+_RE_FALSE_PROMISE = re.compile(
+    r"\b("
+    r"donne[- ]moi\s+(quelques?\s+)?(secondes?|instants?|moments?)"
+    r"|laisse[- ]moi\s+(faire|chercher|regarder|vérifier|trouver)"
+    r"|je\s+vais\s+(faire|chercher|effectuer|lancer|démarrer|commencer|rechercher)"
+    r"|je\s+vais\s+maintenant"
+    r"|let\s+me\s+(search|check|look|find|do)"
+    r"|give\s+me\s+(a\s+)?(moment|second|sec)"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def looks_incomplete_final_answer(answer: str, llm_meta: Dict[str, Any]) -> bool:
     trimmed = (answer or "").strip()
     if not trimmed:
+        return True
+
+    # Fausse promesse : le LLM s'engage à faire quelque chose qu'il n'a pas fait
+    # (ex: "Donne-moi quelques secondes..." alors qu'aucun outil n'a été appelé)
+    if _RE_FALSE_PROMISE.search(trimmed):
         return True
 
     finish_reason = str(llm_meta.get("finish_reason") or "").strip().lower()
@@ -202,11 +239,13 @@ def looks_incomplete_final_answer(answer: str, llm_meta: Dict[str, Any]) -> bool
     if structured_output and not ends_strong and len(trimmed) >= 160:
         suspicion_score += 1
 
-    # For explicit non-truncated finish reasons, require very strong evidence
+    # Pour les finish_reason explicitement "terminé", n'accepter une troncature
+    # que si des problèmes structurels réels sont détectés (délimiteurs non-fermés,
+    # connecteur en fin, etc.). Ignorer la longueur : "stop" signifie que le LLM
+    # a décidé de s'arrêter, quelle que soit la taille de la réponse.
     if finish_reason in {"stop", "end_turn", "eos", "completed", "complete"}:
-        # Réponses courtes/moyennes avec stop, pas de problème structurel → certainement complètes
-        if len(trimmed) < 1500 and not _has_unbalanced and not _has_unclosed and not trailing_connector:
-            return False
+        if not _has_unbalanced and not _has_unclosed and not trailing_connector:
+            return False  # stop sans problème structurel → réponse complète
         if _has_unbalanced or _has_unclosed or trailing_connector:
             return True
         return suspicion_score >= 5
@@ -214,6 +253,6 @@ def looks_incomplete_final_answer(answer: str, llm_meta: Dict[str, Any]) -> bool
     return suspicion_score >= 2
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

@@ -134,9 +134,8 @@ class ReActLoop:
             self.llm_chat = llm_chat_func
         self.tools = tools or ToolRegistry()
         self.history: List[ReActStep] = []
-        _min_iter = self._env_int("LUMENA_MIN_REACT_ITERATIONS", 8, minimum=1)
         _resolved = max_iterations if max_iterations is not None else self._resolve_max_iterations()
-        self.max_iterations = max(_resolved, _min_iter)
+        self.max_iterations = _resolved
         self.timeout_seconds = self._resolve_timeout_seconds()
         self.conversation_context = conversation_context  # Pour les requêtes de suivi
         self.active_skills_context = active_skills_context
@@ -377,8 +376,8 @@ class ReActLoop:
         # Si un skill spécifique matche avec un score élevé, ne PAS capturer
         # avec le pipeline web — laisser ReAct injecter le skill.
         try:
-            from ..skills.loader import SkillLoader
-            _loader = SkillLoader()
+            from ..skills.loader import get_skill_loader as _get_sl
+            _loader = _get_sl()
             _skill_matches = _loader.match_skills(query, max_results=3)
             _VIDEO_KW = {"video", "vidéo", "remotion", "animation", "clip", "render"}
             _q_lower = query.lower()
@@ -436,310 +435,8 @@ class ReActLoop:
         )
         return result.message
 
-    # ------------------------------------------------------------------
-    # Auto-route CodeAgent pour tâches code-heavy
-    # ------------------------------------------------------------------
-
-    async def _maybe_auto_route_codeagent(self, query: str) -> Optional[str]:
-        """Routage intelligent vers CodeAgent — classifieur hybride (regex + LLM).
-
-        Stratégie :
-        1. Guards d'exclusion (runtime, allowed_tools contraints, requête vidéo)
-        2. FAST-ROUTE : resolve_workspace conf>=0.7 + intent modify/create → direct
-        3. Classifieur déterministe : CHAT/TOOL_DIRECT/PROJECT → pas de routage
-        4. Micro-appel LLM pour les cas ambigus (REACT) → CODE → routage
-
-        Retourne le résultat final (str) si CodeAgent a pris le relais,
-        ou None si la requête doit rester dans la boucle ReAct classique.
-        """
-        # ── Guard 1 : runtime complet (pas en test) ──
-        _lum = getattr(self.tools, "lumena", None)
-        if _lum is None:
-            return None
-
-        # ── Guard 2 : tâches internes contraintes (allowed_tools) ──
-        # Si un ensemble d'outils spécifiques est imposé (scheduler, silent...)
-        # la tâche DOIT rester dans la boucle ReAct.
-        if getattr(self.tools, "_caller_set_allowed", False):
-            logger.debug("[ReAct] Auto-route skip: tâche interne avec allowed_tools contraint")
-            return None
-
-        # ── Guard 3 : requêtes vidéo → ReAct (handler generate_video) ──
-        from .prompt_builder import is_video_request as _is_video
-        if _is_video(query):
-            logger.debug("[ReAct] Auto-route skip: requête vidéo détectée → ReAct loop")
-            return None
-
-        # ── Guard 4 : requêtes service/config/outil → ReAct (handlers V2) ──
-        # Ces requêtes ciblent un handler spécifique, pas un projet code.
-        import re as _re_svc
-        _SERVICE_RE = _re_svc.compile(
-            r'\b(ionos|sftp|ftp|h[eé]bergement|deploy|d[eé]ploi|upload\w*.{0,30}(?:site|serveur|server|fichiers?)|stripe|n8n|whatsapp|'
-            r'telegram|discord|ollama|config(ure|uration)?|compte|account|cred|'
-            r'identifiant|mot\s*de\s*passe|password|api[_\s-]?key|webhook)\b',
-            _re_svc.IGNORECASE,
-        )
-        if _SERVICE_RE.search(query):
-            logger.debug("[ReAct] Auto-route skip: requête service/config détectée → ReAct loop")
-            return None
-
-        # ── Guard 5 : requêtes recherche/apprentissage autonome → ReAct ──
-        # Ces tâches (souvent planifiées) visent la recherche web, pas le code.
-        # Sans ce guard, le FAST-ROUTE matche un ancien projet par erreur.
-        import re as _re_learn
-        _RESEARCH_RE = _re_learn.compile(
-            r'\b(apprentissage|apprends?|apprendre|[eé]tudie[rz]?|[eé]tude|'
-            r'recherche[rz]?\s+(les|des|un|le|la|sur)|actualit[eé]s|tendances?|'
-            r'march[eé]s?\s+financ|crypto|forex|devises?|'
-            r'check\s+d.actualit|explore[rz]?\s+(le\s+web|bri[eè]vement)|'
-            r'cours\s+(du|de\s+la)\s+bourse|bourse|trading)\b',
-            _re_learn.IGNORECASE,
-        )
-        if _RESEARCH_RE.search(query):
-            logger.debug("[ReAct] Auto-route skip: requête recherche/apprentissage détectée → ReAct loop")
-            return None
-
-        # ── FAST-ROUTE : resolve_workspace haute confiance ──
-        # Source unique d'intent : si resolve_workspace est confiant
-        # (conf>=0.7 avec intent modify/create), on route directement.
-        _early_ws = None
-        try:
-            from ..utils.project_registry import resolve_workspace as _resolve_ws
-            _early_ws = _resolve_ws(query, allow_create=False)
-            if _early_ws.intent in ("create", "modify") and _early_ws.confidence >= 0.7:
-                logger.info(
-                    "[ReAct] FAST-ROUTE (conf>=0.7): intent={}, conf={:.2f}, path={}",
-                    _early_ws.intent, _early_ws.confidence,
-                    _early_ws.path or "(new)",
-                )
-                return await self._route_to_codeagent(query, _early_ws)
-        except Exception as _e:
-            logger.debug("[ReAct] FAST-ROUTE échoué: {}", _e)
-
-        # ── Pré-filtre CODE fort : contourne le classifieur pour les impératifs clairs ──
-        # Détecte les requêtes création/réparation explicites AVANT le classifieur
-        # déterministe (qui peut classer "projet" ou "chat" et bloquer trop tôt).
-        import re as _re_code
-        _FEEDBACK_FRAME_RE = _re_code.compile(
-            r"^(quand (je|tu|il)|ça marche|ca marche|j'ai (un|le|ce) bug|le bug|"
-            r"le probl[eè]me?|il y a (un|le) bug|y a (un|le) bug)\b",
-            _re_code.IGNORECASE,
-        )
-        _STRONG_CODE_VERB_RE = _re_code.compile(
-            r"\b(fai[st]?|cr[eé][eé][sz]?|d[eé]veloppe?[sz]?|codes?|[eé]cri[st]?|"
-            r"g[eé]n[eè]re?[sz]?|builds?|programm[eè]?[sz]?|r[eé]alise?[sz]?|"
-            r"construi[st]?|fini[rst]?\w*|termin[eè]?\w*|compl[eè]te?[sz]?|"
-            r"modifie?[sz]?|change?[sz]?|remplace?[sz]?|"
-            r"r?ajoute?[sz]?|r[eé]ajoute?[sz]?|ajout|rajout|retire?[sz]?|enl[eè]ve?[sz]?|supprime?[sz]?|"
-            r"am[eé]liore?[sz]?|refactor\w*|renomme?[sz]?|"
-            r"mets?\s+[aà]\s+jour|maj|met[sz]?\s+en\s+place|"
-            r"corrige?[sz]?|r[eé]pare?[sz]?|fixe?[sz]?|debug\w*|"
-            r"optimise?[sz]?|nettoie?[sz]?|clean\w*|upgrade\w*)\b",
-            _re_code.IGNORECASE,
-        )
-        _CODE_TARGET_RE2 = _re_code.compile(
-            r"\b(jeu|game|site|web|app(li(cation)?)?|script|bot|outil|plugin|api|"
-            r"backend|frontend|dashboard|interface|programme|projet|snake|tetris|"
-            r"pong|todo|calculator|serveur|server|"
-            r"bug|erreur|fonction|classe|m[eé]thode|variable|import|"
-            r"favicon|footer|header|navbar|menu|lien|liens|bouton|"
-            r"couleur|style|css|html|js|typo|texte|titre|page|"
-            r"blog|article|post|news|newsletter|cat[eé]gorie|section|formulaire|form)\b|\.\w{2,4}\b",
-            _re_code.IGNORECASE,
-        )
-        _FIX_WITH_FILE_RE = _re_code.compile(
-            r"\b(corrige[sz]?|r[eé]pare[sz]?|fixe[sz]?|debug(gue[sz]?)?|"
-            r"modifie[sz]?|change[sz]?|remplace[sz]?|retire[sz]?|supprime[sz]?|"
-            r"r?ajoute[sz]?|am[eé]liore[sz]?)\b.{0,80}(\.\w{2,4}\b|"
-            r"\b(bug|lien|liens|favicon|footer|header|fonction|classe|"
-            r"couleur|style|titre|bouton|page|projet|site|"
-            r"blog|article|post|news|newsletter|cat[eé]gorie|section)\b)",
-            _re_code.IGNORECASE | _re_code.DOTALL,
-        )
-        _pf_is_feedback = bool(_FEEDBACK_FRAME_RE.match(query))
-        _pf_has_fix_file = bool(_FIX_WITH_FILE_RE.search(query))
-        _pf_has_verb = bool(_STRONG_CODE_VERB_RE.search(query))
-        _pf_has_target = bool(_CODE_TARGET_RE2.search(query))
-        # Exclusion : requêtes non-code (PDF, vidéo, mail, etc.) malgré verbe fort
-        _NON_CODE_KW_RE = _re_code.compile(
-            r"\b(r[eé]sum[eé]|rapport|pdf|document|facture|devis|contrat|mail|email|"
-            r"vid[eé]o|remotion|photo|image|musique|spotify|discord|telegram|"
-            r"whatsapp|cherche|recherche|analyse|explique|raconte|parle|"
-            r"apprentissage|apprends?|apprendre|[eé]tudie[rz]?|actualit[eé]s|"
-            r"tendances?|march[eé]s?\s+financ|crypto|forex|bourse|trading)\b",
-            _re_code.IGNORECASE,
-        )
-        _pf_has_non_code = bool(_NON_CODE_KW_RE.search(query))
-        if _pf_has_fix_file or (not _pf_is_feedback and _pf_has_verb and _pf_has_target and not _pf_has_non_code):
-            logger.debug("[ReAct] Pré-filtre CODE fort → route vers CodeAgent")
-            _ws_pf = _early_ws
-            if _ws_pf is None or not getattr(_ws_pf, "path", None):
-                try:
-                    from ..utils.project_registry import resolve_workspace as _resolve_ws_pf
-                    _ws_pf = _resolve_ws_pf(query, allow_create=True)
-                except Exception:
-                    pass
-            return await self._route_to_codeagent(query, _ws_pf)
-
-        # ── Classifieur déterministe : filtre rapide 0ms ──
-        try:
-            from ..core_services.intent_classifier import classify_intent
-            _snap = None
-            if hasattr(_lum, "build_runtime_snapshot"):
-                try:
-                    _snap = _lum.build_runtime_snapshot()
-                except Exception:
-                    _snap = None
-            _fast = classify_intent(query, _snap)
-            _fast_val = _fast.value if hasattr(_fast, "value") else str(_fast)
-        except Exception:
-            _fast_val = "react"
-
-        # CHAT / TOOL_DIRECT / PROJECT → ne pas router vers CodeAgent
-        if _fast_val in ("chat", "tool_direct", "project"):
-            logger.debug("[ReAct] Classifieur déterministe: {} → pas de routage CodeAgent", _fast_val)
-            return None
-
-        # ── REACT (ambigu) → micro-appel LLM ──
-        _llm_intent = await self._classify_intent_llm(query)
-        if _llm_intent == "CODE":
-            # Résoudre avec allow_create si pas de path trouvé
-            _ws = _early_ws
-            if _ws is None or _ws.path is None:
-                try:
-                    from ..utils.project_registry import resolve_workspace as _resolve_ws2
-                    _ws = _resolve_ws2(query, allow_create=True)
-                except Exception:
-                    _ws = _early_ws
-            return await self._route_to_codeagent(query, _ws)
-
-        # BROWSE / TOOL / CHAT / REACT → boucle ReAct normale
-        return None
-
-    async def _classify_intent_llm(self, query: str) -> str:
-        """Micro-appel LLM pour classifier l'intent (~50 tokens, timeout 5s).
-
-        Retourne CODE / BROWSE / TOOL / CHAT / REACT.
-        Cache TTL 60s sur hash(query[:500]). Fallback: REACT.
-        """
-        from time import perf_counter as _pc
-        _cache: Dict[int, tuple] = getattr(self, "_intent_cache", {})
-        _key = hash(query[:500])
-        _now = _pc()
-        _cached = _cache.get(_key)
-        if _cached is not None:
-            _ts, _val = _cached
-            if (_now - _ts) < 120.0:
-                return _val
-
-        _system = (
-            "Classify the user's intent into exactly ONE word:\n"
-            "CODE - create/modify/fix/debug/refactor code or a project\n"
-            "BROWSE - visit/analyze/scrape a website, web research\n"
-            "TOOL - use a specific tool (mail, schedule, network, file...)\n"
-            "CHAT - conversation, question, explanation, opinion\n"
-            "REACT - complex multi-step task not clearly in the above\n"
-            "Respond with ONLY the word, nothing else."
-        )
-        _intent = "REACT"
-        try:
-            _resp = await asyncio.wait_for(
-                self.llm_chat(
-                    [
-                        {"role": "system", "content": _system},
-                        {"role": "user", "content": query[:500]},
-                    ],
-                ),
-                timeout=5.0,
-            )
-            _words = (_resp or "").strip().upper().split()
-            _candidate = _words[0] if _words else "REACT"
-            if _candidate in ("CODE", "BROWSE", "TOOL", "CHAT", "REACT"):
-                _intent = _candidate
-        except Exception as _e:
-            logger.debug("[ReAct] _classify_intent_llm failed ({}) — fallback REACT", _e)
-            _intent = "REACT"
-
-        # Cache LRU 16 entrées (éviter la croissance infinie)
-        if not hasattr(self, '_intent_cache') or len(self._intent_cache) > 16:
-            self._intent_cache = {}
-        self._intent_cache[_key] = (_now, _intent)
-        logger.info("[ReAct] Intent LLM: {}", _intent)
-        return _intent
-
-    async def _route_to_codeagent(self, query: str, resolution) -> Optional[str]:
-        """Route une requête vers CodeAgent avec contexte enrichi.
-
-        Args:
-            query: Requête utilisateur.
-            resolution: WorkspaceResolution (path peut être None pour create).
-        """
-        try:
-            from ..agents.sub_agent import delegate_to_agent
-        except ImportError:
-            return None
-
-        _lum = getattr(self.tools, "lumena", None)
-        context: Dict[str, Any] = {}
-
-        # Workspace
-        if resolution is not None and getattr(resolution, "path", None):
-            context["workspace_path"] = str(resolution.path)
-            context["project_dir"] = str(resolution.path)
-            # Propage l'intent résolu → permet à CodeAgent de déclencher la phase Architect
-            # sans avoir à ré-appeler resolve_workspace (qui est skippé quand workspace_path
-            # est déjà fourni par ReAct).
-            context["intent"] = getattr(resolution, "intent", "unknown")
-            try:
-                # rglob('*') pour inclure les subdirs (css/style.css, js/script.js, etc.)
-                # → nécessaire pour que la Phase Architect du CodeAgent se déclenche
-                # (condition: len(project_files) > 2). iterdir() ne listait que le top-level.
-                _excluded = ("__pycache__", ".git", "node_modules", ".venv", "venv")
-                _files: List[str] = []
-                for _item in resolution.path.rglob("*"):
-                    if not _item.is_file():
-                        continue
-                    _rel = str(_item.relative_to(resolution.path)).replace("\\", "/")
-                    if any(_ex in _rel for _ex in _excluded):
-                        continue
-                    _files.append(_rel)
-                    if len(_files) >= 100:  # cap de sécurité
-                        break
-                context["project_files"] = _files
-            except Exception:
-                pass
-            logger.info(
-                "[ReAct] Workspace résolu: {} (source={}, intent={}, conf={:.2f})",
-                resolution.path, resolution.source,
-                resolution.intent, resolution.confidence,
-            )
-        elif _lum is not None:
-            _root = getattr(_lum, "runtime_root", None)
-            if _root:
-                context["workspace_path"] = str(_root)
-
-        # Contexte conversationnel
-        if self.conversation_context:
-            context["conversation_history"] = self.conversation_context
-
-        # Mémoire ChromaDB pertinente
-        _lum_mem = getattr(_lum, "memory", None) if _lum is not None else None
-        if _lum_mem is not None and hasattr(_lum_mem, "get_context_for_prompt"):
-            try:
-                _mem_ctx = _lum_mem.get_context_for_prompt(query, max_memories=5)
-                if _mem_ctx:
-                    context["memory_context"] = _mem_ctx
-            except Exception as _me:
-                logger.debug("[ReAct] Mémoire CodeAgent indisponible: {}", _me)
-
-        try:
-            result = await delegate_to_agent(query, agent_type="code", context=context)
-            logger.info("[ReAct] CodeAgent terminé: {} chars", len(result or ""))
-            return result or "CodeAgent a terminé la tâche."
-        except Exception as exc:
-            logger.warning("[ReAct] CodeAgent échoué ({}), fallback boucle ReAct", exc)
-            return None
-
+    # v2: routage CodeAgent supprimé (stickiness, registry fallback, auto-route).
+    # Le LLM utilise delegate_task / delegate_task_bg via les outils du pack CODE.
 
     # ------------------------------------------------------------------
     # Identité & mémoire unifiées (Niveau 1 – même Lumena partout)
@@ -784,7 +481,7 @@ class ReActLoop:
         if memory and hasattr(memory, "get_context_for_prompt"):
             try:
                 logger.info(f"Recherche mémoire ChromaDB pour: {query[:60]}...")
-                mem_ctx = memory.get_context_for_prompt(query, max_memories=10)
+                mem_ctx = memory.get_context_for_prompt(query, max_memories=20)
                 if mem_ctx:
                     logger.info(f"Mémoire injectée: {len(mem_ctx)} chars, ~{len(mem_ctx)//4} tokens")
                     parts.append(mem_ctx)
@@ -793,12 +490,9 @@ class ReActLoop:
             except Exception as exc:
                 logger.warning(f"ChromaDB memory unavailable: {exc}")
 
-        # --- 3. Mémoire permanente (Phase 7.2 : injectée seulement pour REACT/PROJECT) ---
-        _skip_permanent = False
-        if self.runtime_ctx is not None:
-            _rt_intent = getattr(self.runtime_ctx, "intent", "react")
-            if _rt_intent in ("chat", "tool_direct"):
-                _skip_permanent = True
+        # --- 3. Mémoire permanente (injectée sauf pour intent=tool_direct) ---
+        _rt_intent = getattr(self.runtime_ctx, "intent", None) if self.runtime_ctx else None
+        _skip_permanent = str(_rt_intent or "").strip().lower() == "tool_direct"
         if not _skip_permanent and _lum and hasattr(_lum, "get_permanent_memory_context"):
             try:
                 perm = _lum.get_permanent_memory_context()
@@ -817,11 +511,39 @@ class ReActLoop:
             except Exception as e:
                 logger.debug(f"Emotion summary: {e}")
 
-        # --- 5. Règles de cohérence ---
+        # --- 5. Règles obligatoires (lues depuis ChromaDB facts, jamais hardcodées) ---
+        import platform as _plt
+        _os_version = f"{_plt.system()} {_plt.release()}"
+        _os_cmd_hint = (
+            f"- OS actuel : {_os_version} — utilise UNIQUEMENT des commandes Windows "
+            "(dir, type, where, tasklist, findstr, Get-Content, Select-String). "
+            "JAMAIS ls, head, tail, grep, find /mnt/, wc.\n"
+        ) if IS_WINDOWS else (
+            f"- OS actuel : {_os_version} — utilise les commandes shell appropriées.\n"
+        )
+
+        _rules_lines: list[str] = []
+        if memory:
+            try:
+                _formality = memory.get_fact("formality")
+                if _formality == "vouvoiement":
+                    _rules_lines.append("- ⚠️ IMPÉRATIF : utilise VOUS/VOTRE/VOS pour t'adresser à l'utilisateur. JAMAIS tu/ton/ta/tes.")
+                elif _formality == "tutoiement":
+                    _rules_lines.append("- Tu peux tutoyer l'utilisateur (tu, ton, ta, tes).")
+                _user_name = memory.get_fact("user_name")
+                if _user_name:
+                    _rules_lines.append(f"- L'utilisateur s'appelle {_user_name}. Utilise son prénom naturellement.")
+                _relationship = memory.get_fact("relationship")
+                if _relationship:
+                    _rules_lines.append(f"- Ta relation avec l'utilisateur : {_relationship}.")
+            except Exception:
+                pass
+
         parts.append(
             "## Règles de cohérence\n"
-            "- Windows 11 : utilise UNIQUEMENT des commandes Windows (dir, type, where, tasklist). JAMAIS ls, head, tail, grep, find /mnt/.\n"
-            "- Tu ne mentionnes JAMAIS : Qwen, Alibaba, OpenAI, Claude, GPT, LLaMA, Mistral, DeepSeek, ou tout autre modèle/entreprise IA.\n"
+            + _os_cmd_hint
+            + ("\n".join(_rules_lines) + "\n" if _rules_lines else "")
+            + "- Tu ne mentionnes JAMAIS : Qwen, Alibaba, OpenAI, Claude, GPT, LLaMA, Mistral, DeepSeek, ou tout autre modèle/entreprise IA.\n"
             "- Tu NE DIS JAMAIS que tu es « basée sur » ou « dérivée de » quoi que ce soit.\n"
             "- JAMAIS parler de toi à la 3ème personne (« Lumena pense… »). Toujours « je », « moi », « mon ».\n"
             "- Tu ne peux PAS entendre (pas de micro). Ne parle pas de « voix ».\n"
@@ -832,68 +554,9 @@ class ReActLoop:
 
         return "\n\n".join(parts)
 
-    # ── Intent → catégories à injecter (P0 tool recommender) ──
-    _INTENT_CATEGORY_MAP: list = [
-        # (keywords, categories_to_inject)
-        (
-            ("enregistre", "planifie", "programme", "rappelle",
-             "tous les jours", "chaque matin", "chaque soir", "a midi",
-             "toutes les heures", "toutes les", "chaque semaine",
-             "tache quotidienne", "tous les matins", "tous les soirs",
-             "envoie un mail", "envoyer un mail", "envoyer un message",
-             "rappel", "planifier", "schedule"),
-            {"autonomy"},
-        ),
-        (
-            ("pdf", "rapport", "document", "facture", "devis", "invoice",
-             "docx", "xlsx", "pptx", "word", "excel", "powerpoint",
-             "bon de commande", "contrat", "avoir", "proforma",
-             "note de frais", "compte rendu", "compte-rendu",
-             "réunion", "reunion", "synthèse", "synthese",
-             "csv", "tableur", "spreadsheet", "présentation",
-             "presentation", "diaporama", "slides"),
-            {"documents"},
-        ),
-        (
-            ("discord", "salon discord", "serveur discord", "bot discord",
-             "modération discord", "canal discord"),
-            {"discord"},
-        ),
-        (
-            ("stripe", "paiement", "payment", "abonnement",
-             "subscription", "checkout", "coupon", "lien de paiement"),
-            {"stripe"},
-        ),
-        (
-            ("ionos", "hébergement", "hebergement", "sftp", "ftp",
-             "deploy", "déploie", "deploie", "déployer", "deployer",
-             "hosting", "mettre en ligne", "mise en ligne"),
-            {"ionos"},
-        ),
-    ]
-
-    def _expand_tools_by_intent(self, query: str) -> None:
-        """Elargit les outils autorises selon l'intent detecte dans la query.
-
-        Appele AVANT _build_react_prompt() pour que tools_desc reflete les
-        outils necessaires. Parcourt _INTENT_CATEGORY_MAP et injecte les
-        categories manquantes quand des mots-cles matchent.
-        """
-        if not hasattr(self.tools, "_allowed_tools") or self.tools._allowed_tools is None:
-            return
-        query_lower = query.lower()
-        _modules = getattr(self.tools, "_tool_modules", {})
-
-        _changed = False
-        for _keywords, _categories in self._INTENT_CATEGORY_MAP:
-            if any(kw in query_lower for kw in _keywords):
-                for _tn, _tc in _modules.items():
-                    if _tc in _categories and _tn not in self.tools._allowed_tools:
-                        self.tools._allowed_tools.add(_tn)
-                        _changed = True
-        if _changed:
-            self.tools._tools_desc_cache = None
-            logger.debug("[P0] Intent expansion: {} outils ajoutés", len(self.tools._allowed_tools))
+    # v2: _INTENT_CATEGORY_MAP et _expand_tools_by_intent supprimés
+    # La logique est désormais dans _CONTEXT_RULES (tool_registry.py) qui couvre
+    # autonomy, documents, discord, stripe, ionos directement.
 
     def _build_react_prompt(self, query: str) -> str:
         """Construit le prompt ReAct (version epure V4 SUPREME).
@@ -1194,6 +857,20 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
             "Si on te demande juste de causer sans action, reponds avec ACTION: FINAL."
         )
 
+        read_only_section = ""
+        if False:  # v2: mode lecture seule supprimé
+            _ws = ""
+            read_only_section = (
+                "\n## 🔒 MODE LECTURE SEULE\n"
+                f"Workspace ciblé : {_ws}\n"
+                "• Utilise UNIQUEMENT : read_file, list_files, grep_search, read_files_batch.\n"
+                "• N'utilise PAS : write_file, edit_file, apply_patch, delegate_task, "
+                "shell, run_python, generate_website, edit_website.\n"
+                "• Ta réponse FINALE est une analyse/opinion structurée en français, "
+                "sans modifier aucun fichier.\n"
+                "• 1-3 lectures ciblées suffisent — ne liste pas tout le projet.\n"
+            )
+
         from datetime import datetime as _dt_now
         _today = _dt_now.now().strftime("%A %d %B %Y")
 
@@ -1235,6 +912,7 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
 {formality_section}
 {creation_rule_section}
 {agent_memory_section}
+{read_only_section}
 {context_section}
 {self_awareness_context}
 {active_skills_section}
@@ -1268,17 +946,17 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 3. Projet multi-fichiers (2+) -> `create_project` (pas write_file un par un).
 4. PLAN = ENGAGEMENT : complete toutes les taches avant FINAL. Si impossible : explique-le dans THOUGHT et passe a la suivante.
 5. FINAL apres code = seulement si execute et verifie.
-6. Sous-tache > 3 iterations sans progres -> `delegate_task` a l'agent specialise (code/research/debug/refactor/planner/file).
+6. Tache de code complexe (creation, modification, debug) -> `delegate_task` (synchrone, attend le resultat) ou `delegate_task_bg` (arriere-plan, retourne un task_id). Prefere delegate_task sauf si la tache est tres longue et que tu veux continuer a parler en attendant.
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
 
-## Modification de sites web — REGLES STRICTES :
-⛔ N'utilise JAMAIS `edit_file` ou `apply_patch` directement sur des fichiers HTML/CSS/JS d'un site web. Ca echoue systematiquement.
-✅ Pour MODIFIER un site existant (ameliorer, ajouter du contenu, refondre, mettre a jour) → `delegate_task` avec agent_type="code" et context={{"project_dir": "chemin/du/site"}}. Le CodeAgent lit, edite et valide en boucle.
-✅ Pour un micro-fix (typo, couleur CSS, lien casse) → `edit_website`.
-✅ Pour CREER un site from scratch → `generate_website` (JAMAIS si un site existe deja).
-✅ Apres modification → `deploy_to_ionos` pour deployer.
-- DELEGATION MID-LOOP : `delegate_task` retourne le resultat ici, tu continues normalement avec d'autres outils (deploy, mail, etc.).
+## Delegation CodeAgent — QUAND utiliser :
+- Tout code complexe (creation site/projet, modification, debug, refactoring) → `delegate_task` ou `delegate_task_bg`.
+- Le CodeAgent peut lire/ecrire des fichiers, executer des commandes, et iterer jusqu'a 50 fois.
+- `delegate_task` : SYNCHRONE — attend le resultat, tu enchaines (deploy, mail, etc.).
+- `delegate_task_bg` : ARRIERE-PLAN — retourne un task_id, la progression s'affiche automatiquement dans le chat. Utilise `bg_status(task_id)` pour verifier.
+- Pour un micro-fix (typo, couleur CSS) → `edit_website` ou `edit_file` directement.
+- Apres modification de site → `deploy_to_ionos` pour deployer.
 {self._format_plan_section()}
 ## Historique:
 {self._format_history()}
@@ -1554,6 +1232,10 @@ Maintenant, reflechis et reponds:"""
         # Condition : obs non vide + outil non trivial (pas juste wait/memory_add).
         # Exception : un outil "trivial" qui a des hints matchant la tâche du plan
         # n'est PAS trivial dans ce contexte (ex: memory_search quand le plan dit "rechercher").
+        # CODE_READ : désactivé — en mode analyse, seul le LLM peut marquer les tâches
+        # complétées (via hint/tool/arg match). L'auto-avancement désynchronise le plan
+        # et provoque des blocages PLAN GUARD sur des tâches marquées par erreur.
+        _is_read_only_mode = False  # v2: mode lecture seule supprimé
         _TRIVIAL_TOOLS = {
             "wait", "memory_add", "read_file", "list_files", "list_dir",
             "search_files", "search_code", "list_directory", "find_files",
@@ -1573,7 +1255,7 @@ Maintenant, reflechis et reponds:"""
                     return any(h in desc_lower for h in hints)
             return False
 
-        if not _any_matched and not _seq_matched and not observation_has_failure:
+        if not _any_matched and not _seq_matched and not observation_has_failure and not _is_read_only_mode:
             # Garde: max 1 auto-avancement par itération (parallel_tools peut appeler
             # _update_plan_progress N fois dans la même itération → sans garde, N tâches
             # sont marquées completed d'un coup sans rapport avec le contenu réel)
@@ -1815,13 +1497,7 @@ Maintenant, reflechis et reponds:"""
         if _pipeline_result is not None:
             return _pipeline_result
 
-        # ── Auto-route CodeAgent : tâches code-heavy court-circuitent la boucle ReAct ──
-        _codeagent_result = await self._maybe_auto_route_codeagent(query)
-        if _codeagent_result is not None:
-            return _codeagent_result
-
-        # Expansion des outils selon l'intent (ex : schedule → autonomy)
-        self._expand_tools_by_intent(query)
+        # v2: Auto-route supprimé — le LLM utilise delegate_task / delegate_task_bg via le prompt
 
         for i in range(self.max_iterations):
             self._current_iteration = i  # Exposé pour réduction mémoire dynamique
@@ -2222,22 +1898,22 @@ Maintenant, reflechis et reponds:"""
                         logger.warning("⚠️ Stagnation critique ({}) — bypass PLAN GUARD pour débloquer FINAL", _stagnation_streak)
                         # NE PAS mentir sur l'état des tâches — juste bypasser le guard
                         self._plan_guard_retries = 3  # Empêche PLAN GUARD de bloquer
-                    # P3 HARD: Après 5 stagnations consécutives ET actions identiques → FORCER FINAL synthétique
+                    # P3 HARD: Après 3 stagnations consécutives ET actions identiques → FORCER FINAL synthétique
                     # Une progression légitime (lectures séquentielles avec args différents) est tolérée.
                     _actions_are_redundant = False
-                    if _stagnation_streak >= 5 and len(self.history) >= 3:
+                    if _stagnation_streak >= 3 and len(self.history) >= 3:
                         _recent_actions = self.history[-3:]
                         _sig = (action.tool_name, str(action.tool_args))
                         _recent_sigs = [(h.action.tool_name, str(h.action.tool_args)) for h in _recent_actions]
                         # Si les 3 dernières actions + l'actuelle sont toutes identiques → vrai blocage
                         _actions_are_redundant = all(s == _sig for s in _recent_sigs)
-                    if _stagnation_streak >= 5 and _actions_are_redundant:
+                    if _stagnation_streak >= 3 and _actions_are_redundant:
                         logger.error(
                             "🛑 Stagnation HARD ({}× consécutives, action identique) — FORCE FINAL synthétique",
                             _stagnation_streak,
                         )
                         _forced_answer = (
-                            "Je stagne depuis 5 tours consécutifs sur le même raisonnement "
+                            "Je stagne depuis 3 tours consécutifs sur le même raisonnement "
                             "ET la même action, sans progresser. Je m'arrête pour éviter une boucle inutile.\n\n"
                             "Résumé de ce que j'ai exploré :\n"
                             f"- Dernière pensée : {thought.content[:200]}\n"
@@ -2844,10 +2520,14 @@ Maintenant, reflechis et reponds:"""
                         )
                     )
                     _is_clarification = _ends_with_question or _has_option_list
+                    # CODE_READ (analyse) : le LLM a lu ce qu'il lui fallait et
+                    # rédige sa synthèse → ne pas bloquer son FINAL.
+                    _is_read_only = False  # v2: mode lecture seule supprimé
                     if (
                         remaining >= 2
                         and self._plan_guard_retries < 3
                         and not _is_clarification
+                        and not _is_read_only
                         and i < self.max_iterations - 2
                     ):
                         self._plan_guard_retries += 1
@@ -3303,10 +2983,12 @@ Maintenant, reflechis et reponds:"""
                     _total = float(self.timeout_seconds or 600) + getattr(self, '_tool_time_total', 0.0)
                     self.tools._v2_context.budget_seconds = max(0.0, _total - _elapsed)
                 # Mesurer le temps outil pour exclure du timeout de raisonnement
+                from .caller_context import REACT as _CALLER_REACT
                 _tool_exec_start = perf_counter()
                 observation = await self.tools.execute(
                     action.tool_name, 
-                    action.tool_args
+                    action.tool_args,
+                    caller=_CALLER_REACT,
                 )
                 _tool_exec_duration = perf_counter() - _tool_exec_start
                 # Repousser la deadline du temps passé dans l'outil
@@ -3371,9 +3053,10 @@ Maintenant, reflechis et reponds:"""
                         logger.info("⚡ Multi-action PARALLÈLE ({} actions read-only)", len(_pending))
                         _par_start = perf_counter()
 
+                        from .caller_context import REACT as _CALLER_REACT_PAR
                         async def _run_one(_n: str, _a: dict):
                             try:
-                                return _n, await self.tools.execute(_n, _a), None
+                                return _n, await self.tools.execute(_n, _a, caller=_CALLER_REACT_PAR), None
                             except Exception as _e:
                                 return _n, None, _e
 
@@ -3403,8 +3086,9 @@ Maintenant, reflechis et reponds:"""
                                 continue
                             try:
                                 logger.info("⚡ Multi-action queue: exécution de '{}' (args: {})", _ma_name, list(_ma_args.keys()))
+                                from .caller_context import REACT as _CALLER_REACT_MA
                                 _ma_start = perf_counter()
-                                _ma_obs = await self.tools.execute(_ma_name, _ma_args)
+                                _ma_obs = await self.tools.execute(_ma_name, _ma_args, caller=_CALLER_REACT_MA)
                                 _ma_dur = perf_counter() - _ma_start
                                 if hasattr(self, '_timeout_deadline'):
                                     self._timeout_deadline += _ma_dur
@@ -3822,6 +3506,6 @@ Continue à répondre à la question initiale. Si tu as créé les 3 fichiers (H
         self._last_completed_task_count = 0
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

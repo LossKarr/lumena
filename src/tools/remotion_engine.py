@@ -637,9 +637,12 @@ async def _run_local_node(
     """Fallback: exécute via Node.js local si Docker indisponible et LUMENA_SANDBOX_MODE=never."""
     import asyncio
 
+    # Résolution absolue du chemin pour éviter WinError 267 sur chemins accentués (Windows)
+    _resolved_workdir = str(Path(workdir).resolve())
+
     proc = await asyncio.create_subprocess_shell(
         command,
-        cwd=workdir,
+        cwd=_resolved_workdir,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -659,6 +662,6 @@ async def _run_local_node(
     )
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

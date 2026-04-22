@@ -353,6 +353,82 @@ def find_project(query: str) -> Optional[Path]:
     return None
 
 
+# ── Recherche inverse par chemin ─────────────────────────────────────────────
+
+def find_project_by_path(path: str | Path) -> Optional[dict]:
+    """Trouve le projet du registry auquel appartient un chemin donné.
+
+    Fonctionne que `path` pointe vers :
+    - le dossier racine d'un projet enregistré
+    - un fichier à l'intérieur de ce projet (sous-dossiers inclus)
+    - un chemin qui n'existe pas encore (le match se fait sur la hiérarchie logique)
+
+    Ne scanne PAS le filesystem : se base uniquement sur le registry persistant
+    (léger, déterministe, adapté à l'utilisation runtime dans chaque `execute()`).
+
+    Args:
+        path: chemin absolu ou relatif à tester.
+
+    Returns:
+        Dict projet (`{"slug", "path", "description", ...}`) ou None.
+    """
+    if path is None:
+        return None
+    try:
+        # Résolution tolérante : on tente de normaliser sans exiger l'existence
+        _candidate = Path(path)
+        if not _candidate.is_absolute():
+            # Essayer plusieurs bases : ROOT_DIR, WORKSPACE_DIR.parent, cwd
+            _resolved: Optional[Path] = None
+            for _base in (ROOT_DIR, WORKSPACE_DIR.parent, Path.cwd()):
+                _try = (_base / _candidate).resolve(strict=False)
+                if _try.exists() or any(
+                    str(_try).startswith(str(Path(p.get("path", "")).resolve(strict=False)))
+                    for p in load_registry()
+                ):
+                    _resolved = _try
+                    break
+            _candidate = _resolved or _candidate.resolve(strict=False)
+        else:
+            _candidate = _candidate.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+
+    projects = load_registry()
+    # Tri : projets à chemin le + long en premier (pour ne pas confondre un projet
+    # parent avec un projet enfant quand l'un contient l'autre).
+    def _project_path(p: dict) -> Path:
+        try:
+            return Path(p.get("path", "")).resolve(strict=False)
+        except (OSError, RuntimeError):
+            return Path(p.get("path", ""))
+
+    projects_sorted = sorted(
+        projects,
+        key=lambda p: len(str(_project_path(p))),
+        reverse=True,
+    )
+
+    for proj in projects_sorted:
+        try:
+            _proj_path = _project_path(proj)
+        except (OSError, RuntimeError):
+            continue
+        if not _proj_path or str(_proj_path) in ("", "."):
+            continue
+        # Match strict : le candidate doit être == ou un descendant du projet
+        try:
+            if _candidate == _proj_path or _candidate.is_relative_to(_proj_path):
+                return proj
+        except AttributeError:
+            # Python < 3.9 : fallback sur str.startswith
+            _cand_str = str(_candidate).replace("\\", "/") + "/"
+            _proj_str = str(_proj_path).replace("\\", "/") + "/"
+            if _cand_str == _proj_str or _cand_str.startswith(_proj_str):
+                return proj
+    return None
+
+
 # ── Point d'entrée unique : resolve_workspace ────────────────────────────────
 
 @dataclass
@@ -622,6 +698,6 @@ def resolve_workspace(
     return WorkspaceResolution(path=None, intent=intent, source="fallback", confidence=0.0)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

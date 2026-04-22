@@ -791,6 +791,9 @@ class TestComputerTask:
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_cu_loop_mod = ModuleType("src.computer_use.cu_agent_loop")
         mock_cu_loop_mod.CUAgentLoop = MagicMock(return_value=mock_loop)
+        mock_cu_loop_mod.CUAction = CUAction
+        mock_cu_loop_mod.CUStepResult = CUStepResult
+        mock_cu_loop_mod.CUTaskResult = CUTaskResult
 
         with patch.dict(sys.modules, {"src.computer_use.cu_agent_loop": mock_cu_loop_mod}):
             r = await (computer_task(_make_ctx(), goal="test task"))
@@ -809,6 +812,7 @@ class TestComputerTask:
         mock_loop.run = AsyncMock(return_value=mock_result)
         mock_cu_loop_mod = ModuleType("src.computer_use.cu_agent_loop")
         mock_cu_loop_mod.CUAgentLoop = MagicMock(return_value=mock_loop)
+        mock_cu_loop_mod.CUTaskResult = CUTaskResult
 
         with patch.dict(sys.modules, {"src.computer_use.cu_agent_loop": mock_cu_loop_mod}):
             r = await (computer_task(_make_ctx(), goal="failing task"))

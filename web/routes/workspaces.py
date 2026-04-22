@@ -33,9 +33,29 @@ def _serving_info(slug: str) -> tuple[bool, str | None]:
     return False, None
 
 
+def _detect_tech(ws_dir: Path, file_names: set[str]) -> List[str]:
+    tech: List[str] = []
+    if (ws_dir / "package.json").exists():
+        tech.append("Node.js")
+    if (ws_dir / "requirements.txt").exists() or any(f.endswith(".py") for f in file_names):
+        tech.append("Python")
+    if any(f.endswith((".ts", ".tsx")) for f in file_names):
+        tech.append("TypeScript")
+    if (ws_dir / "Cargo.toml").exists() or any(f.endswith(".rs") for f in file_names):
+        tech.append("Rust")
+    if (ws_dir / "go.mod").exists() or any(f.endswith(".go") for f in file_names):
+        tech.append("Go")
+    if any(f.lower() in ("dockerfile", ".dockerignore") for f in file_names):
+        tech.append("Docker")
+    if (ws_dir / "index.html").exists():
+        tech.append("HTML")
+    return tech
+
+
 def _ws_summary(ws_dir: Path, date_str: str) -> Dict[str, Any]:
     files = [f for f in ws_dir.rglob("*") if f.is_file()]
     total_size = sum(f.stat().st_size for f in files)
+    file_names = {f.name for f in files}
     is_serving, serve_url = _serving_info(ws_dir.name)
     return {
         "slug": ws_dir.name,
@@ -45,6 +65,7 @@ def _ws_summary(ws_dir: Path, date_str: str) -> Dict[str, Any]:
         "total_size_kb": round(total_size / 1024, 1),
         "has_index_html": (ws_dir / "index.html").exists(),
         "has_package_json": (ws_dir / "package.json").exists(),
+        "tech_stack": _detect_tech(ws_dir, file_names),
         "is_serving": is_serving,
         "serve_url": serve_url,
     }
@@ -148,6 +169,6 @@ async def delete_workspace(slug: str, _auth=Depends(deps.verify_admin_token)):
     return {"success": True, "slug": slug}
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

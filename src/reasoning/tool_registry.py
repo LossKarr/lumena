@@ -22,6 +22,74 @@ from .react_config import (
     current_trace_context, get_file_edits_store,
     compute_workspace_relative, get_current_runtime_context,
 )
+from .caller_context import CallerContext, UNKNOWN as _CALLER_UNKNOWN
+from .file_categories import requires_codeagent as _requires_codeagent
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Policy : délégation forcée vers CodeAgent pour mutations de code/config
+# ──────────────────────────────────────────────────────────────────────
+
+# Outils qui MUTENT l'état (écriture fichier, exécution shell, suppression).
+# Leur appel par ReAct sur un fichier code/config de projet doit être refusé.
+_MUTATE_TOOLS_CODE: frozenset[str] = frozenset({
+    "write_file", "edit_file", "multi_edit_file", "apply_patch",
+    "insert_at_anchor", "edit_by_lines", "str_replace",
+    "delete_file", "delete_directory", "create_directory",
+    "run_command", "run_shell", "exec_command",
+    "write_website_files",
+})
+
+
+def _strict_mode() -> str:
+    """Lit le flag env `LUMENA_STRICT_CODE_DELEGATION` : enforce|warn|off."""
+    val = (os.getenv("LUMENA_STRICT_CODE_DELEGATION", "enforce") or "enforce").strip().lower()
+    if val not in ("enforce", "warn", "off"):
+        val = "enforce"
+    return val
+
+
+def _extract_path_from_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Extrait le chemin cible depuis les arguments d'un outil muteur.
+
+    Selon l'outil, le path vit sous des clés différentes (path, file_path, cwd,
+    command…). On retourne la meilleure candidate, ou None si rien d'exploitable.
+    """
+    if not isinstance(args, dict):
+        return None
+    # Chemins directs
+    for key in ("path", "file_path", "target", "destination", "filepath"):
+        v = args.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    # Listes de chemins (multi_edit_file, apply_patch)
+    for key in ("paths", "files", "file_paths"):
+        v = args.get(key)
+        if isinstance(v, (list, tuple)) and v:
+            first = v[0]
+            if isinstance(first, str):
+                return first
+            if isinstance(first, dict):
+                for sub in ("path", "file_path"):
+                    if isinstance(first.get(sub), str):
+                        return first[sub]
+    # Shell : cwd d'abord, puis premier token-fichier de la commande
+    if tool_name in ("run_command", "run_shell", "exec_command"):
+        cwd = args.get("cwd") or args.get("working_dir") or args.get("directory")
+        if isinstance(cwd, str) and cwd.strip():
+            return cwd.strip()
+        cmd = args.get("command") or args.get("cmd") or args.get("shell")
+        if isinstance(cmd, str) and cmd.strip():
+            # Rechercher un chemin de type workspace/... ou slug/ dans la commande
+            m = re.search(r"([A-Za-z]:[\\/][^\s;&|<>]+|workspace[\\/][\w\-./\\]+)", cmd)
+            if m:
+                return m.group(0)
+            # Sinon : premier argument qui ressemble à un chemin fichier
+            for token in cmd.split():
+                if ("/" in token or "\\" in token or "." in token) and not token.startswith("-"):
+                    return token
+    return None
+
 
 
 class _FallbackToolSearch:
@@ -583,187 +651,254 @@ class ToolRegistry:
     _FALLBACK_CATEGORIES: set = {"files", "system", "web", "memory"}
 
     # Mots-clés français + anglais → catégories pertinentes
+    # v2 — 18 packs sémantiques, BROWSER/SEARCH séparés, CODE isolé
     _CONTEXT_RULES: list = [
-        # (keywords, categories à inclure)
+
+        # ═══ PACK 01 — SEARCH (SANS navigation Chrome) ═══
         (
-            {"chrome", "chromium", "firefox", "navigateur", "browser", "onglet",
-             "tab", "site", "page web", "webpage", "url", "lien", "click",
-             "cliquer", "formulaire", "form", "bouton", "button", "scraping",
-             "leboncoin", "le bon coin", "google", "bing", "youtube"},
-            {"browser", "web", "system"},
+            {"recherche", "trouve", "news", "actualité", "actualite",
+             "cherche", "info sur", "wikipedia", "internet", "en ligne",
+             "article", "que sait-on", "online", "information",
+             "search", "find", "web", "wiki", "résumé de", "resume de",
+             "explique-moi", "qu'est-ce que", "quoi de neuf",
+             "rapport sur", "synthèse de", "synthese de"},
+            {"web"},
+        ),
+
+        # ═══ PACK 02 — BROWSER (Chrome profil utilisateur, SANS web_search) ═══
+        (
+            {"chrome", "chromium", "firefox", "navigateur", "browser",
+             "onglet", "tab", "page web", "webpage", "url", "lien",
+             "click", "cliquer", "formulaire", "form", "bouton", "button",
+             "scraping", "leboncoin", "le bon coin", "google", "bing",
+             "youtube", "ouvre", "va sur", "navigue", "connecte-toi",
+             "affiche la page", "remplis le formulaire", "télécharge depuis"},
+            {"browser"},
+        ),
+
+        # ═══ PACK 03 — CODE ⭐ (delegate_task = SEUL point d'entrée code) ═══
+        (
+            {"crée un site", "cree un site", "crée un projet", "cree un projet",
+             "développe", "developpe", "génère", "genere",
+             "site web", "website", "application web", "webapp",
+             "landing page", "portfolio", "dashboard",
+             "frontend", "backend", "fullstack",
+             "react", "vue", "angular", "html", "css",
+             "programme", "écris le code", "ecris le code",
+             "implémente", "implemente", "ajoute une feature",
+             "corrige l'erreur", "répare le bug", "repare le bug",
+             "bug", "débogu", "debogu", "debug", "refactor",
+             "variable", "function", "class", "compile",
+             "build", "npm", "pip", "package", "dépendance", "dependance",
+             "dev", "code source", "écris le code", "ecris le code",
+             "génère le code", "genere le code", "script", "python"},
+            {"agents", "project"},
+        ),
+
+        # ═══ PACK 04 — GIT ═══
+        (
+            {"git", "commit", "branch", "branche", "merge", "pull", "push",
+             "rebase", "stash", "diff", "log", "clone", "checkout", "repo",
+             "repository", "dépôt", "depot"},
+            {"git", "files"},
         ),
         (
-            {"souris", "mouse", "clavier", "keyboard", "écran", "screen",
-             "fenêtre", "window", "bureau", "desktop", "clic droit",
-             "right click", "drag", "scroll", "défilement", "application",
-             "notepad", "excel", "word", "paint", "terminal"},
-            {"computer_use", "system"},
+            {"github", "pull request", "issue", "pr", "gist", "fork",
+             "github.com", "actions", "release", "tag"},
+            {"github", "git"},
         ),
+
+        # ═══ PACK 05 — IDE ═══
         (
-            {"fichier", "file", "dossier", "folder", "directory", "répertoire",
-             "écrire", "write", "lire", "read", "créer", "create", "supprimer",
-             "delete", "renommer", "rename", "copier", "copy", "déplacer",
-             "move", "code", "script", "python", "patch"},
-            {"files", "skills", "system"},
+            {"ide", "éditeur", "editeur", "editor", "vscode", "cursor",
+             "code source", "lsp", "autocomplétion", "autocompletion",
+             "navigate", "symbole",
+             "codebase", "base de code", "analyse de code", "dépendances",
+             "imports", "architecture", "structure du code", "index",
+             "search code", "cherche dans le code",
+             "goto definition", "références", "references"},
+            {"ide", "lsp", "codebase", "files"},
         ),
+
+        # ═══ PACK 06 — FILES (fichiers purs, pas code projet) ═══
         (
-            {"mail", "email", "courriel", "courrier", "envoyer un mail",
-             "send mail", "inbox", "boîte de réception", "imap",
-             "telegram", "whatsapp", "envoyer", "envoi", "zip"},
-            {"mail", "files", "system"},
+            {"fichier", "file", "dossier", "folder", "directory",
+             "répertoire", "repertoire", "écrire", "ecrire",
+             "write", "lire", "read", "créer", "creer", "create",
+             "supprimer", "delete", "renommer", "rename", "copier",
+             "copy", "déplacer", "deplacer", "move", "patch",
+             "zip", "archive", "liste les fichiers", "quel contenu"},
+            {"files", "skills"},
         ),
+
+        # ═══ PACK 07 — COMPUTER ═══
+        (
+            {"souris", "mouse", "clavier", "keyboard", "écran", "ecran",
+             "screen", "fenêtre", "fenetre", "window", "bureau", "desktop",
+             "clic droit", "right click", "drag", "scroll", "défilement",
+             "defilement", "application", "notepad", "paint",
+             "terminal", "double-clique", "glisse", "open_app",
+             "ferme la fenêtre", "prend la main", "contrôle l'écran",
+             "automatise le bureau"},
+            {"computer_use"},
+        ),
+
+        # ═══ PACK 08 — DOCUMENTS ═══
         (
             {"document", "rapport", "pdf", "docx", "xlsx", "pptx",
              "facture", "devis", "invoice", "contrat", "compte rendu",
              "compte-rendu", "synthèse", "synthese", "bon de commande",
              "note de frais", "proforma", "avoir", "tableur", "csv",
              "présentation", "presentation", "diaporama", "slides",
-             "word", "excel", "powerpoint", "spreadsheet"},
-            {"documents", "files", "system"},
+             "word", "excel", "powerpoint", "spreadsheet",
+             "réunion", "reunion", "modèle", "modele", "template",
+             "analyse ce document", "lis ce pdf", "résume ce fichier"},
+            {"documents", "files"},
         ),
+
+        # ═══ PACK 09 — MAIL & MESSAGING ═══
+        (
+            {"mail", "email", "courriel", "courrier", "envoyer un mail",
+             "send mail", "inbox", "boîte de réception", "boite de reception",
+             "imap", "telegram", "whatsapp", "envoyer", "envoi",
+             "notification critique", "sms urgent", "appel urgent",
+             "réponds au mail", "reponds au mail", "lis mes mails",
+             "message whatsapp"},
+            {"mail", "files"},
+        ),
+
+        # ═══ PACK 10 — IMAGE ═══
+        (
+            {"image", "photo", "logo", "illustration", "svg",
+             "thumbnail", "miniature", "vignette", "bannière", "banniere",
+             "affiche", "poster", "portrait", "dessin", "icône", "icone",
+             "fond d'écran", "upscale", "recadre", "supprime le fond",
+             "remove background", "génère une image", "genere une image",
+             "crée une image", "cree une image", "dessine", "illustre",
+             "visualise", "imagine", "dalle", "stable diffusion",
+             "midjourney", "flux", "generate image", "screenshot",
+             "capture", "ocr", "texte dans", "reconnaissance",
+             "perception", "analyse d'image"},
+            {"image", "files"},
+        ),
+
+        # ═══ PACK 11 — MUSIC ═══
         (
             {"spotify", "musique", "music", "chanson", "song", "playlist",
-             "album", "artiste", "artist", "écouter", "play"},
-            {"spotify", "system"},
+             "album", "artiste", "artist", "écouter", "ecouter", "play",
+             "pause", "suivant", "précédent", "precedent",
+             "mets de la musique", "volume spotify", "ajoute à la file"},
+            {"spotify"},
         ),
+
+        # ═══ PACK 12 — VIDEO ⚠️ ISOLÉ (agents ABSENT = delegate_task invisible) ═══
         (
-            {"notion", "notion.so", "page notion", "base de données notion",
-             "database notion"},
-            {"notion", "system"},
+            {"video", "vidéo", "remotion", "reel", "short",
+             "tiktok", "animation", "motion", "clip", "montage", "ffmpeg",
+             "render", "composition", "captions", "sous-titres",
+             "sous titres", "edite la vidéo", "edite la video",
+             "modifie la vidéo", "modifie la video", "coupe la vidéo",
+             "découpe le clip", "decoupe le clip", "accélère la vidéo",
+             "ralentis la vidéo", "assemble les plans",
+             "intro vidéo", "intro video", "outro",
+             "générer une vidéo", "generer une video", "aperçu vidéo"},
+            {"video", "files"},
         ),
-        # ── Catégories ajoutées (Phase 1.2) ──
+
+        # ═══ PACK 13 — MEMORY ═══
         (
-            {"projet", "project", "site web", "website", "app", "application web",
-             "développe", "génère", "crée un site", "crée un projet",
-             "landing page", "portfolio", "dashboard", "webapp", "frontend",
-             "backend", "fullstack", "react", "vue", "angular", "html", "css"},
-            {"project", "website", "files", "system"},
+            {"mémoire", "memoire", "memory", "souvenir", "rappelle",
+             "remember", "oublie", "forget", "journal", "apprends",
+             "learn", "connaissance", "knowledge",
+             "retiens", "note ça", "note ca", "écris dans le journal",
+             "qu'as-tu appris"},
+            {"memory"},
         ),
-        (
-            {"git", "commit", "branch", "branche", "merge", "pull", "push",
-             "rebase", "stash", "diff", "log", "clone", "checkout", "repo",
-             "repository", "dépôt"},
-            {"git", "files", "system"},
-        ),
-        (
-            {"github", "pull request", "issue", "pr", "gist", "fork",
-             "github.com", "actions", "workflow", "release"},
-            {"github", "git", "system"},
-        ),
+
+        # ═══ PACK 14 — AUTONOMY ═══
         (
             {"autonome", "autonomy", "daemon", "heartbeat", "planification",
-             "schedule", "tâche planifiée", "cron", "automatique", "routine",
-             "proactif", "surveillance", "tâche", "tâches", "tache", "taches",
-             "enregistr", "récurren", "recurren", "rappel", "rappelle-moi",
-             "tous les jours", "chaque jour", "quotidien"},
-            {"autonomy", "system"},
+             "schedule", "tâche planifiée", "tache planifiee",
+             "cron", "automatique", "routine", "proactif",
+             "surveillance", "tâche", "tache", "tâches", "taches",
+             "rappel", "rappelle-moi", "tous les jours", "chaque jour",
+             "quotidien", "planifie", "programme pour", "enregistre",
+             "récurrent", "recurren", "bg_start", "plan",
+             "chaque matin", "chaque soir", "toutes les heures",
+             "chaque semaine", "planifier", "schedule"},
+            {"autonomy"},
         ),
-        (
-            {"réseau", "network", "ping", "ip", "dns", "port", "scan",
-             "traceroute", "nmap", "connexion", "bandwidth", "latence",
-             "firewall", "proxy", "vpn", "socket", "tcp", "udp"},
-            {"network", "security", "system"},
-        ),
-        (
-            {"ide", "éditeur", "editor", "vscode", "cursor", "code source",
-             "lsp", "autocomplétion", "refactor", "navigate", "symbole"},
-            {"ide", "lsp", "codebase", "files", "system"},
-        ),
-        (
-            {"codebase", "base de code", "analyse de code", "dépendances",
-             "imports", "architecture", "structure du code", "index",
-             "search code", "cherche dans le code"},
-            {"codebase", "files", "system"},
-        ),
-        (
-            {"discord", "serveur discord", "bot discord", "salon", "channel",
-             "modération", "ban", "kick", "rôle", "role"},
-            {"discord", "system"},
-        ),
-        (
-            {"sécurité", "security", "osint", "reconnaissance", "vulnérabilité",
-             "vulnerability", "audit", "pentest", "whois", "shodan",
-             "exploit", "cve", "hash", "encrypt", "decrypt", "chiffr"},
-            {"security", "network", "system"},
-        ),
-        (
-            {"agent", "sub-agent", "sous-agent", "délègue", "delegate",
-             "spécialisé", "expert", "multi-agent"},
-            {"agents", "system"},
-        ),
-        (
-            {"image", "photo", "screenshot", "capture", "ocr", "texte dans",
-             "reconnaissance", "perception", "analyse d'image", "pdf"},
-            {"documents", "files", "system"},
-        ),
-        (
-            {"mémoire", "memory", "souvenir", "rappelle", "remember",
-             "oublie", "forget", "journal", "apprends", "learn",
-             "connaissance", "knowledge"},
-            {"memory", "system"},
-        ),
-        (
-            {"cherche", "search", "recherche", "trouve", "find", "web",
-             "internet", "en ligne", "online", "actualité", "news",
-             "information", "wiki", "wikipedia"},
-            {"web", "system"},
-        ),
-        (
-            {"skill", "compétence", "installer", "install", "plugin",
-             "extension", "module", "activer", "désactiver"},
-            {"skills", "system"},
-        ),
-        (
-            {"api", "http", "rest", "endpoint", "requête http", "get", "post",
-             "json", "webhook", "curl", "fetch"},
-            {"web", "network", "system"},
-        ),
-        (
-            {"stripe", "paiement", "payment", "facture", "invoice", "abonnement",
-             "subscription", "prix", "price", "produit stripe", "lien de paiement",
-             "payment link", "checkout", "coupon", "remboursement", "refund",
-             "client stripe", "customer", "solde", "balance", "encaisser",
-             "facturer", "tarif", "monétis", "monetiz", "vendre", "sell"},
-            {"stripe", "system"},
-        ),
-        # ── P1.8: Règle code/dev ──
-        (
-            {"développe", "dev", "code", "bug", "debug", "erreur",
-             "test", "function", "class", "refactor", "variable",
-             "import", "module", "compile", "build", "npm",
-             "pip", "package", "dépendance"},
-            {"project", "git", "codebase", "files", "lsp", "ide", "system"},
-        ),
-        # ── P1.9: Catégories manquantes (social, automation, custom) ──
-        (
-            {"twitter", "tweet", "x.com", "poster", "publier",
-             "timeline", "retweet", "rt", "follow", "unfollow",
-             "hashtag", "mention"},
-            {"social", "web", "system"},
-        ),
-        (
-            {"n8n", "workflow", "automatiser", "automate", "scénario",
-             "trigger", "webhook n8n", "node", "intégration"},
-            {"automation", "web", "system"},
-        ),
-        (
-            {"custom tool", "outil custom", "skill installé",
-             "installed skill", "plugin", "extension custom"},
-            {"custom", "skills", "system"},
-        ),
+
+        # ═══ PACK 15 — SERVICES ═══
+        ({"notion", "notion.so", "page notion",
+          "base de données notion", "database notion"}, {"notion"}),
+        ({"discord", "serveur discord", "bot discord", "salon",
+          "channel", "modération", "moderation", "ban", "kick",
+          "rôle", "role", "envoyer sur discord", "message discord",
+          "notifie discord", "canal discord", "webhook discord"}, {"discord"}),
+        ({"twitter", "tweet", "x.com", "poster", "publier",
+          "timeline", "retweet", "rt", "follow", "unfollow",
+          "hashtag", "mention", "réseaux sociaux", "reseaux sociaux",
+          "réseau social", "reseau social"}, {"social", "web"}),
+        ({"stripe", "paiement", "payment", "abonnement",
+          "subscription", "prix", "price", "checkout",
+          "coupon", "remboursement", "refund", "customer",
+          "solde stripe", "encaisser", "facturer",
+          "monétis", "monetiz", "vendre", "sell",
+          "lien de paiement", "payment link",
+          "produit stripe", "facture stripe"}, {"stripe"}),
+        ({"n8n", "workflow", "automatiser", "automate", "scénario",
+          "scenario", "trigger", "webhook n8n", "node", "intégration",
+          "integration", "automatisation", "créer une routine",
+          "flux de travail", "pipeline automatique",
+          "zap", "zapier", "make.com", "no-code", "low-code",
+          "déclencher", "declencher", "si alors"}, {"automation", "web"}),
+
+        # ═══ PACK 16 — DEPLOY ═══
         (
             {"ionos", "hébergement", "hebergement", "hébergeur", "hebergeur",
-             "sftp", "ftp", "deploy", "déploie", "deploie", "déployer",
-             "deployer", "déploiement", "deploiement", "hosting",
-             "mettre en ligne", "mise en ligne", "upload", "serveur web"},
-            {"ionos", "system"},
+             "sftp", "ftp", "deploy", "déploie", "deploie",
+             "déployer", "deployer", "déploiement", "deploiement",
+             "hosting", "mettre en ligne", "mise en ligne",
+             "upload", "serveur web", "publie le site", "envoie le site"},
+            {"ionos", "website"},
         ),
-        # ── Video / Remotion / Animation ──
+
+        # ═══ PACK 17 — SECURITY ═══
         (
-            {"video", "vidéo", "remotion", "reel", "short", "tiktok",
-             "animation", "motion", "clip", "montage", "ffmpeg",
-             "render", "composition", "captions", "sous-titres"},
-            {"video", "files", "system"},
+            {"sécurité", "securite", "security", "osint", "reconnaissance",
+             "vulnérabilité", "vulnerability", "audit", "pentest",
+             "whois", "shodan", "exploit", "cve", "hash",
+             "encrypt", "decrypt", "chiffr",
+             "réseau", "reseau", "network", "ping", "ip", "dns",
+             "port", "scan", "traceroute", "nmap", "connexion",
+             "bandwidth", "latence", "firewall", "proxy", "vpn",
+             "socket", "tcp", "udp"},
+            {"security", "network"},
+        ),
+
+        # ═══ PACK 18 — SKILLS ═══
+        (
+            {"skill", "compétence", "competence", "installer", "install",
+             "plugin", "extension", "module", "activer", "désactiver",
+             "desactiver", "custom tool", "outil custom", "skill installé",
+             "installed skill", "extension custom", "capacités",
+             "mes outils", "reload skills"},
+            {"skills", "custom"},
+        ),
+
+        # ═══ PACK API / HTTP ═══
+        (
+            {"api", "http", "rest", "endpoint", "requête http",
+             "requete http", "json", "webhook", "curl", "fetch"},
+            {"web", "network"},
+        ),
+
+        # ═══ PACK AGENTS (délégation explicite) ═══
+        (
+            {"agent", "sub-agent", "sous-agent", "délègue", "delegate",
+             "spécialisé", "specialise", "expert", "multi-agent"},
+            {"agents"},
         ),
     ]
 
@@ -891,9 +1026,120 @@ class ToolRegistry:
             }
             for name, tool in self.tools.items()
         ]
-    
-    async def execute(self, name: str, args: Dict[str, Any]) -> Observation:
-        """Exécute un outil."""
+
+    # ──────────────────────────────────────────────────────────────
+    # Policy middleware : délégation forcée CodeAgent pour mutations
+    # ──────────────────────────────────────────────────────────────
+    def _policy_check(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        caller: CallerContext,
+    ) -> Optional[Observation]:
+        """Retourne une Observation de refus si la mutation doit être déléguée.
+
+        Autorise :
+        - Tous les outils non-muteurs (read_file, grep, send_email, …)
+        - Les callers non-ReAct (CodeAgent, scheduler, autonomy)
+        - Les mutations hors projet connu (data/, reports/, logs/, bureau)
+        - Les mutations dans un projet sur des fichiers doc/binaire/asset
+          (.md, .pdf, .png, .svg…)
+
+        Refuse uniquement :
+        - Mutation par caller=REACT sur un fichier code/config d'un projet
+          du registry (.py, .js, .json, Dockerfile, package.json, etc.)
+
+        Flag env `LUMENA_STRICT_CODE_DELEGATION` :
+        - enforce (défaut) : refuse durement
+        - warn             : log warning mais laisse passer (transition)
+        - off              : aucun check
+        """
+        mode = _strict_mode()
+        if mode == "off":
+            return None
+        if caller.kind != "react":
+            return None
+        if name not in _MUTATE_TOOLS_CODE:
+            return None
+
+        # Extraire le path cible
+        path_str = _extract_path_from_args(name, args or {})
+        if not path_str:
+            return None  # pas de path identifiable → laisser passer (ex: run_command "curl …")
+
+        # Le path appartient-il à un projet du registry ?
+        try:
+            from ..utils.project_registry import find_project_by_path
+            proj = find_project_by_path(path_str)
+        except Exception as e:
+            logger.debug("[policy] find_project_by_path a échoué ({}) → allow", e)
+            return None
+        if proj is None:
+            return None  # hors projet : ReAct peut éditer
+
+        # Shell tools dans un projet : toujours refuser (commande peut toucher
+        # n'importe quel fichier, on ne peut pas se fier à l'extension du cwd).
+        _is_shell = name in ("run_command", "run_shell", "exec_command")
+        if not _is_shell and not _requires_codeagent(path_str):
+            return None  # .md / .pdf / .svg dans projet → ReAct autorisé
+
+        # Mutation refusée
+        slug = proj.get("slug", "?") if isinstance(proj, dict) else "?"
+        msg = (
+            f"⛔ Mutation refusée : l'outil '{name}' tente de modifier "
+            f"'{path_str}', un fichier code/config du projet suivi '{slug}'. "
+            f"Cette opération doit passer par le CodeAgent. "
+            f"Utilise `delegate_to_codeagent(task)` avec une description claire."
+        )
+        if mode == "warn":
+            logger.warning("[policy] (warn) {} sur {} (projet {}) — autorisé par flag", name, path_str, slug)
+            return None
+        logger.warning("[policy] REACT mutation refusée: {} sur {} (projet {}) → délègue CodeAgent", name, path_str, slug)
+        # Télémétrie minimale si disponible
+        if TELEMETRY_AVAILABLE:
+            try:
+                publish_trace(
+                    stage="policy_refuse",
+                    status="blocked",
+                    mode="agent",
+                    tool_name=name,
+                    summary=f"project={slug} path={path_str}",
+                )
+            except Exception:
+                pass
+        # Reliability metrics
+        try:
+            from ..utils.reliability_metrics import get_metrics as _get_rm
+            _get_rm().record_policy_refuse(tool=name, path=path_str, project=str(slug))
+        except Exception:
+            pass
+        return Observation(content=msg, success=False)
+
+    async def execute(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        *,
+        caller: Optional[CallerContext] = None,
+    ) -> Observation:
+        """Exécute un outil.
+
+        Args:
+            name: Nom de l'outil.
+            args: Arguments (dict).
+            caller: Identité de l'agent appelant (REACT, CODEAGENT, …).
+                Si None, considéré UNKNOWN (permissif pour rétrocompat).
+                ReAct doit passer caller=REACT pour que la policy bloque
+                les mutations de code projet.
+        """
+        caller = caller or _CALLER_UNKNOWN
+
+        # ── Policy middleware : délégation forcée vers CodeAgent ──
+        # Bloque les mutations de code/config de projet quand l'appelant est ReAct.
+        _refusal = self._policy_check(name, args or {}, caller)
+        if _refusal is not None:
+            return _refusal
+
         if name not in self.tools:
             # Auto-fix: normalisation + fuzzy strict (cutoff=0.75) avant d'échouer
             from src.llm.output_normalizer import auto_fix_action_name
@@ -1234,7 +1480,12 @@ class ToolRegistry:
                 success=False
             )
     
-    async def execute_parallel(self, tool_calls: List[Dict[str, Any]]) -> List[Observation]:
+    async def execute_parallel(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        *,
+        caller: Optional[CallerContext] = None,
+    ) -> List[Observation]:
         """
         🚀 PHASE 2: Exécute plusieurs outils en parallèle.
         
@@ -1262,7 +1513,7 @@ class ToolRegistry:
         for tc in tool_calls:
             name = tc.get("name", "")
             args = tc.get("args", {})
-            tasks.append(self.execute(name, args))
+            tasks.append(self.execute(name, args, caller=caller))
         
         # Exécuter en parallèle
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1327,6 +1578,6 @@ class ToolRegistry:
         return self._notion_hub_instance
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

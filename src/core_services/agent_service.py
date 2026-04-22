@@ -343,7 +343,21 @@ class AgentService:
             r"\b(?:passe|switch|change|met|mets|active|utilise)\b.*\b(?:cerveau|modele|modèle|model|llm)\b",
             r"\b(?:passe|switch|change|met|mets|active|utilise)\b.*\b(?:deepseek|qwen|lumena|gpt|claude|gemini|kimi|reasoner|grok|nvidia)\b",
         )
-        if any(re.search(pattern, message) for pattern in model_switch_patterns):
+        # Garde-fous : un vrai ordre de switch est court et direct.
+        # Sinon un long prompt contenant "passe à l'étape X" + "openlumena.com"
+        # déclencherait un switch non voulu vers lumena-v1.
+        _is_switch_command = (
+            len(message) <= 160
+            and any(re.search(pattern, message) for pattern in model_switch_patterns)
+            # action verb doit apparaître dans les 40 premiers caractères
+            and re.search(
+                r"^\s*(?:\w+\s+){0,6}(?:passe|switch|change|met|mets|active|utilise)\b",
+                message,
+                re.IGNORECASE,
+            )
+            is not None
+        )
+        if _is_switch_command:
             target_model = self._match_model_alias(message)
             if target_model:
                 return await self._switch_brain_model(target_model)
@@ -1946,6 +1960,6 @@ Conversations et apprentissages de la journée.
                 return ""
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

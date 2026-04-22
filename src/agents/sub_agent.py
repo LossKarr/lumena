@@ -222,6 +222,7 @@ class SubAgent:
         self.llm_provider = llm_provider  # Optionnel: utiliser un LLM différent
         self.current_task: Optional[AgentTask] = None
         self.history: List[AgentResult] = []
+        self._history_max: int = 100  # garde-fou memory leak sur daemon 24/7
         self._task_workspace_root: Optional[Path] = None  # Root pour write_file si workspace_path dans context
         
         logger.info(f"\U0001f916 SubAgent cr\u00e9\u00e9: {name} ({agent_type.value})")
@@ -422,6 +423,8 @@ class SubAgent:
         self.status = AgentStatus.COMPLETED if result.success else AgentStatus.FAILED
         self.current_task = None
         self.history.append(result)
+        if len(self.history) > self._history_max:
+            self.history = self.history[-self._history_max:]
         
         return result
     
@@ -1282,6 +1285,9 @@ class CodeAgent(SubAgent):
             text_parts.append(f"[{role}]: {content}")
         conversation_text = "\n---\n".join(text_parts)
         try:
+            # Timeout généreux (30s) : sur modèles "thinking" (Kimi K2, o1, R1…)
+            # un résumé de contexte long dépasse régulièrement 15s — fallback troncature
+            # perd tout le résumé structuré, préférable d'attendre un peu plus.
             summary = await asyncio.wait_for(
                 llm.chat(
                     messages=[
@@ -1291,7 +1297,7 @@ class CodeAgent(SubAgent):
                     temperature=0.1,
                     max_tokens=2000,
                 ),
-                timeout=15.0,
+                timeout=30.0,
             )
             return str(summary).strip()[:4000]
         except Exception as exc:
@@ -2533,25 +2539,84 @@ class CodeAgent(SubAgent):
                 # On ne match PLUS par basename seul, car `.backups/contact.html`
                 # et `contact.html` sont deux fichiers différents (cf. logs 2026-04-19 20:09).
                 elif _pk and _pk_abs and not _is_backup_probe:
-                    _files_read = self._session_memory.get("files_read", {})
-                    for _cached_key in _files_read.keys():
-                        _ck_raw = str(_cached_key).replace("\\", "/")
-                        _ck = _ck_raw.lower()
-                        # Ignorer les clés de backup dans le cache
-                        if any(_seg in _ck for _seg in ("/.backups/", "/.git/", "/node_modules/")):
-                            continue
-                        # Résolution absolue de la clé cache
+                    # ── P_REREAD_AFTER_EDIT: si le fichier a été édité/écrit dans cette
+                    # session, le cache est PÉRIMÉ → autoriser la relecture pour que
+                    # l'agent voie le contenu actuel au lieu de corriger à l'aveugle.
+                    _was_edited_this_session = False
+                    _edits_done = self._session_memory.get("edits_done", [])
+                    for _ed_entry in _edits_done:
+                        # Format: "path: action" — extraire le chemin
+                        _ed_path = _ed_entry.split(":", 1)[0].strip().replace("\\", "/").lower()
                         try:
-                            _ck_p = Path(_ck_raw)
-                            if not _ck_p.is_absolute():
-                                _ws_root2 = self._task_workspace_root or Path.cwd()
-                                _ck_p = _ws_root2 / _ck_p
-                            _ck_abs = str(_ck_p.resolve()).replace("\\", "/").lower()
+                            _ed_p = Path(_ed_entry.split(":", 1)[0].strip())
+                            if not _ed_p.is_absolute():
+                                _ed_p = (self._task_workspace_root or Path.cwd()) / _ed_p
+                            _ed_abs = str(_ed_p.resolve()).replace("\\", "/").lower()
                         except Exception:
-                            _ck_abs = _ck
-                        if _ck_abs == _pk_abs:
-                            _blocked_reason = f"déjà lu dans cette session ({_cached_key})"
+                            _ed_abs = _ed_path
+                        if _ed_abs == _pk_abs:
+                            _was_edited_this_session = True
                             break
+
+                    if _was_edited_this_session:
+                        # Fichier modifié → cache périmé, autoriser la relecture
+                        # et invalider le cache pour que le contenu frais soit enregistré
+                        _stale_keys = []
+                        _files_read = self._session_memory.get("files_read", {})
+                        for _cached_key in _files_read.keys():
+                            _ck_raw = str(_cached_key).replace("\\", "/")
+                            _ck = _ck_raw.lower()
+                            try:
+                                _ck_p = Path(_ck_raw)
+                                if not _ck_p.is_absolute():
+                                    _ck_p = (self._task_workspace_root or Path.cwd()) / _ck_p
+                                _ck_abs = str(_ck_p.resolve()).replace("\\", "/").lower()
+                            except Exception:
+                                _ck_abs = _ck
+                            if _ck_abs == _pk_abs:
+                                _stale_keys.append(_cached_key)
+                        for _sk in _stale_keys:
+                            del _files_read[_sk]
+                        logger.info(
+                            "[CodeAgent] Guard read_file levé (fichier édité dans cette session): "
+                            "{} sur {} ré-autorisé (cache invalidé)",
+                            action_type, _probe_path,
+                        )
+                        # _blocked_reason reste "" → lecture autorisée
+                    else:
+                        _files_read = self._session_memory.get("files_read", {})
+                        for _cached_key in _files_read.keys():
+                            _ck_raw = str(_cached_key).replace("\\", "/")
+                            _ck = _ck_raw.lower()
+                            # Ignorer les clés de backup dans le cache
+                            if any(_seg in _ck for _seg in ("/.backups/", "/.git/", "/node_modules/")):
+                                continue
+                            # Résolution absolue de la clé cache
+                            try:
+                                _ck_p = Path(_ck_raw)
+                                if not _ck_p.is_absolute():
+                                    _ws_root2 = self._task_workspace_root or Path.cwd()
+                                    _ck_p = _ws_root2 / _ck_p
+                                _ck_abs = str(_ck_p.resolve()).replace("\\", "/").lower()
+                            except Exception:
+                                _ck_abs = _ck
+                            if _ck_abs == _pk_abs:
+                                _blocked_reason = f"déjà lu dans cette session ({_cached_key})"
+                                break
+
+                # Sur retry (attempt ≥ 2), lever le guard "cache session" : la tentative
+                # précédente a pu partir sur une mauvaise piste, la nouvelle doit pouvoir relire.
+                # On garde le guard Architect-injected (contenu toujours dans le contexte initial).
+                if (
+                    _blocked_reason
+                    and attempt >= 2
+                    and _blocked_reason.startswith("déjà lu dans cette session")
+                ):
+                    logger.info(
+                        "[CodeAgent] Guard read_file levé (attempt={}): {} sur {} ré-autorisé",
+                        attempt, action_type, _probe_path,
+                    )
+                    _blocked_reason = ""
 
                 if _blocked_reason:
                     # Tenter de récupérer le contenu déjà en cache pour l'injecter dans le refus
@@ -2706,6 +2771,39 @@ class CodeAgent(SubAgent):
                 logger.info("[CodeAgent] 💭 {}", _iter_thought[:800])
             logger.info("[CodeAgent] iter={}/{} {} (attempt {})", iteration, max_iter, _action_detail, attempt)
 
+            # ── Progression temps réel (v2) ──
+            _progress_cb = task.context.get("_progress_callback")
+            try:
+                _pct = int(iteration * 100 / max_iter)
+                _progress_data = {
+                    "iteration": iteration,
+                    "max_iter": max_iter,
+                    "pct": _pct,
+                    "last_action": action_type,
+                    "last_path": _action_path[:120] if _action_path else "",
+                }
+                # Stocker dans pending_tasks pour bg_status
+                _orch = getattr(self, "_orchestrator_ref", None)
+                if _orch is None:
+                    try:
+                        _orch = get_orchestrator()
+                    except Exception:
+                        pass
+                if _orch and task.task_id in _orch.pending_tasks:
+                    _orch.pending_tasks[task.task_id]["progress"] = _progress_data
+                # Callback push vers le chat
+                if _progress_cb and iteration % 5 == 0:
+                    _bar = "█" * (_pct // 10) + "░" * (10 - _pct // 10)
+                    _msg = f"[{_bar}] {_pct}% — iter {iteration}/{max_iter} — `{_action_detail}`"
+                    try:
+                        _r = _progress_cb(_msg)
+                        if asyncio.iscoroutine(_r):
+                            await _r
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
             messages.append({"role": "assistant", "content": raw_text})
             obs_text = observation.full() if isinstance(observation, ActionResult) else str(observation)
             # ── P11.FRENCH_ERRORS : traduire messages d'erreur techniques ──
@@ -2818,8 +2916,9 @@ class CodeAgent(SubAgent):
             # Intent déjà résolu par l'appelant (ReAct) ? On le récupère pour que la phase
             # Architect puisse se déclencher (sinon getattr('_resolved_intent', 'auto')
             # renvoie 'auto' et _is_complex_modify reste toujours False).
+            # 'read' = nouveau mode lecture (intent_router v2) : skip Architect + Reasoner.
             _ctx_intent = (task.context or {}).get("intent")
-            if _ctx_intent in ("create", "modify", "unknown"):
+            if _ctx_intent in ("create", "modify", "unknown", "read"):
                 self._resolved_intent = _ctx_intent
         else:
             # ── Résolution centralisée via resolve_workspace ──
@@ -2853,6 +2952,21 @@ class CodeAgent(SubAgent):
 
         user_content = f"Tâche : {task.description}"
         ctx = {k: v for k, v in (task.context or {}).items() if not k.startswith("_")}
+
+        # ── Mode lecture (intent_router v2) : bannière explicite no-write ──
+        # Quand intent='read', l'utilisateur a explicitement demandé une analyse
+        # SANS modification (ex: "analyse juste, ne modifie rien").  On force
+        # le CodeAgent à rester en lecture + raisonnement, sans write_file ni
+        # edit_file.  La phase Architect (Reasoner 12k tokens) est naturellement
+        # skippée car _is_complex_modify exige intent in ('modify','create').
+        if getattr(self, "_resolved_intent", None) == "read":
+            user_content = (
+                "🔒 MODE LECTURE SEULE — l'utilisateur a demandé une ANALYSE, pas une modification.\n"
+                "    • NE PAS utiliser write_file, edit_file, apply_patch, shell, run_python.\n"
+                "    • Utiliser read_file, list_files, grep_search uniquement.\n"
+                "    • Ta réponse finale est une analyse/opinion claire et structurée en français.\n\n"
+                + user_content
+            )
 
         # ── Contexte conversationnel : ce qui a été discuté avant cette tâche
         _conv_hist = (task.context or {}).get("conversation_history", "")
@@ -5073,10 +5187,25 @@ class SubAgentOrchestrator:
 
         text = (description or "").lower()
 
+        # ── Code-modification intent (haute priorité) ──
+        # Des mots comme "corriger", "fix", "modifier le code", "bug dans script.js"
+        # indiquent une tâche CODE même si "site" ou "navig" apparaissent aussi.
+        _code_edit_signals = [
+            "corriger", "corrige", "fix ", "fixer", "modifier le code", "modifier le script",
+            "modifier le fichier", "bug ", "patch", "script.js", "script.py",
+            "style.css", "styles.css", "index.html", ".js", ".py", ".css", ".html",
+            "fonction", "function", "navigateTo", "querySelectorAll",
+            "syntaxe", "syntax", "accolade", "bracket", "parenthès",
+        ]
+        _has_code_edit_intent = any(k in text for k in _code_edit_signals)
+
         if any(k in text for k in ["debug", "erreur", "traceback", "exception", "stack"]):
             return AgentType.DEBUG
         if any(k in text for k in ["refactor", "rename", "renommer", "simplifier", "clean code"]):
             return AgentType.REFACTOR
+        # ── Code editing prend priorité sur Browser quand l'intent est clair ──
+        if _has_code_edit_intent:
+            return AgentType.CODE
         if any(k in text for k in ["browser", "navig", "url", "site", "page web", "crawl"]):
             return AgentType.BROWSER
         if any(k in text for k in ["fichier", "file", "dossier", "read_file", "write_file", "delete", "supprimer"]):
@@ -5404,6 +5533,77 @@ class SubAgentOrchestrator:
 
         return await self.execute_task(task)
 
+    async def run_task_bg(
+        self,
+        description: str,
+        agent_type: AgentType = AgentType.GENERAL,
+        context: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable] = None,
+    ) -> str:
+        """
+        Lance une tâche en arrière-plan et retourne immédiatement le task_id.
+        Le résultat sera disponible dans pending_tasks une fois terminé.
+        """
+        self.task_counter += 1
+        task_id = f"ca_{self.task_counter}_{datetime.now().strftime('%H%M%S')}"
+        task = AgentTask(
+            task_id=task_id,
+            description=description,
+            agent_type=agent_type,
+            context=context or {},
+        )
+        self.pending_tasks[task_id] = {
+            **task.to_dict(),
+            "status": "running",
+            "started_at": datetime.now().isoformat(),
+        }
+        self._save_to_disk()
+
+        async def _run_and_store():
+            try:
+                if progress_callback:
+                    task.context["_progress_callback"] = progress_callback
+                result = await self.execute_task(task)
+                self.pending_tasks[task_id].update({
+                    "status": "done" if result.success else "failed",
+                    "output": result.output[:2000],
+                    "success": result.success,
+                    "meta": result.meta or {},
+                    "finished_at": datetime.now().isoformat(),
+                })
+                self._save_to_disk()
+                if progress_callback:
+                    try:
+                        _msg = (
+                            f"✅ **Tâche terminée** (`{task_id}`)\n"
+                            f"{result.output[:300]}"
+                        )
+                        _r = progress_callback(_msg)
+                        if asyncio.iscoroutine(_r):
+                            await _r
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.error("[SubAgent] bg task {} failed: {}", task_id, exc)
+                self.pending_tasks[task_id].update({
+                    "status": "failed",
+                    "output": f"Erreur: {exc}",
+                    "success": False,
+                    "finished_at": datetime.now().isoformat(),
+                })
+                self._save_to_disk()
+                if progress_callback:
+                    try:
+                        _r = progress_callback(f"❌ **Erreur** (`{task_id}`): {exc}")
+                        if asyncio.iscoroutine(_r):
+                            await _r
+                    except Exception:
+                        pass
+
+        asyncio.create_task(_run_and_store())
+        logger.info("[SubAgent] 🚀 Tâche bg lancée: {} ({})", task_id, agent_type.value)
+        return task_id
+
     async def execute_plan(
         self,
         steps: List[Dict[str, Any]],
@@ -5712,8 +5912,62 @@ async def delegate_to_agent(
     result = await orchestrator.run_task_sync(description, agent_enum, context)
     
     return result.output
+
+
+async def delegate_to_agent_full(
+    description: str,
+    agent_type: str = "general",
+    context: Optional[Dict[str, Any]] = None,
+) -> "AgentResult":
+    """
+    Comme delegate_to_agent mais retourne l'AgentResult complet
+    (output, meta, artifacts, duration_ms, success, status_code).
+    """
+    orchestrator = get_orchestrator()
+    type_map = {
+        "code": AgentType.CODE, "research": AgentType.RESEARCH,
+        "file": AgentType.FILE, "browser": AgentType.BROWSER,
+        "debug": AgentType.DEBUG, "refactor": AgentType.REFACTOR,
+        "planner": AgentType.PLANNER, "general": AgentType.GENERAL,
+    }
+    agent_enum = type_map.get(agent_type.lower(), AgentType.GENERAL)
+    return await orchestrator.run_task_sync(description, agent_enum, context)
+
+
+async def delegate_to_agent_bg(
+    description: str,
+    agent_type: str = "code",
+    context: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable] = None,
+) -> str:
+    """
+    Lance une tâche agent en arrière-plan et retourne immédiatement le task_id.
+    Le résultat sera consultable via bg_status(task_id).
+    """
+    orchestrator = get_orchestrator()
+
+    type_map = {
+        "code": AgentType.CODE,
+        "research": AgentType.RESEARCH,
+        "file": AgentType.FILE,
+        "browser": AgentType.BROWSER,
+        "debug": AgentType.DEBUG,
+        "refactor": AgentType.REFACTOR,
+        "planner": AgentType.PLANNER,
+        "general": AgentType.GENERAL,
+    }
+
+    agent_enum = type_map.get(agent_type.lower(), AgentType.GENERAL)
+
+    task_id = await orchestrator.run_task_bg(
+        description, agent_enum, context,
+        progress_callback=progress_callback,
+    )
+    return task_id
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

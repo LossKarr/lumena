@@ -41,6 +41,7 @@ class ProviderType(Enum):
     XAI = "xai"
     NVIDIA = "nvidia"
     MINIMAX = "minimax"
+    ZAI = "zai"
     # Image generation providers
     STABILITY = "stability"
     FLUX = "flux"
@@ -441,6 +442,71 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="Kimi K2.5 — multimodal, agent swarm, 1M context, output 262K",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
+    "kimi-k2.6": ModelConfig(
+        name="kimi-k2.6",
+        display_name="Kimi K2.6 (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2.6",
+        context_window=262144,          # 256K context window
+        max_output_tokens=32768,        # 32K output par défaut
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.6,
+        description="Kimi K2.6 — dernier modèle Moonshot, coding longue durée, multimodal (text/image/vidéo), thinking + non-thinking",
+        capabilities=frozenset({"vision_describe", "tool_calling"}),
+    ),
+    "kimi-k2-0905-preview": ModelConfig(
+        name="kimi-k2-0905-preview",
+        display_name="Kimi K2 0905 Preview (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2-0905-preview",
+        context_window=262144,          # 256K context window
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.6,
+        description="Kimi K2 0905 Preview — long context + reasoning, Moonshot direct",
+        capabilities=frozenset({"vision_describe", "tool_calling"}),
+    ),
+    "kimi-k2-turbo-preview": ModelConfig(
+        name="kimi-k2-turbo-preview",
+        display_name="Kimi K2 Turbo Preview (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2-turbo-preview",
+        context_window=262144,          # 256K context window
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.6,
+        description="Kimi K2 Turbo Preview — variante rapide, 256K contexte, Moonshot direct",
+        capabilities=frozenset({"vision_describe", "tool_calling"}),
+    ),
+    "kimi-k2-thinking": ModelConfig(
+        name="kimi-k2-thinking",
+        display_name="Kimi K2 Thinking (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2-thinking",
+        context_window=262144,          # 256K context window
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.6,
+        description="Kimi K2 Thinking — mode raisonnement explicite, multi-step tool calling, Moonshot direct",
+        capabilities=frozenset({"vision_describe", "tool_calling"}),
+    ),
+    "kimi-k2-thinking-turbo": ModelConfig(
+        name="kimi-k2-thinking-turbo",
+        display_name="Kimi K2 Thinking Turbo (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2-thinking-turbo",
+        context_window=262144,          # 256K context window
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.6,
+        description="Kimi K2 Thinking Turbo — thinking rapide, 256K contexte, Moonshot direct",
+        capabilities=frozenset({"vision_describe", "tool_calling"}),
+    ),
     
     # === XAI (Grok) ===
     "grok-4-1-fast-reasoning": ModelConfig(
@@ -688,6 +754,122 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="MiniMax M2.7 — dernier modèle, améliorations raisonnement",
         badge="beta",
         capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+
+    # === Z.AI (GLM — API OpenAI-compatible) ===
+    "glm-5.1": ModelConfig(
+        name="glm-5.1",
+        display_name="GLM-5.1 (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="glm-5.1",
+        context_window=262144,
+        max_output_tokens=65536,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=1.40,
+        description="GLM-5.1 — flagship Z.AI, agentic engineering, tool calling avancé, 256K contexte",
+        badge="Nouveau",
+        capabilities=frozenset({"tool_calling", "reasoning"}),
+    ),
+    "glm-4.7-flashx": ModelConfig(
+        name="glm-4.7-flashx",
+        display_name="GLM-4.7 FlashX (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="glm-4.7-flashx",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.07,
+        description="GLM-4.7 FlashX — ultra-économique, tool calling, excellent rapport qualité/prix",
+        badge="Économique",
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "glm-4.7-flash": ModelConfig(
+        name="glm-4.7-flash",
+        display_name="GLM-4.7 Flash (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="glm-4.7-flash",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="GLM-4.7 Flash — gratuit, tool calling, multilingue, 256K contexte",
+        badge="Gratuit",
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "glm-4.5-flash": ModelConfig(
+        name="glm-4.5-flash",
+        display_name="GLM-4.5 Flash (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="glm-4.5-flash",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="GLM-4.5 Flash — gratuit, rapide, tool calling basique",
+        badge="Gratuit",
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "glm-4.6v-flash": ModelConfig(
+        name="glm-4.6v-flash",
+        display_name="GLM-4.6V Flash (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="glm-4.6v-flash",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="GLM-4.6V Flash — vision gratuite, multimodal, analyse d'images",
+        badge="Gratuit",
+        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text"}),
+    ),
+    "glm-5v-turbo": ModelConfig(
+        name="glm-5v-turbo",
+        display_name="GLM-5V Turbo (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="glm-5v-turbo",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=1.20,
+        description="GLM-5V Turbo — vision avancée, compréhension images haute fidélité",
+        badge="Nouveau",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling"}),
+    ),
+    "cogview-4": ModelConfig(
+        name="cogview-4",
+        display_name="CogView-4 (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="cogview-4",
+        context_window=0,
+        max_output_tokens=0,
+        supports_vision=False,
+        supports_image_generation=True,
+        supports_tools=False,
+        cost_per_million_tokens=0.0,
+        description="CogView-4 — génération d'images Z.AI, $0.01/image",
+        badge="Nouveau",
+        capabilities=frozenset({"image_generation"}),
+    ),
+    "cogview-4-flash": ModelConfig(
+        name="cogview-4-flash",
+        display_name="CogView-4 Flash (Z.AI)",
+        provider=ProviderType.ZAI,
+        model_id="cogview-4-flash",
+        context_window=0,
+        max_output_tokens=0,
+        supports_vision=False,
+        supports_image_generation=True,
+        supports_tools=False,
+        cost_per_million_tokens=0.0,
+        description="CogView-4 Flash — génération d'images rapide Z.AI, $0.015/image",
+        badge="Nouveau",
+        capabilities=frozenset({"image_generation"}),
     ),
 
     # === DEEPSEEK ===
@@ -1270,6 +1452,13 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "minimax-m2.1":                {"code": 80, "speed": 78, "reasoning": 76, "creative": 76, "research": 72, "vision":  0, "web": 65},
     "minimax-m2.1-highspeed":      {"code": 78, "speed": 94, "reasoning": 72, "creative": 72, "research": 68, "vision":  0, "web": 62},
     "minimax-m2.7":                {"code": 88, "speed": 76, "reasoning": 85, "creative": 84, "research": 80, "vision":  0, "web": 72},
+    # ── Z.AI (GLM) ────────────────────────────────────────────────────────
+    "glm-5.1":                     {"code": 85, "speed": 65, "reasoning": 88, "creative": 80, "research": 82, "vision":  0, "web": 78},
+    "glm-4.7-flashx":              {"code": 80, "speed": 88, "reasoning": 76, "creative": 74, "research": 72, "vision":  0, "web": 70},
+    "glm-4.7-flash":               {"code": 76, "speed": 92, "reasoning": 70, "creative": 70, "research": 68, "vision":  0, "web": 66},
+    "glm-4.5-flash":               {"code": 70, "speed": 95, "reasoning": 64, "creative": 64, "research": 62, "vision":  0, "web": 60},
+    "glm-4.6v-flash":              {"code": 60, "speed": 90, "reasoning": 62, "creative": 65, "research": 60, "vision": 72, "web": 58},
+    "glm-5v-turbo":                {"code": 72, "speed": 68, "reasoning": 74, "creative": 76, "research": 70, "vision": 85, "web": 68},
     # ── OpenAI ─────────────────────────────────────────────────────────────
     "gpt-5.4":                     {"code": 92, "speed": 75, "reasoning": 93, "creative": 90, "research": 91, "vision": 96, "web": 93},
     "gpt-5.4-mini":                {"code": 86, "speed": 88, "reasoning": 85, "creative": 82, "research": 84, "vision": 88, "web": 87},
@@ -1506,6 +1695,7 @@ def check_api_key(provider: ProviderType) -> bool:
         ProviderType.XAI: "XAI_API_KEY",
         ProviderType.NVIDIA: "NVIDIA_API_KEY",
         ProviderType.MINIMAX: "MINIMAX_API_KEY",
+        ProviderType.ZAI: "ZAI_API_KEY",
         # Image generation providers
         ProviderType.STABILITY: "STABILITY_API_KEY",
         ProviderType.FLUX: "BFL_API_KEY",
@@ -1535,6 +1725,7 @@ def get_api_key(provider: ProviderType) -> Optional[str]:
         ProviderType.XAI: "XAI_API_KEY",
         ProviderType.NVIDIA: "NVIDIA_API_KEY",
         ProviderType.MINIMAX: "MINIMAX_API_KEY",
+        ProviderType.ZAI: "ZAI_API_KEY",
         # Image generation providers
         ProviderType.STABILITY: "STABILITY_API_KEY",
         ProviderType.FLUX: "BFL_API_KEY",
@@ -1550,6 +1741,6 @@ def get_api_key(provider: ProviderType) -> Optional[str]:
     return None
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

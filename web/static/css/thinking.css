@@ -31,7 +31,7 @@
 .thinking-step.done .thinking-step-icon{color:var(--ok)}
 .thinking-api-status{font-size:11px;padding:4px 16px 8px;color:var(--muted)}
 /* Terminal live block dans thinking panel — VS Code style */
-.thinking-terminal{flex-direction:column!important;padding:0!important;overflow:hidden;border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin:4px 8px}
+.thinking-terminal{flex-direction:column!important;align-items:stretch!important;padding:0!important;overflow:hidden;border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin:4px 8px}
 .term-block-header{
   display:flex;align-items:center;gap:8px;padding:8px 14px;
   background:#1e1e2e;border-bottom:1px solid rgba(255,255,255,0.08);
@@ -69,7 +69,7 @@
 /* ============================================================
    FILE VIEWER — VS Code-style collapsible file preview
    ============================================================ */
-.thinking-file-viewer{flex-direction:column!important;padding:0!important;overflow:hidden;border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin:4px 8px}
+.thinking-file-viewer{flex-direction:column!important;align-items:stretch!important;padding:0!important;overflow:hidden;border-radius:8px;border:1px solid rgba(255,255,255,0.08);margin:4px 8px}
 .file-block-header{
   display:flex;align-items:center;gap:8px;padding:8px 14px;
   background:#1e1e2e;border-bottom:1px solid rgba(255,255,255,0.08);

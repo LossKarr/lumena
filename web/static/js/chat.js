@@ -49,6 +49,8 @@ export async function sendMessage(){
   logC(`"${message.substring(0,50)}..."`,`info`);
   input.value='';input.style.height='auto';
   isLoading=true;
+  // Reset checkpoint dedup state pour ce nouveau message
+  window._lastCheckpointText=null;window._lastCheckpointEl=null;window._lastCheckpointCount=1;
 
   // Open activity sidebar & reset
   startActivityFeed();
@@ -80,6 +82,7 @@ export async function sendMessage(){
     while(body.children.length>50)body.removeChild(body.firstChild);
     body.scrollTop=body.scrollHeight;
     thinking.scrollIntoView({block:'end',behavior:'instant'});
+    return step;
   }
 
   function openFileBlock(filePath,linesInfo,content){
@@ -199,7 +202,10 @@ export async function sendMessage(){
     pendingFileEdits=[];pendingEditSessionId=null;pendingUndoAvailable=false;
 
     while(true){
-      const{done,value}=await reader.read();if(done)break;
+      let done,value;
+      try{({done,value}=await reader.read());}
+      catch(readErr){throw new Error('Stream interrompu: '+readErr.message);}
+      if(done)break;
       buffer+=decoder.decode(value,{stream:true});
       const lines=buffer.split('\n\n');buffer=lines.pop()||'';
       for(const line of lines){
@@ -278,9 +284,24 @@ export async function sendMessage(){
               else if(cp.thoughts)cpText+=` — ${cp.thoughts} pensees`;
               if(cp.file_edits)cpText+=` — ${cp.file_edits} edits`;
               if(cp.retry_count)cpText+=` — retry #${cp.retry_count}`;
-              addThinkingStep('⏳',cpText);
-              pushActivity('checkpoint','',cpText);
-              logC(`Checkpoint: ${cp.phase||'?'} ${cp.action_detail||''}`,'info');
+              // Dédup : si le texte est identique au dernier checkpoint affiché,
+              // on incrémente juste un compteur sur la ligne existante au lieu
+              // de rajouter une nouvelle ligne « Phase: running — 46 pensees » à l'infini.
+              if(window._lastCheckpointText===cpText && window._lastCheckpointEl){
+                window._lastCheckpointCount=(window._lastCheckpointCount||1)+1;
+                const badge=window._lastCheckpointEl.querySelector('.dup-badge');
+                const badgeHtml=` <span class="dup-badge" style="opacity:.6;font-size:.85em">×${window._lastCheckpointCount}</span>`;
+                if(badge)badge.textContent=`×${window._lastCheckpointCount}`;
+                else window._lastCheckpointEl.insertAdjacentHTML('beforeend',badgeHtml);
+                logC(`Checkpoint (dup ×${window._lastCheckpointCount}): ${cp.phase||'?'}`,'info');
+              } else {
+                const el=addThinkingStep('⏳',cpText);
+                window._lastCheckpointEl=el;
+                window._lastCheckpointText=cpText;
+                window._lastCheckpointCount=1;
+                pushActivity('checkpoint','',cpText);
+                logC(`Checkpoint: ${cp.phase||'?'} ${cp.action_detail||''}`,'info');
+              }
             }
           }
           else if(data.type==='todo_update'){renderTaskProgress(data.todos||[])}

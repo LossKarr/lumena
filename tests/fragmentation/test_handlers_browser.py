@@ -617,7 +617,7 @@ class TestBrowserTypeIndex:
 class TestBrowserHandlerDefs:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 52
+        assert len(defs) == 66
 
     def test_names_unique(self):
         defs = get_browser_handler_defs()

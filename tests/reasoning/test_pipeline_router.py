@@ -103,9 +103,9 @@ class TestMatchPipeline:
         assert pipe.name == "deploy_only"
 
     def test_edit_only(self):
+        # Pipeline edit_website_only est désactivé: requêtes d'édition passent par ReAct/CodeAgent
         pipe = match_pipeline("améliore mon site web")
-        assert pipe is not None
-        assert pipe.name == "edit_website_only"
+        assert pipe is None
 
     def test_no_match(self):
         pipe = match_pipeline("quel temps fait-il demain ?")

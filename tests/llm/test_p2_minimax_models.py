@@ -224,8 +224,9 @@ class TestConfigPanelP2:
 
 class TestModelCountP2:
     def test_total_models(self):
-        # Static models: 47 (dynamic Ollama models may add more at runtime)
-        assert len(MODEL_SKILLS) == 47
+        # Au moins 47 modèles statiques — d'autres tests peuvent enregistrer des modèles
+        # dynamiques (Ollama auto-config) qui s'ajoutent au dict global en suite complète.
+        assert len(MODEL_SKILLS) >= 47
         assert len(AVAILABLE_MODELS) >= len(MODEL_SKILLS)
 
     def test_all_models_have_skills(self):

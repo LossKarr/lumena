@@ -64,7 +64,8 @@ import {
 // ── Workspaces ──
 import {
   loadWorkspaces, renderWorkspaces,
-  serveAndOpenWorkspace, stopWorkspace, continueWorkspace, deleteWorkspace
+  serveAndOpenWorkspace, stopWorkspace, continueWorkspace, deleteWorkspace,
+  toggleWsTree, filterWorkspaces, sortWorkspaces
 } from './workspaces.js';
 
 // ── Tasks ──
@@ -126,6 +127,7 @@ Object.assign(window, {
   // workspaces
   loadWorkspaces, renderWorkspaces,
   serveAndOpenWorkspace, stopWorkspace, continueWorkspace, deleteWorkspace,
+  toggleWsTree, filterWorkspaces, sortWorkspaces,
   // tasks
   showNewTaskForm, createTask, startTaskPoll, cancelTask,
   loadActiveTasks, renderTasks, loadDaemonActivity, renderDaemon,

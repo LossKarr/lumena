@@ -2088,10 +2088,10 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Drag souris par coordonnées (x,y) → (x,y).",
             parameters={
                 "properties": {
-                    "from_x": {"type": "integer"},
-                    "from_y": {"type": "integer"},
-                    "to_x": {"type": "integer"},
-                    "to_y": {"type": "integer"},
+                    "from_x": {"type": "integer", "description": "Coordonnée X source"},
+                    "from_y": {"type": "integer", "description": "Coordonnée Y source"},
+                    "to_x": {"type": "integer", "description": "Coordonnée X cible"},
+                    "to_y": {"type": "integer", "description": "Coordonnée Y cible"},
                 },
                 "required": ["from_x", "from_y", "to_x", "to_y"],
             },
@@ -2120,7 +2120,7 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Liste les fichiers téléchargés pendant la session (data/browser_downloads/).",
             parameters={
                 "properties": {
-                    "limit": {"type": "integer", "default": 20},
+                    "limit": {"type": "integer", "description": "Nombre max de résultats", "default": 20},
                 },
                 "required": [],
             },
@@ -2145,8 +2145,8 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             parameters={
                 "properties": {
                     "frame": {"type": "string", "description": "Référence de frame"},
-                    "selector": {"type": "string"},
-                    "by": {"type": "string", "default": "css"},
+                    "selector": {"type": "string", "description": "Sélecteur de l'élément"},
+                    "by": {"type": "string", "description": "Type: css, xpath, text", "default": "css"},
                 },
                 "required": ["frame", "selector"],
             },
@@ -2159,10 +2159,10 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Tape du texte dans un champ à l'intérieur d'une iframe.",
             parameters={
                 "properties": {
-                    "frame": {"type": "string"},
-                    "selector": {"type": "string"},
-                    "text": {"type": "string"},
-                    "by": {"type": "string", "default": "css"},
+                    "frame": {"type": "string", "description": "Référence de frame (nom, #index, ou URL partielle)"},
+                    "selector": {"type": "string", "description": "Sélecteur du champ"},
+                    "text": {"type": "string", "description": "Texte à taper"},
+                    "by": {"type": "string", "description": "Type: css, xpath, text", "default": "css"},
                 },
                 "required": ["frame", "selector", "text"],
             },
@@ -2175,8 +2175,8 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Récupère le texte d'une iframe (frame = nom, '#index', ou URL partielle).",
             parameters={
                 "properties": {
-                    "frame": {"type": "string"},
-                    "max_chars": {"type": "integer", "default": 5000},
+                    "frame": {"type": "string", "description": "Référence de frame (nom, #index, ou URL partielle)"},
+                    "max_chars": {"type": "integer", "description": "Nombre max de caractères retournés", "default": 5000},
                 },
                 "required": ["frame"],
             },
@@ -2189,7 +2189,7 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Exécute du JavaScript dans une iframe spécifique.",
             parameters={
                 "properties": {
-                    "frame": {"type": "string"},
+                    "frame": {"type": "string", "description": "Référence de frame (nom, #index, ou URL partielle)"},
                     "script": {"type": "string", "description": "Expression JS à évaluer"},
                 },
                 "required": ["frame", "script"],
@@ -2221,7 +2221,7 @@ def get_browser_handler_defs() -> List[HandlerDef]:
                 "properties": {
                     "hint": {"type": "string", "description": "Description textuelle de l'élément (ex: 'bouton connexion')"},
                     "selector": {"type": "string", "description": "Sélecteur exact (optionnel, tenté en premier)", "default": ""},
-                    "by": {"type": "string", "default": "css"},
+                    "by": {"type": "string", "description": "Type de sélecteur: css, xpath, text", "default": "css"},
                 },
                 "required": ["hint"],
             },
@@ -2232,6 +2232,6 @@ def get_browser_handler_defs() -> List[HandlerDef]:
     ]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

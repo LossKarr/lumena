@@ -28,11 +28,10 @@ async def delegate_task_handler(
     description: str,
     agent_type: str = "general",
     context: dict = None,
+    project_path: str = "",
 ) -> HandlerResult:
     """Délègue une tâche à un sub-agent."""
     try:
-        from ...agents.sub_agent import delegate_to_agent
-
         # Le LLM peut passer context comme string JSON — normaliser en dict
         safe_context = context
         if isinstance(safe_context, str):
@@ -44,6 +43,14 @@ async def delegate_task_handler(
         if not isinstance(safe_context, dict):
             safe_context = {}
 
+        # ── Injection project_path explicite (priorité absolue sur fuzzy match) ──
+        if project_path and "project_dir" not in safe_context:
+            _pp = Path(project_path)
+            if _pp.is_dir():
+                safe_context["project_dir"] = str(_pp)
+                safe_context["workspace_path"] = str(_pp)
+                logger.info("delegate_task: project_path explicite injecté: {}", _pp)
+
         # ── Injection automatique du contexte projet via resolve_workspace ──
         try:
             if "project_dir" not in safe_context:
@@ -53,9 +60,16 @@ async def delegate_task_handler(
                     safe_context["workspace_path"] = str(_resolution.path)
                     safe_context["project_dir"] = str(_resolution.path)
                     try:
-                        safe_context["project_files"] = [
-                            f.name for f in _resolution.path.iterdir() if f.is_file()
-                        ]
+                        _excluded = {".git", "__pycache__", "node_modules", ".venv", ".env"}
+                        _files = []
+                        for f in sorted(_resolution.path.rglob("*")):
+                            if f.is_file():
+                                _rel = str(f.relative_to(_resolution.path))
+                                if not any(_ex in _rel for _ex in _excluded):
+                                    _files.append(_rel)
+                                    if len(_files) >= 100:
+                                        break
+                        safe_context["project_files"] = _files
                     except Exception:
                         pass
             if "workspace_path" not in safe_context:
@@ -63,11 +77,34 @@ async def delegate_task_handler(
         except Exception as _ctx_err:
             logger.debug(f"delegate_task: auto-context injection partielle: {_ctx_err}")
 
-        result = await delegate_to_agent(description, agent_type, safe_context)
-        return HandlerResult.ok(
-            f"🤖 Résultat de {agent_type}Agent:\n{result}",
-            handler_name="delegate_task",
+        # ── Injection mémoire ChromaDB pertinente ──
+        try:
+            _lum = ctx.lumena
+            if _lum and "memory_context" not in safe_context:
+                _mem = getattr(_lum, "memory", None)
+                if _mem and hasattr(_mem, "get_context_for_prompt"):
+                    _mem_ctx = _mem.get_context_for_prompt(description, max_memories=5)
+                    if _mem_ctx:
+                        safe_context["memory_context"] = _mem_ctx
+        except Exception as _mem_err:
+            logger.debug(f"delegate_task: memory injection: {_mem_err}")
+
+        from ...agents.sub_agent import delegate_to_agent_full
+        result = await delegate_to_agent_full(description, agent_type, safe_context)
+
+        # ── Rapport structuré ──
+        _icon = "✅" if result.success else "❌"
+        _duration = f"{result.duration_ms / 1000:.1f}s" if result.duration_ms else "N/A"
+        _artifacts_str = ""
+        if result.artifacts:
+            _artifacts_str = "\n**Fichiers** : " + ", ".join(f"`{a}`" for a in result.artifacts[:20])
+        _iterations = result.meta.get("iterations", "?") if result.meta else "?"
+        _report = (
+            f"{_icon} **{agent_type}Agent terminé** ({_duration}, {_iterations} itérations)"
+            f"{_artifacts_str}\n\n"
+            f"{result.output}"
         )
+        return HandlerResult.ok(_report, handler_name="delegate_task")
     except ImportError:
         return HandlerResult.fail(
             "❌ Module sub_agent non disponible",
@@ -76,6 +113,110 @@ async def delegate_task_handler(
     except Exception as e:
         return HandlerResult.fail(
             f"❌ Erreur délégation: {e}", handler_name="delegate_task"
+        )
+
+
+async def delegate_task_bg_handler(
+    ctx: HandlerContext,
+    description: str,
+    agent_type: str = "code",
+    context: dict = None,
+    project_path: str = "",
+) -> HandlerResult:
+    """Délègue une tâche au CodeAgent en arrière-plan — retourne immédiatement un task_id."""
+    try:
+        from ...agents.sub_agent import delegate_to_agent_bg
+
+        safe_context = context
+        if isinstance(safe_context, str):
+            import json as _json
+            try:
+                safe_context = _json.loads(safe_context)
+            except (ValueError, TypeError):
+                safe_context = {"raw": safe_context}
+        if not isinstance(safe_context, dict):
+            safe_context = {}
+
+        # ── Injection project_path explicite ──
+        if project_path and "project_dir" not in safe_context:
+            _pp = Path(project_path)
+            if _pp.is_dir():
+                safe_context["project_dir"] = str(_pp)
+                safe_context["workspace_path"] = str(_pp)
+                logger.info("delegate_task_bg: project_path explicite injecté: {}", _pp)
+
+        # ── Injection automatique du contexte projet ──
+        try:
+            if "project_dir" not in safe_context:
+                from ...utils.project_registry import resolve_workspace
+                _resolution = resolve_workspace(description, context=safe_context, allow_create=False)
+                if _resolution.path:
+                    safe_context["workspace_path"] = str(_resolution.path)
+                    safe_context["project_dir"] = str(_resolution.path)
+                    try:
+                        _excluded = {".git", "__pycache__", "node_modules", ".venv", ".env"}
+                        _files = []
+                        for f in sorted(_resolution.path.rglob("*")):
+                            if f.is_file():
+                                _rel = str(f.relative_to(_resolution.path))
+                                if not any(_ex in _rel for _ex in _excluded):
+                                    _files.append(_rel)
+                                    if len(_files) >= 100:
+                                        break
+                        safe_context["project_files"] = _files
+                    except Exception:
+                        pass
+            if "workspace_path" not in safe_context:
+                safe_context["workspace_path"] = str(ctx.runtime_root)
+        except Exception as _ctx_err:
+            logger.debug(f"delegate_task_bg: auto-context: {_ctx_err}")
+
+        # ── Injection mémoire ChromaDB ──
+        try:
+            _lum = ctx.lumena
+            if _lum and "memory_context" not in safe_context:
+                _mem = getattr(_lum, "memory", None)
+                if _mem and hasattr(_mem, "get_context_for_prompt"):
+                    _mem_ctx = _mem.get_context_for_prompt(description, max_memories=5)
+                    if _mem_ctx:
+                        safe_context["memory_context"] = _mem_ctx
+        except Exception:
+            pass
+
+        # ── Construire le progress_callback ──
+        _progress_cb = None
+        try:
+            _lum = ctx.lumena
+            if _lum and getattr(_lum, "_on_response_callbacks", None):
+                def _push_progress(msg: str):
+                    for cb in _lum._on_response_callbacks:
+                        try:
+                            cb(f"🔄 {msg}")
+                        except Exception:
+                            pass
+                _progress_cb = _push_progress
+        except Exception:
+            pass
+
+        task_id = await delegate_to_agent_bg(
+            description, agent_type, safe_context,
+            progress_callback=_progress_cb,
+        )
+        return HandlerResult.ok(
+            f"🚀 **CodeAgent lancé en arrière-plan**\n"
+            f"- **ID** : `{task_id}`\n"
+            f"- **Tâche** : {description[:200]}\n"
+            f"- Utilise `bg_status(task_id=\"{task_id}\")` pour suivre la progression.",
+            handler_name="delegate_task_bg",
+        )
+    except ImportError:
+        return HandlerResult.fail(
+            "❌ Module sub_agent non disponible",
+            handler_name="delegate_task_bg",
+        )
+    except Exception as e:
+        return HandlerResult.fail(
+            f"❌ Erreur délégation bg: {e}", handler_name="delegate_task_bg"
         )
 
 
@@ -176,7 +317,51 @@ async def bg_start_handler(
 async def bg_status_handler(
     ctx: HandlerContext, task_id: str
 ) -> HandlerResult:
-    """Vérifie le statut d'une tâche."""
+    """Vérifie le statut d'une tâche (shell ou agent)."""
+
+    # ── 1. Vérifier d'abord les tâches agent (ca_*) ──
+    if task_id.startswith("ca_") or task_id.startswith("task_"):
+        try:
+            from ...agents.sub_agent import get_orchestrator
+            orchestrator = get_orchestrator()
+            task_info = orchestrator.pending_tasks.get(task_id)
+            if task_info:
+                _status = task_info.get("status", "unknown")
+                _status_icon = {
+                    "running": "🔄", "done": "✅", "failed": "❌",
+                }.get(_status, "❓")
+
+                # Progression détaillée si disponible
+                progress = task_info.get("progress", {})
+                if progress and _status == "running":
+                    pct = progress.get("pct", 0)
+                    bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+                    return HandlerResult.ok(
+                        f"⏳ **CodeAgent en cours** [{bar}] {pct}%\n"
+                        f"- **Itération**: {progress.get('iteration')}/{progress.get('max_iter')}\n"
+                        f"- **Action**: {progress.get('last_action')} `{progress.get('last_path', '')}`\n"
+                        f"- **ID**: `{task_id}`",
+                        handler_name="bg_status",
+                    )
+
+                result_text = (
+                    f"📊 **Tâche agent `{task_id}`**\n\n"
+                    f"**Statut**: {_status_icon} {_status}\n"
+                    f"**Description**: {task_info.get('description', 'N/A')[:200]}"
+                )
+                if task_info.get("output"):
+                    result_text += f"\n\n**Résultat**:\n{task_info['output'][:500]}"
+                if task_info.get("started_at"):
+                    result_text += f"\n**Démarré**: {task_info['started_at']}"
+                if task_info.get("finished_at"):
+                    result_text += f"\n**Terminé**: {task_info['finished_at']}"
+                return HandlerResult.ok(result_text, handler_name="bg_status")
+        except ImportError:
+            pass
+        except Exception as _e:
+            logger.debug(f"bg_status agent lookup: {_e}")
+
+    # ── 2. Fallback: tâches shell background ──
     try:
         from ...background.manager import get_task_manager
 
@@ -417,16 +602,46 @@ def get_agents_handler_defs() -> List[HandlerDef]:
     return [
         HandlerDef(
             name="delegate_task",
-            description="Délègue une sous-tâche à un agent spécialisé et RETOURNE le résultat ici pour continuer. Tu peux ensuite enchaîner avec d'autres outils (deploy, mail, etc.). QUAND utiliser: modification code complexe (code), recherche web multi-sources (research), debug/traceback (debug), refacto module (refactor), planification (planner), fichiers en masse (file). Utilise dès qu'une sous-tâche prendrait >3 itérations seul.",
+            description=(
+                "Délègue une tâche de code au CodeAgent et RETOURNE le résultat ici. "
+                "Le CodeAgent peut lire/écrire des fichiers, exécuter des commandes, et itérer jusqu'à 50 fois. "
+                "QUAND utiliser : créer/modifier un site ou projet, corriger un bug, refactorer du code, "
+                "écrire du code complexe, créer des fichiers en masse. "
+                "IMPORTANT : Passe une description DETAILLEE de ce que tu veux. "
+                "Le contexte (workspace, fichiers, conversation) est injecté automatiquement. "
+                "Après le résultat, tu peux enchaîner avec d'autres outils (deploy, mail, etc.)."
+            ),
             parameters={
                 "properties": {
-                    "description": {"type": "string", "description": "Description précise de la tâche à déléguer"},
-                    "agent_type": {"type": "string", "description": "code=génération/analyse code isolée | research=web/docs multi-sources | file=fichiers en masse | debug=traceback/runtime errors | refactor=restructuration module | planner=décomposition multi-étapes | general=tâche mixte"},
-                    "context": {"type": "object", "description": "Contexte optionnel (file_path, query, url, ou tool/args pour appel explicite)"},
+                    "description": {"type": "string", "description": "Description DÉTAILLÉE de la tâche de code à réaliser. Inclure : quoi faire, quel style, quelles contraintes."},
+                    "agent_type": {"type": "string", "description": "code=génération/modification code | research=recherche multi-sources | file=fichiers en masse | debug=traceback/runtime errors | refactor=restructuration | planner=décomposition multi-étapes | general=tâche mixte", "default": "code"},
+                    "context": {"type": "object", "description": "Contexte additionnel optionnel. workspace_path, project_dir, conversation_history sont injectés automatiquement si absents."},
+                    "project_path": {"type": "string", "description": "Chemin absolu du projet cible. Si fourni, le CodeAgent travaillera EXACTEMENT sur ce dossier (pas de fuzzy match)."},
                 },
                 "required": ["description"],
             },
             handler=delegate_task_handler,
+            category="agents",
+            source_module="handlers.agents",
+        ),
+        HandlerDef(
+            name="delegate_task_bg",
+            description=(
+                "Lance une tâche CodeAgent en ARRIÈRE-PLAN et retourne immédiatement un task_id. "
+                "Utiliser pour les tâches longues (création de projet, refactoring complet, etc.) "
+                "pour ne pas bloquer la conversation. "
+                "Suivi via bg_status(task_id). La progression est affichée automatiquement dans le chat."
+            ),
+            parameters={
+                "properties": {
+                    "description": {"type": "string", "description": "Description DÉTAILLÉE de la tâche de code"},
+                    "agent_type": {"type": "string", "description": "code | research | file | debug | refactor | planner | general", "default": "code"},
+                    "context": {"type": "object", "description": "Contexte additionnel optionnel"},
+                    "project_path": {"type": "string", "description": "Chemin absolu du projet cible (pas de fuzzy match si fourni)."},
+                },
+                "required": ["description"],
+            },
+            handler=delegate_task_bg_handler,
             category="agents",
             source_module="handlers.agents",
         ),
@@ -565,6 +780,6 @@ def get_agents_handler_defs() -> List[HandlerDef]:
     ]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

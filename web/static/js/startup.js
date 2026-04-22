@@ -83,9 +83,10 @@ const _PROVIDER_META = {
   xai:      { label: 'xAI',       color: '#a855f7' },
   minimax:  { label: 'MiniMax',   color: '#8b5cf6' },
   moonshot: { label: 'Moonshot',  color: '#0ea5e9' },
+  zai:      { label: 'Z.AI',      color: '#00c8a0' },
   ollama:   { label: 'Ollama',    color: '#f59e0b' },
 };
-const _PROVIDER_ORDER = ['deepseek','openai','anthropic','google','nvidia','xai','minimax','moonshot','ollama'];
+const _PROVIDER_ORDER = ['deepseek','openai','anthropic','google','nvidia','xai','minimax','moonshot','zai','ollama'];
 
 let _mpFilter = 'all';
 let _mpSearch = '';

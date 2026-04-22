@@ -74,6 +74,7 @@ async def _summarize_large_output(command: str, output: str, limit: int) -> Opti
 async def run_command_handler(
     ctx: HandlerContext, command: str,
     stdin_input: str = "", timeout: int = 0,
+    cwd: Optional[str] = None,
 ) -> HandlerResult:
     """Execute une commande shell de manière asynchrone (non-bloquante)."""
     try:
@@ -144,11 +145,20 @@ async def run_command_handler(
                     _cwd = _extracted_cwd
                 command = _rest_cmd
 
+        # Si le LLM passe cwd= explicitement, ça prime sur tout le reste
+        if cwd:
+            _cwd = cwd
+            logger.info("[run_command] cwd explicite: {}", cwd[:200])
+
         # ── Auto-traduction commandes Linux → Windows ──
         import sys as _sys_plat
         if _sys_plat.platform == "win32":
             import re as _re_cmd
             _orig = command
+            # && n'est pas valide dans PowerShell 5.1 (Windows PowerShell) → remplacer par ;
+            # PowerShell 7+ supporte &&, mais le shell cible est powershell.exe (5.1).
+            if ' && ' in command and not command.strip().lower().startswith('cmd'):
+                command = command.replace(' && ', '; ')
             # mkdir -p → mkdir (Windows mkdir est récursif nativement)
             command = _re_cmd.sub(r'\bmkdir\s+-p\s+', 'mkdir ', command)
             # tail -N file → powershell Get-Content -Tail N file
@@ -613,9 +623,15 @@ async def get_recent_src_changes_handler(
     hours: int = 24,
     extensions: str = ".py",
 ) -> HandlerResult:
-    """Liste les fichiers src/ modifiés dans les dernières N heures."""
+    """Liste les fichiers src/ modifiés dans les dernières N heures.
+
+    Croise avec l'audit log des sub-agents pour distinguer les modifications
+    faites PAR Lumena (via write_file/edit_file) des modifications EXTERNES
+    (faites par l'utilisateur, Copilot, ou autre).
+    """
     import time
     from pathlib import Path
+    import json as _json
 
     try:
         root = Path(__file__).resolve().parents[3]  # racine du projet lumena
@@ -627,6 +643,43 @@ async def get_recent_src_changes_handler(
         cutoff = time.time() - hours * 3600
         results = []
 
+        # --- Charger les fichiers que Lumena a elle-même modifiés (audit log) ---
+        lumena_modified: set[str] = set()
+        try:
+            audit_dir = root / "data" / "ops" / "subagent_audit"
+            if audit_dir.exists():
+                cutoff_dt = datetime.fromtimestamp(cutoff)
+                for audit_file in audit_dir.glob("audit_*.jsonl"):
+                    try:
+                        date_str = audit_file.stem.replace("audit_", "")
+                        file_date = datetime.strptime(date_str, "%Y-%m-%d")
+                        if file_date.date() < cutoff_dt.date():
+                            continue
+                    except ValueError:
+                        pass
+                    try:
+                        for line in audit_file.read_text(encoding="utf-8").splitlines():
+                            if not line.strip():
+                                continue
+                            entry = _json.loads(line)
+                            tool = entry.get("tool", "")
+                            if tool in ("write_file", "edit_file", "edit_own_code",
+                                        "str_replace", "create_file"):
+                                args = entry.get("args", {})
+                                target = args.get("path") or args.get("file_path") or args.get("filename", "")
+                                if target:
+                                    try:
+                                        tp = Path(target)
+                                        if tp.is_absolute():
+                                            tp = tp.relative_to(root)
+                                        lumena_modified.add(str(tp).replace("/", "\\"))
+                                    except Exception:
+                                        lumena_modified.add(str(target))
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
         for f in src_dir.rglob("*"):
             if not f.is_file():
                 continue
@@ -636,7 +689,9 @@ async def get_recent_src_changes_handler(
             if mtime >= cutoff:
                 rel = f.relative_to(root)
                 dt = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
-                results.append((mtime, dt, str(rel)))
+                rel_str = str(rel)
+                is_lumena = rel_str.replace("/", "\\") in lumena_modified or rel_str.replace("\\", "/") in lumena_modified
+                results.append((mtime, dt, rel_str, is_lumena))
 
         if not results:
             return HandlerResult.ok(
@@ -645,9 +700,18 @@ async def get_recent_src_changes_handler(
             )
 
         results.sort(reverse=True)
-        lines = [f"📁 **Fichiers src/ modifiés dans les dernières {hours}h ({len(results)} fichier(s)):**\n"]
-        for _, dt, path in results:
-            lines.append(f"  `{dt}` — {path}")
+        n_lumena = sum(1 for r in results if r[3])
+        n_externe = len(results) - n_lumena
+        lines = [
+            f"📁 **Fichiers src/ modifiés dans les dernières {hours}h ({len(results)} fichier(s)):**",
+            f"   → {n_lumena} par Lumena, {n_externe} par modification externe (utilisateur/Copilot/autre)\n",
+        ]
+        for _, dt, path, is_lumena in results:
+            tag = "🤖 LUMENA" if is_lumena else "👤 EXTERNE"
+            lines.append(f"  `{dt}` [{tag}] — {path}")
+
+        lines.append("\n⚠️ IMPORTANT: Les fichiers marqués [👤 EXTERNE] n'ont PAS été modifiés par toi. "
+                     "Ne dis pas 'j'ai modifié' pour des fichiers externes.")
 
         return HandlerResult.ok("\n".join(lines), handler_name="get_recent_src_changes")
 
@@ -682,6 +746,15 @@ def get_system_handler_defs() -> List[HandlerDef]:
                         "type": "integer",
                         "description": "Timeout en secondes (defaut 120, max 600). Augmenter pour installs, speedtest, builds, downloads.",
                         "default": 0,
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": (
+                            "Répertoire de travail pour la commande (chemin absolu). "
+                            "Utilise ce paramètre PLUTÔT que 'cd ... && commande' pour éviter "
+                            "les problèmes Windows avec les chemins accentués ou les espaces."
+                        ),
+                        "default": "",
                     },
                 },
                 "required": ["command"],
@@ -733,8 +806,10 @@ def get_system_handler_defs() -> List[HandlerDef]:
         HandlerDef(
             name="get_recent_src_changes",
             description=(
-                "Liste les fichiers du code source (src/) modifiés récemment. "
-                "Utile pour savoir si Lumena a modifié son propre code, quels fichiers ont changé et quand. "
+                "Liste les fichiers du code source (src/) modifiés récemment, "
+                "en distinguant ceux modifiés PAR Lumena (via ses outils) de ceux "
+                "modifiés par l'utilisateur ou un outil externe (Copilot, éditeur…). "
+                "⚠️ Ne dis JAMAIS 'j'ai modifié X' pour un fichier marqué EXTERNE. "
                 "Paramètre 'hours' = nombre d'heures à remonter (défaut 24). "
                 "Paramètre 'extensions' = extensions à filtrer, séparées par virgule (défaut '.py')."
             ),
@@ -760,6 +835,6 @@ def get_system_handler_defs() -> List[HandlerDef]:
     ]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

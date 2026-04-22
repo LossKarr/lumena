@@ -269,118 +269,29 @@ class TestJournalRotation:
 # FIX: auto-route skip quand allowed_tools contraint
 # ────────────────────────────────────────────────────────────────
 
-class TestAutoRouteSkipAllowedTools:
-    """Les tâches internes avec allowed_tools ne doivent PAS être reroutées vers CodeAgent."""
+class TestAutoRouteV2DelegateTask:
+    """v2: Le routage code passe par delegate_task (outil ReAct), plus par auto-route.
 
-    @pytest.mark.asyncio
-    async def test_caller_set_allowed_skips_codeagent(self):
-        """Un ReActLoop avec _caller_set_allowed=True → _maybe_auto_route retourne None."""
+    Vérifie que les requêtes code font apparaître delegate_task dans les outils filtrés.
+    """
+
+    def test_code_query_exposes_delegate_task(self):
+        """Requête code → delegate_task visible via context filter."""
+        from src.reasoning.tool_registry import ToolRegistry
+        reg = object.__new__(ToolRegistry)
+        reg.tools = {}
+        reg._tool_modules = {}
+        reg._allowed_tools = None
+        reg._caller_set_allowed = False
+        reg._tools_desc_cache = None
+        for name, cat in [("delegate_task", "agents"), ("final_answer", "system"),
+                          ("create_project", "project"), ("read_file", "files")]:
+            reg.tools[name] = {"name": name, "description": f"t {name}", "parameters": {}}
+            reg._tool_modules[name] = cat
+        reg.apply_context_filter("crée un site web portfolio")
+        assert "delegate_task" in reg._allowed_tools
+
+    def test_auto_route_method_removed(self):
+        """Confirme que _maybe_auto_route_codeagent n'existe plus dans ReActLoop."""
         from src.reasoning.react import ReActLoop
-
-        mock_llm = AsyncMock(return_value="ok")
-        mock_tools = MagicMock()
-        mock_tools.lumena = MagicMock()
-        mock_tools._caller_set_allowed = True
-
-        react = ReActLoop(mock_llm, mock_tools)
-        result = await react._maybe_auto_route_codeagent(
-            "Crée UN skill utile aujourd'hui avec create_skill"
-        )
-        assert result is None, "Tâche avec allowed_tools contraint ne doit PAS router vers CodeAgent"
-
-    @pytest.mark.asyncio
-    async def test_no_caller_set_allowed_still_routes(self):
-        """Sans _caller_set_allowed, la requête code-heavy passe le guard contraint."""
-        from src.reasoning.react import ReActLoop
-
-        mock_llm = AsyncMock(return_value="ok")
-        mock_tools = MagicMock()
-        mock_tools.lumena = MagicMock()
-        mock_tools._caller_set_allowed = False
-
-        react = ReActLoop(mock_llm, mock_tools)
-        # Patch resolve_workspace ET delegate_to_agent pour éviter le vrai appel CodeAgent
-        _no_ws = MagicMock(path=None, intent="unknown", source="fallback", confidence=0.0)
-        with patch("src.utils.project_registry.resolve_workspace", return_value=_no_ws), \
-             patch("src.agents.sub_agent.delegate_to_agent",
-                    new_callable=AsyncMock, return_value="Fait"):
-            result = await react._maybe_auto_route_codeagent("Crée un site web moderne")
-        assert result is not None, "Sans _caller_set_allowed, la requête code-heavy DOIT router"
-
-
-class TestAutoRouteFeedbackGuard:
-    """Messages descriptifs / feedback ne doivent PAS router vers CodeAgent."""
-
-    _NO_WS = MagicMock(path=None, intent="unknown", source="fallback", confidence=0.0)
-
-    def _make_react(self):
-        from src.reasoning.react import ReActLoop
-        mock_llm = AsyncMock(return_value="ok")
-        mock_tools = MagicMock()
-        mock_tools.lumena = MagicMock()
-        mock_tools._caller_set_allowed = False
-        return ReActLoop(mock_llm, mock_tools)
-
-    @pytest.mark.asyncio
-    async def test_feedback_quand_je_skips(self):
-        """'quand je fait jouer le jeu marche mais le message reste' → skip CodeAgent."""
-        react = self._make_react()
-        with patch("src.utils.project_registry.resolve_workspace", return_value=self._NO_WS):
-            result = await react._maybe_auto_route_codeagent(
-                "quand je fait jouer le jeu marche mais le message avec bouton reste afficher"
-            )
-        assert result is None, "Feedback/observation ne doit PAS router vers CodeAgent"
-
-    @pytest.mark.asyncio
-    async def test_feedback_ca_marche_pas_skips(self):
-        """'ça marche pas quand je clique sur le bouton' → skip CodeAgent."""
-        react = self._make_react()
-        with patch("src.utils.project_registry.resolve_workspace", return_value=self._NO_WS):
-            result = await react._maybe_auto_route_codeagent(
-                "ça marche pas quand je clique sur le bouton du jeu"
-            )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_feedback_with_explicit_fix_routes(self):
-        """'quand je joue le jeu bug, corrige le script' → CodeAgent (impératif + target)."""
-        react = self._make_react()
-        with patch("src.utils.project_registry.resolve_workspace", return_value=self._NO_WS), \
-             patch("src.agents.sub_agent.delegate_to_agent",
-                    new_callable=AsyncMock, return_value="Corrigé"):
-            result = await react._maybe_auto_route_codeagent(
-                "quand je joue le jeu bug, corrige le script.js"
-            )
-        assert result is not None, "Feedback + verbe réparation + target DOIT router"
-
-    @pytest.mark.asyncio
-    async def test_imperative_fais_un_jeu_routes(self):
-        """'fais un jeu snake' doit toujours router vers CodeAgent."""
-        react = self._make_react()
-        with patch("src.utils.project_registry.resolve_workspace", return_value=self._NO_WS), \
-             patch("src.agents.sub_agent.delegate_to_agent",
-                    new_callable=AsyncMock, return_value="Fait"):
-            result = await react._maybe_auto_route_codeagent("fais un jeu snake")
-        assert result is not None, "'fais un jeu' doit router vers CodeAgent"
-
-    @pytest.mark.asyncio
-    async def test_finir_jeu_routes(self):
-        """'finir le jeu snake stp' doit router vers CodeAgent."""
-        react = self._make_react()
-        with patch("src.utils.project_registry.resolve_workspace", return_value=self._NO_WS), \
-             patch("src.agents.sub_agent.delegate_to_agent",
-                    new_callable=AsyncMock, return_value="Fini"):
-            result = await react._maybe_auto_route_codeagent(
-                "lumena tu pourrais finir le jeu snake stp"
-            )
-        assert result is not None, "'finir le jeu stp' doit router vers CodeAgent"
-
-    @pytest.mark.asyncio
-    async def test_feedback_jai_un_bug_skips(self):
-        """'j'ai un bug sur le jeu' → skip (observation, pas d'impératif)."""
-        react = self._make_react()
-        with patch("src.utils.project_registry.resolve_workspace", return_value=self._NO_WS):
-            result = await react._maybe_auto_route_codeagent(
-                "j'ai un bug sur le jeu le score s'affiche pas"
-            )
-        assert result is None
+        assert not hasattr(ReActLoop, "_maybe_auto_route_codeagent")

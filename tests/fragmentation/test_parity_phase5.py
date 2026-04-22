@@ -41,6 +41,7 @@ EXPECTED_SKILLS_NAMES = [
 
 EXPECTED_AGENTS_NAMES = [
     "delegate_task",
+    "delegate_task_bg",
     "get_agents_status",
     "fork_analyze",
     "bg_start",
@@ -166,7 +167,7 @@ class TestSkillsParity:
 
 class TestAgentsParity:
     def test_count(self):
-        assert len(get_agents_handler_defs()) == 12
+        assert len(get_agents_handler_defs()) == 13  # +1 delegate_task_bg
 
     def test_names_match(self):
         actual = [d.name for d in get_agents_handler_defs()]

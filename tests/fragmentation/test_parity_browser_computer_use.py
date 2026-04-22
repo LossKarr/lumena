@@ -39,6 +39,7 @@ EXPECTED_BROWSER_NAMES = [
     "browser_dom_state",
     "browser_click_index",
     "browser_type_index",
+    "browser_dismiss_popups",
     # Phase 2.4 — Handlers évolués Playwright 1.58+
     "browser_evaluate",
     "browser_forward",
@@ -72,6 +73,20 @@ EXPECTED_BROWSER_NAMES = [
     "browser_get_text",
     "browser_list_tabs",
     "browser_open_tab",
+    # Phase 4 — Dialog, Drag, Download, Frames, Metrics, SmartClick
+    "browser_handle_dialog",
+    "browser_dialog_log",
+    "browser_drag",
+    "browser_drag_at",
+    "browser_wait_for_download",
+    "browser_list_downloads",
+    "browser_frames",
+    "browser_frame_click",
+    "browser_frame_type",
+    "browser_frame_content",
+    "browser_frame_evaluate",
+    "browser_metrics",
+    "browser_click_smart",
 ]
 
 EXPECTED_COMPUTER_USE_NAMES = [
@@ -111,7 +126,7 @@ EXPECTED_COMPUTER_USE_NAMES = [
 class TestBrowserParity:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 52
+        assert len(defs) == 66
 
     def test_names_match(self):
         defs = get_browser_handler_defs()
@@ -175,6 +190,6 @@ class TestCrossModuleParity:
         assert not collision, f"Noms en collision: {collision}"
 
     def test_total_count(self):
-        """browser(52) + computer_use(28) = 80 handlers."""
+        """browser(66) + computer_use(28) = 94 handlers."""
         total = len(get_browser_handler_defs()) + len(get_computer_use_handler_defs())
-        assert total == 80
+        assert total == 94

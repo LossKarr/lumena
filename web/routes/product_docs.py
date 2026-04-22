@@ -178,14 +178,14 @@ def _collect_live_stats() -> Dict[str, Any]:
         tests_passed = 0  # leave as 0 — will show file count instead
 
     # ── LLM Providers ───────────────────────────────────────────────────────
-    providers_count = 8  # stable enum
+    providers_count = 10  # stable enum
     provider_names: List[str] = []
     try:
         from src.llm.providers import ProviderType
         providers_count = len(ProviderType)
         provider_names = [p.value for p in ProviderType]
     except Exception:
-        provider_names = ["deepseek", "openai", "anthropic", "google", "moonshot", "xai", "nvidia", "ollama"]
+        provider_names = ["deepseek", "openai", "anthropic", "google", "moonshot", "xai", "nvidia", "minimax", "zai", "ollama"]
 
     # ── LLM Models ──────────────────────────────────────────────────────────
     models_count = 0
@@ -348,7 +348,7 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 <tr><td>{tools_count} outils natifs</td><td class="ok">✓</td><td class="ko">Plugins limités</td><td class="warn">Partiel</td></tr>
 <tr><td>Contrôle complet du PC</td><td class="ok">✓ Souris + clavier</td><td class="ko">✗</td><td class="ko">✗</td></tr>
 <tr><td>Développement autonome</td><td class="ok">✓ CodeAgent</td><td class="warn">Limité</td><td class="ok">✓</td></tr>
-<tr><td>Multi-LLM fallback auto</td><td class="ok">✓ {providers_count} providers</td><td class="ko">✗</td><td class="warn">Partiel</td></tr>
+<tr><td>Multi-LLM fallback auto ({providers_count} providers)</td><td class="ok">✓</td><td class="ko">✗</td><td class="warn">Partiel</td></tr>
 <tr><td>Skills créés à la volée</td><td class="ok">✓</td><td class="ko">✗</td><td class="ko">✗</td></tr>
 <tr><td>Journal quotidien auto</td><td class="ok">✓</td><td class="ko">✗</td><td class="ko">✗</td></tr>
 <tr><td>Documents pro (13 templates)</td><td class="ok">✓ Factures, contrats, devis…</td><td class="ko">✗</td><td class="ko">✗</td></tr>
@@ -476,8 +476,8 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 <div class="doc-cap-card">
   <h4>Génération d'images</h4>
   <ul>
-    <li>11 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax</li>
-    <li>37 modèles — de gratuits (Gemini Flash, HuggingFace SDXL) à ultra (Flux 2 Max, Imagen 4 Ultra)</li>
+    <li>12 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax, Z.AI (CogView-4)</li>
+    <li>39 modèles — de gratuits (Gemini Flash, HuggingFace SDXL, CogView-4-Flash) à ultra (Flux 2 Max, Imagen 4 Ultra)</li>
     <li>13 handlers ReAct : generate, edit (inpaint/outpaint/erase), compose (multi-images), thumbnail, thumbnail-pro (pipeline LLM), headlines, logo, upscale, remove/replace background, sketch-to-image, SVG vectoriel</li>
     <li>Mode <code>auto</code> : sélection automatique du meilleur modèle disponible (fallback par tier de qualité Q10→Q5)</li>
     <li>8 templates de prompt : <code>photo</code>, <code>illustration</code>, <code>3d_render</code>, <code>pixel_art</code>, <code>watercolor</code>, <code>anime</code>, <code>logo</code>, <code>icon</code></li>
@@ -597,15 +597,15 @@ lumena/
 │   │   ├── providers.py            # {models_count} modèles dans AVAILABLE_MODELS
 │   │   └── output_normalizer.py    # Normalisation réponses LLM
 │   ├── reasoning/
-│   │   ├── react.py                # Boucle ReAct (3 766L façade)
+│   │   ├── react.py                # Boucle ReAct (3 511L façade)
 │   │   ├── react_config.py         # Config, enums, constantes (373L)
-│   │   ├── tool_registry.py        # Registre {tools_count} outils (1 243L)
+│   │   ├── tool_registry.py        # Registre {tools_count} outils (1 583L)
 │   │   ├── response_parser.py      # Parsing ReAct (292L)
 │   │   ├── prompt_builder.py       # Heuristiques prompt (177L)
 │   │   └── handlers/               # {handler_modules} modules handlers V2
 │   ├── tools/                      # {tools_modules} modules d'outils bas niveau
 │   ├── agents/
-│   │   └── sub_agent.py            # CodeAgent 8 types + délégation (3 411L)
+│   │   └── sub_agent.py            # CodeAgent 8 types + délégation (5 973L)
 │   ├── skills/                     # Moteur de skills (loader, skill, sync, tools)
 │   ├── channels/                   # Telegram, Discord, Twitter, IDE bridge
 │   ├── computer_use/               # Cascade native CU + pywinauto + vision
@@ -907,7 +907,7 @@ Plan créé → étapes décomposées automatiquement
         "icon": "terminal",
         "title": "CodeAgent",
         "content": """
-<p class="doc-lead">Le CodeAgent est un sous-agent spécialisé (<code>sub_agent.py</code> — 3 411 LOC) qui travaille en boucle
+<p class="doc-lead">Le CodeAgent est un sous-agent spécialisé (<code>sub_agent.py</code> — 5 973 LOC) qui travaille en boucle
 itérative autonome pour les tâches de développement complexes.</p>
 
 <h3>8 types d'agents</h3>
@@ -1132,7 +1132,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tr><td rowspan="5"><strong>Infra</strong></td><td>Telegram</td><td>Statut et détails du bot Telegram</td></tr>
 <tr><td>Autonomie</td><td>État du daemon, tâches planifiées</td></tr>
 <tr><td>Providers LLM</td><td>Santé de chaque provider, latence, coûts</td></tr>
-<tr><td>Configuration</td><td>Variables d'environnement, clés API (93 entrées, 19 groupes)</td></tr>
+<tr><td>Configuration</td><td>Variables d'environnement, clés API (149 entrées, 23 groupes)</td></tr>
 <tr><td>Fichiers</td><td>Éditeur .lumena_rules, README, HEARTBEAT</td></tr>
 </tbody>
 </table>
@@ -1143,7 +1143,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tbody>
 <tr><td><strong>Fine-tuning</strong></td><td>Détection GPU nvidia-smi, catalogue 30 modèles filtrés par VRAM, install dépendances auto, pipeline LoRA, export GGUF, import Ollama, SSE streaming progression</td></tr>
 <tr><td><strong>Setup / Wizard</strong></td><td>One-Click Install wizard (<code>setup.py</code> 1 203L + <code>setup.js</code> 2 046L) — config providers, clés API, Telegram, workspace, sandbox Docker</td></tr>
-<tr><td><strong>Fichiers</strong></td><td>Explorateur de fichiers, gestion de workspaces (4 endpoints REST)</td></tr>
+<tr><td><strong>Projets / Workspaces</strong></td><td>Panel redesigné : groupes par date, arbre de fichiers lazy-load, badges tech stack (Node.js, Python, HTML, TypeScript, Rust, Go, Docker), recherche + tri, 4 endpoints REST</td></tr>
 <tr><td><strong>Stripe</strong></td><td>Dashboard Stripe intégré : produits, clients, paiements, abonnements, création de liens</td></tr>
 <tr><td><strong>Documentation</strong></td><td>Product Docs interactive (cette page)</td></tr>
 <tr><td><strong>Chat</strong></td><td>Interface chat SSE streaming, markdown rendu, upload fichiers, historique</td></tr>
@@ -1250,7 +1250,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
     <span class="doc-rel-icon"><i data-lucide="atom"></i></span>
     <div>
       <strong>Fallback multi-niveaux</strong>
-      <p>Boucle <code>while</code> sur 9 providers — jamais de réponse vide</p>
+      <p>Boucle <code>while</code> sur 10 providers — jamais de réponse vide</p>
     </div>
   </div>
   <div class="doc-rel-item">
@@ -1556,7 +1556,7 @@ protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code>.</
   <div class="doc-api-item">
     <span class="doc-api-method get">GET</span>
     <code>/api/config</code>
-    <span class="doc-api-desc">Lecture configuration (93 entrées, 19 groupes)</span>
+    <span class="doc-api-desc">Lecture configuration (149 entrées, 23 groupes)</span>
   </div>
   <div class="doc-api-item">
     <span class="doc-api-method put">PUT</span>
@@ -2277,6 +2277,6 @@ async def get_product_docs():
     }
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

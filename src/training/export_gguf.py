@@ -155,6 +155,6 @@ def cleanup_intermediate(paths: list[str]) -> None:
             _log.warning("Failed to clean up %s: %s", p, exc)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

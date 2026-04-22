@@ -121,18 +121,20 @@ class TestB1KeywordIntegrity:
 
 class TestB2NoDuplicateHasFile:
     def test_single_has_file_assignment(self):
-        """B2: _maybe_auto_route_codeagent uses the hybrid LLM classifier (P1).
-        The old regex-based has_file check has been replaced by _classify_intent_llm
-        and _route_to_codeagent. This test verifies the new architecture is in place."""
+        """B2: v2 — auto-route supprimé, routage via delegate_task tool.
+        Legacy code should be absent from react.py."""
         from pathlib import Path
         react_path = Path(__file__).parent.parent.parent / "src" / "reasoning" / "react.py"
         source = react_path.read_text(encoding="utf-8")
         # Old has_file regex should be gone
         old_count = source.count("has_file = any(") + source.count("has_file = _any_word(")
         assert old_count == 0, f"Old has_file regex still present ({old_count} occurrences)"
-        # New hybrid classifier should be present
-        assert "_classify_intent_llm" in source, "_classify_intent_llm missing (P1 not applied)"
-        assert "_route_to_codeagent" in source, "_route_to_codeagent missing (P1 not applied)"
+        # Legacy classifier should be gone
+        assert "_classify_intent_llm" not in source, "Legacy _classify_intent_llm toujours présent"
+        assert "_maybe_auto_route_codeagent_legacy" not in source, "Fonction legacy toujours présente"
+        # v2: auto-route removed, delegate_task handler handles routing
+        assert "_maybe_auto_route_codeagent" not in source or "supprimé" in source, \
+            "_maybe_auto_route_codeagent devrait être supprimé (v2)"
 
 
 # ── P1: LRU eviction on contexts ────────────────────────────────────────────

@@ -64,25 +64,25 @@ class TestHistoryObsLimitDynamic:
         assert 300 <= limit <= 20000, f"fallback hors plage: {limit}"
 
     def test_dynamic_deepseek_chat(self):
-        """deepseek-chat: output=8192, ctx=64000 -> max(4000, min(64000//20=3200, 16000))=4000"""
+        """deepseek-chat: output=8192, ctx=64000 -> palier 64k<150k -> 24000"""
         ctx = _make_runtime_ctx(max_output_tokens=8192, max_context_window=64000)
         loop = _make_react_loop(runtime_ctx=ctx)
         limit = loop._history_observation_limit()
-        assert limit == max(4000, min(64000 // 20, 16000))
+        assert limit == 24000  # palier 64k < 150k
 
     def test_dynamic_gemini_flash(self):
-        """gemini-2.5-flash: output=65536, ctx=1048576 -> max(4000, min(1048576//20=52428, 16000))=16000"""
+        """gemini-2.5-flash: output=65536, ctx=1048576 -> palier 500k<1.5M -> 40000"""
         ctx = _make_runtime_ctx(max_output_tokens=65536, max_context_window=1048576)
         loop = _make_react_loop(runtime_ctx=ctx)
         limit = loop._history_observation_limit()
-        assert limit == 16000
+        assert limit == 40000  # palier 500k < 1.5M
 
     def test_dynamic_small_model(self):
-        """Modele tres petit: output=512, ctx=4096 -> max(4000, min(4096//20=204, 16000))=4000 (clamp min)"""
+        """Modele tres petit: output=512, ctx=4096 -> palier <16k -> 2000"""
         ctx = _make_runtime_ctx(max_output_tokens=512, max_context_window=4096)
         loop = _make_react_loop(runtime_ctx=ctx)
         limit = loop._history_observation_limit()
-        assert limit == 4000  # clamp minimum
+        assert limit == 2000  # palier ctx < 16k
 
     def test_dynamic_zero_values_fallback(self):
         """max_output=0 → pas de dynamic, fallback env var."""

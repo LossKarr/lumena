@@ -785,6 +785,6 @@ def build_active_skills_context(query: str, max_results: int = 3, max_chars: int
     return loader.build_active_skills_context(query=query, max_results=max_results, max_chars=max_chars)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

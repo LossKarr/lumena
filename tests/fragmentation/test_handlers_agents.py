@@ -40,12 +40,18 @@ def ctx(tmp_path):
 
 @pytest.mark.asyncio
 async def test_delegate_task_success(ctx):
+    from src.agents.sub_agent import AgentResult, StatusCode
+    _mock_result = AgentResult(
+        task_id="t1", success=True, output="Done: analysis complete",
+        status_code=StatusCode.SUCCESS, meta={"iterations": 3},
+        artifacts=["file.py"], duration_ms=1500,
+    )
     mock_mod = MagicMock()
-    mock_mod.delegate_to_agent = AsyncMock(return_value="Done: analysis complete")
+    mock_mod.delegate_to_agent_full = AsyncMock(return_value=_mock_result)
     with patch.dict(sys.modules, {"src.agents.sub_agent": mock_mod}):
         r = await delegate_task_handler(ctx, description="analyze code", agent_type="code")
     assert r.success
-    assert "codeAgent" in r.output or "Done" in r.output
+    assert "Done" in r.output
 
 
 @pytest.mark.asyncio
@@ -315,7 +321,7 @@ async def test_process_list_success(ctx):
 
 def test_handler_defs_count():
     defs = get_agents_handler_defs()
-    assert len(defs) == 12
+    assert len(defs) == 13  # +1 delegate_task_bg
 
 
 def test_handler_defs_names():
@@ -326,7 +332,7 @@ def test_handler_defs_names():
 
 def test_handler_defs_expected_names():
     expected = {
-        "delegate_task", "get_agents_status", "fork_analyze",
+        "delegate_task", "delegate_task_bg", "get_agents_status", "fork_analyze",
         "bg_start", "bg_status", "bg_list", "bg_cancel",
         "process_run", "process_status", "process_input",
         "process_kill", "process_list",

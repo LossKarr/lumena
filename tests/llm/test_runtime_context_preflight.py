@@ -110,7 +110,8 @@ class TestMaxOutputTokensConfig:
     def test_ollama_models_have_reasonable_output(self):
         for name, cfg in AVAILABLE_MODELS.items():
             if cfg.provider == ProviderType.OLLAMA:
-                assert cfg.max_output_tokens in (4096, 8192), f"{name} = {cfg.max_output_tokens}"
+                # Accepter jusqu'à 16384 — certains modèles (ex: qwen3.5-9b) ont un output plus élevé
+                assert cfg.max_output_tokens in (4096, 8192, 16384), f"{name} = {cfg.max_output_tokens}"
 
 
 # ── build_runtime_snapshot ──────────────────────────────────────────────

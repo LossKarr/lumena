@@ -19,6 +19,8 @@ pyright>=1.1.0
 # Voice
 edge-tts>=6.1.0
 faster-whisper>=0.10.0
+nvidia-cublas-cu12         # DLL cublas64_12 requise par ctranslate2/faster-whisper GPU
+nvidia-cudnn-cu12          # DLL cudnn requise par ctranslate2/faster-whisper GPU
 SpeechRecognition>=3.10.0 # Calibration & Google Fallback
 PyAudio>=0.2.14            # Microphone handling
 pyttsx3>=2.90              # TTS fallback offline

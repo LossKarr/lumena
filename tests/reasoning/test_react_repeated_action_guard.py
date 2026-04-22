@@ -16,7 +16,7 @@ class _DummyTools:
     def get_tools_description(self) -> str:
         return "- list_directory(path)"
 
-    async def execute(self, tool_name: str, tool_args):
+    async def execute(self, tool_name: str, tool_args, **kwargs):
         return Observation(content=f"ok {tool_name} {tool_args}", success=True)
 
 

@@ -97,9 +97,10 @@ _CONFIG_SCHEMA: list[dict] = [
                  "o3", "o4-mini",
                  "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-haiku-4.5",
                  "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
-                 "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4-1-fast-reasoning"],
+                 "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4-1-fast-reasoning",
+                 "glm-4.6v-flash", "glm-5v-turbo"],
      "default": "auto",
-     "hint": "auto = meilleur mod\u00e8le disponible avec support vision (OpenAI/Anthropic/Google/Grok)"},
+     "hint": "auto = meilleur mod\u00e8le disponible avec support vision (OpenAI/Anthropic/Google/Grok/Z.AI)"},
     {"key": "LUMENA_BRAIN_CODE", "label": "Cerveau Code (analyse et g\u00e9n\u00e9ration)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
      "options": ["auto", "gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini",
@@ -108,7 +109,8 @@ _CONFIG_SCHEMA: list[dict] = [
                  "deepseek-v3", "deepseek-reasoner", "gemini-3.1-pro", "gemini-2.5-pro",
                  "nvidia-glm-4.7", "nvidia-minimax-m2.5", "nvidia-deepseek-v3.2",
                  "minimax-m2.5", "minimax-m2.7",
-                 "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309"],
+                 "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
+                 "glm-5.1", "glm-4.7-flashx", "glm-4.7-flash"],
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le code disponible (score HumanEval/SWE-bench)"},
     {"key": "LUMENA_BRAIN_WEB", "label": "Cerveau Web (recherche et analyse web)",
@@ -116,7 +118,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "options": ["auto", "gpt-5.4", "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
                  "claude-sonnet-4.6", "claude-opus-4.7", "claude-opus-4.6", "gpt-4o-mini",
                  "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
-                 "kimi-k2.5", "deepseek-v3", "minimax-m2.5"],
+                 "kimi-k2.5", "deepseek-v3", "minimax-m2.5",
+                 "glm-5.1", "glm-4.7-flashx"],
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le disponible pour la recherche et analyse web"},
     {"key": "LUMENA_BRAIN_IMAGE_GEN", "label": "Mod\u00e8le g\u00e9n\u00e9ration d'images",
@@ -131,6 +134,7 @@ _CONFIG_SCHEMA: list[dict] = [
                  "ideogram-v3-quality", "ideogram-v3-balanced", "ideogram-v3-turbo",
                  "recraft-v4", "recraft-v4-svg",
                  "grok-imagine-image", "minimax-image-01",
+                 "cogview-4", "cogview-4-flash",
                  "huggingface-sdxl"],
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le image disponible. 40+ mod\u00e8les : Gemini, GPT-image, FLUX, Stable Diffusion, Ideogram, Recraft, etc."},
@@ -283,6 +287,10 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Clé API NVIDIA NIM. Accès à Kimi-K2, DeepSeek-V3, GLM-4 hébergés. Obtenir sur build.nvidia.com"},
     {"key": "MINIMAX_API_KEY", "label": "MiniMax API Key", "group": "Clés API", "type": "secret", "default": "",
      "hint": "Clé API MiniMax. Accès aux modèles M2.1/M2.5/M2.7 natifs. Obtenir sur platform.minimax.io"},
+    {"key": "ZAI_API_KEY", "label": "Z.AI API Key", "group": "Clés API", "type": "secret", "default": "",
+     "hint": "Clé API Z.AI pour GLM-5.1, GLM-4.7-Flash, CogView-4... Obtenir sur z.ai"},
+    {"key": "ZAI_BASE_URL", "label": "Z.AI Base URL", "group": "Clés API", "type": "text", "default": "https://api.z.ai/api/paas/v4",
+     "hint": "URL de base API Z.AI. Modifier uniquement si proxy custom."},
     # ── Clés API Génération d'images ──
     {"key": "STABILITY_API_KEY", "label": "Stability AI API Key", "group": "Clés API", "type": "secret", "default": "",
      "hint": "Clé API Stability AI. Utilisée pour Stable Diffusion 3.5, Stable Image Ultra/Core. Obtenir sur platform.stability.ai"},
@@ -718,6 +726,6 @@ async def get_alerts(limit: int = 50):
     return {"success": True, "alerts": alerts[:limit], "total": len(alerts)}
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

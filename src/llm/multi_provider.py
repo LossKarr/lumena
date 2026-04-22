@@ -82,6 +82,7 @@ class MultiProviderLLM:
             "xai": {"healthy": True, "failures": 0, "cooldown_until": None},
             "nvidia": {"healthy": True, "failures": 0, "cooldown_until": None},
             "minimax": {"healthy": True, "failures": 0, "cooldown_until": None},
+            "zai":     {"healthy": True, "failures": 0, "cooldown_until": None},
         }
         self._health_lock = threading.Lock()  # P0: protège provider_health
         self._meta_lock = threading.Lock()  # protège _last_response_meta
@@ -89,7 +90,7 @@ class MultiProviderLLM:
         self.cooldown_minutes = int(os.getenv("LUMENA_PROVIDER_COOLDOWN_MIN", "5"))
         
         # Ordre de fallback : cloud providers d'abord, ollama en dernier recours
-        _default_fallback = "deepseek,anthropic,openai,google,moonshot,xai,nvidia,minimax,ollama"
+        _default_fallback = "deepseek,zai,anthropic,openai,google,moonshot,xai,nvidia,minimax,ollama"
         self.fallback_order = os.getenv("LUMENA_FALLBACK_ORDER", _default_fallback).split(",")
         self.max_continuation_steps = int(os.getenv("LUMENA_MAX_CONTINUATION_STEPS", "3"))
         self._last_response_meta: Dict[str, Any] = self._default_response_meta()
@@ -606,14 +607,10 @@ class MultiProviderLLM:
         if _current_loop_id and _current_loop_id == self._http_loop_id:
             return
         logger.debug("🔄 Recréation du client HTTP (event loop changé)")
-        try:
-            try:
-                loop = _aio.get_running_loop()
-                loop.create_task(self._http.aclose())
-            except Exception:
-                pass
-        except Exception:
-            pass
+        # Ne pas tenter de fermer l'ancien client : ses connexions sont liées à
+        # l'ancienne event loop (potentiellement fermée sur Windows ProactorEventLoop).
+        # Appeler aclose() sur cet event loop cause "RuntimeError: Event loop is closed".
+        # On remplace silencieusement — le GC + timeout serveur nettoient les connexions.
         self._http = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=10.0, pool=10.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
@@ -632,6 +629,17 @@ class MultiProviderLLM:
     ) -> Dict[str, Any]:
         """Appelle le provider avec retry pour les erreurs transitoires (429/5xx/timeout)."""
         last_exc: Optional[Exception] = None
+        # Vérification proactive de l'event loop : si elle a changé depuis la création
+        # du client HTTP, on le recrée maintenant (avant la 1re tentative) pour éviter
+        # 1 appel perdu + ~300ms de latence supplémentaire par requête.
+        try:
+            import asyncio as _asyncio_chk
+            _cur_loop_id = id(_asyncio_chk.get_running_loop())
+            if _cur_loop_id and _cur_loop_id != self._http_loop_id:
+                self._recreate_http_client()
+                logger.debug("🔄 Client HTTP recréé proactivement (event loop changé)")
+        except RuntimeError:
+            pass
         for attempt in range(self._TRANSIENT_RETRIES + 1):
             try:
                 return await self._chat_provider_result_inner(
@@ -714,6 +722,8 @@ class MultiProviderLLM:
             return await self._chat_nvidia_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
         if provider == ProviderType.MINIMAX:
             return await self._chat_minimax_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
+        if provider == ProviderType.ZAI:
+            return await self._chat_zai_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
         raise ValueError(f"Provider non supporté: {provider}")
 
     async def _continue_if_needed(
@@ -1906,6 +1916,77 @@ class MultiProviderLLM:
             "prompt_tokens": _usage.get("prompt_tokens"),
             "completion_tokens": _usage.get("completion_tokens"),
         }
+
+    async def _chat_zai(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 32768,
+        model: Optional[str] = None,
+    ) -> str:
+        """Chat via Z.AI API (GLM models)."""
+        result = await self._chat_zai_result(messages, temperature=temperature, max_tokens=max_tokens, model=model)
+        return result.get("text", "")
+
+    async def _chat_zai_result(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 32768,
+        model: Optional[str] = None,
+        stop: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Chat via Z.AI API (GLM-5.1, GLM-4.7-Flash...) — format compatible OpenAI.
+
+        URL : https://api.z.ai/api/paas/v4/chat/completions
+        Auth : Bearer {ZAI_API_KEY}
+        """
+        api_key = get_api_key(ProviderType.ZAI)
+        if not api_key:
+            raise ValueError("ZAI_API_KEY non configurée")
+
+        target_model = model or self.model
+        cfg = get_model_config(target_model)
+        model_id = cfg.model_id if cfg else target_model
+
+        base_url = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+        url = f"{base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if stop:
+            payload["stop"] = stop
+
+        try:
+            response = await self._http.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content", "") or ""
+            _usage = data.get("usage") or {}
+            return {
+                "text": content,
+                "finish_reason": choice.get("finish_reason"),
+                "provider_used": ProviderType.ZAI.value,
+                "model_used": model_id,
+                "prompt_tokens": _usage.get("prompt_tokens"),
+                "completion_tokens": _usage.get("completion_tokens"),
+            }
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_detail = e.response.text
+            except Exception:
+                pass
+            logger.error(f"❌ Erreur Z.AI HTTP {e.response.status_code}: {error_detail[:1000]}")
+            raise
 
     async def describe_image(self, image_path: str, prompt: str = "") -> str:
         """Décrit une image via vision API.
@@ -3182,6 +3263,6 @@ Maintenant, utilise ces informations pour répondre à ma question initiale de m
         return await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

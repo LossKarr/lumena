@@ -1242,15 +1242,35 @@
     </div>
 
     <!-- ======= WORKSPACES ======= -->
-    <div class="panel" id="panel-workspaces">
-      <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span><i data-lucide="folder-open"></i> Projets CodeAgent</span>
-          <button class="btn" style="font-size:12px" data-action="loadWorkspaces">↺ Actualiser</button>
+    <div class="panel" id="panel-workspaces" style="padding:0;display:flex;flex-direction:column;overflow:hidden">
+      <!-- Header fixe -->
+      <div class="ws-panel-header">
+        <div class="ws-panel-top">
+          <div class="ws-panel-title">
+            <i data-lucide="folder-open" style="width:18px;height:18px;color:var(--accent)"></i>
+            <span>Projets CodeAgent</span>
+          </div>
+          <div id="ws-stats" class="ws-stats"></div>
+          <button class="ws-btn" title="Actualiser" data-action="loadWorkspaces" style="margin-left:auto">
+            <i data-lucide="refresh-cw" style="width:13px;height:13px"></i>
+          </button>
         </div>
-        <p style="color:var(--muted);font-size:13px;margin-top:6px">Tous les projets créés par Lumena. Vous pouvez les ouvrir, continuer ou supprimer.</p>
+        <div class="ws-panel-controls">
+          <div class="ws-search-wrap">
+            <i data-lucide="search" style="width:13px;height:13px;color:var(--muted);flex-shrink:0"></i>
+            <input id="ws-search" class="ws-search-input" type="text"
+                   placeholder="Rechercher un projet, une techno…"
+                   oninput="filterWorkspaces(this.value)" autocomplete="off" spellcheck="false">
+          </div>
+          <select id="ws-sort" class="ws-sort-select" onchange="sortWorkspaces(this.value)">
+            <option value="date">Plus récent</option>
+            <option value="name">Nom A → Z</option>
+            <option value="size">Plus grand</option>
+          </select>
+        </div>
       </div>
-      <div id="workspaces-list" style="margin-top:8px"></div>
+      <!-- Liste scrollable -->
+      <div id="workspaces-list" class="ws-list-scroll"></div>
     </div>
 
   </div><!-- /content -->

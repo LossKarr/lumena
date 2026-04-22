@@ -42,6 +42,12 @@ def _make_registry() -> ToolRegistry:
         "agents": ["delegate_agent", "list_agents"],
         "documents": ["ocr_image", "extract_pdf"],
         "custom": ["custom_handler_1"],
+        "video": ["generate_video", "render_video"],
+        "image": ["generate_image", "edit_image"],
+        "stripe": ["stripe_create_payment_link", "stripe_list_products"],
+        "ionos": ["deploy_to_ionos"],
+        "social": ["post_tweet"],
+        "automation": ["n8n_trigger"],
     }
 
     for cat, tool_names in _categories.items():
@@ -74,23 +80,25 @@ def test_mail_query_filters_to_mail_tools():
 
 
 def test_browser_query_filters_correctly():
-    """Requête browser → outils browser, web, system."""
+    """Requête browser → outils browser + system (SANS web_search — pack v2)."""
     reg = _make_registry()
     reg.apply_context_filter("ouvre chrome et va sur google")
     assert "open_chrome" in reg._allowed_tools
-    assert "web_search" in reg._allowed_tools
     assert "navigate_to" in reg._allowed_tools
+    # v2: BROWSER et SEARCH sont séparés — web_search n'est plus dans le pack browser
+    assert "web_search" not in reg._allowed_tools
     assert "send_mail" not in reg._allowed_tools
     assert "play_song" not in reg._allowed_tools
 
 
 def test_project_query_filters_correctly():
-    """Requête projet → outils project, website, files, system."""
+    """Requête code → outils agents + project (v2: delegate_task est le point d'entrée)."""
     reg = _make_registry()
     reg.apply_context_filter("crée un site web portfolio avec react")
-    assert "create_project" in reg._allowed_tools
-    assert "generate_website" in reg._allowed_tools
-    assert "write_file" in reg._allowed_tools
+    assert "create_project" in reg._allowed_tools      # catégorie project
+    assert "delegate_agent" in reg._allowed_tools       # catégorie agents (v2) — fixture name
+    # v2: generate_website est catégorie 'website', write_file catégorie 'files'
+    # — ni l'un ni l'autre ne sont dans le pack CODE (agents+project)
     assert "send_mail" not in reg._allowed_tools
 
 

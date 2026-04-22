@@ -1234,6 +1234,6 @@ async def test_api_key(request: Request, _: None = Depends(deps.verify_admin_tok
         return {"success": True, "message": "Format valide (test réseau échoué, vérifie manuellement)."}
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

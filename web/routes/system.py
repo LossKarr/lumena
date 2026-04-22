@@ -585,6 +585,15 @@ async def shutdown_server(request: Request, _auth=Depends(deps.verify_admin_toke
         # Laisser la réponse HTTP partir
         time.sleep(0.8)
 
+        # Libérer le lock avant de tuer le processus (taskkill /F bypasse le lifespan)
+        try:
+            if deps.instance_lock:
+                deps.instance_lock.release()
+                deps.instance_lock = None
+                print("[LOCK] Instance lock released (pre-shutdown)")
+        except Exception:
+            pass
+
         if sys.platform == "win32":
             # Windows : on lance un processus DÉTACHÉ (hors de notre arbre)
             # qui fait taskkill /F /T sur notre PID.
@@ -637,6 +646,20 @@ async def preflight(request: Request):
     checker = HealthChecker()
     result = await asyncio.to_thread(checker.check_all)
     return result.to_dict()
+
+
+@router.get("/api/system/reliability")
+async def system_reliability():
+    """Métriques runtime de fiabilité (routing, policy, stickiness, outils).
+
+    Lecture seule, non authentifiée : consommé par le HUD / monitoring.
+    """
+    try:
+        from src.utils.reliability_metrics import get_metrics
+        return get_metrics().snapshot()
+    except Exception as e:
+        logger.warning("[reliability] snapshot erreur: {}", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.get("/api/status", dependencies=[Depends(deps.verify_admin_token)])
@@ -904,6 +927,6 @@ async def serve_uploaded_file(filename: str, _auth=Depends(deps.verify_admin_tok
     return FileResponse(path)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

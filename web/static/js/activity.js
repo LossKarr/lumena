@@ -18,6 +18,11 @@ export function toggleSidebar(){
 export function startActivityFeed(){
   activityCounts={tools:0,thoughts:0,edits:0,obs:0,actions:0,errors:0};
   activityStartTime=Date.now();
+  // Reset checkpoint dedup state for the new request
+  window._lastCheckpointText=null;
+  window._lastCheckpointEl=null;
+  window._lastCheckpointCount=0;
+  window._lastAgentStepDetail=null;
   const feed=document.getElementById('activity-feed');
   if(feed)feed.innerHTML='';
   const stats=document.getElementById('activity-stats');

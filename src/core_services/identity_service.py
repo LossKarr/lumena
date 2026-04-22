@@ -29,6 +29,73 @@ class IdentityService(BaseService):
         self._discord_users: Dict[str, dict] = discord_users if discord_users is not None else {}
         self._max_contexts = max_contexts
         self._identity_lock = threading.Lock()
+        # Phase 2 fiabilisation : contexte code récent par canal pour maintenir
+        # le projet actif à travers plusieurs tours conversationnels.
+        # Clé = channel_key unifié (ex: "telegram:12345", "web:session:xxx").
+        # Valeur = {"workspace_path": str, "project_slug": Optional[str], "ts": float}
+        self._last_code_context: Dict[str, Dict[str, Any]] = {}
+        self._code_context_ttl: float = 1800.0  # 30 min
+
+    # ── Stickiness code context (Phase 2 fiabilisation) ─────────────────
+
+    def remember_code_context(
+        self,
+        channel_key: str,
+        workspace_path: str,
+        project_slug: Optional[str] = None,
+    ) -> None:
+        """Mémorise le dernier contexte code actif pour un canal.
+
+        Permet à ReAct de re-router les messages ambigus ("ça marche pas",
+        "t'as fini ?") vers le bon projet pendant `_code_context_ttl` secondes.
+        """
+        if not channel_key or not workspace_path:
+            return
+        import time
+        with self._identity_lock:
+            self._last_code_context[channel_key] = {
+                "workspace_path": str(workspace_path),
+                "project_slug": project_slug,
+                "ts": time.time(),
+            }
+
+    def get_recent_code_context(
+        self,
+        channel_key: str,
+        ttl: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retourne le contexte code récent pour un canal, ou None si expiré/absent."""
+        if not channel_key:
+            return None
+        import time
+        _ttl = ttl if ttl is not None else self._code_context_ttl
+        with self._identity_lock:
+            entry = self._last_code_context.get(channel_key)
+            if not entry:
+                return None
+            if (time.time() - float(entry.get("ts", 0))) > _ttl:
+                self._last_code_context.pop(channel_key, None)
+                return None
+            return dict(entry)
+
+    @staticmethod
+    def resolve_channel_key(runtime_context: Any, sender: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Construit une clé unifiée (channel:identifier) depuis le RuntimeContext."""
+        if runtime_context is None and not sender:
+            return None
+        channel = getattr(runtime_context, "channel", None) or "unknown"
+        # Priorités par canal
+        if sender:
+            if channel == "telegram" and sender.get("id"):
+                return f"telegram:{sender['id']}"
+            if channel == "whatsapp" and sender.get("phone"):
+                return f"whatsapp:{sender['phone']}"
+            if channel == "discord" and sender.get("id"):
+                return f"discord:{sender['id']}"
+        sid = getattr(runtime_context, "session_id", None) if runtime_context else None
+        if sid:
+            return f"{channel}:{sid}"
+        return f"{channel}:default"
 
     def _resolve_sender_identity(
         self,
@@ -476,6 +543,6 @@ Tu parles avec : {name}
         logger.info("🌐 Contexte Web effacé")
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the Apache License, Version 2.0
+# Licensed under the GNU General Public License v3.0 (GPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

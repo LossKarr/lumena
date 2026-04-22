@@ -68,3 +68,20 @@ QUI_SUIS_JE.md
 "Plan- meilleur code agent au monde.md"
 *.lock.tmp
 data/env_backups/
+
+# Claude Code (config locale)
+.claude/
+
+# Plans et docs de travail temporaires
+PLAN_*.md
+PACK_*.md
+
+# Fichiers scratch / debug
+y.py
+collect.txt
+logggg.txt
+*.tmp.py
+
+# Captures d'écran
+screenshot_*.png
+screenshot_*.jpg
