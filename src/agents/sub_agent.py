@@ -2920,6 +2920,20 @@ class CodeAgent(SubAgent):
             _ctx_intent = (task.context or {}).get("intent")
             if _ctx_intent in ("create", "modify", "unknown", "read"):
                 self._resolved_intent = _ctx_intent
+            elif not _ctx_intent:
+                # Fallback : si le handler n'a pas injecté d'intent, on le déduit
+                # du workspace. Si le dossier existe et contient des fichiers → "modify",
+                # sinon → "create". Sans ça, _resolved_intent reste 'auto' et
+                # l'Architect ne se déclenche JAMAIS quand workspace_path est fourni.
+                _ws_path = Path(str(_ws))
+                if _ws_path.is_dir() and any(_ws_path.iterdir()):
+                    self._resolved_intent = "modify"
+                else:
+                    self._resolved_intent = "create"
+                logger.debug(
+                    "[CodeAgent] Intent déduit du workspace: {} ({})",
+                    self._resolved_intent, _ws_path,
+                )
         else:
             # ── Résolution centralisée via resolve_workspace ──
             # Plus AUCUNE création à l'aveugle ici — tout passe par le registre.

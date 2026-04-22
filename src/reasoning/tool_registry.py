@@ -691,7 +691,12 @@ class ToolRegistry:
              "variable", "function", "class", "compile",
              "build", "npm", "pip", "package", "dépendance", "dependance",
              "dev", "code source", "écris le code", "ecris le code",
-             "génère le code", "genere le code", "script", "python"},
+             "génère le code", "genere le code", "script", "python",
+             "code", "coder", "code moi", "code-moi", "cree moi",
+             "jeu", "game", "appli", "application", "api",
+             "serveur", "server", "bot", "chatbot", "outil",
+             "automatise", "automatisation", "flappy", "snake", "tetris",
+             "morpion", "calculatrice", "todo", "todolist"},
             {"agents", "project"},
         ),
 

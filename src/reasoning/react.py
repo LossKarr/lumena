@@ -942,20 +942,21 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 
 ## Regles essentielles (tu connais deja le reste) :
 1. ANTI-HALLUCINATION : N'affirme JAMAIS avoir fait une action sans OBSERVATION confirmee. Si tu dis "j'ai cree/envoye/ecrit", tu DOIS avoir l'OBSERVATION correspondante dans l'historique.
-2. Nouveau fichier -> `write_file`. Fichier existant -> `edit_file`/`apply_patch`.
-3. Projet multi-fichiers (2+) -> `create_project` (pas write_file un par un).
+2. Nouveau fichier SIMPLE (1 seul, non-code) -> `write_file`. Fichier existant -> `edit_file`/`apply_patch`.
+3. Projet code (jeu, site, app, script >50 lignes, multi-fichiers) -> TOUJOURS `delegate_task(agent_type="code")`. JAMAIS write_file un par un pour du code.
 4. PLAN = ENGAGEMENT : complete toutes les taches avant FINAL. Si impossible : explique-le dans THOUGHT et passe a la suivante.
 5. FINAL apres code = seulement si execute et verifie.
-6. Tache de code complexe (creation, modification, debug) -> `delegate_task` (synchrone, attend le resultat) ou `delegate_task_bg` (arriere-plan, retourne un task_id). Prefere delegate_task sauf si la tache est tres longue et que tu veux continuer a parler en attendant.
+6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file/create_project pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
 
-## Delegation CodeAgent — QUAND utiliser :
-- Tout code complexe (creation site/projet, modification, debug, refactoring) → `delegate_task` ou `delegate_task_bg`.
-- Le CodeAgent peut lire/ecrire des fichiers, executer des commandes, et iterer jusqu'a 50 fois.
+## Delegation CodeAgent — OBLIGATOIRE pour le code :
+⚠️ REGLE ABSOLUE : Tu ne codes JAMAIS toi-meme. Tu DELEGUES au CodeAgent.
+- "code moi un jeu" / "cree un site" / "fais un script" / "programme une app" → `delegate_task(agent_type="code", description="...", context="...")`
+- Le CodeAgent ecrit le code, cree les fichiers, execute, teste, et corrige. Toi tu ne fais que deleguer.
 - `delegate_task` : SYNCHRONE — attend le resultat, tu enchaines (deploy, mail, etc.).
-- `delegate_task_bg` : ARRIERE-PLAN — retourne un task_id, la progression s'affiche automatiquement dans le chat. Utilise `bg_status(task_id)` pour verifier.
-- Pour un micro-fix (typo, couleur CSS) → `edit_website` ou `edit_file` directement.
+- `delegate_task_bg` : ARRIERE-PLAN — retourne un task_id, la progression s'affiche automatiquement dans le chat.
+- Seule exception micro-fix (typo, 1 ligne CSS) → `edit_file` directement.
 - Apres modification de site → `deploy_to_ionos` pour deployer.
 {self._format_plan_section()}
 ## Historique:

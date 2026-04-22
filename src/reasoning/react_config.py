@@ -227,7 +227,7 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     "generate_website": ["site", "landing", "portfolio", "page web", "genér", "gener", "créer", "creer", "website"],
     "write_website_files": ["site", "écri", "ecri", "fichier", "website", "html", "css"],
     "edit_website": ["corrig", "fix", "couleur", "typo", "lien", "petit", "css", "texte"],
-    "delegate_task": ["modif", "amélio", "amelio", "ajout", "chang", "site", "portfolio", "website", "mettre a jour", "mise a jour", "actualise", "update", "refaire", "retravaill", "optimis", "renouvel", "reecrire", "refondre", "restructur"],
+    "delegate_task": ["modif", "amélio", "amelio", "ajout", "chang", "site", "portfolio", "website", "mettre a jour", "mise a jour", "actualise", "update", "refaire", "retravaill", "optimis", "renouvel", "reecrire", "refondre", "restructur", "code", "coder", "code moi", "code-moi", "programme", "jeu", "game", "script", "appli", "application", "api", "bot", "développ", "developp", "bug", "débogu", "debogu", "debug", "refactor", "erreur dans", "répare", "repare", "résou", "resou"],
     "serve_website": ["servir", "serveur", "preview", "prévisual", "previsual", "lancer", "ouvrir"],
     "export_website_zip": ["export", "zip", "archiv", "télécharg", "telecharg"],
     "list_website_projects": ["list", "projet", "site", "website"],
@@ -250,7 +250,8 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     # Tests / debug
     "test_and_fix": ["test", "tester", "vérifi", "verifi", "corrig", "fix", "bug", "débogu", "debogu"],
     # Délégation CodeAgent (correction de code multi-fichiers, debugging complexe)
-    "delegate_task": ["corrig", "fix", "bug", "débogu", "debogu", "debug", "refactor", "restructur", "erreur dans", "répare", "repare", "résou", "resou"],
+    # NOTE: clé delegate_task déjà définie plus haut avec keywords création+debug fusionnés
+    # "delegate_task": (fusionné ci-dessus pour éviter écrasement dict)
     # GitHub (lecture / écriture)
     "github_repo_list": ["lister", "list", "repos", "dépôts", "depots", "répertoir", "repertoir", "étape 1", "etape 1", "identifier"],
     "github_file_read": ["lire", "read", "fichier", "analys", "examiner", "étape 2", "etape 2", "étape 3", "etape 3", "consulter"],

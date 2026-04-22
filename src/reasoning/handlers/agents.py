@@ -59,6 +59,9 @@ async def delegate_task_handler(
                 if _resolution.path:
                     safe_context["workspace_path"] = str(_resolution.path)
                     safe_context["project_dir"] = str(_resolution.path)
+                    # ── Injecter l'intent pour que la phase Architect se déclenche ──
+                    if _resolution.intent and "intent" not in safe_context:
+                        safe_context["intent"] = _resolution.intent
                     try:
                         _excluded = {".git", "__pycache__", "node_modules", ".venv", ".env"}
                         _files = []
@@ -153,6 +156,9 @@ async def delegate_task_bg_handler(
                 if _resolution.path:
                     safe_context["workspace_path"] = str(_resolution.path)
                     safe_context["project_dir"] = str(_resolution.path)
+                    # ── Injecter l'intent pour que la phase Architect se déclenche ──
+                    if _resolution.intent and "intent" not in safe_context:
+                        safe_context["intent"] = _resolution.intent
                     try:
                         _excluded = {".git", "__pycache__", "node_modules", ".venv", ".env"}
                         _files = []
