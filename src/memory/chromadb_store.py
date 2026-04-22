@@ -907,7 +907,7 @@ class LumenaMemory:
         # === RECHERCHE MÉMOIRE AMÉLIORÉE ===
         # Détecter si la question porte sur des sujets mémorisés
         query_lower = query.lower()
-        personal_keywords = ["portfolio", "portefolio", "site", "moi", "mon", "me", "toi", "lumena", "lumi", "charles", "losskarr"]
+        personal_keywords = ["portfolio", "portefolio", "site", "moi", "mon", "me", "toi", "lumena", "lumi", "utilisateur", "owner"]
         is_personal_question = any(kw in query_lower for kw in personal_keywords)
         
         # Augmenter le nombre de résultats pour les questions personnelles
@@ -961,6 +961,6 @@ class ChromaDBStore(ChromaMemoryStore):
         super().__init__(data_dir)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

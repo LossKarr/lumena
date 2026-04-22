@@ -1440,7 +1440,7 @@ Conversations et apprentissages de la journée.
                 if _fmarker:
                     yield _fmarker
                 # BLOCKER D: Auto-dispatch images pour Telegram/WhatsApp
-                await self._dispatch_generated_images(full_response, source_channel, sender)
+                await self._dispatch_generated_images(full_response, source_channel, None)
         else:
             active_context.add_message("user", user_message)
 
@@ -1591,7 +1591,7 @@ Conversations et apprentissages de la journée.
             if _fmarker:
                 yield _fmarker
             # BLOCKER D: Auto-dispatch images pour Telegram/WhatsApp
-            await self._dispatch_generated_images(full_response, source_channel, sender)
+            await self._dispatch_generated_images(full_response, source_channel, None)
 
         if _discord_user_id and _discord_channel_id:
             profile = c._discord_users.get(_discord_user_id, {})
@@ -1960,6 +1960,6 @@ Conversations et apprentissages de la journée.
                 return ""
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

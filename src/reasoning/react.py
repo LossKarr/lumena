@@ -3506,6 +3506,6 @@ Continue à répondre à la question initiale. Si tu as créé les 3 fichiers (H
         self._last_completed_task_count = 0
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

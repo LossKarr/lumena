@@ -260,6 +260,6 @@ def get_model_manager(primary_model: str = "gemini-2.5-flash") -> ModelManager:
     return _model_manager
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

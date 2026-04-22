@@ -286,6 +286,6 @@ def get_bm25_index(cache_path: Optional[Path] = None) -> BM25Index:
     return _bm25_index
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

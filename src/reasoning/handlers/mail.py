@@ -1015,7 +1015,7 @@ def get_mail_handler_defs() -> List[HandlerDef]:
                 "properties": {
                     "file_path": {"type": "string", "description": "Chemin local du fichier"},
                     "caption": {"type": "string", "description": "Légende", "default": ""},
-                    "target_chat_id": {"type": "string", "description": "Chat ID Telegram NUMERIQUE (ex: 1942152541). Vide = chat courant.", "default": ""},
+                    "target_chat_id": {"type": "string", "description": "Chat ID Telegram NUMERIQUE (ex: 123456789). Vide = chat courant.", "default": ""},
                 },
                 "required": ["file_path"],
             },
@@ -1144,6 +1144,6 @@ def get_mail_handler_defs() -> List[HandlerDef]:
     ]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

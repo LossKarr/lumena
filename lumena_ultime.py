@@ -596,7 +596,7 @@ class LumenaUltime:
         response = self.lora_tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
         
         # Nettoyer
-        response = response.replace("Qwen", "Lumena").replace("Alibaba", "Charles")
+        response = response.replace("Qwen", "Lumena").replace("Alibaba", "Lumena")
         lines = response.split('\n')
         return lines[0].strip() if lines else response.strip()
     

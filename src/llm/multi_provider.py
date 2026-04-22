@@ -3263,6 +3263,6 @@ Maintenant, utilise ces informations pour répondre à ma question initiale de m
         return await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

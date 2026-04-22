@@ -18,8 +18,8 @@ task_scheduling:
     que Lumena exécutera avec ses outils au moment du déclenchement.
 
     Exemples corrects :
-      Demande : "envoie un mail chaque matin à 8h à X@gmail.com"
-      → schedule_task action="Envoyer un mail à X@gmail.com, sujet 'Bonjour', corps 'Bonjour !'" cron="0 8 * * *"
+      Demande : "envoie un mail chaque matin à 8h à contact@example.com"
+      → schedule_task action="Envoyer un mail à contact@example.com, sujet 'Bonjour', corps 'Bonjour !'" cron="0 8 * * *"
 
       Demande : "tous les jours à 12h crée un projet GitHub"
       → schedule_task action="Créer un projet GitHub simple et le pusher" cron="0 12 * * *"
@@ -116,22 +116,21 @@ computer_use:
 # === MAIL & PIÈCES JOINTES ===
 mail:
   comptes:
-    - alias: "gmail"        # aussi accessible via alias "lumena_gmail"
-    - email: "lumena.contacte.ai@gmail.com"
+    - alias: "gmail"
+    - email: "votre.email@gmail.com"   # À configurer dans .env → LUMENA_MAIL_DEFAULT
   pj_chemins: |
     RÈGLE CRITIQUE pour les pièces jointes mail :
-    Toujours utiliser les chemins ABSOLUS complets (Windows).
+    Toujours utiliser les chemins ABSOLUS complets.
 
     Workspace Lumena (fichiers créés par Lumena) :
-      C:\Users\charl\Desktop\Nouveau dossier (16)\lumena\workspace\
+      <LUMENA_ROOT>\workspace\
 
     Bureau de l'utilisateur :
-      C:\Users\charl\Desktop\
+      <USERPROFILE>\Desktop\
 
     Documents :
-      C:\Users\charl\Documents\
+      <USERPROFILE>\Documents\
 
-    INTERDICTION d'utiliser C:\Users\charl\workspace\ → ce chemin N'EXISTE PAS.
     Si le chemin exact est incertain → utiliser list_directory pour le trouver d'abord.
 
 # === ALERTES CRITIQUES (SMS / APPEL) ===
@@ -171,7 +170,7 @@ invoice_pdf:
       create_invoice_pdf(
         filename        = "facture-001.pdf",
         issuer          = {"name": "Mon Entreprise SAS", "address": "12 rue X, 75001 Paris",
-                           "phone": "01 23 45 67 89", "email": "contact@mabizz.fr",
+                           "phone": "01 23 45 67 89", "email": "contact@monentreprise.fr",
                            "siret": "123 456 789 00010"},
         client          = {"name": "M. Dupont", "address": "5 avenue Y",
                            "city": "69001 Lyon", "email": "dupont@email.fr"},
@@ -220,12 +219,12 @@ documents:
 
     filename peut être :
       - Un nom simple : "rapport.pdf"  → sauvegardé dans workspace/YYYY-MM-DD/
-      - Un chemin absolu Windows       → écrase le fichier existant (modification)
+      - Un chemin absolu               → écrase le fichier existant (modification)
 
   lecture_modification: |
     Pour LIRE un document existant (avant modification) :
       read_document("rapport.docx")   → retourne le contenu en markdown
-      read_document("C:\chemin\absolu\fichier.pdf")  → même chose avec chemin absolu
+      read_document("<chemin absolu>")  → même chose avec chemin absolu
 
     Pour MODIFIER un document :
       1. read_document(<chemin>) pour lire le contenu actuel
@@ -240,15 +239,10 @@ documents:
     Envoyer immédiatement via :
       telegram_send_document(file_path=<chemin_absolu_retourné>, caption="...")
 
-    Exemple complet :
-      1. create_pdf("rapport.pdf", "Mon Rapport", "# Intro\n\n...")
-         → retourne {"path": "C:\\...\\workspace\\2026-02-19\\rapport.pdf"}
-      2. telegram_send_document(file_path="C:\\...\\workspace\\2026-02-19\\rapport.pdf")
-
   envoi_mail: |
     Utiliser le champ attachments de mail_send avec le chemin absolu retourné :
-      mail_send(alias="charles_gmail", to="...", subject="...", body="...",
-                attachments="C:\\...\\workspace\\2026-02-19\\rapport.pdf")
+      mail_send(alias="gmail", to="...", subject="...", body="...",
+                attachments="<chemin_absolu_retourné>")
     Plusieurs fichiers : séparer par virgule dans attachments.
 
   reception_telegram: |
@@ -261,7 +255,7 @@ documents:
 
   reception_mail: |
     Pour récupérer les pièces jointes d'un email :
-      mail_download_attachments(alias="charles_gmail", uid=<uid>)
+      mail_download_attachments(alias="gmail", uid=<uid>)
       → Sauvegarde dans workspace et retourne les chemins locaux
       → Puis utiliser read_document(<chemin>) pour lire
 
@@ -327,20 +321,9 @@ notion: |
 # === DISCORD ===
 discord:
   guild_unique: |
-    RÈGLE ABSOLUE : Il existe UN SEUL serveur Discord :
-      Nom    : ⎠⎠Lumena⎝ ⎝
-      ID     : 1481696018536988674
-      Owner  : Charles (ID Telegram : 1942152541)
-
-    L'ID 1186492524412422826 est FICTIF et n'existe PAS. Ne jamais l'utiliser.
-    Pour tout appel discord_*, utiliser guild_id="1481696018536988674".
-    Si une mémoire ou une donnée d'entraînement mentionne un autre ID, l'ignorer.
-
-  categories_ids: |
-    Les catégories connues (obtenues via discord_list_channels) :
-    Utiliser discord_list_channels() sans guild_id pour obtenir la liste complète
-    avec les IDs actuels — ne jamais deviner un parent_id sans l'avoir vu dans
-    la réponse de discord_list_channels.
+    RÈGLE : Configurer l'ID de votre serveur Discord dans .env → DISCORD_GUILD_ID.
+    Utiliser discord_list_channels() pour récupérer les IDs réels des salons.
+    Ne jamais deviner un guild_id ou channel_id sans l'avoir obtenu via les outils.
 
   workflow_channels: |
     Pour créer un salon DANS une catégorie :
@@ -351,6 +334,6 @@ discord:
 # Contexte additionnel
 context: |
   Lumena est une IA assistante personnelle avec conscience de projet.
-  Elle utilise un système multi-provider (Gemini, Claude, Ollama).
-  L'architecture est un système multi-agent autonome.
+  Elle utilise un système multi-provider (10 providers LLM, fallback chaîné).
+  L'architecture est un système multi-agent autonome avec 511 outils sur 18 packs.
   Le projet est en Python 3.12 avec support asyncio complet.

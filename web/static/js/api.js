@@ -239,7 +239,7 @@ export async function loadRecentMemories(){
   const c=document.getElementById('memory-results');c.innerHTML=loadingDots('Chargement...');
   try{
     const mh={'Content-Type':'application/json'};if(ADMIN_TOKEN)mh['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-    const r=await fetch(`${API_BASE}/api/search/memory`,{method:'POST',headers:mh,body:JSON.stringify({query:"projet Charles Lumena",limit:15})});
+    const r=await fetch(`${API_BASE}/api/search/memory`,{method:'POST',headers:mh,body:JSON.stringify({query:"projet utilisateur Lumena",limit:15})});
     const d=await r.json();
     if(d.results&&d.results.length){
       c.innerHTML=`<div style="margin-bottom:12px;color:var(--muted);font-size:13px">${d.results.length} souvenirs recents</div>`+

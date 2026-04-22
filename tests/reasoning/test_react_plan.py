@@ -258,10 +258,10 @@ class TestUpdatePlanProgress:
     def test_browser_navigate_matches_naviguer(self):
         """browser_navigate hint 'navig' doit matcher 'Naviguer vers'."""
         loop = self._make_loop([
-            "Naviguer vers https://losskarr.fr",
+            "Naviguer vers https://example.com",
             "Analyser la page",
         ])
-        loop._update_plan_progress("browser_navigate", {"url": "https://losskarr.fr"}, "✅ Navigué", 1)
+        loop._update_plan_progress("browser_navigate", {"url": "https://example.com"}, "✅ Navigué", 1)
         assert loop._task_plan[0].completed is True
 
     def test_browser_click_matches_soumettre(self):
@@ -327,7 +327,7 @@ class TestUpdatePlanProgress:
         """Simule le plan 8 tâches losskarr.fr — toutes doivent matcher."""
         loop = self._make_loop([
             "Démarrer le navigateur contrôlé (Playwright)",
-            "Naviguer vers https://losskarr.fr",
+            "Naviguer vers https://example.com",
             "Analyser la page pour trouver le lien d'inscription",
             "Cliquer pour accéder au formulaire d'inscription",
             "Remplir le formulaire avec des informations",
@@ -337,7 +337,7 @@ class TestUpdatePlanProgress:
         ])
         actions = [
             ("browser_start", {}, "🌐 Navigateur démarré"),
-            ("browser_navigate", {"url": "https://losskarr.fr"}, "✅ Navigué vers losskarr.fr"),
+            ("browser_navigate", {"url": "https://example.com"}, "✅ Navigué vers losskarr.fr"),
             ("browser_dom_state", {}, "Page: 37 elements"),
             ("browser_click_index", {"index": 2}, "✅ Clic sur [2] Inscription"),
             ("browser_type_index", {"index": 7, "text": "Lumena"}, "✅ Tape Lumena"),

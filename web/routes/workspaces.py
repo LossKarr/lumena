@@ -169,6 +169,6 @@ async def delete_workspace(slug: str, _auth=Depends(deps.verify_admin_token)):
     return {"success": True, "slug": slug}
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

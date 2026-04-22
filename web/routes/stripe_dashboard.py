@@ -196,6 +196,6 @@ async def create_payment_link_quick(body: dict, _auth=Depends(deps.verify_admin_
         return JSONResponse({"error": str(exc)}, status_code=500)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

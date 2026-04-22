@@ -27,7 +27,7 @@ et ce projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
 - Model picker : `flex-wrap: wrap` remplace `overflow-x: auto` (tous les providers visibles)
 
 ### Changements
-- Licence passée de AGPL-3.0 à **GPL-3.0** sur ~200 fichiers source
+- Licence confirmée **AGPL-3.0** sur ~200 fichiers source (classifiers pyproject mis à jour)
 - `.env.example` : 149 variables documentées (23 groupes), ajout variables Z.AI
 - `pytest.ini` : marker `timeout` enregistré, suppression faux `PytestUnknownMarkWarning`
 

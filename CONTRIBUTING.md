@@ -332,4 +332,4 @@ Ouvrir une [issue](https://github.com/Losskarr/lumena/issues) sur GitHub.
 
 ---
 
-_Licence : [GPL-3.0](LICENSE)_
+_Licence : [AGPL-3.0](LICENSE)_

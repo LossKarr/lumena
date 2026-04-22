@@ -253,6 +253,6 @@ def looks_incomplete_final_answer(answer: str, llm_meta: Dict[str, Any]) -> bool
     return suspicion_score >= 2
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU General Public License v3.0 (GPL-3.0)
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

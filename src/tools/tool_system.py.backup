@@ -421,7 +421,7 @@ class LumenaToolSystem:
             "### Exemples concrets:",
             "- Météo → `[TOOL:web_search] {\"query\": \"météo Lille week-end\"}`",
             "- Créer fichier → `[TOOL:write_file] {\"path\": \"test.md\", \"content\": \"# Mon fichier\"}`",
-            "- Chercher souvenir → `[TOOL:memory_search] {\"query\": \"ce que je sais sur Charles\"}`",
+            "- Chercher souvenir → `[TOOL:memory_search] {\"query\": \"ce que je sais sur l'utilisateur\"}`",
             "- Date/heure → `[TOOL:get_time] {}`",
             "",
             "### Quand utiliser les outils:",
