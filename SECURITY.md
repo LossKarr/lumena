@@ -4,7 +4,7 @@
 
 | Version | Support sécurité |
 |---------|-----------------|
-| 1.0.x   | ✅ Actif         |
+| 1.0.9   | ✅ Actif         |
 | < 1.0   | ❌ Non supporté  |
 
 ## Signaler une vulnérabilité

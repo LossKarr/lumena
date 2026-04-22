@@ -7,6 +7,32 @@ et ce projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [1.0.9] — 2026-04-22
+
+### Ajouts
+- **Z.AI** — 10ème provider LLM intégré (GLM-4 series), position 2 dans la chaîne de fallback
+- **Router v2 — 18 packs contextuels** — `_CONTEXT_RULES` réécrit : BROWSER et SEARCH séparés,
+  pack CODE avec `delegate_task`/`delegate_task_bg`, pack VIDEO isolé
+- **`delegate_task_bg`** — CodeAgent en arrière-plan avec `task_id` immédiat + progression temps réel
+- **`run_task_bg`** dans l'Orchestrator + `progress_callback` pour push vers le chat
+- **Panel Workspaces** — interface admin complète : groupement par date, badges tech stack,
+  arbre de fichiers lazy, recherche, tri
+- **`intent_router.py`** — classifieur LLM-first + fallback regex + cache TTL + audit JSONL
+- **`reliability_metrics.py`** — métriques de routage temps réel
+
+### Corrections
+- `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` ajoutés aux requirements — résout `cublas64_12.dll not found` pour faster-whisper GPU
+- `test_get_next_healthy_provider` mis à jour pour refléter Z.AI en position 2 du fallback
+- Tests `test_image_gen_compose` : patchaient `GEMINI_API_KEY` au lieu de `GOOGLE_API_KEY`
+- Model picker : `flex-wrap: wrap` remplace `overflow-x: auto` (tous les providers visibles)
+
+### Changements
+- Licence passée de AGPL-3.0 à **GPL-3.0** sur ~200 fichiers source
+- `.env.example` : 149 variables documentées (23 groupes), ajout variables Z.AI
+- `pytest.ini` : marker `timeout` enregistré, suppression faux `PytestUnknownMarkWarning`
+
+---
+
 ## [1.0.0] — 2026-04-16
 
 Première release publique. Assistant IA autonome complet avec raisonnement

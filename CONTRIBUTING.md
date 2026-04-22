@@ -59,30 +59,29 @@ LUMENA_DEEPSEEK_API_KEY=...    # Clé DeepSeek (provider par défaut)
 LUMENA_ADMIN_TOKEN=...          # Token admin pour l'API web
 ```
 
-Le fichier `.env.example` documente les 219 variables disponibles.
+Le fichier `.env.example` documente les 149 variables disponibles (23 groupes).
 
 ## Lancer les tests
 
 ```bash
-# Suite complète (~6400 tests)
-python -m pytest tests/ --timeout=15 -q
+# Suite complète (~7536 tests)
+python -m pytest tests/ -q
 
 # Subset critique uniquement (CI gate, ~16 tests)
-python scripts/ci_phase_gate.py --timeout=15
+python scripts/ci_phase_gate.py
 
 # Run de stabilité ×3 (preuve de non-flakiness)
-python scripts/ci_phase_gate.py --full --runs=3 --timeout=15
+python scripts/ci_phase_gate.py --full --runs=3
 
 # Un fichier spécifique
 python -m pytest tests/test_core.py -v
 
 # Tests marqués slow exclus
-python -m pytest tests/ --timeout=15 -m "not slow"
+python -m pytest tests/ -m "not slow"
 ```
 
 **Configuration pytest** (`pytest.ini`) :
-- `asyncio_mode = auto` — pas besoin de `@pytest.mark.asyncio` explicite
-- Timeout par défaut : 15 secondes par test
+- `asyncio_mode = strict` — `@pytest.mark.asyncio` requis explicitement
 - Répertoires exclus : `venv`, `Backup`, `workspace`, `web`, `__pycache__`
 
 ## Lint & formatage
@@ -123,12 +122,12 @@ lumena/
 │   ├── core_services/      # 12 services (agent, identity, memory, voice…)
 │   ├── hooks/              # Système de hooks (WebSocket brain 3D)
 │   ├── learning/           # Reflection, instincts
-│   ├── llm/                # Multi-provider LLM (9 providers, 46 modèles)
+│   ├── llm/                # Multi-provider LLM (10 providers, fallback chaîné)
 │   ├── memory/             # ChromaDB + BM25 + Knowledge Graph
 │   ├── perception/         # Lecture de documents, extraction de savoir
 │   ├── prompts/            # Construction de prompts
-│   ├── reasoning/          # ReAct loop + 466 handlers V2 + pipeline
-│   │   └── handlers/       # 35 modules de handlers (1 fichier = 1 domaine)
+│   ├── reasoning/          # ReAct loop + 511 handlers V2 — 18 packs contextuels
+│   │   └── handlers/       # modules de handlers (1 fichier = 1 domaine)
 │   ├── runtime/            # Enveloppes canal, orchestrateur de tâches
 │   ├── services/           # IONOS, n8n, Stripe
 │   ├── skills/             # Chargement et gestion des skills
@@ -303,7 +302,7 @@ Deux workflows GitHub Actions se déclenchent sur push/PR vers `main` :
    ruff check src/ web/ tests/ --select F821,F811,E722 --ignore E501,E402
 
    # Tests
-   python -m pytest tests/ --timeout=15 -q
+   python -m pytest tests/ -q
    ```
 
 4. **Committer** avec un message clair :
@@ -333,4 +332,4 @@ Ouvrir une [issue](https://github.com/Losskarr/lumena/issues) sur GitHub.
 
 ---
 
-_Licence : [AGPL-3.0-only](LICENSE)_
+_Licence : [GPL-3.0](LICENSE)_
