@@ -205,7 +205,7 @@ class TestCompose:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}):
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key"}):
             with patch.object(svc, "_get_client", new_callable=AsyncMock, return_value=mock_client):
                 result = await svc.compose(assets, "Combine subject on beach background")
 
@@ -236,7 +236,7 @@ class TestCompose:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}):
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key"}):
             with patch.object(svc, "_get_client", new_callable=AsyncMock, return_value=mock_client):
                 result = await svc.compose(
                     assets, "test", platform="youtube_thumbnail",
@@ -258,7 +258,7 @@ class TestCompose:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}):
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key"}):
             with patch.object(svc, "_get_client", new_callable=AsyncMock, return_value=mock_client):
                 with pytest.raises(ImageGenError, match="pas retourné d'image composée"):
                     await svc.compose(assets, "test")
@@ -282,7 +282,7 @@ class TestCompose:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-key"}):
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key"}):
             with patch.object(svc, "_get_client", new_callable=AsyncMock, return_value=mock_client):
                 await svc.compose(assets, "Compose it")
 
