@@ -51,6 +51,31 @@ async def delegate_task_handler(
                 safe_context["workspace_path"] = str(_pp)
                 logger.info("delegate_task: project_path explicite injecté: {}", _pp)
 
+        # ── Extraction de chemin explicite depuis description/context string ──
+        # Le LLM inclut souvent le chemin en clair dans la description ou le context.
+        # On l'extrait AVANT le fuzzy match pour éviter de résoudre le mauvais projet.
+        if "project_dir" not in safe_context:
+            import re as _re_path
+            _texts_to_scan = [description]
+            if isinstance(safe_context.get("raw"), str):
+                _texts_to_scan.append(safe_context["raw"])
+            for _text in _texts_to_scan:
+                # Chercher un chemin Windows ou Unix absolu vers un dossier existant
+                _path_matches = _re_path.findall(
+                    r'([A-Za-z]:\\[^\s\'"<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^\s\'"<>|*?]+)',
+                    _text,
+                )
+                for _pm in _path_matches:
+                    _pm_clean = _pm.rstrip(".,;:!?)")
+                    _pm_path = Path(_pm_clean)
+                    if _pm_path.is_dir():
+                        safe_context["project_dir"] = str(_pm_path)
+                        safe_context["workspace_path"] = str(_pm_path)
+                        logger.info("delegate_task: chemin explicite extrait du texte: {}", _pm_path)
+                        break
+                if "project_dir" in safe_context:
+                    break
+
         # ── Injection automatique du contexte projet via resolve_workspace ──
         try:
             if "project_dir" not in safe_context:
@@ -147,6 +172,28 @@ async def delegate_task_bg_handler(
                 safe_context["project_dir"] = str(_pp)
                 safe_context["workspace_path"] = str(_pp)
                 logger.info("delegate_task_bg: project_path explicite injecté: {}", _pp)
+
+        # ── Extraction de chemin explicite depuis description/context string ──
+        if "project_dir" not in safe_context:
+            import re as _re_path
+            _texts_to_scan = [description]
+            if isinstance(safe_context.get("raw"), str):
+                _texts_to_scan.append(safe_context["raw"])
+            for _text in _texts_to_scan:
+                _path_matches = _re_path.findall(
+                    r'([A-Za-z]:\\[^\s\'"<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^\s\'"<>|*?]+)',
+                    _text,
+                )
+                for _pm in _path_matches:
+                    _pm_clean = _pm.rstrip(".,;:!?)")
+                    _pm_path = Path(_pm_clean)
+                    if _pm_path.is_dir():
+                        safe_context["project_dir"] = str(_pm_path)
+                        safe_context["workspace_path"] = str(_pm_path)
+                        logger.info("delegate_task_bg: chemin explicite extrait du texte: {}", _pm_path)
+                        break
+                if "project_dir" in safe_context:
+                    break
 
         # ── Injection automatique du contexte projet ──
         try:
