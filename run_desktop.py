@@ -73,6 +73,19 @@ def main() -> None:
             pass
         return
 
+    # ── Clear stale WebView2 cache (ensures HTML/CSS/JS changes apply) ──
+    try:
+        import shutil
+        _wv2_cache = Path(os.environ.get("LOCALAPPDATA", "")) / "pywebview"
+        if _wv2_cache.is_dir():
+            for _sub in ("EBWebView/Cache", "EBWebView/Code Cache"):
+                _cd = _wv2_cache / _sub
+                if _cd.is_dir():
+                    shutil.rmtree(_cd, ignore_errors=True)
+                    print(f"[OK] Cache WebView2 vidé: {_cd}")
+    except Exception as _ce:
+        print(f"[WARN] Nettoyage cache WebView2 échoué: {_ce}")
+
     # ── Native window via pywebview ──
     try:
         import webview  # pywebview

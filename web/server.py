@@ -119,8 +119,8 @@ class _SecurityHeadersMiddleware:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
                 headers.extend(_SECURITY_HEADERS)
-                # Force no-cache on static assets so code changes apply immediately
-                if path.startswith("/static/"):
+                # Force no-cache on static assets + root page (pywebview cache)
+                if path.startswith("/static/") or path == "/":
                     headers.append(_NO_CACHE_HEADER)
                 message = {**message, "headers": headers}
             await send(message)

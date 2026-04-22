@@ -587,6 +587,8 @@ svg.lucide{display:inline-block;vertical-align:middle;pointer-events:none}
 /* ============================================================
    WORKSPACES PANEL — v2
    ============================================================ */
+#panel-workspaces:not(.active){display:none!important}
+#panel-workspaces.active{display:flex!important;padding:0;flex-direction:column;overflow:hidden}
 .ws-panel-header{
   padding:14px 18px;border-bottom:1px solid var(--border);
   background:var(--bg-elevated);flex-shrink:0;display:flex;flex-direction:column;gap:10px;
