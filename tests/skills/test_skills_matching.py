@@ -51,10 +51,10 @@ def test_build_active_skills_context_is_bounded(tmp_path: Path):
     context = loader.build_active_skills_context(
         query="cree un pdf puis un docx",
         max_results=2,
-        max_chars=220,
+        max_chars=600,
     )
-    assert context.startswith("## Skills actifs")
-    assert len(context) <= 220
+    assert context.startswith("## Bonnes pratiques")
+    assert len(context) <= 600
     assert ("`pdf`" in context) or ("`docx`" in context)
 
 

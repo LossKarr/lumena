@@ -1,6 +1,7 @@
 ---
 name: disk-space-crisis-manager
-description: Skill disk-space-crisis-manager
+description: Gère les situations d'urgence de disque plein (>90% utilisé). Utilise ce skill quand le disque est presque plein, qu'il faut libérer de l'espace, nettoyer des fichiers temporaires ou archiver des données volumineuses.
+keywords: [disque plein, disk full, espace disque, stockage plein, liberer espace, nettoyage disque, disk space, cleanup, espace insuffisant, more space, free space, saturation disque]
 ---
 
 # Disk Space Crisis Manager

@@ -973,6 +973,45 @@ class MultiProviderLLM:
             if isinstance(result, str):
                 logger.warning("⚠️ chat(): result est str au lieu de dict — wrapping")
                 result = {"text": result, "finish_reason": "stop"}
+            # deepseek-chat tronqué (4096 tokens) → retry automatique avec deepseek-reasoner
+            if (
+                not auto_switch_used
+                and not no_upgrade
+                and result.get("truncated")
+                and "deepseek" in str(model_for_call).lower()
+                and "reasoner" not in str(model_for_call).lower()
+            ):
+                reasoner_cfg = get_model_config("deepseek-reasoner")
+                _reasoner_mdl = reasoner_cfg.model_id if reasoner_cfg else "deepseek-reasoner"
+                logger.warning(
+                    "⚠️ deepseek-chat tronqué ({} tokens) → retry avec deepseek-reasoner",
+                    result.get("completion_tokens", "?"),
+                )
+                try:
+                    _retry_result = await self._chat_provider_result(
+                        provider=provider_for_call,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        model=_reasoner_mdl,
+                        stop=stop,
+                    )
+                    _retry_result = await self._continue_if_needed(
+                        provider=provider_for_call,
+                        base_messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        initial_result=_retry_result,
+                        model=_reasoner_mdl,
+                    )
+                    if isinstance(_retry_result, str):
+                        _retry_result = {"text": _retry_result, "finish_reason": "stop"}
+                    result = _retry_result
+                    auto_switch_used = True
+                    auto_switch_reason = "truncation_upgrade"
+                    model_for_call = _reasoner_mdl
+                except Exception as _trunc_retry_err:
+                    logger.warning("⚠️ Retry deepseek-reasoner après troncature échoué: {}", _trunc_retry_err)
             self._set_last_response_meta(
                 provider_requested=requested_provider,
                 provider_used=result.get("provider_used", requested_provider),
@@ -1928,6 +1967,10 @@ class MultiProviderLLM:
         result = await self._chat_zai_result(messages, temperature=temperature, max_tokens=max_tokens, model=model)
         return result.get("text", "")
 
+    # Flag session : True si Z.AI a retourné une erreur de solde insuffisant (1113)
+    # → évite les retries inutiles jusqu'au prochain redémarrage
+    _zai_balance_exhausted: bool = False
+
     async def _chat_zai_result(
         self,
         messages: List[Dict[str, str]],
@@ -1941,6 +1984,9 @@ class MultiProviderLLM:
         URL : https://api.z.ai/api/paas/v4/chat/completions
         Auth : Bearer {ZAI_API_KEY}
         """
+        if self.__class__._zai_balance_exhausted:
+            raise ValueError("Z.AI désactivé (solde épuisé) — rechargez votre compte Z.AI")
+
         api_key = get_api_key(ProviderType.ZAI)
         if not api_key:
             raise ValueError("ZAI_API_KEY non configurée")
@@ -1985,6 +2031,11 @@ class MultiProviderLLM:
                 error_detail = e.response.text
             except Exception:
                 pass
+            # Code 1113 = solde insuffisant (erreur permanente — désactiver pour la session)
+            if e.response.status_code == 429 and '"code":"1113"' in error_detail:
+                self.__class__._zai_balance_exhausted = True
+                logger.warning("⚠️ Z.AI solde épuisé (code 1113) — provider désactivé pour cette session")
+                raise ValueError("Z.AI désactivé (solde épuisé) — rechargez votre compte Z.AI") from e
             logger.error(f"❌ Erreur Z.AI HTTP {e.response.status_code}: {error_detail[:1000]}")
             raise
 

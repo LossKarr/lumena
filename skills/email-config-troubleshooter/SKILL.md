@@ -1,6 +1,7 @@
 ---
 name: email-config-troubleshooter
-description: Skill email-config-troubleshooter
+description: Diagnostique et résout les problèmes de configuration email SMTP, Gmail et autres providers. Utilise ce skill quand l'envoi d'email échoue, erreurs d'authentification 535/534, mot de passe d'application requis, ou configuration SMTP incorrecte.
+keywords: [email config, smtp, gmail, 535, 534, authentification email, mot de passe app, configuration email, email error, sendmail, python email, nodemailer, email setup]
 ---
 
 # Email Config Troubleshooter

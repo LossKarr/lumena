@@ -422,9 +422,14 @@ async def run_tests_handler(
     timeout: int = 120,
 ) -> HandlerResult:
     """Lance la suite de tests Lumena et retourne le rapport de résultats."""
+    if not test_path:
+        return HandlerResult.ok(
+            "⏭️ run_tests : test_path requis. Spécifie un chemin ou utilise run_tests depuis le CodeAgent.",
+            handler_name="run_tests",
+        )
     try:
         import asyncio
-        cmd = ["py", "-m", "pytest", test_path or "tests", "-q", "--tb=short", "--no-header", f"--timeout={timeout}"]
+        cmd = ["py", "-m", "pytest", test_path, "-q", "--tb=short", "--no-header", f"--timeout={timeout}"]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(ctx.lumena_root),

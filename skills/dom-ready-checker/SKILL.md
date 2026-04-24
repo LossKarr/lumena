@@ -1,6 +1,7 @@
 ---
 name: dom-ready-checker
-description: Skill dom-ready-checker
+description: Détecte et résout les erreurs de timing DOM en JavaScript. Utilise ce skill quand getElementById ou querySelector retourne null, quand des scripts s'exécutent avant le chargement du DOM, ou quand il y a des erreurs Cannot read properties of null.
+keywords: [dom, getElementById, querySelector, null, timing, DOMContentLoaded, chargement dom, script timing, cannot read null, dom error, dom not ready, js timing]
 ---
 
 # DOM Ready Checker

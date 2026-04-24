@@ -136,7 +136,7 @@ async def test_append_syntax_warning_handles_exceptions_gracefully():
 def test_load_provider_prompt_hint_extraction():
     """Vérifie que _load_provider_prompt retourne bien des sections parsables."""
     from src.prompts.agents.sub_agent_prompts import _load_provider_prompt
-    _load_provider_prompt.cache_clear()
+    # @lru_cache retiré — cache_clear() n'existe plus, appel direct
     hint = _load_provider_prompt("deepseek-v3")
     assert "PERSÉVÉRANCE" in hint
     # Le prompt doit contenir au moins une section extractible

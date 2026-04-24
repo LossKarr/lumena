@@ -145,6 +145,7 @@ class AgentTask:
     context: Dict[str, Any] = field(default_factory=dict)
     delegation_ctx: Optional[DelegationContext] = None  # Contexte de délégation cross-agent
     runtime_ctx: Optional[Any] = None  # RuntimeContext snapshot (Phase 2)
+    task_ctx: Optional[Any] = None  # TaskContext typé (Phase 2 — priorité sur context dict)
     created_at: datetime = field(default_factory=datetime.now)
 
     def __post_init__(self):
@@ -2055,6 +2056,17 @@ class CodeAgent(SubAgent):
         # Réinitialiser les compteurs d'état par tentative
         self._edit_fail_for_path = {}
         self._self_repair_count = 0
+        self._gate_retries_used = 0
+
+        # ── P8 : CodeFileWatcher — bridge IDE ────────────────────────────────
+        _code_watcher = None
+        try:
+            from src.config.codeagent_flags import FILE_WATCHER_BRIDGE
+            if FILE_WATCHER_BRIDGE and getattr(self, '_task_workspace_root', None):
+                from src.memory.code_file_watcher import start_code_watcher
+                _code_watcher = start_code_watcher(self._task_workspace_root)
+        except Exception:
+            pass
 
         report: list[str] = []
         loop_detector = LoopDetector()
@@ -2089,9 +2101,9 @@ class CodeAgent(SubAgent):
         _architect_injected_keys: set[str] = set()  # fichiers dont le contenu est déjà dans les messages
         # Déclenchement Architect :
         # - intent "modify" classique (corrige, refactor, fix...)
-        # - intent "create" SI projet existe déjà (= ajout de page/section, pas création from scratch)
-        # - seuil description abaissé à 40 chars pour couvrir les requêtes courtes comme
-        #   "crée une page contact au site X" ou "ajoute une section panier"
+        # - intent "modify" classique (corrige, refactor, fix...)
+        # - intent "modify" sur projet existant avec description longue
+        # - seuil description à 40 chars pour couvrir les requêtes courtes
         _project_exists = bool(_project_files and len(_project_files) > 2)
         _is_complex_modify = (
             _mode_attempt in ("modify", "create")
@@ -2108,7 +2120,12 @@ class CodeAgent(SubAgent):
                 import re as _re_arch
                 _desc_lower = task.description.lower()
                 _candidates: list[str] = []
-                for _pf in (_project_files or []):
+                _ARCH_EXCLUDED = ("/.backups/", "/.git/", "/node_modules/", "/__pycache__/", "/.venv/")
+                _project_files_clean = [
+                    _pf for _pf in (_project_files or [])
+                    if not any(_seg in _pf.replace("\\", "/").lower() for _seg in _ARCH_EXCLUDED)
+                ]
+                for _pf in _project_files_clean:
                     _pf_lower = _pf.lower()
                     _stem = _pf_lower.rsplit("/", 1)[-1].rsplit(".", 1)[0]
                     if _stem and _stem in _desc_lower:
@@ -2131,7 +2148,7 @@ class CodeAgent(SubAgent):
                     if _trigger in _desc_lower:
                         _hint_keys.update(_hints)
                 if _hint_keys:
-                    for _pf in (_project_files or []):
+                    for _pf in _project_files_clean:
                         _pf_low = _pf.lower()
                         if _pf in _candidates:
                             continue
@@ -2146,7 +2163,7 @@ class CodeAgent(SubAgent):
                 if not _candidates:
                     # Fallback : heuristique par extension pertinente — priorité aux noms communs
                     _preferred_ext = (".html", ".css", ".js", ".py", ".ts", ".tsx", ".jsx", ".vue")
-                    _all_matching = [f for f in (_project_files or []) if f.lower().endswith(_preferred_ext)]
+                    _all_matching = [f for f in _project_files_clean if f.lower().endswith(_preferred_ext)]
                     # Tri : entry points en premier (index, main, app, blog, home)
                     _priority_names = ("index", "main", "app", "home", "blog")
                     _all_matching.sort(key=lambda f: (
@@ -2179,13 +2196,29 @@ class CodeAgent(SubAgent):
                         + "\n\n".join(_target_content_blocks)
                         + "\n"
                     )
+                # ── P3 : Fail-to-Pass — injecter le contexte test runner ──
+                _test_runner_section = ""
+                try:
+                    from src.config.codeagent_flags import FAIL_TO_PASS
+                    if FAIL_TO_PASS and _workspace_path:
+                        from src.tools.test_runner_detector import detect_test_runner, format_for_architect
+                        _tr_info = detect_test_runner(
+                            Path(str(_workspace_path)),
+                            list(getattr(self, "_edited_files", [])),
+                        )
+                        _tr_fmt = format_for_architect(_tr_info)
+                        if _tr_fmt:
+                            _test_runner_section = f"\n\n{_tr_fmt}\n"
+                except Exception:
+                    pass
                 _architect_messages = [
                     {"role": "system", "content": _ARCHITECT_PROMPT},
                     {"role": "user", "content": (
                         f"Contexte : modification du projet dans {_workspace_path}.\n\n"
                         f"Fichiers du projet :\n{_files_listing}\n\n"
                         f"Tâche : {task.description}\n"
-                        f"{_content_section}\n"
+                        f"{_content_section}"
+                        f"{_test_runner_section}\n"
                         "Décris PRÉCISÉMENT quelles modifications faire dans quels fichiers. "
                         "Pour chaque modification, cite le code EXACT à remplacer (avec 3-5 lignes de contexte). "
                         "Liste-les comme un plan d'action numéroté que l'exécuteur pourra suivre étape par étape."
@@ -2227,6 +2260,18 @@ class CodeAgent(SubAgent):
                     _llm_for_arch.chat(messages=_architect_messages, temperature=0.1, max_tokens=_arch_max_tokens),
                     timeout=_arch_timeout,  # Reasoner CoT : jusqu'à 10min pour requêtes vagues multi-fichiers complexes
                 )
+                if not (_architect_plan and str(_architect_plan).strip()):
+                    logger.warning("[CodeAgent] Architect réponse vide — retry 1/2 avec le même modèle")
+                    _architect_plan = await asyncio.wait_for(
+                        _llm_for_arch.chat(messages=_architect_messages, temperature=0.3, max_tokens=_arch_max_tokens),
+                        timeout=_arch_timeout,
+                    )
+                if not (_architect_plan and str(_architect_plan).strip()):
+                    logger.warning("[CodeAgent] Architect réponse vide — retry 2/2 (temperature=0.5)")
+                    _architect_plan = await asyncio.wait_for(
+                        _llm_for_arch.chat(messages=_architect_messages, temperature=0.5, max_tokens=_arch_max_tokens),
+                        timeout=_arch_timeout,
+                    )
                 if _architect_plan and str(_architect_plan).strip():
                     # ── Injection du CONTENU brut dans les messages du Chat (pas seulement le plan) ──
                     # Sans ça, le Chat relit blog.html, le cache kicks in, et il boucle en pensant
@@ -2265,11 +2310,18 @@ class CodeAgent(SubAgent):
                                 _architect_injected_keys.add(_cand_path.name.lower())
                         except Exception:
                             continue
+                    # Strip <think>...</think> avant injection — le raisonnement interne
+                    # du reasoner ne doit pas consommer le budget d'injection de l'executor.
+                    import re as _re_think
+                    _plan_raw = str(_architect_plan)
+                    _plan_text = _re_think.sub(r'<think>.*?</think>', '', _plan_raw, flags=_re_think.DOTALL).strip()
+                    if not _plan_text:
+                        _plan_text = _plan_raw  # fallback si tout était <think>
                     messages.append({
                         "role": "user",
                         "content": (
                             f"📋 PLAN DE L'ARCHITECTE (analyse préalable avec le contenu réel — suis-le étape par étape) :\n\n"
-                            f"{str(_architect_plan)[:8000]}\n\n"
+                            f"{_plan_text[:32000]}\n\n"
                             "⚠️ RÈGLES STRICTES POUR TOI :\n"
                             "1. Le contenu des fichiers cibles est DÉJÀ dans tes messages précédents.\n"
                             "2. NE RELIS PAS ces fichiers (read_file interdit sur eux au 1er tour).\n"
@@ -2279,8 +2331,8 @@ class CodeAgent(SubAgent):
                         ),
                     })
                     logger.info(
-                        "[CodeAgent] Phase Architect injectée ({} chars plan + {} fichier(s) cible(s) en contexte)",
-                        len(str(_architect_plan)), len(_target_content_blocks),
+                        "[CodeAgent] Phase Architect injectée ({} chars plan (stripped: {}) + {} fichier(s) cible(s) en contexte)",
+                        len(_plan_text), len(_plan_raw) - len(_plan_text), len(_target_content_blocks),
                     )
                     # ── Plan Architect → TODO_STATE SSE (affichage UI) ──
                     try:
@@ -2474,6 +2526,86 @@ class CodeAgent(SubAgent):
                         except Exception:
                             pass  # jamais bloquant
                 report.append(f"[iter {iteration}] done")
+                # ── Verification Gate (P2 Upgrade Final) ──────────────────
+                try:
+                    from src.config.codeagent_flags import VERIFICATION_GATE
+                    if VERIFICATION_GATE and self._task_workspace_root:
+                        from src.tools.verification_gate import run_gate
+                        from src.utils.gate_metrics import record_gate_retry, record_rollback
+                        # Budget de retries gate : env var, défaut 2
+                        try:
+                            _gate_max_retries = int(os.getenv("LUMENA_GATE_MAX_RETRIES", "2"))
+                        except (TypeError, ValueError):
+                            _gate_max_retries = 2
+                        _gate_retries_used = getattr(self, "_gate_retries_used", 0)
+                        _gate = await run_gate(
+                            self._task_workspace_root,
+                            list(getattr(self, "_edited_files", [])),
+                            task_id=str(task.task_id),
+                        )
+                        if not _gate.passed:
+                            if _gate_retries_used < _gate_max_retries:
+                                # Retry autorisé
+                                self._gate_retries_used = _gate_retries_used + 1
+                                record_gate_retry(task_id=str(task.task_id))
+                                # ── P9 : escalade SWE Pipeline si tests en échec ──
+                                _swe_note = ""
+                                try:
+                                    from src.config.codeagent_flags import SWE_PIPELINE
+                                    if SWE_PIPELINE:
+                                        from src.agents.swe_pipeline import run_swe_pipeline
+                                        _swe = await run_swe_pipeline(
+                                            self._task_workspace_root,
+                                            task.description,
+                                            task_id=str(task.task_id),
+                                            timeout_per_step=60.0,
+                                        )
+                                        report.append(f"[iter {iteration}] SWE pipeline: {'ok' if _swe.success else 'fail'}")
+                                        _swe_note = (
+                                            "\n\nℹ️ SWE Pipeline a corrigé les régressions automatiquement."
+                                            if _swe.success
+                                            else f"\n\nSWE Pipeline résultat : {_swe.format_report()}"
+                                        )
+                                except Exception:
+                                    pass
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        _gate.format_feedback() + _swe_note
+                                        + f"\n\n(Tentative gate {self._gate_retries_used}/{_gate_max_retries})"
+                                    ),
+                                })
+                                report.append(f"[iter {iteration}] gate failed — retry {self._gate_retries_used}/{_gate_max_retries}")
+                                continue
+                            else:
+                                # Budget épuisé — rollback des fichiers modifiés
+                                record_rollback(task_id=str(task.task_id))
+                                _rolled_back: list[str] = []
+                                for _ef in list(getattr(self, "_edited_files", [])):
+                                    try:
+                                        _snap = (_session_snapshots or {}).get(str(_ef))
+                                        if _snap is not None:
+                                            _ef_abs = self._resolve_path(str(_ef))
+                                            _ef_abs.write_text(_snap, encoding="utf-8")
+                                            _rolled_back.append(str(_ef))
+                                    except Exception:
+                                        pass
+                                _rb_note = f" (rollback: {', '.join(_rolled_back)})" if _rolled_back else ""
+                                report.append(f"[iter {iteration}] gate budget épuisé — rollback{_rb_note}")
+                                return AgentResult(
+                                    task_id=task.task_id,
+                                    success=False,
+                                    output=(
+                                        f"❌ Verification Gate : budget de {_gate_max_retries} retries épuisé.\n"
+                                        + "\n".join(_gate.errors[:5])
+                                        + (_rb_note or "")
+                                    ),
+                                    status_code=StatusCode.FAILURE,
+                                    meta={"iterations": iteration, "attempt": attempt, "trace": report, "gate_rollback": _rolled_back},
+                                ), False
+                except Exception:
+                    pass  # gate jamais bloquante
+                # ── fin gate ──────────────────────────────────────────────
                 # P3: sortie du plan mode si actif
                 if getattr(self, "_plan_mode_read_only", False):
                     self._plan_mode_read_only = False
@@ -2910,14 +3042,20 @@ class CodeAgent(SubAgent):
         *, model_name: str = "",
     ) -> tuple[list[dict[str, str]], list[str], list[str] | None]:
         """Construit les messages initiaux + target_files. Extrait du setup de _single_code_attempt."""
-        _ws = (task.context or {}).get("workspace_path") or (task.context or {}).get("project_dir")
+        # Lire depuis task_ctx (typé, priorité) ou depuis le dict legacy
+        _tc = task.task_ctx
+        _ws = (
+            str(_tc.workspace_path) if _tc and _tc.workspace_path
+            else (task.context or {}).get("workspace_path") or (task.context or {}).get("project_dir")
+        )
+        _ctx_intent_from_tc = _tc.intent if _tc and _tc.intent not in ("auto", None) else None
         if _ws:
             self._task_workspace_root = Path(str(_ws))
             # Intent déjà résolu par l'appelant (ReAct) ? On le récupère pour que la phase
             # Architect puisse se déclencher (sinon getattr('_resolved_intent', 'auto')
             # renvoie 'auto' et _is_complex_modify reste toujours False).
             # 'read' = nouveau mode lecture (intent_router v2) : skip Architect + Reasoner.
-            _ctx_intent = (task.context or {}).get("intent")
+            _ctx_intent = _ctx_intent_from_tc or (task.context or {}).get("intent")
             if _ctx_intent in ("create", "modify", "unknown", "read"):
                 self._resolved_intent = _ctx_intent
             elif not _ctx_intent:
@@ -2997,6 +3135,11 @@ class CodeAgent(SubAgent):
         if _mem_ctx:
             user_content += f"\n\n## Souvenirs pertinents\n{_mem_ctx}\n"
 
+        # ── Skills actifs (transmis par delegate_task_handler) ──
+        _skills_ctx = (task.context or {}).get("skills_context", "")
+        if _skills_ctx:
+            user_content += f"\n\n## Instructions spécifiques à appliquer dans ton code\n⚠️ Ce sont des GUIDELINES de style/qualité, PAS des outils appelables. Intègre-les dans le code que tu produis.\n{_skills_ctx}\n"
+
         # Exclure les clés déjà rendues du dump JSON contexte
         _rendered_keys = {"conversation_history", "memory_context"}
         ctx = {k: v for k, v in ctx.items() if k not in _rendered_keys}
@@ -3070,6 +3213,16 @@ class CodeAgent(SubAgent):
             _system_content = _build_system_prompt(
                 task.description, workspace_files=_ws_files, mode=_mode, model_name=model_name,
             )
+        # ── P6 : Convention scanning ──────────────────────────────────────────
+        try:
+            from src.config.codeagent_flags import CONVENTION_SCAN
+            if CONVENTION_SCAN and _ws:
+                from src.tools.convention_scanner import scan_conventions
+                _conv_block = scan_conventions(Path(str(_ws)))
+                if _conv_block:
+                    _system_content = _system_content + "\n\n" + _conv_block
+        except Exception:
+            pass  # jamais bloquant
         messages: list[dict[str, str]] = [
             {"role": "system", "content": _system_content},
             {"role": "user", "content": user_content},
@@ -3164,6 +3317,23 @@ class CodeAgent(SubAgent):
                     )
                 except Exception:
                     pass
+                # ── P5 : LSP pre-edit — noter les fichiers dépendants ──────────
+                try:
+                    from src.config.codeagent_flags import LSP_PRE_EDIT
+                    if LSP_PRE_EDIT and self._task_workspace_root:
+                        _lsp_file = action.get("path", "") or ""
+                        if _lsp_file:
+                            from src.tools.lsp_pre_edit import get_related_files, format_related_files_note
+                            _related = await get_related_files(
+                                self._task_workspace_root,
+                                _lsp_file,
+                                task_id=str(task.task_id),
+                            )
+                            _note = format_related_files_note(_related, _lsp_file)
+                            if _note:
+                                obs_str = str(observation) + _note
+                except Exception:
+                    pass  # jamais bloquant
         elif action_type == "run_tests" and "❌" in obs_summary:
             self._record_session_error(obs_summary[:200])
 
@@ -3463,7 +3633,12 @@ class CodeAgent(SubAgent):
         # ── Forcer run_tests apres N edits consecutifs ──
         _EDITS_BEFORE_FORCED_TEST = 3
         _task_desc_lower = task.description.lower() if task.description else ""
-        _is_workspace_project = "workspace/" in _task_desc_lower or "workspace\\" in _task_desc_lower
+        _lumena_root_str = str(getattr(self, "_lumena_root", "")).rstrip("/\\")
+        _task_ws_str = str(getattr(self, "_task_workspace_root", "") or "").rstrip("/\\")
+        _is_workspace_project = (
+            ("workspace/" in _task_desc_lower or "workspace\\" in _task_desc_lower)
+            or (_task_ws_str and _lumena_root_str and _task_ws_str != _lumena_root_str)
+        )
         if edits_since_last_test >= _EDITS_BEFORE_FORCED_TEST and not _is_workspace_project:
             test_obs = await self._execute_loop_action({"action": "run_tests", "test_path": ""}, snapshots=session_snapshots)
             observation += f"\n\n[Auto-test apres {edits_since_last_test} edits]:\n{test_obs.full()[:5000]}"
@@ -4637,8 +4812,28 @@ class CodeAgent(SubAgent):
                 _test_path = action.get("test_path", "")
                 # Quand workspace actif, ne jamais lancer la suite Lumena
                 _ws = getattr(self, "_task_workspace_root", None)
+                # P3 : auto-détection du test runner si test_path vide et workspace connu
                 if not _test_path and _ws:
-                    return ActionResult("⏭️ Pas de tests pytest pour ce projet. Spécifie un test_path si besoin.")
+                    try:
+                        from src.tools.test_runner_detector import detect_test_runner
+                        _tr = detect_test_runner(Path(str(_ws)), list(getattr(self, "_edited_files", [])))
+                        if _tr.runner != "unknown" and _tr.command:
+                            # Exécuter directement via run_command
+                            import asyncio as _asyncio_rt
+                            _proc = await _asyncio_rt.create_subprocess_shell(
+                                _tr.command,
+                                cwd=str(_ws),
+                                stdout=_asyncio_rt.subprocess.PIPE,
+                                stderr=_asyncio_rt.subprocess.STDOUT,
+                            )
+                            _out, _ = await _asyncio_rt.wait_for(_proc.communicate(), timeout=120)
+                            _out_str = (_out or b"").decode("utf-8", errors="replace")
+                            _last = _out_str.strip().split("\n")[-1] if _out_str.strip() else "no output"
+                            _icon = "✅" if _proc.returncode == 0 else "❌"
+                            return ActionResult(f"{_icon} {_last}", _out_str[-3000:])
+                    except Exception:
+                        pass
+                    return ActionResult("⏭️ Aucun test runner détecté pour ce projet. Spécifie un test_path.")
                 if not _test_path:
                     return ActionResult("❌ test_path requis pour run_tests.")
                 # Résoudre le chemin dans le workspace
@@ -4778,8 +4973,13 @@ def _is_simple_edit(description: str, context: dict) -> bool:
            context.get("file_path") and context.get("search") is not None
 
 def _is_simple_test(description: str) -> bool:
-    return "test" in description and not any(
-        kw in description for kw in ["modifier", "edit", "fix", "implement", "corrig", "debug"]
+    import re as _re_test
+    return bool(_re_test.search(r'\btest(s|er|ez|ing)?\b', description)) and not any(
+        kw in description for kw in [
+            "modifier", "edit", "fix", "implement", "corrig", "debug",
+            "crée", "creer", "create", "build", "genere", "generate",
+            "tetris", "contest", "latest", "protest", "attest",
+        ]
     )
 
 

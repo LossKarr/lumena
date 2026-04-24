@@ -133,7 +133,7 @@ def test_system_prompt_with_provider_prompt_keeps_tool_hints():
         _load_provider_prompt,
     )
     _load_tool_descriptions.cache_clear()
-    _load_provider_prompt.cache_clear()
+    # @lru_cache retiré de _load_provider_prompt — pas de cache_clear() nécessaire
     prompt = _build_system_prompt("test task", None, model_name="deepseek-v3")
     assert "GUIDE DES OUTILS" in prompt
     # provider prompt présent si flag on (default)

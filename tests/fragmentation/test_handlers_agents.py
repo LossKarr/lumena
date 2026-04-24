@@ -237,7 +237,7 @@ async def test_bg_cancel_failed(ctx):
 @pytest.mark.asyncio
 async def test_process_run_completed(ctx):
     mock_manager = MagicMock()
-    mock_manager.run_background.return_value = ("Hello World", None)
+    mock_manager.run_background = AsyncMock(return_value=("Hello World", None))
     mock_mod = MagicMock()
     mock_mod.get_process_manager = MagicMock(return_value=mock_manager)
     with patch.dict(sys.modules, {"src.tools.process_manager": mock_mod}):
@@ -249,7 +249,7 @@ async def test_process_run_completed(ctx):
 @pytest.mark.asyncio
 async def test_process_run_background(ctx):
     mock_manager = MagicMock()
-    mock_manager.run_background.return_value = ("Starting...", "proc_42")
+    mock_manager.run_background = AsyncMock(return_value=("Starting...", "proc_42"))
     mock_mod = MagicMock()
     mock_mod.get_process_manager = MagicMock(return_value=mock_manager)
     with patch.dict(sys.modules, {"src.tools.process_manager": mock_mod}):

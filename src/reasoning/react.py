@@ -481,7 +481,8 @@ class ReActLoop:
         if memory and hasattr(memory, "get_context_for_prompt"):
             try:
                 logger.info(f"Recherche mémoire ChromaDB pour: {query[:60]}...")
-                mem_ctx = memory.get_context_for_prompt(query, max_memories=20)
+                _max_mem = int(os.environ.get("LUMENA_MEMORY_MAX_INJECT", "20"))
+                mem_ctx = memory.get_context_for_prompt(query, max_memories=_max_mem)
                 if mem_ctx:
                     logger.info(f"Mémoire injectée: {len(mem_ctx)} chars, ~{len(mem_ctx)//4} tokens")
                     parts.append(mem_ctx)
@@ -945,7 +946,7 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 2. Nouveau fichier SIMPLE (1 seul, non-code) -> `write_file`. Fichier existant -> `edit_file`/`apply_patch`.
 3. Projet code (jeu, site, app, script >50 lignes, multi-fichiers) -> TOUJOURS `delegate_task(agent_type="code")`. JAMAIS write_file un par un pour du code.
 4. PLAN = ENGAGEMENT : complete toutes les taches avant FINAL. Si impossible : explique-le dans THOUGHT et passe a la suivante.
-5. FINAL apres code = seulement si execute et verifie.
+5. Apres delegate_task ✅ → FINAL_ANSWER IMMEDIATEMENT. Ne relance JAMAIS delegate_task pour "verifier". Le CodeAgent a deja tout fait, son rapport est ta verification.
 6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file/create_project pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
@@ -1544,19 +1545,39 @@ Maintenant, reflechis et reponds:"""
             messages = [{"role": "user", "content": prompt}]
 
             # ─── Context Window Overflow Guard ────────────────────────────
-            # Si le prompt dépasse 85% de la fenêtre de contexte du modèle,
+            # Si le prompt dépasse 75% de la fenêtre de contexte du modèle,
             # compacter l'historique pour éviter troncature silencieuse.
             _ctx_max = 0
             if self.runtime_ctx is not None:
                 _ctx_max = getattr(self.runtime_ctx, "max_context_window", 0) or 0
+            # Fallback modèle-agnostic si runtime_ctx absent ou context_window non configuré
+            if _ctx_max == 0:
+                _CTX_FALLBACKS = {
+                    "deepseek-chat": 32_000, "deepseek-reasoner": 64_000,
+                    "deepseek-r1": 64_000, "deepseek-v3": 64_000,
+                    "gpt-4o": 128_000, "gpt-4": 64_000, "gpt-3.5": 16_000,
+                    "gemini-2": 200_000, "gemini-1.5": 128_000, "gemini-1.0": 32_000,
+                    "claude-3": 200_000, "claude-sonnet": 200_000, "claude-haiku": 200_000,
+                    "kimi": 128_000, "llama-3": 128_000, "llama-2": 32_000,
+                    "mistral": 32_000, "mixtral": 32_000, "qwen": 32_000,
+                    "gemma": 8_000, "phi": 8_000,
+                }
+                for _key, _limit in _CTX_FALLBACKS.items():
+                    if _key in _active_model:
+                        _ctx_max = _limit
+                        break
+                if _ctx_max == 0:
+                    _ctx_max = 32_000  # seuil conservateur universel
+                if _active_model:
+                    logger.debug(f"🔍 Context guard fallback: modèle='{_active_model}' → ctx_max={_ctx_max}")
             if _ctx_max > 0:
                 from ..tools.compaction import estimate_tokens
                 _prompt_tokens = estimate_tokens(prompt)
-                _threshold = int(_ctx_max * 0.85)
+                _threshold = int(_ctx_max * 0.75)  # 75% : agir avant dégradation, pas après
                 if _prompt_tokens > _threshold:
                     _overflow = _prompt_tokens - _threshold
                     logger.warning(
-                        f"⚠️ Context overflow guard: {_prompt_tokens} tokens > 85% de {_ctx_max} "
+                        f"⚠️ Context overflow guard: {_prompt_tokens} tokens > 75% de {_ctx_max} "
                         f"({_threshold}). Compaction d'urgence."
                     )
                     # Supprimer les étapes les plus anciennes de l'historique
@@ -1817,6 +1838,17 @@ Maintenant, reflechis et reponds:"""
                         "'OBSERVATION:' toi-même."
                     )
                     logger.warning("⚠️ Hallucination streak: {} — warning injecté", _halluc_streak)
+                # Streak ≥ 2 : compaction d'urgence — le contexte accumulé est probablement
+                # la cause principale des hallucinations. Garder seulement les 3 dernières étapes.
+                if _halluc_streak >= 2 and len(self.history) > 3:
+                    _kept = self.history[-3:]
+                    _dropped = len(self.history) - 3
+                    self.history = _kept
+                    logger.warning(
+                        "🚨 Hallucination streak {} — compaction d'urgence: {} étapes supprimées, "
+                        "historique réduit à 3 pour nettoyer le contexte.",
+                        _halluc_streak, _dropped,
+                    )
             else:
                 self._halluc_streak = 0
 
@@ -2556,10 +2588,10 @@ Maintenant, reflechis et reponds:"""
                     _combined_text = _thought_text + " " + _answer_text_guard
                     _HALLUCINATION_PATTERNS = [
                         # français
-                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b", ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "discord_delete_channel", "discord_edit_channel", "memory_save", "create_file", "telegram_send_message", "telegram_send_document", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents", "create_zip", "run_command", "mail_send", "memory_add", "generate_video", "edit_video"]),
-                        (r"\bla tâche a été (créée|planifiée|enregistrée|programmée)\b", ["create_task", "schedule_task"]),
-                        (r"\bj[''`]ai bien (enregistré|planifié|créé|envoyé|configuré)\b", ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "generate_website", "serve_website", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "telegram_send_document", "telegram_send_message", "create_zip", "run_command", "mail_send", "memory_add", "generate_video", "edit_video"]),
-                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", ["create_task", "write_file", "send_message", "discord_create_channel", "generate_website", "serve_website", "edit_website", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_invoice_pdf", "create_from_template", "generate_video", "edit_video"]),
+                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b", ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "discord_delete_channel", "discord_edit_channel", "memory_save", "create_file", "telegram_send_message", "telegram_send_document", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents", "create_zip", "run_command", "mail_send", "memory_add", "generate_video", "edit_video", "delegate_task"]),
+                        (r"\bla tâche a été (créée|planifiée|enregistrée|programmée)\b", ["create_task", "schedule_task", "delegate_task"]),
+                        (r"\bj[''`]ai bien (enregistré|planifié|créé|envoyé|configuré)\b", ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "generate_website", "serve_website", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "telegram_send_document", "telegram_send_message", "create_zip", "run_command", "mail_send", "memory_add", "generate_video", "edit_video", "delegate_task"]),
+                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", ["create_task", "write_file", "send_message", "discord_create_channel", "generate_website", "serve_website", "edit_website", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_invoice_pdf", "create_from_template", "generate_video", "edit_video", "delegate_task"]),
                         # Discord: doit avoir envoyé un message ou créé un canal pour prétendre avoir agi
                         (r"\bdiscord.{0,30}(animé|anime|géré|gere|organisé|organise|avec succès|avec succes)\b", ["discord_send_message", "discord_send", "discord_create_channel"]),
                         (r"\b(animé|anime).{0,20}discord\b", ["discord_send_message", "discord_send", "discord_create_channel"]),
@@ -2760,11 +2792,11 @@ Maintenant, reflechis et reponds:"""
                     _tu = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
                     _HP_NOPLAN = [
                         (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b",
-                         ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "memory_save", "create_file", "telegram_send_message", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents"]),
+                         ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "memory_save", "create_file", "telegram_send_message", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents", "delegate_task"]),
                         (r"\bj[''`]ai bien (enregistré|planifié|créé|envoyé|configuré)\b",
-                         ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "generate_website", "serve_website", "create_skill", "create_pdf", "create_docx"]),
+                         ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "generate_website", "serve_website", "create_skill", "create_pdf", "create_docx", "delegate_task"]),
                         (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b",
-                         ["create_task", "write_file", "send_message", "discord_create_channel", "generate_website", "serve_website", "edit_website", "create_pdf"]),
+                         ["create_task", "write_file", "send_message", "discord_create_channel", "generate_website", "serve_website", "edit_website", "create_pdf", "delegate_task"]),
                         (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|commit réussi|commit reussi)\b",
                          ["github_repo_create", "github_file_write", "github_push_directory"]),
                         (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b",
@@ -3333,6 +3365,58 @@ Maintenant, reflechis et reponds:"""
                     _finish_iteration(status="ok", summary="parallel_tools_rejected_sequential_redirect")
                     continue
             
+            # 6. Compacter les observations volumineuses avant stockage (anti-context-poisoning)
+            # Le modèle a déjà vu l'observation complète — on stocke une version compacte
+            # pour que les futures itérations ne soient pas noyées dans du contenu stale.
+            if step.observation and step.observation.content:
+                _raw_obs_len = len(step.observation.content)
+                _OBS_COMPACT_LIMIT = 3000
+                if _raw_obs_len > _OBS_COMPACT_LIMIT:
+                    _tool_name_compact = action.tool_name or ""
+                    if _tool_name_compact in (
+                        "delegate_task", "create_project", "generate_website",
+                        "write_website_files", "website_build",
+                    ):
+                        # Résultats de délégation : garder début (statut) + fin (conclusion)
+                        _c_head = step.observation.content[:600]
+                        _c_tail = step.observation.content[-200:]
+                        _c_body = (
+                            f"{_c_head}\n[...{_raw_obs_len - 800} chars compactés — "
+                            f"contenu disponible sur demande...]\n{_c_tail}"
+                        )
+                    elif _tool_name_compact in ("run_command", "execute_code", "dev_run_fix"):
+                        # Sorties de commandes : garder début (env) + fin (résultat/erreur)
+                        _c_head = step.observation.content[:400]
+                        _c_tail = step.observation.content[-400:]
+                        _c_body = (
+                            f"{_c_head}\n[...sortie tronquée ({_raw_obs_len} chars)...]\n{_c_tail}"
+                        )
+                    elif _tool_name_compact in (
+                        "read_file", "search_in_code", "grep_search", "find_files",
+                    ):
+                        # Lectures fichiers : garder le début (header + premières lignes)
+                        _c_body = (
+                            step.observation.content[:1200]
+                            + f"\n[...{_raw_obs_len - 1200} chars omis — relire si nécessaire...]"
+                        )
+                    else:
+                        _c_head = step.observation.content[:500]
+                        _c_tail = step.observation.content[-300:]
+                        _c_body = (
+                            f"{_c_head}\n[...{_raw_obs_len - 800} chars compactés...]\n{_c_tail}"
+                        )
+                    step = ReActStep(
+                        thought=step.thought,
+                        action=step.action,
+                        observation=Observation(
+                            content=_c_body,
+                            success=step.observation.success,
+                        ),
+                    )
+                    logger.debug(
+                        f"🗜️ Observation compactée: {_raw_obs_len} → {len(_c_body)} chars "
+                        f"({_tool_name_compact})"
+                    )
             # 6. Ajouter à l'historique
             self.history.append(step)
 

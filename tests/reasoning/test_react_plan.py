@@ -321,10 +321,10 @@ class TestUpdatePlanProgress:
             assert tool in _TOOL_COMPLETION_HINTS, f"{tool} manquant du dict"
         assert "wait" in _TOOL_COMPLETION_HINTS
 
-    # ── Test losskarr.fr full scenario (P1 regression test) ──
+    # ── Test example.com full scenario (P1 regression test) ──
 
-    def test_losskarr_8task_plan_all_match(self):
-        """Simule le plan 8 tâches losskarr.fr — toutes doivent matcher."""
+    def test_example_8task_plan_all_match(self):
+        """Simule le plan 8 tâches example.com — toutes doivent matcher."""
         loop = self._make_loop([
             "Démarrer le navigateur contrôlé (Playwright)",
             "Naviguer vers https://example.com",
@@ -337,7 +337,7 @@ class TestUpdatePlanProgress:
         ])
         actions = [
             ("browser_start", {}, "🌐 Navigateur démarré"),
-            ("browser_navigate", {"url": "https://example.com"}, "✅ Navigué vers losskarr.fr"),
+            ("browser_navigate", {"url": "https://example.com"}, "✅ Navigué vers example.com"),
             ("browser_dom_state", {}, "Page: 37 elements"),
             ("browser_click_index", {"index": 2}, "✅ Clic sur [2] Inscription"),
             ("browser_type_index", {"index": 7, "text": "Lumena"}, "✅ Tape Lumena"),

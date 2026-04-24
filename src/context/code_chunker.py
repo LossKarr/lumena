@@ -221,18 +221,32 @@ class CodeChunker:
         return [c for c in self._chunks if c.symbol_name and query_lower in c.symbol_name.lower()]
 
 
-# Singleton
-_chunker: Optional[CodeChunker] = None
+# Cache keyed par workspace — évite la contamination inter-projets
+_chunker_cache: dict[str, "CodeChunker"] = {}
+import threading as _threading
+_chunker_lock = _threading.Lock()
 
 
-def get_code_chunker(project_root: Optional[Path] = None) -> CodeChunker:
-    """Retourne l'instance globale du chunker."""
-    global _chunker
-    if _chunker is None:
+def get_code_chunker(project_root: Optional[Path] = None) -> "CodeChunker":
+    """Retourne l'instance CodeChunker pour un workspace (isolée par projet)."""
+    global _chunker_cache
+    if project_root is None:
+        raise ValueError("project_root requis")
+    key = str(Path(project_root).resolve())
+    with _chunker_lock:
+        if key not in _chunker_cache:
+            _chunker_cache[key] = CodeChunker(project_root)
+        return _chunker_cache[key]
+
+
+def clear_chunker_cache(project_root: Optional[Path] = None) -> None:
+    """Vide le cache d'un workspace (ou tous si project_root=None)."""
+    global _chunker_cache
+    with _chunker_lock:
         if project_root is None:
-            raise ValueError("project_root requis pour le premier appel")
-        _chunker = CodeChunker(project_root)
-    return _chunker
+            _chunker_cache.clear()
+        else:
+            _chunker_cache.pop(str(Path(project_root).resolve()), None)
 
 
 if __name__ == "__main__":

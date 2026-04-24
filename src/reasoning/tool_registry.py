@@ -1085,6 +1085,21 @@ class ToolRegistry:
         # Shell tools dans un projet : toujours refuser (commande peut toucher
         # n'importe quel fichier, on ne peut pas se fier à l'extension du cwd).
         _is_shell = name in ("run_command", "run_shell", "exec_command")
+        if _is_shell:
+            _cmd = str((args or {}).get("command", "")).strip().lower()
+            _readonly_prefixes = (
+                "python -m http.server", "python3 -m http.server",
+                "node --check", "node -c",
+                "python -m py_compile", "python3 -m py_compile",
+                "pytest", "python -m pytest", "python3 -m pytest",
+                "npm test", "npm run test", "npm run lint", "npm run build",
+                "git status", "git log", "git diff", "git show", "git branch",
+                "ls", "dir", "pwd", "whoami",
+                "curl", "wget",
+                "python --version", "node --version", "npm --version",
+            )
+            if any(_cmd.startswith(p) for p in _readonly_prefixes):
+                return None  # commande read-only / test / serveur → ReAct autorisé
         if not _is_shell and not _requires_codeagent(path_str):
             return None  # .md / .pdf / .svg dans projet → ReAct autorisé
 
@@ -1193,8 +1208,9 @@ class ToolRegistry:
             
             # --- Mapping d'aliases courants pour les params (LLM envoie souvent de mauvais noms) ---
             _PARAM_ALIASES = {
-                "edit_file": {"path": "file_path", "content": "new_content", "old": "old_content", "original": "old_content", "replacement": "new_content"},
+                "edit_file": {"path": "file_path", "file": "file_path", "content": "new_content", "new": "new_content", "old": "old_content", "original": "old_content", "replacement": "new_content"},
                 "write_file": {"file_path": "path", "text": "content"},
+                "delegate_task": {"path": "project_path", "files": "context", "content": "description"},
                 "write_website_files": {"files": "json_data", "data": "json_data"},
                 "parallel_tools": {"input": "tool_calls", "tools": "tool_calls", "calls": "tool_calls"},
                 "run_command": {"input": "command", "cmd": "command", "shell": "command"},

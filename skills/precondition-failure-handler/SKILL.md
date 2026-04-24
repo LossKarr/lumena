@@ -1,6 +1,7 @@
 ---
 name: precondition-failure-handler
-description: Skill precondition-failure-handler
+description: Gère les échecs de préconditions et prérequis manquants. Utilise ce skill quand une dépendance est absente, qu'un prérequis n'est pas satisfait, qu'un module est introuvable, ou qu'une condition nécessaire à l'exécution n'est pas remplie.
+keywords: [precondition, prerequisite, condition, echec, failed, manque, dependency missing, module absent, import error, module not found, prerequis, condition requise]
 ---
 
 # Skill: Precondition Failure Handler

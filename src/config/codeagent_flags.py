@@ -73,6 +73,25 @@ CODING_METRICS: bool = _flag("CODING_METRICS")
 DESTRUCTIVE_CONFIRM: bool = _flag("DESTRUCTIVE_CONFIRM", default=False)  # opt-IN (peut bloquer batch)
 FRENCH_ERRORS: bool = _flag("FRENCH_ERRORS")
 
+# ── Upgrade Final ─────────────────────────────────────────────
+# P2 — Verification Gate (validate avant de déclarer "done")
+VERIFICATION_GATE: bool = _flag("VERIFICATION_GATE", default=False)  # opt-IN progressif
+
+# P3 — Fail-to-Pass flow (test d'abord, puis patch)
+FAIL_TO_PASS: bool = _flag("FAIL_TO_PASS", default=False)  # opt-IN
+
+# P5 — LSP pre-edit (inject dépendances avant modification)
+LSP_PRE_EDIT: bool = _flag("LSP_PRE_EDIT", default=False)  # opt-IN
+
+# P6 — Convention scanning (tsconfig/eslint/pyproject injectés)
+CONVENTION_SCAN: bool = _flag("CONVENTION_SCAN", default=True)
+
+# P8 — FileWatcher bridge IDE
+FILE_WATCHER_BRIDGE: bool = _flag("FILE_WATCHER_BRIDGE", default=False)  # opt-IN
+
+# P9 — SWE pipeline (Reproducer→Patcher→Reviewer)
+SWE_PIPELINE: bool = _flag("SWE_PIPELINE", default=False)  # opt-IN, désactivé par défaut
+
 
 __all__ = [
     "PROVIDER_PROMPTS",
@@ -95,4 +114,10 @@ __all__ = [
     "CODING_METRICS",
     "DESTRUCTIVE_CONFIRM",
     "FRENCH_ERRORS",
+    "VERIFICATION_GATE",
+    "FAIL_TO_PASS",
+    "LSP_PRE_EDIT",
+    "CONVENTION_SCAN",
+    "FILE_WATCHER_BRIDGE",
+    "SWE_PIPELINE",
 ]

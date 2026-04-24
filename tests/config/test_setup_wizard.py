@@ -1053,7 +1053,7 @@ class TestBatch4VouvoiementFix:
 
 # ─── Batch 5 tests ────────────────────────────────────────────────
 
-class TestBatch5NoCharlesRegex:
+class TestBatch5NoPersonalNameRegex:
     """P3.1 — No 'charles' hardcoded in email regex."""
 
     def test_no_charles_in_config(self):

@@ -347,7 +347,6 @@ from pathlib import Path as _Path_psp
 _CODEAGENT_PROMPTS_DIR = _Path_psp(__file__).parent / "codeagent"
 
 
-@_functools_psp.lru_cache(maxsize=8)
 def _load_provider_prompt(model_name: str) -> str:
     """Charge le prompt système provider-specific pour CodeAgent.
     Mappe model_name → fichier .txt dans codeagent/.

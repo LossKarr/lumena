@@ -1,6 +1,7 @@
 ---
 name: api-error-retry
-description: Skill api-error-retry
+description: Gère les erreurs API avec retry automatique et backoff exponentiel. Utilise ce skill quand une API retourne des erreurs 429, 500, 503, timeout, ou rate limit. Implémente une stratégie de retry robuste avec délai progressif.
+keywords: [api error, retry, rate limit, 429, 503, 500, timeout, backoff, erreur api, relancer, rate limiting, exponential backoff, api failure, recuperation erreur]
 ---
 
 # Skill: api-error-retry

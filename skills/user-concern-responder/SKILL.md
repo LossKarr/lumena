@@ -1,6 +1,7 @@
 ---
 name: user-concern-responder
-description: Skill user-concern-responder
+description: Répond aux préoccupations, plaintes et feedbacks des utilisateurs avec empathie et solutions. Utilise ce skill quand un utilisateur exprime une insatisfaction, un problème non résolu, une frustration ou une demande de support.
+keywords: [plainte, preoccupation, feedback, satisfaction, insatisfaction, probleme utilisateur, mecontentement, support, aide utilisateur, reclamation, frustration, avis negatif]
 ---
 
 # Skill: user-concern-responder

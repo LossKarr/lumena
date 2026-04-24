@@ -66,11 +66,8 @@ def test_destructive_confirm_can_be_enabled(truthy):
 
 @pytest.fixture(autouse=True)
 def _reset_loader_cache():
-    """Reset lru_cache entre tests pour éviter les interférences."""
-    from src.prompts.agents.sub_agent_prompts import _load_provider_prompt
-    _load_provider_prompt.cache_clear()
+    """Fixture vide — @lru_cache retiré de _load_provider_prompt, aucun reset nécessaire."""
     yield
-    _load_provider_prompt.cache_clear()
 
 
 @pytest.mark.parametrize(
@@ -113,17 +110,18 @@ def test_provider_prompt_empty_model_returns_empty():
 
 def test_provider_prompt_disabled_by_flag():
     """Si flag PROVIDER_PROMPTS=False, le loader retourne ''."""
-    with patch.dict(os.environ, {"LUMENA_PROVIDER_PROMPTS": "0"}):
-        from src.config import codeagent_flags as flags_mod
-        importlib.reload(flags_mod)
-        from src.prompts.agents.sub_agent_prompts import _load_provider_prompt
-        _load_provider_prompt.cache_clear()
-        assert _load_provider_prompt("deepseek-v3") == ""
-
-    # Restaurer
-    with patch.dict(os.environ, {"LUMENA_PROVIDER_PROMPTS": "1"}):
-        from src.config import codeagent_flags as flags_mod
-        importlib.reload(flags_mod)
+    import importlib as _il
+    from src.config import codeagent_flags as flags_mod
+    try:
+        with patch.dict(os.environ, {"LUMENA_PROVIDER_PROMPTS": "0"}):
+            _il.reload(flags_mod)
+            from src.prompts.agents.sub_agent_prompts import _load_provider_prompt
+            # @lru_cache retiré — pas de cache_clear() nécessaire
+            assert _load_provider_prompt("deepseek-v3") == ""
+    finally:
+        # Toujours restaurer, même si le test échoue
+        with patch.dict(os.environ, {"LUMENA_PROVIDER_PROMPTS": "1"}):
+            _il.reload(flags_mod)
 
 
 # ── Intégration _build_system_prompt ────────────────────────────────────────

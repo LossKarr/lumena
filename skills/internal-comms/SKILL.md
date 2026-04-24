@@ -1,6 +1,7 @@
 ---
 name: internal-comms
 description: A set of resources to help me write all kinds of internal communications, using the formats that my company likes to use. Claude should use this skill whenever asked to write some sort of internal communications (status reports, leadership updates, 3P updates, company newsletters, FAQs, incident reports, project updates, etc.).
+keywords: [communication interne, rapport, newsletter, status update, memo, incident report, project update, leadership update, company news, FAQ interne, ecrire rapport, rediger communication]
 license: Complete terms in LICENSE.txt
 ---
 

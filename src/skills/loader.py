@@ -66,10 +66,36 @@ FRENCH_STOP_WORDS = {
 }
 
 EXTENSION_TRIGGER_MAP = {
+    # ── Documents Office ──────────────────────────────────────────────────────
     "pdf": {"pdf"},
-    "docx": {"docx", "word"},
-    "pptx": {"pptx", "powerpoint", "deck", "presentation"},
-    "xlsx": {"xlsx", "excel", "sheet", "tableur"},
+    "docx": {"docx", "word", "rapport", "lettre", "memo", "courrier"},
+    "pptx": {"pptx", "powerpoint", "deck", "presentation", "slides", "slide", "diapo", "diaporama"},
+    "xlsx": {"xlsx", "excel", "sheet", "tableur", "spreadsheet", "csv", "calcul"},
+    # ── Web / Frontend ────────────────────────────────────────────────────────
+    "website": {"site", "website", "landing", "portfolio", "ecommerce", "boutique", "vitrine", "homepage"},
+    "frontend": {"frontend", "html", "css", "javascript", "interface", "ui", "ux", "dashboard", "navbar", "composant", "component", "page"},
+    # ── Art / Design visuel ───────────────────────────────────────────────────
+    "algorithmic": {"generatif", "generative", "p5", "p5js", "particules", "particles", "flowfield", "algorithmique"},
+    "canvas": {"poster", "affiche", "visuel", "illustration", "graphisme", "artwork", "dessin"},
+    # ── Vidéo / Animation ─────────────────────────────────────────────────────
+    "remotion": {"video", "reel", "tiktok", "short", "clip", "motion", "captions", "sous-titres", "rendu"},
+    "gif": {"gif", "anime"},
+    # ── Code / Apps ───────────────────────────────────────────────────────────
+    "artifacts": {"react", "tailwind", "shadcn", "widget", "artifact"},
+    "webapp": {"playwright", "testing", "tester", "selenium", "browser"},
+    "mcp": {"mcp", "protocol", "fastmcp"},
+    # ── Communication ─────────────────────────────────────────────────────────
+    "internal": {"newsletter", "communication", "comms", "statut", "incident"},
+    "doc": {"documentation", "spec", "proposal", "rediger", "documenter"},
+    # ── Git ───────────────────────────────────────────────────────────────────
+    "commit": {"commit", "git"},
+    # ── Skill / Theme ─────────────────────────────────────────────────────────
+    "skill": {"skill", "competence"},
+    "theme": {"theme", "palette", "charte"},
+    # ── Debug / Ops ───────────────────────────────────────────────────────────
+    "dom": {"getelementbyid", "queryselector", "timing", "domcontentloaded"},
+    "email": {"smtp", "gmail"},
+    "disk": {"disque", "disk", "stockage"},
 }
 
 MAX_SKILL_ARCHIVE_FILES = 400
@@ -647,7 +673,11 @@ class SkillLoader:
             return ""
 
         budget = max(120, int(max_chars))
-        lines = ["## Skills actifs (selection automatique)", ""]
+        lines = [
+            "## Bonnes pratiques à appliquer (guidelines uniquement — pas des outils appelables)",
+            "⚠️ Ces sections décrivent des INSTRUCTIONS à suivre, PAS des actions ou fonctions disponibles.",
+            "",
+        ]
         current_len = sum(len(line) + 1 for line in lines)
 
         for match in matches:

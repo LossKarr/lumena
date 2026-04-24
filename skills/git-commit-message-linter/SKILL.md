@@ -1,6 +1,7 @@
 ---
 name: git-commit-message-linter
-description: Skill git-commit-message-linter
+description: Formate et valide les messages de commit git selon les conventions (Conventional Commits, semantic versioning). Utilise ce skill pour écrire un bon message de commit, vérifier le format, respecter les conventions feat/fix/chore/docs, ou générer un changelog.
+keywords: [git, commit, message commit, conventional commits, semantic, changelog, feat, fix, chore, docs, branch, push, format commit, lint commit, bonne pratique git]
 ---
 
 # Skill: git-commit-message-linter

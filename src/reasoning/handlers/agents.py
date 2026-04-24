@@ -32,92 +32,38 @@ async def delegate_task_handler(
 ) -> HandlerResult:
     """Délègue une tâche à un sub-agent."""
     try:
-        # Le LLM peut passer context comme string JSON — normaliser en dict
-        safe_context = context
-        if isinstance(safe_context, str):
-            import json as _json
-            try:
-                safe_context = _json.loads(safe_context)
-            except (ValueError, TypeError):
-                safe_context = {"raw": safe_context}
-        if not isinstance(safe_context, dict):
-            safe_context = {}
-
-        # ── Injection project_path explicite (priorité absolue sur fuzzy match) ──
-        if project_path and "project_dir" not in safe_context:
-            _pp = Path(project_path)
-            if _pp.is_dir():
-                safe_context["project_dir"] = str(_pp)
-                safe_context["workspace_path"] = str(_pp)
-                logger.info("delegate_task: project_path explicite injecté: {}", _pp)
-
-        # ── Extraction de chemin explicite depuis description/context string ──
-        # Le LLM inclut souvent le chemin en clair dans la description ou le context.
-        # On l'extrait AVANT le fuzzy match pour éviter de résoudre le mauvais projet.
-        if "project_dir" not in safe_context:
-            import re as _re_path
-            _texts_to_scan = [description]
-            if isinstance(safe_context.get("raw"), str):
-                _texts_to_scan.append(safe_context["raw"])
-            for _text in _texts_to_scan:
-                # Chercher un chemin Windows ou Unix absolu vers un dossier existant
-                _path_matches = _re_path.findall(
-                    r'([A-Za-z]:\\[^\s\'"<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^\s\'"<>|*?]+)',
-                    _text,
-                )
-                for _pm in _path_matches:
-                    _pm_clean = _pm.rstrip(".,;:!?)")
-                    _pm_path = Path(_pm_clean)
-                    if _pm_path.is_dir():
-                        safe_context["project_dir"] = str(_pm_path)
-                        safe_context["workspace_path"] = str(_pm_path)
-                        logger.info("delegate_task: chemin explicite extrait du texte: {}", _pm_path)
-                        break
-                if "project_dir" in safe_context:
-                    break
-
-        # ── Injection automatique du contexte projet via resolve_workspace ──
-        try:
-            if "project_dir" not in safe_context:
-                from ...utils.project_registry import resolve_workspace
-                _resolution = resolve_workspace(description, context=safe_context, allow_create=False)
-                if _resolution.path:
-                    safe_context["workspace_path"] = str(_resolution.path)
-                    safe_context["project_dir"] = str(_resolution.path)
-                    # ── Injecter l'intent pour que la phase Architect se déclenche ──
-                    if _resolution.intent and "intent" not in safe_context:
-                        safe_context["intent"] = _resolution.intent
-                    try:
-                        _excluded = {".git", "__pycache__", "node_modules", ".venv", ".env"}
-                        _files = []
-                        for f in sorted(_resolution.path.rglob("*")):
-                            if f.is_file():
-                                _rel = str(f.relative_to(_resolution.path))
-                                if not any(_ex in _rel for _ex in _excluded):
-                                    _files.append(_rel)
-                                    if len(_files) >= 100:
-                                        break
-                        safe_context["project_files"] = _files
-                    except Exception:
-                        pass
-            if "workspace_path" not in safe_context:
-                safe_context["workspace_path"] = str(ctx.runtime_root)
-        except Exception as _ctx_err:
-            logger.debug(f"delegate_task: auto-context injection partielle: {_ctx_err}")
-
-        # ── Injection mémoire ChromaDB pertinente ──
-        try:
-            _lum = ctx.lumena
-            if _lum and "memory_context" not in safe_context:
-                _mem = getattr(_lum, "memory", None)
-                if _mem and hasattr(_mem, "get_context_for_prompt"):
-                    _mem_ctx = _mem.get_context_for_prompt(description, max_memories=5)
-                    if _mem_ctx:
-                        safe_context["memory_context"] = _mem_ctx
-        except Exception as _mem_err:
-            logger.debug(f"delegate_task: memory injection: {_mem_err}")
-
+        from ...agents.task_context import TaskContext
+        from ...utils.project_registry import resolve_workspace
         from ...agents.sub_agent import delegate_to_agent_full
+
+        _lum = ctx.lumena
+        _mem_fn = None
+        if _lum:
+            _mem = getattr(_lum, "memory", None)
+            if _mem and hasattr(_mem, "get_context_for_prompt"):
+                _mem_fn = _mem.get_context_for_prompt
+
+        task_ctx = TaskContext.from_delegate_call(
+            description=description,
+            context=context,
+            project_path=project_path,
+            runtime_root=ctx.runtime_root,
+            resolve_workspace_fn=resolve_workspace,
+            memory_fn=_mem_fn,
+        )
+        safe_context = task_ctx.to_legacy_dict()
+
+        # ── Injection des skills actifs dans le CodeAgent ──
+        try:
+            from ...skills.loader import build_active_skills_context
+            _skills_ctx = build_active_skills_context(description, max_results=2, max_chars=3000)
+            if _skills_ctx:
+                safe_context["skills_context"] = _skills_ctx
+        except Exception:
+            pass
+
+        logger.info("delegate_task: {}", task_ctx.summary())
+
         result = await delegate_to_agent_full(description, agent_type, safe_context)
 
         # ── Rapport structuré ──
@@ -153,88 +99,37 @@ async def delegate_task_bg_handler(
 ) -> HandlerResult:
     """Délègue une tâche au CodeAgent en arrière-plan — retourne immédiatement un task_id."""
     try:
+        from ...agents.task_context import TaskContext
+        from ...utils.project_registry import resolve_workspace
         from ...agents.sub_agent import delegate_to_agent_bg
 
-        safe_context = context
-        if isinstance(safe_context, str):
-            import json as _json
-            try:
-                safe_context = _json.loads(safe_context)
-            except (ValueError, TypeError):
-                safe_context = {"raw": safe_context}
-        if not isinstance(safe_context, dict):
-            safe_context = {}
+        _lum = ctx.lumena
+        _mem_fn = None
+        if _lum:
+            _mem = getattr(_lum, "memory", None)
+            if _mem and hasattr(_mem, "get_context_for_prompt"):
+                _mem_fn = _mem.get_context_for_prompt
 
-        # ── Injection project_path explicite ──
-        if project_path and "project_dir" not in safe_context:
-            _pp = Path(project_path)
-            if _pp.is_dir():
-                safe_context["project_dir"] = str(_pp)
-                safe_context["workspace_path"] = str(_pp)
-                logger.info("delegate_task_bg: project_path explicite injecté: {}", _pp)
+        task_ctx = TaskContext.from_delegate_call(
+            description=description,
+            context=context,
+            project_path=project_path,
+            runtime_root=ctx.runtime_root,
+            resolve_workspace_fn=resolve_workspace,
+            memory_fn=_mem_fn,
+        )
+        safe_context = task_ctx.to_legacy_dict()
 
-        # ── Extraction de chemin explicite depuis description/context string ──
-        if "project_dir" not in safe_context:
-            import re as _re_path
-            _texts_to_scan = [description]
-            if isinstance(safe_context.get("raw"), str):
-                _texts_to_scan.append(safe_context["raw"])
-            for _text in _texts_to_scan:
-                _path_matches = _re_path.findall(
-                    r'([A-Za-z]:\\[^\s\'"<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^\s\'"<>|*?]+)',
-                    _text,
-                )
-                for _pm in _path_matches:
-                    _pm_clean = _pm.rstrip(".,;:!?)")
-                    _pm_path = Path(_pm_clean)
-                    if _pm_path.is_dir():
-                        safe_context["project_dir"] = str(_pm_path)
-                        safe_context["workspace_path"] = str(_pm_path)
-                        logger.info("delegate_task_bg: chemin explicite extrait du texte: {}", _pm_path)
-                        break
-                if "project_dir" in safe_context:
-                    break
-
-        # ── Injection automatique du contexte projet ──
+        # ── Injection des skills actifs dans le CodeAgent bg ──
         try:
-            if "project_dir" not in safe_context:
-                from ...utils.project_registry import resolve_workspace
-                _resolution = resolve_workspace(description, context=safe_context, allow_create=False)
-                if _resolution.path:
-                    safe_context["workspace_path"] = str(_resolution.path)
-                    safe_context["project_dir"] = str(_resolution.path)
-                    # ── Injecter l'intent pour que la phase Architect se déclenche ──
-                    if _resolution.intent and "intent" not in safe_context:
-                        safe_context["intent"] = _resolution.intent
-                    try:
-                        _excluded = {".git", "__pycache__", "node_modules", ".venv", ".env"}
-                        _files = []
-                        for f in sorted(_resolution.path.rglob("*")):
-                            if f.is_file():
-                                _rel = str(f.relative_to(_resolution.path))
-                                if not any(_ex in _rel for _ex in _excluded):
-                                    _files.append(_rel)
-                                    if len(_files) >= 100:
-                                        break
-                        safe_context["project_files"] = _files
-                    except Exception:
-                        pass
-            if "workspace_path" not in safe_context:
-                safe_context["workspace_path"] = str(ctx.runtime_root)
-        except Exception as _ctx_err:
-            logger.debug(f"delegate_task_bg: auto-context: {_ctx_err}")
-
-        # ── Injection mémoire ChromaDB ──
-        try:
-            _lum = ctx.lumena
-            if _lum and "memory_context" not in safe_context:
-                _mem = getattr(_lum, "memory", None)
-                if _mem and hasattr(_mem, "get_context_for_prompt"):
-                    _mem_ctx = _mem.get_context_for_prompt(description, max_memories=5)
-                    if _mem_ctx:
-                        safe_context["memory_context"] = _mem_ctx
+            from ...skills.loader import build_active_skills_context
+            _skills_ctx = build_active_skills_context(description, max_results=2, max_chars=3000)
+            if _skills_ctx:
+                safe_context["skills_context"] = _skills_ctx
         except Exception:
             pass
+
+        logger.info("delegate_task_bg: {}", task_ctx.summary())
 
         # ── Construire le progress_callback ──
         _progress_cb = None
@@ -538,7 +433,7 @@ async def process_run_handler(
         from ...tools.process_manager import get_process_manager
 
         manager = get_process_manager()
-        output, process_id = manager.run_background(
+        output, process_id = await manager.run_background(
             command=command, wait_ms_before_async=wait_ms
         )
 

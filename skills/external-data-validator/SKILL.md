@@ -1,6 +1,7 @@
 ---
 name: external-data-validator
-description: Skill external-data-validator
+description: Valide et nettoie les données provenant de sources externes (API, fichiers, formulaires). Utilise ce skill pour valider des schémas JSON, détecter des données manquantes ou malformées, vérifier des types et formats, ou nettoyer des données avant traitement.
+keywords: [valider donnees, validation, schema, external data, donnees externes, format, json schema, data quality, nettoyage donnees, data cleaning, type checking, missing fields]
 ---
 
 # Skill: external-data-validator

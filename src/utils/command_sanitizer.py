@@ -47,6 +47,9 @@ DEFAULT_ALLOWED_EXECUTABLES: Set[str] = {
     "mkdir", "cp", "copy", "xcopy", "robocopy",
     "touch", "mv", "move", "rename", "ren",
     "tar", "zip", "unzip", "7z",
+    # Suppression fichiers individuels (del /s /f /q reste bloqué par BLOCKED_PATTERNS)
+    "del", "del.exe",
+    "Remove-Item",      # PowerShell — Remove-Item -Recurse reste bloqué par BLOCKED_PATTERNS
     # Dev tools
     "cargo", "rustc", "go", "javac", "java", "gcc", "g++", "make", "cmake",
     "docker", "docker-compose",

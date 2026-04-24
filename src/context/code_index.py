@@ -40,26 +40,35 @@ class CodeSearchResult:
         return f"{header}\n```{self.chunk.language}\n{self.chunk.content}\n```"
 
 
+def _workspace_key(project_root: Path) -> str:
+    """Hash court (8 chars) du chemin absolu du workspace — safe pour nom de collection Chroma."""
+    import hashlib
+    return hashlib.sha256(str(project_root.resolve()).encode()).hexdigest()[:8]
+
+
 class CodeIndex:
     """
     🔍 Index vectoriel du code source
-    
+
     Utilise ChromaDB pour indexer et rechercher dans le code.
-    Les chunks sont stockés avec leur contenu et métadonnées.
+    Chaque workspace a son propre persist_dir ET sa propre collection Chroma
+    → isolation complète, pas de contamination inter-projets.
     """
-    
-    COLLECTION_NAME = "lumena_code_index"
-    
+
     def __init__(self, project_root: Path, persist_dir: Optional[Path] = None):
         self.project_root = Path(project_root).resolve()
-        
-        # Dossier de persistence
+        _key = _workspace_key(self.project_root)
+
+        # Dossier de persistence : sous-dossier par workspace
         if persist_dir is None:
             from src.utils.paths import CODE_INDEX_DIR
-            persist_dir = CODE_INDEX_DIR
+            persist_dir = CODE_INDEX_DIR / _key
         self.persist_dir = Path(persist_dir)
         self.persist_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # Nom de collection unique par workspace
+        self.collection_name = f"lumena_code_{_key}"
+
         # Initialiser ChromaDB
         if CHROMADB_AVAILABLE:
             self.client = chromadb.PersistentClient(
@@ -67,15 +76,15 @@ class CodeIndex:
                 settings=Settings(anonymized_telemetry=False)
             )
             self.collection = self.client.get_or_create_collection(
-                name=self.COLLECTION_NAME,
+                name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-            logger.info(f"📚 CodeIndex initialisé ({self.collection.count()} chunks)")
+            logger.info(f"📚 CodeIndex initialisé ({self.collection.count()} chunks) [ws={_key}]")
         else:
             self.client = None
             self.collection = None
             logger.warning("CodeIndex désactivé (ChromaDB non disponible)")
-        
+
         # Chunker
         self.chunker = CodeChunker(project_root)
     
@@ -100,14 +109,14 @@ class CodeIndex:
         
         # Nettoyer si réindexation
         if force_reindex and existing_count > 0:
-            self.client.delete_collection(self.COLLECTION_NAME)
+            self.client.delete_collection(self.collection_name)
             self.collection = self.client.create_collection(
-                name=self.COLLECTION_NAME,
+                name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
         
-        # Chunker le projet
-        chunks = self.chunker.chunk_project(['.py'])
+        # Chunker le projet (toutes extensions supportées par défaut)
+        chunks = self.chunker.chunk_project()
         
         if not chunks:
             logger.warning("Aucun chunk à indexer")
@@ -268,18 +277,32 @@ class CodeIndex:
         }
 
 
-# Singleton
-_code_index: Optional[CodeIndex] = None
+# Cache keyed par workspace — évite la contamination inter-projets
+_code_index_cache: dict[str, "CodeIndex"] = {}
+import threading as _threading
+_code_index_lock = _threading.Lock()
 
 
-def get_code_index(project_root: Optional[Path] = None) -> CodeIndex:
-    """Retourne l'instance globale de l'index."""
-    global _code_index
-    if _code_index is None:
+def get_code_index(project_root: Optional[Path] = None) -> "CodeIndex":
+    """Retourne l'instance CodeIndex pour un workspace (isolée par projet)."""
+    global _code_index_cache
+    if project_root is None:
+        raise ValueError("project_root requis")
+    key = str(Path(project_root).resolve())
+    with _code_index_lock:
+        if key not in _code_index_cache:
+            _code_index_cache[key] = CodeIndex(project_root)
+        return _code_index_cache[key]
+
+
+def clear_code_index_cache(project_root: Optional[Path] = None) -> None:
+    """Vide le cache d'un workspace (ou tous si project_root=None)."""
+    global _code_index_cache
+    with _code_index_lock:
         if project_root is None:
-            raise ValueError("project_root requis pour le premier appel")
-        _code_index = CodeIndex(project_root)
-    return _code_index
+            _code_index_cache.clear()
+        else:
+            _code_index_cache.pop(str(Path(project_root).resolve()), None)
 
 
 if __name__ == "__main__":

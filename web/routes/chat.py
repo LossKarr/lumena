@@ -419,7 +419,6 @@ def _extract_ide_context(request: ChatRequest, channel: str) -> Dict[str, Any]:
         return {}
 
     workspace_path = _normalize_existing_dir(request.workspace_path)
-    workspace_hint_parent = _normalize_existing_parent_dir(request.workspace_path)
     active_file_path = _normalize_existing_file(request.active_file_path)
     open_files = []
     for item in (request.open_files or [])[:30]:
@@ -427,13 +426,11 @@ def _extract_ide_context(request: ChatRequest, channel: str) -> Dict[str, Any]:
         if normalized:
             open_files.append(normalized)
 
+    # Signaux bruts uniquement — pas d'inférence ici.
+    # resolve_workspace_for_request() (via _apply_workspace_policy) est la seule
+    # source de vérité pour la résolution finale du workspace.
     incoming = {
-        "workspace_path": _infer_workspace_path(
-            workspace_path=workspace_path,
-            workspace_hint_parent=workspace_hint_parent,
-            active_file_path=active_file_path,
-            open_files=open_files,
-        ),
+        "workspace_path": workspace_path,
         "active_file_path": active_file_path,
         "open_files": open_files,
     }
@@ -448,16 +445,6 @@ def _extract_ide_context(request: ChatRequest, channel: str) -> Dict[str, Any]:
             cached.get("open_files") or [],
         ),
     }
-
-    if not merged.get("workspace_path"):
-        merged["workspace_path"] = _infer_workspace_path(
-            workspace_path=None,
-            workspace_hint_parent=workspace_hint_parent,
-            active_file_path=merged.get("active_file_path"),
-            open_files=merged.get("open_files") or [],
-        )
-    if not merged.get("workspace_path"):
-        merged["workspace_path"] = DEFAULT_WORKSPACE_PATH
 
     _store_cached_ide_context(cache_key, merged)
     return {
@@ -539,8 +526,15 @@ def _apply_workspace_policy(
     ide_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     if not (WORKSPACE_POLICY_V2_ENABLED and deps.RUNTIME_AVAILABLE and deps.resolve_workspace_for_request is not None):
+        legacy_ws = ide_context.get("workspace_path") or _infer_workspace_path(
+            workspace_path=None,
+            workspace_hint_parent=_normalize_existing_parent_dir(request.workspace_path),
+            active_file_path=ide_context.get("active_file_path") or _normalize_existing_file(request.active_file_path),
+            open_files=ide_context.get("open_files") or [],
+        ) or DEFAULT_WORKSPACE_PATH
         return {
             **ide_context,
+            "workspace_path": legacy_ws,
             "resolved_date": datetime.now().strftime("%Y-%m-%d"),
             "resolution_reason": "legacy_ide_context",
             "workspace_policy": str(request.workspace_policy or "default").strip().lower() or "default",

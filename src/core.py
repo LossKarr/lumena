@@ -384,7 +384,14 @@ class LumenaCore:
         self.repo_map: Optional[RepoMap] = None
         self.code_index: Optional[CodeIndex] = None
         if CONTEXT_AVAILABLE:
-            project_root = Path(__file__).parent.parent
+            _lumena_root = Path(__file__).parent.parent
+            _ext_ws_raw = os.getenv("LUMENA_DEFAULT_WORKSPACE", "").strip()
+            _ext_ws = Path(_ext_ws_raw).expanduser().resolve() if _ext_ws_raw else None
+            if _ext_ws and _ext_ws.exists() and _ext_ws.is_dir() and _ext_ws != _lumena_root.resolve():
+                project_root = _ext_ws
+                logger.info(f"🗺️ RepoMap + CodeIndex sur workspace externe : {project_root}")
+            else:
+                project_root = _lumena_root
             self.repo_map = RepoMap(project_root, max_files=25, max_tokens=1200)
             self.code_index = CodeIndex(project_root)
             logger.info("🗺️ RepoMap + CodeIndex initialisés pour conscience projet")

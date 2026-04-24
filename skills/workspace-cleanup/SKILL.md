@@ -1,6 +1,7 @@
 ---
 name: workspace-cleanup
-description: Skill workspace-cleanup
+description: Nettoie, archive et organise le workspace Lumena. Utilise ce skill pour supprimer les vieux projets, archiver les fichiers inutilisés, ranger le workspace, libérer de la place ou réorganiser les dossiers de travail.
+keywords: [workspace, nettoyer, archiver, cleanup, vieux fichiers, old files, ranger, organiser, supprimer projet, archiver projet, trier fichiers, nettoyer dossier, menage]
 ---
 
 # Skill: Workspace Cleanup

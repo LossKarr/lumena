@@ -317,28 +317,32 @@ class RepoMap:
         self.build()
 
 
-# Singleton
-_repo_map: Optional[RepoMap] = None
+# Cache keyed par workspace — évite la contamination inter-projets
+_repo_map_cache: dict[str, "RepoMap"] = {}
+import threading as _threading
+_repo_map_lock = _threading.Lock()
 
 
-def get_repo_map(project_path: Optional[Path] = None) -> RepoMap:
-    """
-    Retourne l'instance globale du RepoMap.
-    
-    Args:
-        project_path: Chemin du projet (requis au premier appel)
-    
-    Returns:
-        Instance RepoMap
-    """
-    global _repo_map
-    
-    if _repo_map is None:
+def get_repo_map(project_path: Optional[Path] = None) -> "RepoMap":
+    """Retourne l'instance RepoMap pour un workspace donné (isolée par projet)."""
+    global _repo_map_cache
+    if project_path is None:
+        raise ValueError("project_path requis")
+    key = str(Path(project_path).resolve())
+    with _repo_map_lock:
+        if key not in _repo_map_cache:
+            _repo_map_cache[key] = RepoMap(project_path)
+        return _repo_map_cache[key]
+
+
+def clear_repo_map_cache(project_path: Optional[Path] = None) -> None:
+    """Vide le cache d'un workspace (ou tous si project_path=None)."""
+    global _repo_map_cache
+    with _repo_map_lock:
         if project_path is None:
-            raise ValueError("project_path requis pour le premier appel")
-        _repo_map = RepoMap(project_path)
-    
-    return _repo_map
+            _repo_map_cache.clear()
+        else:
+            _repo_map_cache.pop(str(Path(project_path).resolve()), None)
 
 
 # Test si exécuté directement

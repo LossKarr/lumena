@@ -27,7 +27,7 @@ def record_task_metrics(
     duration_s: float,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    """Ajoute une ligne JSON au fichier metrics.jsonl.
+    """Ajoute une ligne JSON au fichier metrics.jsonl (+ snapshot métriques gate).
 
     No-op si le flag CODING_METRICS est désactivé ou en cas d'erreur I/O.
     """
@@ -35,6 +35,18 @@ def record_task_metrics(
         from src.config.codeagent_flags import CODING_METRICS
         if not CODING_METRICS:
             return
+        # Enrichir avec les métriques gate (P7)
+        if extra is None:
+            extra = {}
+        try:
+            from src.utils.gate_metrics import get_summary
+            gate_summary = get_summary()
+            extra.setdefault("gate_pass_rate", gate_summary.get("gate_pass_rate"))
+            extra.setdefault("gate_retry_count", gate_summary.get("gate_retry_count"))
+            extra.setdefault("wrong_workspace_count", gate_summary.get("wrong_workspace_context_count"))
+            extra.setdefault("lsp_fail_open_count", gate_summary.get("lsp_fail_open_count"))
+        except Exception:
+            pass
         from src.utils.paths import LOGS_DIR
         metrics_dir = LOGS_DIR / "codeagent"
         metrics_dir.mkdir(parents=True, exist_ok=True)
