@@ -24,6 +24,12 @@ from .heartbeat import HeartbeatSystem, get_heartbeat
 from ..learning.reflection import get_self_reflection
 from ..utils.persistence import atomic_write_json
 
+try:
+    from ..telemetry import publish_trace
+    _TELEMETRY_AVAILABLE = True
+except Exception:
+    _TELEMETRY_AVAILABLE = False
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -336,11 +342,43 @@ class LumenaDaemon:
         # Vérifier si l'action peut être exécutée AVANT de logger/notifier
         if self._can_execute_autonomous_action(action):
             logger.info(f"🎯 Exécution: {action.description}")
+            # P7 — telemetry action autonome
+            if _TELEMETRY_AVAILABLE:
+                try:
+                    publish_trace(
+                        stage="daemon_action_start",
+                        status="start",
+                        mode="autonomy",
+                        summary=f"{action.action_type.value}: {action.description[:80]}",
+                    )
+                except Exception:
+                    pass
             if self._on_autonomous_action:
                 self._on_autonomous_action(action)
             executed = await self._execute_action_with_core(action)
             if executed:
                 self._record_executed_action(action)
+                if _TELEMETRY_AVAILABLE:
+                    try:
+                        publish_trace(
+                            stage="daemon_action_success",
+                            status="ok",
+                            mode="autonomy",
+                            summary=f"{action.action_type.value}: {action.description[:80]}",
+                        )
+                    except Exception:
+                        pass
+            else:
+                if _TELEMETRY_AVAILABLE:
+                    try:
+                        publish_trace(
+                            stage="daemon_action_failure",
+                            status="error",
+                            mode="autonomy",
+                            summary=f"{action.action_type.value}: {action.description[:80]}",
+                        )
+                    except Exception:
+                        pass
         else:
             logger.debug("Autonomy action execution désactivée (LUMENA_AUTONOMY_EXECUTE_ACTIONS=0)")
         
@@ -482,6 +520,36 @@ class LumenaDaemon:
         prompt = self._build_goal_prompt(goal)
         metadata["last_attempt_at"] = now.isoformat()
         goal.metadata = metadata
+
+        # P3 — envelope de traçabilité pour cette exécution de goal
+        try:
+            from .task_envelope import TaskEnvelope
+            _goal_envelope = TaskEnvelope.for_autonomous(
+                origin="goals",
+                intent=str(goal.title or goal.description or "goal autonome")[:200],
+                tool_category="system",
+                risk_level="medium",
+                budget_seconds=max(10, self.autonomy_action_timeout_seconds),
+            )
+            logger.debug("[envelope] goal '{}' — {}", goal.title, _goal_envelope)
+        except Exception:
+            pass
+
+        try:
+            _goal_envelope = goal.build_task_envelope(
+                budget_seconds=max(10, self.autonomy_action_timeout_seconds),
+            )
+            metadata["envelope_origin"] = _goal_envelope.origin
+            metadata["envelope_intent"] = _goal_envelope.intent
+            metadata["envelope_workspace"] = _goal_envelope.workspace
+            metadata["envelope_tool_category"] = _goal_envelope.tool_category
+            metadata["envelope_budget_seconds"] = _goal_envelope.budget_seconds
+            metadata["envelope_risk_level"] = _goal_envelope.risk_level
+            metadata["envelope_requires_verification"] = _goal_envelope.requires_verification
+            goal.metadata = metadata
+            logger.debug("[envelope] goal '{}' -> {}", goal.title, _goal_envelope)
+        except Exception as e:
+            logger.warning("[envelope] goal '{}' invalide: {}", goal.title, e)
 
         try:
             response = await asyncio.wait_for(

@@ -1,4 +1,5 @@
 """
+STATUS: pending-integration — non canonique en production. Prévu pour P10 multi-instance.
 🧠 LUMENA - Session Memory (Phase 3: Performance)
 
 Mémoire de session avancée pour améliorer la pertinence des réponses.

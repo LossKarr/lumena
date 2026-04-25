@@ -115,9 +115,27 @@ class TaskContext:
         resolved_path: Optional[Path] = None
         target_path: Optional[Path] = None
         intent = safe_ctx.get("intent", "auto")
+        detected_intent: Optional[str] = None
         source = ""
         confidence = 0.0
         project_files: List[str] = safe_ctx.get("project_files", [])
+
+        if intent == "auto":
+            try:
+                from ..utils.project_registry import _detect_intent as detect_intent
+
+                intent_text = " ".join(
+                    part for part in (
+                        description or "",
+                        raw_llm_context or "",
+                        safe_ctx.get("raw", "") or "",
+                    ) if part
+                )
+                detected_intent = detect_intent(intent_text)
+                if detected_intent in {"create", "modify", "read"}:
+                    intent = detected_intent
+            except Exception:
+                detected_intent = None
 
         # 1. project_path explicite
         if project_path:
@@ -161,8 +179,9 @@ class TaskContext:
         # 3. resolve_workspace (registre + fuzzy)
         if resolved_path is None and resolve_workspace_fn:
             try:
+                allow_create = intent == "create" or detected_intent == "create"
                 resolution = resolve_workspace_fn(
-                    description, context=safe_ctx, allow_create=False,
+                    description, context=safe_ctx, allow_create=allow_create,
                 )
                 if resolution.path:
                     resolved_path = resolution.path

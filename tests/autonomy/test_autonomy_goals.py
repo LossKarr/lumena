@@ -69,6 +69,24 @@ class TestGoalDataclass:
         assert d["id"] == "g2"
         assert d["goal_type"] == GoalType.ORGANIZING.value
 
+    def test_build_task_envelope_uses_goal_metadata(self):
+        g = Goal(
+            id="g3",
+            title="Refactor project",
+            description="Clean code safely",
+            goal_type=GoalType.ORGANIZING,
+            metadata={"workspace_path": "C:/tmp/demo-workspace"},
+        )
+
+        envelope = g.build_task_envelope(budget_seconds=180)
+
+        assert envelope.origin == "goals"
+        assert envelope.workspace == "C:/tmp/demo-workspace"
+        assert envelope.tool_category == "files"
+        assert envelope.risk_level == "medium"
+        assert envelope.budget_seconds == 180
+        assert envelope.is_valid() is True
+
 
 class TestGoalManager:
     def test_create_goal(self, gm):
@@ -79,6 +97,23 @@ class TestGoalManager:
         )
         assert goal.title == "Learn Python"
         assert goal.id in gm.goals
+        assert goal.metadata["envelope_origin"] == "goals"
+        assert goal.metadata["envelope_intent"] == "Learn Python"
+        assert goal.metadata["envelope_tool_category"] == "autonomy"
+        assert goal.metadata["envelope_risk_level"] == "low"
+
+    def test_create_goal_with_workspace_seeds_mutating_envelope(self, gm):
+        goal = gm.create_goal(
+            title="Organize project",
+            description="Clean and reorder files",
+            goal_type=GoalType.ORGANIZING,
+            metadata={"workspace_path": "C:/tmp/project-a"},
+        )
+
+        assert goal.metadata["envelope_workspace"] == "C:/tmp/project-a"
+        assert goal.metadata["envelope_tool_category"] == "files"
+        assert goal.metadata["envelope_risk_level"] == "medium"
+        assert goal.metadata["envelope_requires_verification"] is False
 
     def test_get_active_goals_starts_empty(self, gm):
         active = gm.get_active_goals()

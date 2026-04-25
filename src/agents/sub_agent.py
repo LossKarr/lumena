@@ -15,6 +15,12 @@ import json
 import time
 from loguru import logger
 from ..utils.persistence import atomic_write_text
+
+try:
+    from ..telemetry import publish_trace
+    _TELEMETRY_AVAILABLE = True
+except Exception:
+    _TELEMETRY_AVAILABLE = False  # telemetry non critique
 from src.prompts.agents.sub_agent_prompts import (
     _CODE_AGENT_SYSTEM,
     _SHORT_EXAMPLE,
@@ -660,7 +666,7 @@ def _classify_llm_error(exc: Exception) -> tuple[str, str]:
     """
     Classifie une erreur LLM. Retourne (category, action).
     Categories: rate_limit, overload, auth, timeout, format, unknown
-    Actions: retry_wait, retry_compact, abort, retry
+    Actions: retry_wait, timeout_recovery, abort, retry
     """
     msg = str(exc).lower()
     status = getattr(exc, "status_code", 0) or getattr(exc, "status", 0)
@@ -672,7 +678,7 @@ def _classify_llm_error(exc: Exception) -> tuple[str, str]:
     if status in (401, 403) or "unauthorized" in msg or "api key" in msg:
         return "auth", "abort"
     if "timeout" in msg or "timed out" in msg or isinstance(exc, asyncio.TimeoutError):
-        return "timeout", "retry_compact"
+        return "timeout", "timeout_recovery"
     if status == 400 or "invalid" in msg:
         return "format", "retry"
     return "unknown", "retry"
@@ -1053,6 +1059,22 @@ class CodeAgent(SubAgent):
         # Raison : Reasoner perd son CoT entre tours (doc officielle) → mauvais pour boucles,
         # mais excellent pour planifier UNE fois. Chat exécute ensuite en suivant le plan.
         _model = getattr(llm, "model_name", "") or ""
+        # P5 — cap d'itérations adapté au profil comportemental du modèle
+        try:
+            from ..llm.model_profile import get_model_profile as _get_profile
+            _model_profile = _get_profile(_model)
+            _profile_iter_cap = _model_profile.sub_agent_iter_cap
+            if _profile_iter_cap > 0:
+                _effective_max_iter = min(_CODE_AGENT_MAX_ITER, _profile_iter_cap)
+                if _effective_max_iter < _CODE_AGENT_MAX_ITER:
+                    logger.debug(
+                        "[P5] iter cap profil '{}': {} → {} iters max",
+                        _model, _CODE_AGENT_MAX_ITER, _effective_max_iter,
+                    )
+            else:
+                _effective_max_iter = _CODE_AGENT_MAX_ITER
+        except Exception:
+            _effective_max_iter = _CODE_AGENT_MAX_ITER
         if "deepseek" in _model.lower() and "reasoner" in _model.lower():
             # L'utilisateur a explicitement demandé reasoner → on le ramène à chat pour la boucle
             try:
@@ -1067,6 +1089,19 @@ class CodeAgent(SubAgent):
 
         prior_failures: list[str] = []
         last_result: AgentResult | None = None
+        # P7 — telemetry : début de tâche CodeAgent
+        if _TELEMETRY_AVAILABLE:
+            try:
+                publish_trace(
+                    stage="codeagent_start",
+                    status="start",
+                    mode="codeagent",
+                    model=_model,
+                    task_id=getattr(task, "task_id", None),
+                    summary=str(getattr(task, "description", ""))[:120],
+                )
+            except Exception:
+                pass
         # Reset compteur anti-relecture pour cette tâche (survit aux outer retries
         # → si attempt 1 a déjà lu un fichier 3×, attempt 2 ne le relira pas non plus)
         self._read_count_per_file = {}
@@ -1109,7 +1144,7 @@ class CodeAgent(SubAgent):
                 ))
             last_result, is_stuck = await self._single_code_attempt(
                 task, llm, prior_failures, attempt,
-                max_iter=_CODE_AGENT_MAX_ITER,
+                max_iter=_effective_max_iter,
             )
             if last_result.success:
                 # P1 : capture pattern de réussite (fire-and-forget)
@@ -1179,17 +1214,86 @@ class CodeAgent(SubAgent):
                         )
                     except Exception:
                         pass  # jamais bloquant
+                # P7 — telemetry succès CodeAgent
+                if _TELEMETRY_AVAILABLE:
+                    try:
+                        import time as _t7
+                        publish_trace(
+                            stage="codeagent_success",
+                            status="ok",
+                            mode="codeagent",
+                            model=_model,
+                            task_id=getattr(task, "task_id", None),
+                            duration_ms=(_t7.perf_counter() - _metrics_start) * 1000,
+                            summary=str(getattr(last_result, "output", ""))[:120],
+                        )
+                    except Exception:
+                        pass
                 return self._finalize_metrics(last_result, task, llm, _metrics_start, attempt)
             if not is_stuck or attempt >= _CODE_AGENT_MAX_OUTER_RETRIES:
+                # P7 — telemetry échec final CodeAgent
+                if _TELEMETRY_AVAILABLE:
+                    try:
+                        import time as _t7
+                        publish_trace(
+                            stage="codeagent_failure",
+                            status="error",
+                            mode="codeagent",
+                            model=_model,
+                            task_id=getattr(task, "task_id", None),
+                            duration_ms=(_t7.perf_counter() - _metrics_start) * 1000,
+                            error=str(getattr(last_result, "status_code", ""))[:80],
+                            summary=str(getattr(last_result, "output", ""))[:120],
+                        )
+                    except Exception:
+                        pass
                 return self._finalize_metrics(last_result, task, llm, _metrics_start, attempt)
-            # Bloqué mais on peut encore retry
+            # P6 — reprise intelligente : timeout/stuck → changement de stratégie, pas répétition
+            _stuck_output = last_result.output[:300]
+            _stuck_status = last_result.status_code
+            # Identifier la cause du blocage pour guider la stratégie de reprise
+            _is_timeout = _stuck_status == StatusCode.TIMEOUT or "timeout" in _stuck_output.lower()
+            _is_loop = "bloqué" in _stuck_output.lower() or "boucle" in _stuck_output.lower()
+            if _is_timeout:
+                _strategy_hint = (
+                    "La tentative précédente a timeout. NOUVELLE STRATÉGIE OBLIGATOIRE : "
+                    "décompose la tâche en étapes plus petites, commence par la partie la plus simple, "
+                    "évite les gros fichiers en une seule passe. Priorise un résultat partiel fonctionnel "
+                    "plutôt qu'un résultat complet bloqué."
+                )
+            elif _is_loop:
+                _strategy_hint = (
+                    "La tentative précédente a tourné en boucle sans converger. NOUVELLE STRATÉGIE OBLIGATOIRE : "
+                    "change complètement d'approche — si tu utilisais str_replace, essaie write_file complet. "
+                    "Si tu modifiais un fichier existant, recrée-le depuis zéro. "
+                    "N'applique JAMAIS deux fois la même action qui a échoué."
+                )
+            else:
+                _strategy_hint = (
+                    "La tentative précédente a échoué. NOUVELLE STRATÉGIE : "
+                    "analyse l'erreur précise, change de méthode, simplifie si nécessaire."
+                )
             prior_failures.append(
-                f"Tentative {attempt} : {last_result.output[:300]}"
+                f"Tentative {attempt} [{_stuck_status}] : {_stuck_output}\n→ {_strategy_hint}"
             )
             logger.warning(
-                "[CodeAgent] Tentative {} echouee (bloquee), retry (#{})",
-                attempt, attempt + 1,
+                "[P6] Tentative {} bloquée ({}), reprise #{} avec stratégie différente",
+                attempt, _stuck_status, attempt + 1,
             )
+            # P7 — telemetry reprise (stuck → outer retry)
+            if _TELEMETRY_AVAILABLE:
+                try:
+                    publish_trace(
+                        stage="codeagent_stuck_retry",
+                        status="retry",
+                        mode="codeagent",
+                        model=_model,
+                        task_id=getattr(task, "task_id", None),
+                        error=f"attempt={attempt} status={_stuck_status}",
+                        summary=_stuck_output[:120],
+                    )
+                except Exception:
+                    pass
 
         return self._finalize_metrics(last_result, task, llm, _metrics_start, _CODE_AGENT_MAX_OUTER_RETRIES)  # type: ignore[return-value]
 
@@ -2053,6 +2157,26 @@ class CodeAgent(SubAgent):
             task, prior_failures, attempt, model_name=_model_name_for_prompt,
         )
 
+        # P5 — signaux comportementaux : parser_severity et tool_call_quality
+        try:
+            from ..llm.model_profile import get_model_profile as _gmp
+            _attempt_profile = _gmp(_model_name_for_prompt)
+            _parser_severity = _attempt_profile.parser_severity   # "strict"|"lenient"|"forgiving"
+            _tool_call_quality = _attempt_profile.tool_call_quality  # "excellent"|"good"|"moderate"|"poor"
+            if _tool_call_quality in ("moderate", "poor"):
+                # Injecter un rappel de format strict pour les modèles moins fiables
+                _fmt_hint = (
+                    "⚠️ FORMAT STRICT REQUIS : chaque appel d'outil doit utiliser exactement "
+                    "le schéma JSON attendu. Vérifiez les noms des paramètres avant d'appeler."
+                )
+                messages.append({"role": "user", "content": _fmt_hint})
+                logger.debug("[P5] tool_call_quality={} → rappel format injecté", _tool_call_quality)
+            if _parser_severity == "forgiving":
+                logger.debug("[P5] parser_severity=forgiving pour '{}' — tolérance max activée", _model_name_for_prompt)
+        except Exception:
+            _parser_severity = "lenient"
+            _tool_call_quality = "good"
+
         # Réinitialiser les compteurs d'état par tentative
         self._edit_fail_for_path = {}
         self._self_repair_count = 0
@@ -2075,6 +2199,7 @@ class CodeAgent(SubAgent):
         _session_snapshots: dict[str, str | None] = {}
         _context_cache: dict[str, str] = {}
         _llm_retries: int = 0
+        _timeout_count: int = 0   # P6 — timeouts dans cette tentative (bifurcation stratégie)
         temperature = 0.15 + (attempt - 1) * 0.05
         # DeepSeek suit mieux les instructions strictes à basse température
         _model_name_lc = str(getattr(llm, "model_name", "") or "").lower()
@@ -2232,9 +2357,13 @@ class CodeAgent(SubAgent):
                 except (TypeError, ValueError):
                     _arch_max_tokens = 12000
                 _current_model_name = (getattr(llm, "model_name", "") or "").lower()
-                _is_deepseek_default = ("deepseek" in _current_model_name)
+                # Swap Architect → deepseek-reasoner UNIQUEMENT si le modèle courant est deepseek-v3
+                # (model_id = "deepseek-chat", V3.2 non-thinking).
+                # Les modèles V4 (deepseek-v4-flash, deepseek-v4-pro) raisonnent nativement → pas de swap.
+                _current_model_id = (getattr(llm, "model", "") or "").lower()
+                _is_deepseek_v3_chat = (_current_model_id == "deepseek-chat")
                 _llm_for_arch = None
-                if _is_deepseek_default:
+                if _is_deepseek_v3_chat:
                     try:
                         from ..llm.multi_provider import MultiProviderLLM
                         _llm_for_arch = MultiProviderLLM(model_name="deepseek-reasoner")
@@ -2247,7 +2376,7 @@ class CodeAgent(SubAgent):
                 else:
                     _llm_for_arch = llm
                     logger.info(
-                        "[CodeAgent] Architect = {} (modèle par défaut non-DeepSeek, max_tokens={}, {} fichier(s) cible(s) injecté(s))",
+                        "[CodeAgent] Architect = {} (max_tokens={}, {} fichier(s) cible(s) injecté(s))",
                         _current_model_name or "modèle courant", _arch_max_tokens, len(_target_content_blocks),
                     )
                 # ── Timeout Architect (configurable via panel/env) ──
@@ -2487,10 +2616,66 @@ class CodeAgent(SubAgent):
                 elif action_class == "retry_wait":
                     await asyncio.sleep(3)
                     continue
-                elif action_class == "retry_compact":
-                    if len(messages) > 6:
-                        messages = messages[:2] + messages[-4:]
-                    continue
+                elif action_class == "timeout_recovery":
+                    # P6 — machine de reprise à 3 niveaux selon les timeouts consécutifs
+                    _timeout_count += 1
+                    # P7 — telemetry timeout recovery
+                    if _TELEMETRY_AVAILABLE:
+                        try:
+                            publish_trace(
+                                stage="codeagent_timeout_recovery",
+                                status="retry",
+                                mode="codeagent",
+                                task_id=getattr(task, "task_id", None),
+                                error=f"timeout_level={_timeout_count} iter={iteration}",
+                                summary=f"P6 timeout #{_timeout_count}",
+                            )
+                        except Exception:
+                            pass
+                    if _timeout_count == 1:
+                        # 1er timeout → compaction + hint décomposition
+                        if len(messages) > 6:
+                            messages = messages[:2] + messages[-4:]
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[TIMEOUT #1] Génération trop longue. NOUVELLE STRATÉGIE : "
+                                "décompose en étapes plus petites, commence par la partie la plus simple. "
+                                "Évite les gros write_file, préfère des éditions ciblées str_replace."
+                            ),
+                        })
+                        report.append(f"[iter {iteration}] Timeout #1 → compaction + hint décomposition")
+                        logger.warning("[P6] Timeout #1 — compaction + hint décomposition (iter {})", iteration)
+                        continue
+                    elif _timeout_count == 2:
+                        # 2e timeout → scope minimal, réponse courte forcée
+                        if len(messages) > 4:
+                            messages = messages[:2] + messages[-2:]
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[TIMEOUT #2] Deuxième timeout. STRATÉGIE OBLIGATOIRE : "
+                                "réduis au minimum viable. Une seule action simple par tour. "
+                                "Pas de write_file > 50 lignes. Livre quelque chose de partiel et fonctionnel."
+                            ),
+                        })
+                        temperature = min(temperature + 0.1, 0.5)
+                        report.append(f"[iter {iteration}] Timeout #2 → scope minimal + réponse courte")
+                        logger.warning("[P6] Timeout #2 — scope minimal forcé (iter {})", iteration)
+                        continue
+                    else:
+                        # 3e timeout → abandon contrôlé, boucle externe reprend avec stratégie différente
+                        report.append(f"[iter {iteration}] Timeout #3 → abandon contrôlé")
+                        logger.warning("[P6] Timeout #3 — abandon, reprise boucle externe (iter {})", iteration)
+                        return AgentResult(
+                            task_id=task.task_id,
+                            success=False,
+                            output=self._enrich_summary(
+                                "CodeAgent bloqué (3 timeouts consécutifs):\n" + "\n".join(report[-5:])
+                            ),
+                            status_code=StatusCode.TIMEOUT,
+                            meta={"iterations": iteration, "stuck": True, "attempt": attempt, "timeout_count": _timeout_count},
+                        ), True
                 else:
                     _llm_retries += 1
                     if _llm_retries >= 3:

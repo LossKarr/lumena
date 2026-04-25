@@ -43,10 +43,32 @@ def test_channel_manager_runtime_snapshot_normalized():
 
     snapshot = manager.get_runtime_snapshot()
 
+    assert snapshot["running"] is True
     assert snapshot["registered_count"] == 1
     assert "telegram" in snapshot["channels"]
     assert snapshot["channels"]["telegram"]["state"] == "running"
     assert snapshot["channels"]["telegram"]["custom_flag"] == "ok"
+
+
+def test_scheduler_schedule_injects_envelope_metadata():
+    scheduler = LumenaScheduler()
+
+    async def _handler_ok():
+        return {"success": True}
+
+    scheduler.register_handler("workspace_archive", _handler_ok)
+    task = scheduler.schedule(
+        name="Workspace Archive",
+        description="Archive workspace",
+        handler_name="workspace_archive",
+    )
+
+    assert task.metadata["envelope_origin"] == "scheduler"
+    assert task.metadata["envelope_intent"] == "Archive workspace"
+    assert task.metadata["envelope_tool_category"] == "files"
+    assert task.metadata["envelope_risk_level"] == "medium"
+    assert task.metadata["envelope_requires_verification"] is False
+    assert task.metadata.get("envelope_workspace")
 
 
 def test_core_status_contains_channel_contract(monkeypatch):

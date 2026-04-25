@@ -16,6 +16,9 @@ from .react_config import (
     _PLAN_RE, _TASK_LINE_RE,
 )
 
+# Compteur global ACTION inline — monitoring P4 (reset par processus, pas par requête)
+_action_inline_total: list = [0]
+
 
 def extract_balanced_json(text: str, start_index: int) -> Optional[tuple[str, int]]:
     """Extract a balanced JSON object/array starting at index."""
@@ -185,7 +188,12 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
         inline_m = re.search(r"(?i)\bACTION:\s*([A-Za-z_][A-Za-z0-9_]*)", cleaned_response)
         if inline_m:
             action_matches = [inline_m]
-            logger.warning("⚠️ ACTION inline détecté (pas en début de ligne) — extraction forcée: {}", inline_m.group(1).strip())
+            # Compter les occurrences ACTION inline pour le monitoring P4
+            _action_inline_total[0] += 1
+            logger.warning(
+                "⚠️ ACTION inline détecté (#{}, pas en début de ligne) — extraction forcée: {}",
+                _action_inline_total[0], inline_m.group(1).strip(),
+            )
     # ── Multi-action: exécuter toutes les actions séquentiellement ──
     _sel = None
     pending_multi_actions: list = []

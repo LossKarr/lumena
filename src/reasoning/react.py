@@ -171,6 +171,11 @@ class ReActLoop:
         self._premature_final_retries: int = 0
         self._plan_guard_retries: int = 0
         self._thought_leak_repairs: int = 0
+        self._action_inline_count: int = 0  # Nombre de fois que ACTION inline a été détecté
+        self._category_iter_counts: dict = {}  # category → nombre d'itérations consommées
+        # P5 — profil comportemental par modèle (chargé dynamiquement à la première itération)
+        self._model_profile = None
+        self._model_profile_applied_for: str = ""
 
     @staticmethod
     def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -1562,22 +1567,29 @@ Maintenant, reflechis et reponds:"""
                     "mistral": 32_000, "mixtral": 32_000, "qwen": 32_000,
                     "gemma": 8_000, "phi": 8_000,
                 }
+                _meta_now = self._get_llm_meta()
+                _guard_model = (
+                    _meta_now.get("model_used") or _meta_now.get("model_name")
+                    or self._last_llm_meta.get("model_used") or ""
+                ).lower()
                 for _key, _limit in _CTX_FALLBACKS.items():
-                    if _key in _active_model:
+                    if _key in _guard_model:
                         _ctx_max = _limit
                         break
                 if _ctx_max == 0:
                     _ctx_max = 32_000  # seuil conservateur universel
-                if _active_model:
-                    logger.debug(f"🔍 Context guard fallback: modèle='{_active_model}' → ctx_max={_ctx_max}")
+                if _guard_model:
+                    logger.debug(f"🔍 Context guard fallback: modèle='{_guard_model}' → ctx_max={_ctx_max}")
             if _ctx_max > 0:
                 from ..tools.compaction import estimate_tokens
                 _prompt_tokens = estimate_tokens(prompt)
-                _threshold = int(_ctx_max * 0.75)  # 75% : agir avant dégradation, pas après
+                # P5 — seuil de compaction adapté au profil du modèle (défaut 0.75)
+                _compact_threshold = getattr(self._model_profile, "compact_ctx_threshold", 0.75) if self._model_profile else 0.75
+                _threshold = int(_ctx_max * _compact_threshold)
                 if _prompt_tokens > _threshold:
                     _overflow = _prompt_tokens - _threshold
                     logger.warning(
-                        f"⚠️ Context overflow guard: {_prompt_tokens} tokens > 75% de {_ctx_max} "
+                        f"⚠️ Context overflow guard: {_prompt_tokens} tokens > {_compact_threshold:.0%} de {_ctx_max} "
                         f"({_threshold}). Compaction d'urgence."
                     )
                     # Supprimer les étapes les plus anciennes de l'historique
@@ -1608,9 +1620,26 @@ Maintenant, reflechis et reponds:"""
             if not _active_model and self.llm_meta_getter:
                 _meta0 = self.llm_meta_getter() or {}
                 _active_model = (_meta0.get("model_name") or _meta0.get("model") or "").lower()
-            _is_kimi = "kimi" in _active_model
-            _base_timeout = 300 if _is_kimi else 240
+            # P5 — profil comportemental : charge une fois par modèle actif
+            if _active_model and _active_model != self._model_profile_applied_for:
+                try:
+                    from ..llm.model_profile import get_model_profile, describe_profile
+                    self._model_profile = get_model_profile(_active_model)
+                    self._model_profile_applied_for = _active_model
+                    logger.debug("[P5] profil chargé pour '{}': {}", _active_model, describe_profile(self._model_profile))
+                    # parser_severity="forgiving" → augmenter le budget de repair FINAL
+                    # (les modèles forgiving tronquent souvent leurs réponses)
+                    if self._model_profile.parser_severity == "forgiving" and self.max_final_repair_attempts < 2:
+                        self.max_final_repair_attempts = 2
+                        logger.debug("[P5] parser_severity=forgiving → max_final_repair_attempts élevé à 2")
+                except Exception:
+                    pass
+            _timeout_mult = getattr(self._model_profile, "timeout_multiplier", 1.0) if self._model_profile else 1.0
+            _base_timeout = int(240 * _timeout_mult)
             _llm_call_timeout = (_base_timeout + 60) if i >= 9 else ((_base_timeout + 30) if i >= 5 else _base_timeout)
+            # P5 — signaux comportementaux dérivés du profil (calculés une fois par itération)
+            _parser_sev = getattr(self._model_profile, "parser_severity", "lenient") if self._model_profile else "lenient"
+            _loop_risk = getattr(self._model_profile, "loop_risk", "low") if self._model_profile else "low"
             # stop=["OBSERVATION:"] empêche le modèle d'écrire de fausses observations
             # Seul le système produit OBSERVATION: après exécution réelle d'un outil
             _react_stop = ["OBSERVATION:"]
@@ -1794,10 +1823,16 @@ Maintenant, reflechis et reponds:"""
             # 2. Parser la réponse
             logger.info(f"📥 LLM RESPONSE SIZE: {len(response)} chars")
             
-            # FIX: Gérer les réponses vides - retry au lieu de terminer
+            # FIX: Gérer les réponses vides - comportement adapté au profil (P5)
             if not response or len(response.strip()) == 0:
-                logger.warning("⚠️ Réponse LLM vide détectée - retry avec rappel de format")
-                query = f"{query}\n\n⚠️ Ta dernière réponse était vide. RAPPEL: utilise le format THOUGHT/ACTION pour répondre."
+                _empty_risk = getattr(self._model_profile, "empty_response_risk", "rare") if self._model_profile else "rare"
+                _retry_on_empty = getattr(self._model_profile, "retry_on_empty", True) if self._model_profile else True
+                if _empty_risk == "frequent":
+                    logger.debug("⚠️ Réponse LLM vide (attendu pour ce modèle) — retry format")
+                else:
+                    logger.warning("⚠️ Réponse LLM vide détectée - retry avec rappel de format")
+                if _retry_on_empty:
+                    query = f"{query}\n\n⚠️ Ta dernière réponse était vide. RAPPEL: utilise le format THOUGHT/ACTION pour répondre."
                 _finish_iteration(status="error", error="empty_llm_response")
                 continue  # Skip to next iteration instead of parsing empty response
             
@@ -1876,8 +1911,14 @@ Maintenant, reflechis et reponds:"""
                         _prev_words = set(_previous_thoughts[-2].lower().split())
                         _overlap2 = len(_current_words & _prev_words) / max(len(_current_words | _prev_words), 1)
                         # Seuil adaptatif : 65% si requête courte (≤5 mots), 80% sinon
+                        # P5 — modèles à loop_risk élevé : seuil abaissé pour détection plus tôt
                         _q_words = len(original_query.split())
-                        _thresh = 0.65 if _q_words <= 5 else 0.80
+                        _base_thresh = 0.65 if _q_words <= 5 else 0.80
+                        _thresh = (
+                            _base_thresh - 0.10 if _loop_risk == "high" else
+                            _base_thresh - 0.05 if _loop_risk == "medium" else
+                            _base_thresh
+                        )
                         if _overlap > _thresh and _overlap2 > _thresh:
                             _is_stagnant = True
                 # Détection secondaire : 3+ actions read-only consécutives sur même sujet
@@ -2486,7 +2527,40 @@ Maintenant, reflechis et reponds:"""
                         return message
                 
                 self.action_history.append(action_key)
-            
+
+            # ── Budget par outil ──────────────────────────────────────────────
+            # Plafonds adaptatifs : au-delà, guidance injectée (pas de hard-stop
+            # pour ne pas bloquer des tâches légitimement longues).
+            _TOOL_SOFT_BUDGET: dict[str, int] = {
+                "read_file": 12,
+                "list_directory": 6,
+                "grep_search": 10,
+                "find_files": 6,
+                "run_command": 20,
+                "http_request": 8,
+                "browser_get_content": 6,
+            }
+            if action.action_type == ActionType.TOOL_CALL and action.tool_name:
+                _tname = action.tool_name
+                _tbudget = _TOOL_SOFT_BUDGET.get(_tname, 0)
+                if _tbudget:
+                    _tcalls = sum(
+                        1 for _ak in self.action_history
+                        if isinstance(_ak, tuple) and _ak[0] == _tname
+                    )
+                    if _tcalls >= _tbudget and not getattr(self, "_pending_loop_guidance", None):
+                        self._pending_loop_guidance = (
+                            f"⚠️ Budget outil dépassé : `{_tname}` appelé {_tcalls}× "
+                            f"(budget conseillé : {_tbudget}×). "
+                            "Continue uniquement si l'outil est strictement nécessaire, "
+                            "sinon passe à l'étape productive suivante ou conclus avec FINAL."
+                        )
+                        logger.warning(
+                            "⚠️ Budget outil: {} appelé {}x (budget={})",
+                            _tname, _tcalls, _tbudget,
+                        )
+            # ─────────────────────────────────────────────────────────────────
+
             # 3. Créer l'étape
             step = ReActStep(thought=thought, action=action)
 
@@ -2868,26 +2942,54 @@ Maintenant, reflechis et reponds:"""
                 # de la réflexion interne (sinon on gaspille des itérations en re-prompting).
                 _answer_lower = (answer or "").lower().lstrip()
                 _INTERNAL_PREFIXES = (
+                    # FR — réflexion interne
                     "l'utilisateur me demande",
                     "l'utilisateur demande",
                     "l'utilisateur souhaite",
                     "l'utilisateur veut",
+                    "l'utilisateur a demandé",
+                    "l'utilisateur a sollicité",
                     "je dois maintenant",
                     "je vais maintenant synthétiser",
                     "je vais maintenant formuler",
                     "je vais maintenant fournir",
                     "je vais maintenant résumer",
+                    "je vais maintenant répondre",
+                    "je vais maintenant donner",
                     "je dois analyser",
+                    "je dois vérifier",
+                    "je dois d'abord",
+                    "je dois ensuite",
                     "j'ai exécuté les",
                     "j'ai déjà exécuté",
                     "j'ai déjà effectué une recherche",
+                    "j'ai maintenant toutes les",
+                    "maintenant que j'ai",
+                    "sur la base de",
+                    "après avoir analysé",
+                    "d'après les résultats",
+                    # EN — internal reasoning prefixes
                     "the user is asking",
                     "the user wants",
                     "the user asked",
+                    "the user requested",
                     "i need to now",
                     "i should now",
+                    "i will now",
+                    "i'll now",
                     "let me analyze",
                     "let me now",
+                    "let me provide",
+                    "let me summarize",
+                    "let me now provide",
+                    "based on the",
+                    "based on my",
+                    "now that i have",
+                    "i have already",
+                    "i've already",
+                    "i have now",
+                    "i've now",
+                    "having gathered",
                 )
                 _is_reasoning_prefix = any(_answer_lower.startswith(p) for p in _INTERNAL_PREFIXES)
                 _thought_leaked = bool(answer) and (
@@ -2902,10 +3004,16 @@ Maintenant, reflechis et reponds:"""
                         ))
                     )
                 )
-                if _thought_leaked and self._thought_leak_repairs < 2:
+                # P5 — modèles à thought_leak_risk élevé ont droit à plus de repairs
+                _max_tleak = (
+                    4 if getattr(self._model_profile, "thought_leak_risk", "low") == "high" else
+                    3 if getattr(self._model_profile, "thought_leak_risk", "low") == "medium" else
+                    2
+                ) if self._model_profile else 2
+                if _thought_leaked and self._thought_leak_repairs < _max_tleak:
                     self._thought_leak_repairs += 1
                     logger.warning(
-                        f"⚠️ THOUGHT leaké comme réponse finale (tentative {self._thought_leak_repairs}/2) - reformulation demandée"
+                        f"⚠️ THOUGHT leaké comme réponse finale (tentative {self._thought_leak_repairs}/{_max_tleak}) - reformulation demandée"
                     )
                     self.history.pop()
                     query = (
@@ -3029,6 +3137,19 @@ Maintenant, reflechis et reponds:"""
                 if hasattr(self, '_timeout_deadline'):
                     self._timeout_deadline += _tool_exec_duration
                     self._tool_time_total = getattr(self, '_tool_time_total', 0.0) + _tool_exec_duration
+                # ── P4: Budget par catégorie ──
+                _tool_cat = getattr(self.tools, "_tool_modules", {}).get(action.tool_name, "unknown")
+                self._category_iter_counts[_tool_cat] = self._category_iter_counts.get(_tool_cat, 0) + 1
+                _CAT_ITER_LIMITS = {
+                    "web": 8, "browser": 6, "memory": 5,
+                    "security": 10, "network": 8,
+                }
+                _cat_limit = _CAT_ITER_LIMITS.get(_tool_cat, 0)
+                if _cat_limit and self._category_iter_counts[_tool_cat] >= _cat_limit:
+                    logger.warning(
+                        "[P4] Budget catégorie '{}' atteint ({}/{}) — outil={} — passage à FINAL suggéré",
+                        _tool_cat, self._category_iter_counts[_tool_cat], _cat_limit, action.tool_name,
+                    )
                 # Injecter l'avertissement de stagnation dans l'observation si détecté
                 if _stagnation_warning and observation.content:
                     observation = Observation(
@@ -3368,11 +3489,17 @@ Maintenant, reflechis et reponds:"""
             # 6. Compacter les observations volumineuses avant stockage (anti-context-poisoning)
             # Le modèle a déjà vu l'observation complète — on stocke une version compacte
             # pour que les futures itérations ne soient pas noyées dans du contenu stale.
+            # RÈGLE : read_file/grep ont un seuil élevé (8000) — le contenu fichier est précieux.
+            #         delegate_task/run_command ont un seuil bas (3000) — ce sont des résumés.
             if step.observation and step.observation.content:
                 _raw_obs_len = len(step.observation.content)
-                _OBS_COMPACT_LIMIT = 3000
+                _tool_name_compact = action.tool_name or ""
+                # Seuils adaptatifs par type d'outil
+                if _tool_name_compact in ("read_file", "search_in_code", "grep_search", "find_files"):
+                    _OBS_COMPACT_LIMIT = 8000   # seuil élevé : ne pas tronquer le contenu fichier
+                else:
+                    _OBS_COMPACT_LIMIT = 3000   # seuil bas pour les outils qui retournent des rapports
                 if _raw_obs_len > _OBS_COMPACT_LIMIT:
-                    _tool_name_compact = action.tool_name or ""
                     if _tool_name_compact in (
                         "delegate_task", "create_project", "generate_website",
                         "write_website_files", "website_build",
@@ -3394,10 +3521,10 @@ Maintenant, reflechis et reponds:"""
                     elif _tool_name_compact in (
                         "read_file", "search_in_code", "grep_search", "find_files",
                     ):
-                        # Lectures fichiers : garder le début (header + premières lignes)
+                        # Lectures fichiers : seuil élevé atteint → garder 3000 chars (début)
                         _c_body = (
-                            step.observation.content[:1200]
-                            + f"\n[...{_raw_obs_len - 1200} chars omis — relire si nécessaire...]"
+                            step.observation.content[:3000]
+                            + f"\n[...{_raw_obs_len - 3000} chars omis — relire avec plage de lignes si nécessaire...]"
                         )
                     else:
                         _c_head = step.observation.content[:500]

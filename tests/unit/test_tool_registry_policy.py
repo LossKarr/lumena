@@ -140,3 +140,64 @@ def test_warn_mode_allows_but_logs(registry, fake_project, monkeypatch):
     from src.reasoning.caller_context import REACT
     obs = registry._policy_check("write_file", {"path": "/fake/demo-project/app.py"}, REACT)
     assert obs is None  # warn ne bloque pas
+
+
+def test_category_contract_requires_workspace_for_delegate_task(registry, monkeypatch):
+    from src.reasoning.caller_context import REACT
+
+    monkeypatch.setattr(
+        "src.reasoning.tool_registry.get_current_runtime_context",
+        lambda: None,
+    )
+    obs = registry._category_contract_check(
+        "delegate_task",
+        {"description": "Corrige le projet existant avec plusieurs changements importants"},
+        REACT,
+    )
+    assert obs is not None
+    assert obs.success is False
+    assert "workspace_path requis" in obs.content
+
+
+def test_category_contract_accepts_runtime_workspace_for_delegate_task(registry, monkeypatch, tmp_path):
+    from src.reasoning.caller_context import REACT
+
+    runtime_ctx = type(
+        "RuntimeCtx",
+        (),
+        {"workspace_path": str(tmp_path), "resolved_workspace": str(tmp_path)},
+    )()
+    monkeypatch.setattr(
+        "src.reasoning.tool_registry.get_current_runtime_context",
+        lambda: runtime_ctx,
+    )
+    monkeypatch.setattr(
+        "src.reasoning.react_config.get_current_runtime_context",
+        lambda: runtime_ctx,
+        raising=False,
+    )
+    registry.ide_context = registry._normalize_ide_context(
+        {"workspace_path": str(tmp_path)}
+    )
+    obs = registry._category_contract_check(
+        "delegate_task",
+        {"description": "Corrige le projet existant avec plusieurs changements importants"},
+        REACT,
+    )
+    assert obs is None
+
+
+def test_category_contract_accepts_absolute_file_path_parent(registry, monkeypatch, tmp_path):
+    from src.reasoning.caller_context import REACT
+
+    target = tmp_path / "notes.txt"
+    monkeypatch.setattr(
+        "src.reasoning.tool_registry.get_current_runtime_context",
+        lambda: None,
+    )
+    obs = registry._category_contract_check(
+        "write_file",
+        {"path": str(target)},
+        REACT,
+    )
+    assert obs is None

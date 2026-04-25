@@ -41,6 +41,17 @@ class GoalType(Enum):
     SOCIAL = "social"              # Interaction sociale
     MAINTENANCE = "maintenance"    # Maintenance système
     EXPLORATION = "exploration"    # Explorer/découvrir
+def _infer_goal_envelope_defaults(goal_type: GoalType, workspace: Optional[str]) -> tuple[str, str, bool]:
+    """Retourne (tool_category, risk_level, requires_verification) pour un goal."""
+    if goal_type == GoalType.SOCIAL:
+        return "communication", "medium", True
+    if goal_type in {GoalType.LEARNING, GoalType.EXPLORATION, GoalType.HELPING}:
+        return "autonomy", "low", False
+    if goal_type in {GoalType.ORGANIZING, GoalType.MAINTENANCE}:
+        return ("files", "medium", False) if workspace else ("autonomy", "low", False)
+    if goal_type == GoalType.CREATING:
+        return ("project", "medium", False) if workspace else ("autonomy", "low", False)
+    return "autonomy", "low", False
 
 
 @dataclass
@@ -87,6 +98,45 @@ class Goal:
         if reason:
             self.notes.append(f"Échec: {reason}")
     
+    def build_task_envelope(
+        self,
+        *,
+        workspace: Optional[str] = None,
+        budget_seconds: int = 300,
+    ):
+        """Construit une TaskEnvelope valide pour l'execution autonome du goal."""
+        from .task_envelope import TaskEnvelope
+
+        metadata = self.metadata if isinstance(self.metadata, dict) else {}
+        resolved_workspace = (
+            metadata.get("envelope_workspace")
+            or metadata.get("workspace_path")
+            or metadata.get("project_path")
+            or workspace
+        )
+        default_category, default_risk, default_verify = _infer_goal_envelope_defaults(
+            self.goal_type,
+            resolved_workspace,
+        )
+        envelope = TaskEnvelope.for_autonomous(
+            origin=str(metadata.get("envelope_origin") or "goals"),
+            intent=str(
+                metadata.get("envelope_intent")
+                or self.title
+                or self.description
+                or "goal autonome"
+            )[:200],
+            workspace=resolved_workspace,
+            tool_category=str(metadata.get("envelope_tool_category") or default_category),
+            budget_seconds=int(metadata.get("envelope_budget_seconds") or max(10, budget_seconds)),
+            risk_level=str(metadata.get("envelope_risk_level") or default_risk),
+            requires_verification=bool(
+                metadata.get("envelope_requires_verification", default_verify)
+            ),
+        )
+        envelope.validate()
+        return envelope
+
     def to_dict(self) -> Dict[str, Any]:
         """Convertit en dictionnaire."""
         return {
@@ -160,6 +210,7 @@ class GoalManager:
                     data = json.load(f)
                     for goal_data in data:
                         goal = Goal.from_dict(goal_data)
+                        goal.metadata = self._normalize_goal_metadata(goal)
                         self.goals[goal.id] = goal
                 logger.info(f"Chargé {len(self.goals)} objectifs")
             except Exception as e:
@@ -190,6 +241,53 @@ class GoalManager:
                     tmp.replace(self.goals_file)  # Atomique sur la plupart des OS
                 except Exception as e:
                     logger.error(f"Erreur sauvegarde objectifs: {e}")
+
+    def _normalize_goal_metadata(self, goal: Goal) -> Dict[str, Any]:
+        """Injecte des metadata envelope_* coherentes pour tous les goals."""
+        metadata = dict(goal.metadata or {})
+        requested_workspace = (
+            metadata.get("envelope_workspace")
+            or metadata.get("workspace_path")
+            or metadata.get("project_path")
+        )
+        requested_budget = metadata.get("envelope_budget_seconds") or 300
+
+        try:
+            envelope = goal.build_task_envelope(
+                workspace=requested_workspace,
+                budget_seconds=int(requested_budget),
+            )
+        except Exception as e:
+            logger.warning(
+                "[goals] envelope invalide pour '{}' - fallback applique ({})",
+                goal.title,
+                e,
+            )
+            from .task_envelope import TaskEnvelope
+
+            default_category, default_risk, default_verify = _infer_goal_envelope_defaults(
+                goal.goal_type,
+                requested_workspace,
+            )
+            envelope = TaskEnvelope.for_autonomous(
+                origin="goals",
+                intent=str(goal.title or goal.description or "goal autonome")[:200],
+                workspace=requested_workspace,
+                tool_category=default_category,
+                budget_seconds=max(10, int(requested_budget)),
+                risk_level=default_risk,
+                requires_verification=default_verify,
+            )
+            envelope.validate()
+
+        metadata["envelope_origin"] = envelope.origin
+        metadata["envelope_intent"] = envelope.intent
+        metadata["envelope_workspace"] = envelope.workspace
+        metadata["envelope_tool_category"] = envelope.tool_category
+        metadata["envelope_budget_seconds"] = envelope.budget_seconds
+        metadata["envelope_risk_level"] = envelope.risk_level
+        metadata["envelope_requires_verification"] = envelope.requires_verification
+        return metadata
 
     def _archive_old_goals(self):
         """Déplace les vieux goals terminés/échoués vers goals_archive.json."""
@@ -270,6 +368,7 @@ class GoalManager:
             deadline=deadline,
             metadata=metadata or {},
         )
+        goal.metadata = self._normalize_goal_metadata(goal)
         
         self.goals[goal_id] = goal
         self._save()
@@ -325,6 +424,8 @@ class GoalManager:
             for key, value in kwargs.items():
                 if hasattr(goal, key):
                     setattr(goal, key, value)
+            if {"title", "description", "goal_type", "metadata"} & set(kwargs.keys()):
+                goal.metadata = self._normalize_goal_metadata(goal)
             self._save()
     
     def complete_goal(self, goal_id: str):

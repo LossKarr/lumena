@@ -30,10 +30,21 @@ _counters: dict[str, int | float] = {
 }
 
 
+def _is_test_env() -> bool:
+    """Détecte si on tourne sous pytest (PYTEST_CURRENT_TEST ou LUMENA_ENV=test)."""
+    import os
+    return (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or os.environ.get("LUMENA_ENV", "").lower() == "test"
+    )
+
+
 def _metrics_file() -> Path | None:
     try:
         from src.utils.paths import LOGS_DIR
-        p = LOGS_DIR / "codeagent" / "gate_metrics.jsonl"
+        # Fichier séparé en environnement de test — évite de polluer les métriques prod.
+        suffix = "_test" if _is_test_env() else ""
+        p = LOGS_DIR / "codeagent" / f"gate_metrics{suffix}.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
     except Exception:

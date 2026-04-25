@@ -1,4 +1,5 @@
 """
+STATUS: pending-integration — non canonique en production. Réintégrer uniquement si goulot embeddings mesuré (P8).
 🌟 LUMENA - Cache d'Embeddings SQLite
 
 Cache persistant pour les embeddings vectoriels.

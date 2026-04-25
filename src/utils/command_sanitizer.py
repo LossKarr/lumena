@@ -121,7 +121,26 @@ BLOCKED_PATTERNS = [
     r"Invoke-Expression",           # Invoke-Expression (arbitrary code execution)
     r"IEX\s",                       # IEX alias for Invoke-Expression
     r"Set-ExecutionPolicy",         # Changing execution policy
+    # Protocoles réseau de déploiement — bloquer techniquement.
+    # Le déploiement passe OBLIGATOIREMENT par deploy_to_ionos / ionos.py.
+    r"\bssh\b",                        # ssh (accès shell distant)
+    r"\bscp\b",                        # scp (copie SSH)
+    r"\brsync\b",                      # rsync (synchronisation SSH)
+    r"\bsftp\b",                       # sftp (FTP over SSH)
+    r"\bftp\b",                        # ftp (transfert non sécurisé)
+    r"\bpsftp\b",                      # PuTTY SFTP
+    r"\bpscp\b",                       # PuTTY SCP
+    r"\bwinSCP\b",                     # WinSCP CLI
 ]
+
+# Message spécifique pour les tentatives de déploiement réseau
+_DEPLOY_NETWORK_MSG = (
+    "⛔ Déploiement réseau bloqué ({exe}). "
+    "Le déploiement doit passer par l'outil natif `deploy_to_ionos` "
+    "(ou `ionos_add_site`, `update_ionos_files`) qui gère les credentials SFTP "
+    "de façon sécurisée. N'utilise JAMAIS ssh/scp/sftp/rsync/ftp directement."
+)
+_DEPLOY_NETWORK_EXES = frozenset({"ssh", "scp", "sftp", "rsync", "ftp", "psftp", "pscp", "winscp"})
 
 # Verbes PowerShell autorisés (lecture / diagnostic / formatage)
 _PS_SAFE_VERBS: Set[str] = {
@@ -254,6 +273,9 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
 
     if exe_lower not in allowed and exe_base not in allowed:
         logger.warning("Executable non autorise: '{}' (commande: {})", executable, command_stripped[:80])
+        # Message spécialisé pour les protocoles de déploiement réseau
+        if exe_base in _DEPLOY_NETWORK_EXES:
+            return False, _DEPLOY_NETWORK_MSG.format(exe=executable)
         reason = (
             f"Executable '{executable}' non autorise par la whitelist de securite. "
             "Pour controler la souris ou le clavier, utilise directement les outils natifs : "

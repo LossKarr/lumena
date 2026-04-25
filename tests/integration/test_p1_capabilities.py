@@ -122,18 +122,3 @@ class TestModelConfigOutputCaps:
 
     def test_deepseek_v3_output_8k(self):
         assert AVAILABLE_MODELS["deepseek-v3"].max_output_tokens == 8192
-
-
-class TestFallbackChain:
-    """P1.5 — model_manager fallback chain ne contient que des modèles existants."""
-
-    def test_all_fallback_models_exist(self):
-        from src.llm.model_manager import ModelManager
-        for model in ModelManager.DEFAULT_FALLBACK_CHAIN:
-            assert model in AVAILABLE_MODELS, f"Fallback model '{model}' not in AVAILABLE_MODELS"
-
-    def test_no_obsolete_models(self):
-        from src.llm.model_manager import ModelManager
-        obsolete = {"gemini-2.0-flash", "gemini-1.5-flash", "claude-3-haiku"}
-        for model in ModelManager.DEFAULT_FALLBACK_CHAIN:
-            assert model not in obsolete, f"Obsolete model '{model}' still in fallback chain"

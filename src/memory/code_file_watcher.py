@@ -139,7 +139,32 @@ def stop_code_watcher(workspace: Path) -> None:
         w.stop()
 
 
-__all__ = ["CodeFileWatcher", "start_code_watcher", "stop_code_watcher"]
+def stop_all_watchers() -> int:
+    """
+    Arrête tous les watchers actifs — à appeler en fin de session ou via atexit.
+    Retourne le nombre de watchers arrêtés.
+    """
+    stopped = 0
+    keys = list(_active_watchers.keys())
+    for key in keys:
+        w = _active_watchers.pop(key, None)
+        if w:
+            try:
+                w.stop()
+                stopped += 1
+            except Exception as exc:
+                logger.debug("[CodeFileWatcher] erreur arrêt {}: {}", key, exc)
+    if stopped:
+        logger.debug("[CodeFileWatcher] {} watcher(s) arrêté(s) (stop_all)", stopped)
+    return stopped
+
+
+# Enregistrement atexit — garantit le cleanup même si le process se termine proprement
+import atexit as _atexit
+_atexit.register(stop_all_watchers)
+
+
+__all__ = ["CodeFileWatcher", "start_code_watcher", "stop_code_watcher", "stop_all_watchers"]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)

@@ -193,6 +193,9 @@ class TestDaemon:
 
             assert goal.steps_completed == 1
             assert goal.progress > 0
+            assert goal.metadata["envelope_origin"] == "goals"
+            assert goal.metadata["envelope_intent"] == "Test Goal"
+            assert goal.metadata["envelope_tool_category"] == "autonomy"
             fake_lumena.think_and_act.assert_awaited_once()
         except ImportError:
             pytest.skip("LumenaDaemon/Goal non disponible")

@@ -254,6 +254,18 @@ class HeartbeatSystem:
         self.last_heartbeat = datetime.now()
         self.heartbeat_count += 1
         self._save_state()  # Persiste immédiatement (survit aux redémarrages)
+        # P3 — envelope de traçabilité (non-bloquant, max 4 actions déjà garanti)
+        try:
+            from .task_envelope import TaskEnvelope
+            _hb_envelope = TaskEnvelope.for_autonomous(
+                intent=f"heartbeat #{self.heartbeat_count} — vérification ops runtime",
+                tool_category="system",
+                risk_level="low",
+                budget_seconds=120,
+            )
+            logger.debug("[envelope] heartbeat — {}", _hb_envelope)
+        except Exception:
+            pass
 
         logger.info(f"💓 Heartbeat #{self.heartbeat_count} - Vérification des tâches...")
         

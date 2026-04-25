@@ -58,13 +58,13 @@ except ImportError:
     TELEMETRY_AVAILABLE = False
 
 try:
-    from src.instincts import InstinctSystem
+    from src.learning.instincts import InstinctSystem
     INSTINCTS_AVAILABLE = True
 except ImportError:
     INSTINCTS_AVAILABLE = False
 
 try:
-    from src.context_compactor import estimate_messages_tokens
+    from src.tools.compaction import estimate_messages_tokens
 except ImportError:
     estimate_messages_tokens = None
 

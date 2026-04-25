@@ -11,6 +11,26 @@ from tests._server_compat import server_module
 from src.runtime.task_orchestrator import TaskOrchestrator
 
 
+@pytest.fixture(autouse=True)
+def _resolved_workspace_context(monkeypatch, tmp_path):
+    workspace = str(tmp_path)
+
+    def _ok_workspace(*_args, **_kwargs):
+        return {
+            "workspace_path": workspace,
+            "active_file_path": None,
+            "open_files": [],
+            "resolved_date": "2026-04-25",
+            "resolution_reason": "explicit_test_workspace",
+            "workspace_policy": "default",
+            "workspace_used_fallback": False,
+            "channel": "web",
+        }
+
+    monkeypatch.setattr("web.routes.chat._apply_workspace_policy", _ok_workspace)
+    return workspace
+
+
 class _FakeLLM:
     def __init__(self, meta):
         self._meta = meta
@@ -737,3 +757,77 @@ async def test_api_chat_stream_cancel_request_marks_cancelled(monkeypatch):
 
     session_payload = await server_module.get_session("conv_cancelled_stream")
     assert session_payload["session_state"]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_api_chat_refuses_ambiguous_workspace(monkeypatch):
+    from web.routes.chat import WorkspacePolicyError
+
+    fake_meta = {
+        "provider_requested": "openai",
+        "provider_used": "openai",
+        "model_requested": "gpt-4o",
+        "model_used": "gpt-4o",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "continuation_used": False,
+        "continuation_steps": 0,
+        "finish_reason": "stop",
+    }
+    monkeypatch.setattr(server_module, "lumena", _FakeLumena(fake_meta))
+
+    def _raise_workspace_error(*_args, **_kwargs):
+        raise WorkspacePolicyError(
+            "workspace_ambiguous: ambiguous project",
+            status_code=409,
+        )
+
+    monkeypatch.setattr("web.routes.chat._apply_workspace_policy", _raise_workspace_error)
+
+    with pytest.raises(server_module.HTTPException) as exc:
+        await server_module.chat(server_module.ChatRequest(message="test", use_agent=False))
+
+    assert exc.value.status_code == 409
+    assert "workspace_ambiguous" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_api_chat_stream_emits_workspace_ambiguous_error(monkeypatch):
+    from web.routes.chat import WorkspacePolicyError
+
+    fake_meta = {
+        "provider_requested": "openai",
+        "provider_used": "openai",
+        "model_requested": "gpt-4o",
+        "model_used": "gpt-4o",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "continuation_used": False,
+        "continuation_steps": 0,
+        "finish_reason": "stop",
+    }
+    monkeypatch.setattr(server_module, "lumena", _FakeLumena(fake_meta))
+
+    def _raise_workspace_error(*_args, **_kwargs):
+        raise WorkspacePolicyError(
+            "workspace_ambiguous: ambiguous project",
+            status_code=409,
+        )
+
+    monkeypatch.setattr("web.routes.chat._apply_workspace_policy", _raise_workspace_error)
+
+    stream_response = await server_module.chat_stream(
+        server_module.ChatRequest(message="workspace-ambiguous-stream", use_agent=False)
+    )
+
+    payloads = []
+    async for chunk in stream_response.body_iterator:
+        text = chunk.decode("utf-8") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+        for line in text.splitlines():
+            if line.startswith("data: "):
+                payloads.append(json.loads(line[6:]))
+
+    assert payloads
+    error_event = payloads[0]
+    assert error_event["type"] == "error"
+    assert "workspace_ambiguous" in error_event["content"]

@@ -148,7 +148,6 @@ def _deploy_is_contextual(query: str) -> bool:
 def _match_edit_and_deploy(query: str) -> bool:
     """Détecte 'modifie/améliore/complète un site web ET déploie/upload'."""
     q = query.lower()
-    # Intent destructif → jamais un pipeline direct
     if _has_destructive_intent(q):
         return False
     has_edit = bool(re.search(
@@ -165,7 +164,6 @@ def _match_edit_and_deploy(query: str) -> bool:
         r"ionos|openlumena|h[eé]berg\w*|sftp)\b",
         q,
     ))
-    # Deploy contextuel (nom de section) → pas de vrai intent deploy
     if has_deploy and _deploy_is_contextual(query):
         has_deploy = False
     has_skill_kw = bool(_SKILL_EXCLUSION_RE.search(q))

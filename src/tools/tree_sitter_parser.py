@@ -1,4 +1,5 @@
 """
+STATUS: pending-integration — non canonique en production. Branchement prévu sur view_outline (P8).
 🌲 LUMENA - Multi-Language Code Parser (Phase 4: Performance)
 
 Parse la structure de fichiers dans plusieurs langages.

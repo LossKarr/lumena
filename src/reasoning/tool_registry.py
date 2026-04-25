@@ -24,6 +24,7 @@ from .react_config import (
 )
 from .caller_context import CallerContext, UNKNOWN as _CALLER_UNKNOWN
 from .file_categories import requires_codeagent as _requires_codeagent
+from .tool_categories import get_category_contract, get_semantic_category
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1135,6 +1136,144 @@ class ToolRegistry:
             pass
         return Observation(content=msg, success=False)
 
+    def _category_contract_check(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        caller: CallerContext,
+    ) -> Optional[Observation]:
+        """Vérifie les préconditions du contrat de catégorie.
+
+        Retourne une Observation de refus explicable si une précondition
+        critique n'est pas satisfaite. None = tout est OK.
+
+        Actuellement vérifié :
+        - Catégories requires_workspace=True : workspace_path requis dans le runtime context
+        - Catégorie "communication" en mode autonomie : refus hard
+        - Catégorie "agents" (delegate_task) : description trop vague refusée
+        """
+        module_cat = self._tool_modules.get(name, "")
+        if not module_cat:
+            return None
+        semantic = get_semantic_category(module_cat)
+        contract = get_category_contract(semantic)
+        if contract is None:
+            return None
+
+        if (
+            contract.requires_workspace
+            and (
+                # En mode autonomie : on vérifie toutes les catégories requires_workspace
+                caller.kind in ("autonomy", "scheduler", "daemon")
+                # En mode react : uniquement la catégorie "agents" (delegate_task)
+                # — les fichiers sont déjà contrôlés par WorkspaceFileGuardrails
+                or (caller.kind == "react" and semantic == "agents")
+            )
+        ):
+            workspace_candidates: List[tuple[str, bool]] = []
+
+            def _append_candidate(
+                value: Any,
+                *,
+                parent_for_file: bool = False,
+                trusted: bool = False,
+            ) -> None:
+                if not isinstance(value, str):
+                    return
+                text = value.strip()
+                if not text:
+                    return
+                if parent_for_file:
+                    try:
+                        path_obj = Path(text).expanduser()
+                        if path_obj.is_absolute():
+                            target = path_obj if path_obj.suffix == "" else path_obj.parent
+                            workspace_candidates.append((str(target), trusted))
+                    except Exception:
+                        return
+                else:
+                    workspace_candidates.append((text, trusted))
+
+            try:
+                runtime_ctx = get_current_runtime_context()
+            except Exception:
+                runtime_ctx = None
+
+            if runtime_ctx is not None:
+                _append_candidate(
+                    getattr(runtime_ctx, "resolved_workspace", None),
+                    trusted=True,
+                )
+                _append_candidate(
+                    getattr(runtime_ctx, "workspace_path", None),
+                    trusted=True,
+                )
+
+            _append_candidate(self.ide_context.get("workspace_path"), trusted=True)
+
+            explicit_workspace_keys = (
+                "workspace_path",
+                "project_path",
+                "project_dir",
+                "cwd",
+                "directory",
+            )
+            for key in explicit_workspace_keys:
+                _append_candidate(args.get(key), trusted=True)
+
+            nested_context = args.get("context")
+            if isinstance(nested_context, dict):
+                for key in explicit_workspace_keys:
+                    _append_candidate(nested_context.get(key), trusted=True)
+
+            for key in ("path", "file_path", "target", "destination", "filepath"):
+                _append_candidate(args.get(key), parent_for_file=True)
+
+            has_workspace = False
+            for candidate, trusted in workspace_candidates:
+                if trusted:
+                    has_workspace = True
+                    break
+                try:
+                    candidate_path = Path(candidate).expanduser()
+                    if candidate_path.exists() or candidate_path.parent.exists():
+                        has_workspace = True
+                        break
+                except Exception:
+                    continue
+
+            if not has_workspace:
+                msg = (
+                    f"[category:{semantic}] Refus - workspace_path requis pour la categorie "
+                    f"'{semantic}'. Fournissez un workspace/project explicite ou un runtime "
+                    f"context avec workspace resolu."
+                )
+                logger.warning("[category_contract] {} caller={}", msg, caller.kind)
+                return Observation(content=msg, success=False)
+
+        # ── Autonomie sur catégorie non autorisée ──
+        if caller.kind in ("autonomy", "scheduler", "daemon") and not contract.autonomy_allowed:
+            msg = (
+                f"[category:{semantic}] Refus autonomie — catégorie '{semantic}' "
+                f"ne peut pas être déclenchée sans interaction utilisateur. "
+                f"Raisons : {'; '.join(contract.refusal_reasons[:2]) or 'interaction requise'}"
+            )
+            logger.warning("[category_contract] {} caller={}", msg, caller.kind)
+            return Observation(content=msg, success=False)
+
+        # ── delegate_task : description trop vague ──
+        if name == "delegate_task" and caller.kind == "react":
+            desc = str(args.get("description", "") or "").strip()
+            if len(desc) < 20:
+                msg = (
+                    "[category:agents] delegate_task refusé — description trop vague "
+                    f"({len(desc)} chars < 20 requis). Précisez la tâche."
+                )
+                logger.warning("[category_contract] {}", msg)
+                return Observation(content=msg, success=False)
+
+        return None
+
     async def execute(
         self,
         name: str,
@@ -1159,6 +1298,11 @@ class ToolRegistry:
         _refusal = self._policy_check(name, args or {}, caller)
         if _refusal is not None:
             return _refusal
+
+        # ── Contrat de catégorie : préconditions formelles ──
+        _cat_refusal = self._category_contract_check(name, args or {}, caller)
+        if _cat_refusal is not None:
+            return _cat_refusal
 
         if name not in self.tools:
             # Auto-fix: normalisation + fuzzy strict (cutoff=0.75) avant d'échouer

@@ -163,7 +163,7 @@ class TestFailoverClassification:
         exc = asyncio.TimeoutError()
         cat, act = _classify_llm_error(exc)
         assert cat == "timeout"
-        assert act == "retry_compact"
+        assert act == "timeout_recovery"
 
     def test_format_400(self):
         exc = Exception("invalid request format")

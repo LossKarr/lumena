@@ -56,6 +56,31 @@ class TestTaskContextIntentPropagation:
         )
         assert ctx.intent == "read"
 
+    def test_resolve_workspace_uses_allow_create_for_create_intent(self, tmp_path):
+        """Une demande de creation autorise resolve_workspace(..., allow_create=True)."""
+        from src.agents.task_context import TaskContext
+
+        captured = {}
+
+        class _Resolution:
+            path = tmp_path / "new-project"
+            source = "registry_new"
+            confidence = 0.9
+            intent = "create"
+
+        def _resolve_workspace(description, context=None, allow_create=False):
+            captured["allow_create"] = allow_create
+            return _Resolution()
+
+        ctx = TaskContext.from_delegate_call(
+            description="Cree un nouveau projet web complet avec plusieurs pages",
+            resolve_workspace_fn=_resolve_workspace,
+        )
+
+        assert captured["allow_create"] is True
+        assert ctx.intent == "create"
+        assert ctx.workspace_path == tmp_path / "new-project"
+
     def test_to_legacy_dict_contains_intent(self, tmp_path):
         """to_legacy_dict() expose intent pour _build_initial_messages."""
         from src.agents.task_context import TaskContext

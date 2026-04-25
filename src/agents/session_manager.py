@@ -1,4 +1,5 @@
 """
+STATUS: pending-integration — non canonique en production. Prévu pour P10 multi-instance.
 🤖 LUMENA - Session Manager
 
 Gère les sessions de conversation pour plusieurs utilisateurs.

@@ -46,6 +46,12 @@ from pathlib import Path
 from time import perf_counter
 from loguru import logger
 
+try:
+    from ..telemetry import publish_trace
+    _TELEMETRY_AVAILABLE = True
+except Exception:
+    _TELEMETRY_AVAILABLE = False
+
 # Support CRON optionnel
 try:
     from croniter import croniter
@@ -707,6 +713,73 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
         self.handlers[name] = handler
         logger.debug(f"Handler enregistré: {name}")
     
+    def _infer_envelope_category(self, handler_name: str) -> str:
+        lower = (handler_name or "").lower()
+        if any(token in lower for token in ("telegram", "discord", "twitter", "whatsapp", "email", "notify")):
+            return "communication"
+        if "github" in lower:
+            return "github"
+        if any(token in lower for token in ("archive", "backup", "cleanup", "workspace")):
+            return "files"
+        if any(token in lower for token in ("probe", "health", "save_state", "ingest", "memory", "eval", "judge", "retrain")):
+            return "autonomy"
+        return "system"
+
+    def _infer_envelope_risk_level(self, handler_name: str, category: str) -> str:
+        lower = (handler_name or "").lower()
+        if category in {"communication", "github"}:
+            return "medium"
+        if category == "files":
+            return "medium"
+        if any(token in lower for token in ("delete", "cleanup", "retrain")):
+            return "medium"
+        return "low"
+
+    def _infer_envelope_workspace(self, metadata: Dict[str, Any], category: str) -> Optional[str]:
+        for key in ("envelope_workspace", "workspace_path", "project_path", "cwd", "directory"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        if category == "files":
+            try:
+                from ..utils.paths import WORKSPACE_DIR
+
+                return str(WORKSPACE_DIR)
+            except Exception:
+                return None
+        return None
+
+    def _normalize_envelope_metadata(
+        self,
+        *,
+        name: str,
+        description: str,
+        handler_name: str,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        normalized: Dict[str, Any] = dict(metadata or {})
+        normalized.setdefault("envelope_origin", "scheduler")
+        normalized.setdefault("envelope_intent", description or name or handler_name)
+
+        category = str(
+            normalized.get("envelope_tool_category")
+            or self._infer_envelope_category(handler_name)
+        )
+        normalized.setdefault("envelope_tool_category", category)
+        normalized.setdefault(
+            "envelope_risk_level",
+            self._infer_envelope_risk_level(handler_name, category),
+        )
+
+        workspace = self._infer_envelope_workspace(normalized, category)
+        if workspace:
+            normalized.setdefault("envelope_workspace", workspace)
+
+        if "envelope_requires_verification" not in normalized:
+            normalized["envelope_requires_verification"] = category in {"communication", "github"}
+
+        return normalized
+
     def schedule(
         self,
         name: str,
@@ -763,6 +836,13 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             except Exception as e:
                 logger.error(f"Expression CRON invalide '{cron_expr}': {e}")
         
+        normalized_metadata = self._normalize_envelope_metadata(
+            name=name,
+            description=description,
+            handler_name=handler_name,
+            metadata=metadata,
+        )
+
         task = ScheduledTask(
             id=task_id,
             name=name,
@@ -772,7 +852,7 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             next_run=initial_run,
             cron_expr=cron_expr,
             interval_ms=interval_ms,
-            metadata=metadata or {},
+            metadata=normalized_metadata,
         )
         
         self.tasks[task_id] = task
@@ -958,10 +1038,44 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             # FAILURE or stale RUNNING → re-run
         self._save_idempotence_entry(task_key, "RUNNING")
 
+        # ── P3 : Validation TaskEnvelope ──────────────────────────────────────
+        # Toute tâche autonome doit satisfaire un contrat minimal d'exécution.
+        # Les tâches medium/high-risk sans workspace sur une catégorie mutante
+        # sont bloquées avec un message explicable.
+        try:
+            from .task_envelope import TaskEnvelope, EnvelopeViolation
+            _envelope = TaskEnvelope.from_scheduled_task(task)
+            _envelope.validate()
+            logger.debug("[envelope] OK — {}", _envelope)
+        except EnvelopeViolation as _ev:
+            logger.warning(
+                "[envelope] Tâche '{}' bloquée — violation contrat : {}",
+                task.handler_name, _ev,
+            )
+            task.status = TaskStatus.FAILED
+            task.fail_count += 1
+            self._save_idempotence_entry(task_key, "FAILURE")
+            return False
+        except Exception as _ee:
+            # Erreur inattendue dans la validation → log + laisser passer (dégradé)
+            logger.debug("[envelope] Erreur validation (ignore) : {}", _ee)
+
         task.status = TaskStatus.RUNNING
         task.run_count += 1
         started = perf_counter()
-        
+        # P7 — telemetry dispatch tâche autonome
+        if _TELEMETRY_AVAILABLE:
+            try:
+                publish_trace(
+                    stage="autonomy_task_start",
+                    status="start",
+                    mode="autonomy",
+                    task_id=task.task_id,
+                    summary=f"{task.name} [{task.handler_name}]",
+                )
+            except Exception:
+                pass
+
         try:
             # Exécuter avec timeout
             raw_result = await asyncio.wait_for(
@@ -1002,6 +1116,20 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
                     result.get("status"),
                     result.get("reason"),
                 )
+                # P7 — telemetry échec handler autonomie
+                if _TELEMETRY_AVAILABLE:
+                    try:
+                        publish_trace(
+                            stage="autonomy_task_failure",
+                            status="error",
+                            mode="autonomy",
+                            task_id=task.task_id,
+                            duration_ms=duration_ms,
+                            error=str(result.get("reason", ""))[:200],
+                            summary=task.name,
+                        )
+                    except Exception:
+                        pass
                 return False
             
             task.status = TaskStatus.COMPLETED
@@ -1015,6 +1143,19 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             
             self._save_idempotence_entry(task_key, "SUCCESS")
             logger.debug(f"Tâche réussie: {task.name}")
+            # P7 — telemetry succès
+            if _TELEMETRY_AVAILABLE:
+                try:
+                    publish_trace(
+                        stage="autonomy_task_success",
+                        status="ok",
+                        mode="autonomy",
+                        task_id=task.task_id,
+                        duration_ms=duration_ms,
+                        summary=task.name,
+                    )
+                except Exception:
+                    pass
             return True
             
         except asyncio.TimeoutError:
@@ -1031,6 +1172,20 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             task.metadata["last_reason"] = result.get("reason")
             self._save_idempotence_entry(task_key, "FAILURE", error_msg=f"timeout after {task.timeout_seconds}s")
             logger.error(f"Timeout tâche: {task.name}")
+            # P7 — telemetry timeout autonomie
+            if _TELEMETRY_AVAILABLE:
+                try:
+                    publish_trace(
+                        stage="autonomy_task_timeout",
+                        status="error",
+                        mode="autonomy",
+                        task_id=task.task_id,
+                        duration_ms=duration_ms,
+                        error=f"timeout after {task.timeout_seconds}s",
+                        summary=task.name,
+                    )
+                except Exception:
+                    pass
             task.fail_count += 1
             task.status = TaskStatus.FAILED
             task.last_run = datetime.now()
@@ -1059,6 +1214,20 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             task.metadata["last_reason"] = result.get("reason")
             self._save_idempotence_entry(task_key, "FAILURE", error_msg=str(e))
             logger.error(f"Erreur tâche {task.name}: {e}")
+            # P7 — telemetry erreur exception autonomie
+            if _TELEMETRY_AVAILABLE:
+                try:
+                    publish_trace(
+                        stage="autonomy_task_error",
+                        status="error",
+                        mode="autonomy",
+                        task_id=task.task_id,
+                        duration_ms=duration_ms,
+                        error=str(e)[:200],
+                        summary=task.name,
+                    )
+                except Exception:
+                    pass
             task.fail_count += 1
             task.status = TaskStatus.FAILED
             task.last_run = datetime.now()
@@ -1262,6 +1431,10 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
                 handler_name="weekly_auto_improve",
                 frequency=TaskFrequency.CRON,
                 cron_expr="0 3 * * 0",  # Dimanche 03:00
+                metadata={
+                    "envelope_tool_category": "autonomy",
+                    "envelope_risk_level": "medium",
+                },
             )
             weekly_task.timeout_seconds = 14400  # 4h max (aligne train+export+benchmark)
             logger.info("⏰ Pipeline auto-amélioration hebdomadaire planifié (dim. 3h)")
@@ -1345,6 +1518,7 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             handler_name="learning_curation",
             frequency=TaskFrequency.INTERVAL_MS,
             interval_ms=2 * 60 * 60 * 1000,  # 2 heures
+            metadata={"envelope_tool_category": "autonomy"},
         )
         t.timeout_seconds = HANDLER_TIMEOUTS.get("learning_curation", 300)
 
@@ -1377,6 +1551,10 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
                 handler_name="rejection_sampling_light",
                 frequency=TaskFrequency.CRON,
                 cron_expr="0 3 * * 1-6",  # Lun-Sam seulement
+                metadata={
+                    "envelope_tool_category": "autonomy",
+                    "envelope_risk_level": "medium",
+                },
             )
             t.timeout_seconds = HANDLER_TIMEOUTS.get("rejection_sampling_light", 7200)
 

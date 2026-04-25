@@ -54,6 +54,22 @@ def sample_py(ctx):
 
 # ─── read_file ─────────────────────────────────────────────────────────────
 
+@pytest.fixture
+def sample_js(ctx):
+    """CrÃ©e un fichier JavaScript de test."""
+    f = ctx.runtime_root / "sample.js"
+    f.write_text(
+        "class Widget {\n"
+        "  render() { return true; }\n"
+        "}\n\n"
+        "function bootApp() {\n"
+        "  return new Widget();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return f
+
+
 class TestReadFile:
     @pytest.mark.asyncio
     async def test_read_existing_file(self, ctx, sample_file):
@@ -181,6 +197,13 @@ class TestViewOutline:
         assert r.success
         assert "Foo" in r.output
         assert "baz" in r.output
+
+    @pytest.mark.asyncio
+    async def test_outline_javascript_file(self, ctx, sample_js):
+        r = await view_outline_handler(ctx, path="sample.js")
+        assert r.success
+        assert "Widget" in r.output
+        assert "bootApp" in r.output
 
     @pytest.mark.asyncio
     async def test_outline_non_python(self, ctx, sample_file):

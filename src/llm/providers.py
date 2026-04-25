@@ -241,6 +241,20 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         badge="Reasoning",
         capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
     ),
+    "gpt-5.3-codex": ModelConfig(
+        name="gpt-5.3-codex",
+        display_name="GPT-5.3 Codex (OpenAI — Code)",
+        provider=ProviderType.OPENAI,
+        model_id="gpt-5.3-codex",
+        context_window=400000,
+        max_output_tokens=128000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=1.75,
+        description="GPT-5.3 Codex — modèle agentique code le plus avancé, 400K contexte, reasoning xhigh, vision",
+        badge="Code",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
 
     # === ANTHROPIC ===
     "claude-opus-4.7": ModelConfig(
@@ -872,32 +886,62 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         capabilities=frozenset({"image_generation"}),
     ),
 
-    # === DEEPSEEK ===
+    # === DEEPSEEK V4 (disponible depuis le 24 avril 2026) ===
+    "deepseek-v4-flash": ModelConfig(
+        name="deepseek-v4-flash",
+        display_name="DeepSeek V4-Flash (API)",
+        provider=ProviderType.DEEPSEEK,
+        model_id="deepseek-v4-flash",
+        context_window=1000000,
+        max_output_tokens=384000,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.14,  # $0.14/M input (cache miss), $0.28/M output
+        description="DeepSeek V4-Flash — 1M contexte, 384K output, rapide et économique, remplace deepseek-chat",
+        badge="Nouveau",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning"}),
+    ),
+    "deepseek-v4-pro": ModelConfig(
+        name="deepseek-v4-pro",
+        display_name="DeepSeek V4-Pro (API)",
+        provider=ProviderType.DEEPSEEK,
+        model_id="deepseek-v4-pro",
+        context_window=1000000,
+        max_output_tokens=384000,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=1.74,  # $1.74/M input (cache miss), $3.48/M output
+        description="DeepSeek V4-Pro — SOTA agentic coding, 1.6T params/49B actifs, 1M contexte, rival GPT-4o",
+        badge="SOTA Code",
+        capabilities=frozenset({"tool_calling", "reasoning"}),
+    ),
+
+    # === DEEPSEEK V3.2 — DÉPRÉCIÉ (inaccessible après le 24 juillet 2026 à 15h59 UTC) ===
     "deepseek-v3": ModelConfig(
         name="deepseek-v3",
-        display_name="DeepSeek V3.2 (API)",
+        display_name="DeepSeek V3.2 ⚠️ Déprécié jul 2026 (API)",
         provider=ProviderType.DEEPSEEK,
-        model_id="deepseek-chat",  # V3.2 non-thinking mode
+        model_id="deepseek-chat",  # V3.2 non-thinking mode — inaccessible après jul 24, 2026 15:59 UTC
         context_window=128000,
         max_output_tokens=8192,
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.27,  # $0.27/M input, $1.10/M output
-        description="DeepSeek V3.2 - Rivalise avec GPT-4",
-        badge="Recommandé",
+        description="DeepSeek V3.2 — DÉPRÉCIÉ : inaccessible après le 24 juillet 2026 à 15h59 UTC. Migrer vers deepseek-v4-flash.",
+        badge="Déprécié",
         capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
     "deepseek-reasoner": ModelConfig(
         name="deepseek-reasoner",
-        display_name="DeepSeek Reasoner (API)",
+        display_name="DeepSeek Reasoner ⚠️ Déprécié jul 2026 (API)",
         provider=ProviderType.DEEPSEEK,
-        model_id="deepseek-reasoner",  # V3.2 thinking mode
+        model_id="deepseek-reasoner",  # V3.2 thinking mode — inaccessible après jul 24, 2026 15:59 UTC
         context_window=128000,
         max_output_tokens=65536,
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=2.19,  # $2.19/M input, $8.78/M output
-        description="DeepSeek V3.2 mode raisonnement avancé",
+        description="DeepSeek V3.2 Reasoner — DÉPRÉCIÉ : inaccessible après le 24 juillet 2026 à 15h59 UTC. Migrer vers deepseek-v4-pro.",
         capabilities=frozenset({"tool_calling"}),
     ),
 }
@@ -1430,6 +1474,8 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "grok-4.20-0309-non-reasoning":{"code": 77, "speed": 88, "reasoning": 70, "creative": 62, "research": 76, "vision": 82, "web": 85},
     "grok-4.20-multi-agent-0309":  {"code": 82, "speed": 70, "reasoning": 88, "creative": 68, "research": 82, "vision": 80, "web": 86},
     # ── DeepSeek ───────────────────────────────────────────────────────────
+    "deepseek-v4-pro":             {"code": 95, "speed": 52, "reasoning": 95, "creative": 76, "research": 92, "vision":  0, "web": 80},
+    "deepseek-v4-flash":           {"code": 88, "speed": 80, "reasoning": 88, "creative": 72, "research": 82, "vision":  0, "web": 76},
     "deepseek-reasoner":           {"code": 82, "speed": 50, "reasoning": 92, "creative": 60, "research": 80, "vision":  0, "web": 72},
     "deepseek-v3":                 {"code": 84, "speed": 72, "reasoning": 82, "creative": 68, "research": 78, "vision":  0, "web": 75},
     # ── Google ─────────────────────────────────────────────────────────────
@@ -1468,6 +1514,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "gpt-4.1":                      {"code": 88, "speed": 76, "reasoning": 86, "creative": 82, "research": 85, "vision": 90, "web": 88},
     "o3":                          {"code": 92, "speed": 35, "reasoning": 97, "creative": 72, "research": 90, "vision": 82, "web": 72},
     "o4-mini":                     {"code": 85, "speed": 65, "reasoning": 92, "creative": 62, "research": 82, "vision": 75, "web": 65},
+    "gpt-5.3-codex":               {"code": 97, "speed": 55, "reasoning": 94, "creative": 70, "research": 88, "vision": 82, "web": 75},
     # ── Local (Ollama) ─────────────────────────────────────────────────────
     "qwen2.5-coder-14b":           {"code": 72, "speed": 60, "reasoning": 55, "creative": 45, "research": 45, "vision":  0, "web": 35},
     "qwen3-8b":                    {"code": 60, "speed": 75, "reasoning": 58, "creative": 55, "research": 50, "vision":  0, "web": 38},

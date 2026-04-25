@@ -49,7 +49,8 @@ async def test_delegate_task_success(ctx):
     mock_mod = MagicMock()
     mock_mod.delegate_to_agent_full = AsyncMock(return_value=_mock_result)
     with patch.dict(sys.modules, {"src.agents.sub_agent": mock_mod}):
-        r = await delegate_task_handler(ctx, description="analyze code", agent_type="code")
+        r = await delegate_task_handler(ctx, description="analyze code", agent_type="code",
+                                        project_path=str(ctx.runtime_root))
     assert r.success
     assert "Done" in r.output
 

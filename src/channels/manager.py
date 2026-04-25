@@ -42,6 +42,9 @@ class ChannelManager:
         # Connecter le callback si défini
         if self._message_handler:
             channel.set_message_callback(self._message_handler)
+
+        if bool(getattr(channel, "is_running", False)):
+            self._is_running = True
         
         logger.info(f"📡 Canal enregistré: {channel.channel_type.value}")
     
@@ -192,8 +195,12 @@ class ChannelManager:
 
             channels[channel_key] = entry
 
+        manager_running = self._is_running or any(
+            bool(entry.get("running")) for entry in channels.values()
+        )
+
         return {
-            "running": self._is_running,
+            "running": manager_running,
             "registered_count": len(channels),
             "channels": channels,
         }

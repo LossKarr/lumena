@@ -477,7 +477,9 @@ class MultiProviderLLM:
             return False, None
         if self.provider != ProviderType.DEEPSEEK:
             return False, None
-        if "reasoner" in self.model.lower():
+        # Auto-switch uniquement depuis deepseek-chat (V3.2 non-thinking) → deepseek-reasoner
+        # Les modèles V4 (deepseek-v4-flash, deepseek-v4-pro) ne doivent pas être redirigés vers V3.2
+        if self.model != "deepseek-chat":
             return False, None
 
         raw_user_text = self._last_user_message(messages)
@@ -974,12 +976,12 @@ class MultiProviderLLM:
                 logger.warning("⚠️ chat(): result est str au lieu de dict — wrapping")
                 result = {"text": result, "finish_reason": "stop"}
             # deepseek-chat tronqué (4096 tokens) → retry automatique avec deepseek-reasoner
+            # Uniquement pour deepseek-chat (V3.2 non-thinking) — pas les modèles V4
             if (
                 not auto_switch_used
                 and not no_upgrade
                 and result.get("truncated")
-                and "deepseek" in str(model_for_call).lower()
-                and "reasoner" not in str(model_for_call).lower()
+                and str(model_for_call).lower() == "deepseek-chat"
             ):
                 reasoner_cfg = get_model_config("deepseek-reasoner")
                 _reasoner_mdl = reasoner_cfg.model_id if reasoner_cfg else "deepseek-reasoner"

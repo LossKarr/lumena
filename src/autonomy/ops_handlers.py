@@ -2330,7 +2330,7 @@ async def handler_discord_morning() -> Dict[str, Any]:
             return result
 
         # ── Étape 3 : envoyer le message sur Discord ──
-        from ..reasoning.handlers.discord import discord_send_message_handler
+        from ..reasoning.handlers.discord_admin import discord_send as discord_send_message_handler
         from ..reasoning.handlers.context import HandlerContext
 
         lumena_root = Path(__file__).parent.parent.parent.resolve()

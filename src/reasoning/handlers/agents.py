@@ -51,6 +51,32 @@ async def delegate_task_handler(
             resolve_workspace_fn=resolve_workspace,
             memory_fn=_mem_fn,
         )
+
+        # ── Guard anti-fuzzy-routing ──────────────────────────────────────
+        # Si la résolution vient du registre avec une confiance < 0.90 et que
+        # l'agent n'a pas fourni de project_path explicite → on rejette.
+        # Cela empêche de modifier le mauvais projet sur un match ambigu.
+        _REGISTRY_CONF_THRESHOLD = 0.90
+        if (
+            not project_path
+            and task_ctx.resolution_source.startswith("registry:")
+            and task_ctx.confidence < _REGISTRY_CONF_THRESHOLD
+        ):
+            _matched = str(task_ctx.workspace_path or "?")
+            logger.warning(
+                "delegate_task: fuzzy routing rejeté — conf={:.2f} < {:.2f}, match={}",
+                task_ctx.confidence, _REGISTRY_CONF_THRESHOLD, _matched,
+            )
+            return HandlerResult.fail(
+                f"⛔ Projet ambigu (confiance {task_ctx.confidence:.0%} < 90%). "
+                f"Le registre a trouvé `{_matched}` mais le match n'est pas assez précis. "
+                "Fournis `project_path` explicitement dans ton appel `delegate_task` "
+                "pour éviter de modifier le mauvais projet. "
+                "Exemple : `delegate_task(description='...', project_path='C:\\\\...\\\\workspace\\\\mon-projet')`",
+                handler_name="delegate_task",
+            )
+        # ─────────────────────────────────────────────────────────────────
+
         safe_context = task_ctx.to_legacy_dict()
 
         # ── Injection des skills actifs dans le CodeAgent ──

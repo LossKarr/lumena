@@ -24,6 +24,7 @@ from loguru import logger
 from .context import HandlerContext
 from .contracts import HandlerResult
 from .registry_v2 import HandlerDef
+from ...tools.tree_sitter_parser import parse_file_outline
 
 # P0.2: Security guardrails
 try:
@@ -1278,39 +1279,50 @@ async def apply_patch_new_handler(ctx: HandlerContext, patch_content: str) -> Ha
 
 
 async def view_outline_handler(ctx: HandlerContext, path: str) -> HandlerResult:
-    """Affiche la structure d'un fichier Python (classes, functions)."""
+    """Affiche la structure d'un fichier de code supporte."""
     try:
         resolved = ctx.resolve_path(path)
         if not resolved or not resolved.exists():
             return HandlerResult.ok(f"❌ Fichier non trouvé: {path}", handler_name="view_outline")
-        if resolved.suffix != ".py":
+        suffix = resolved.suffix.lower()
+        if suffix == ".py":
+            content = resolved.read_text(encoding="utf-8")
+            tree = ast.parse(content)
+
+            lines = [f"📋 **Structure de `{resolved.name}`**\n"]
+
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                    lines.append(f"### 🏷️ `class {node.name}` (ligne {node.lineno})")
+                    if methods:
+                        lines.append(f"   Méthodes: {', '.join(methods[:10])}")
+                    lines.append("")
+
+            for node in ast.iter_child_nodes(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
+                    lines.append(f"### 🔹 `{prefix}def {node.name}()` (ligne {node.lineno})")
+
+            if len(lines) == 1:
+                lines.append("Aucune classe ou fonction trouvée.")
+
+            return HandlerResult.ok("\n".join(lines), handler_name="view_outline")
+
+        if suffix in {".js", ".jsx", ".ts", ".tsx", ".rs", ".go"}:
+            outline = parse_file_outline(str(resolved))
             return HandlerResult.ok(
-                f"❌ Seuls les fichiers Python sont supportés (reçu: {resolved.suffix})",
+                f"📋 **Structure de `{resolved.name}`**\n\n{outline}",
                 handler_name="view_outline",
             )
 
-        content = resolved.read_text(encoding="utf-8")
-        tree = ast.parse(content)
-
-        lines = [f"📋 **Structure de `{resolved.name}`**\n"]
-
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
-                lines.append(f"### 🏷️ `class {node.name}` (ligne {node.lineno})")
-                if methods:
-                    lines.append(f"   Méthodes: {', '.join(methods[:10])}")
-                lines.append("")
-
-        for node in ast.iter_child_nodes(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                prefix = "async " if isinstance(node, ast.AsyncFunctionDef) else ""
-                lines.append(f"### 🔹 `{prefix}def {node.name}()` (ligne {node.lineno})")
-
-        if len(lines) == 1:
-            lines.append("Aucune classe ou fonction trouvée.")
-
-        return HandlerResult.ok("\n".join(lines), handler_name="view_outline")
+        supported = ".py, .js, .jsx, .ts, .tsx, .rs, .go"
+        if suffix not in {".py", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go"}:
+            return HandlerResult.ok(
+                f"❌ Fichier non supporté pour view_outline ({resolved.suffix}). Extensions supportées: {supported}",
+                handler_name="view_outline",
+            )
+        return HandlerResult.ok(f"❌ Fichier non supporté: {resolved.suffix}", handler_name="view_outline")
     except SyntaxError as e:
         return HandlerResult.ok(f"❌ Erreur de syntaxe Python: {e}", handler_name="view_outline")
     except Exception as e:
@@ -1754,10 +1766,10 @@ def get_file_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="view_outline",
-            description="Affiche la structure d'un fichier Python (classes, fonctions).",
+            description="Affiche la structure d'un fichier de code (Python, JS/TS, Rust, Go).",
             parameters={
                 "properties": {
-                    "path": {"type": "string", "description": "Chemin du fichier Python"},
+                    "path": {"type": "string", "description": "Chemin du fichier code"},
                 },
                 "required": ["path"],
             },
@@ -1767,10 +1779,10 @@ def get_file_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="view_file_outline",
-            description="Alias de view_outline. Affiche la structure d'un fichier Python (classes, fonctions).",
+            description="Alias de view_outline. Affiche la structure d'un fichier de code (Python, JS/TS, Rust, Go).",
             parameters={
                 "properties": {
-                    "path": {"type": "string", "description": "Chemin du fichier Python"},
+                    "path": {"type": "string", "description": "Chemin du fichier code"},
                 },
                 "required": ["path"],
             },

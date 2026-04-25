@@ -362,7 +362,9 @@ def _load_provider_prompt(model_name: str) -> str:
     if not model_name:
         return ""
     name = model_name.lower()
-    if "deepseek" in name:
+    if "deepseek-v4" in name:
+        candidate = "deepseek_v4.txt"
+    elif "deepseek" in name:
         candidate = "deepseek.txt"
     elif "claude" in name or "anthropic" in name:
         candidate = "anthropic.txt"

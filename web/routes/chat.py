@@ -45,6 +45,15 @@ from web.routes.system import (
 router = APIRouter()
 
 
+class WorkspacePolicyError(RuntimeError):
+    """Erreur explicite de resolution workspace pour les routes chat."""
+
+    def __init__(self, detail: str, *, status_code: int = 409):
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+
+
 # =====================================================================
 # Pipeline helper functions (extracted from server.py L1216-2013)
 # =====================================================================
@@ -525,21 +534,22 @@ def _apply_workspace_policy(
     channel: str,
     ide_context: Dict[str, Any],
 ) -> Dict[str, Any]:
+    # P1 — le chemin V2 est la seule vérité. Si le runtime n'est pas disponible, on fail explicitement.
     if not (WORKSPACE_POLICY_V2_ENABLED and deps.RUNTIME_AVAILABLE and deps.resolve_workspace_for_request is not None):
-        legacy_ws = ide_context.get("workspace_path") or _infer_workspace_path(
-            workspace_path=None,
-            workspace_hint_parent=_normalize_existing_parent_dir(request.workspace_path),
-            active_file_path=ide_context.get("active_file_path") or _normalize_existing_file(request.active_file_path),
-            open_files=ide_context.get("open_files") or [],
-        ) or DEFAULT_WORKSPACE_PATH
-        return {
-            **ide_context,
-            "workspace_path": legacy_ws,
-            "resolved_date": datetime.now().strftime("%Y-%m-%d"),
-            "resolution_reason": "legacy_ide_context",
-            "workspace_policy": str(request.workspace_policy or "default").strip().lower() or "default",
-        }
+        logger.error(
+            "[workspace] Runtime V2 indisponible (V2_ENABLED={} RUNTIME={} resolver={}) — résolution workspace impossible.",
+            WORKSPACE_POLICY_V2_ENABLED,
+            deps.RUNTIME_AVAILABLE,
+            deps.resolve_workspace_for_request is not None,
+        )
+        raise WorkspacePolicyError(
+            "workspace_runtime_unavailable: le runtime V2 n'est pas initialisé. "
+            "Vérifiez LUMENA_RUNTIME_CONTEXT_V2 et LUMENA_WORKSPACE_POLICY_V2.",
+            status_code=503,
+        )
 
+    # ── Chemin V2 — resolve_workspace_for_request est la SEULE source de vérité ──
+    # Aucun appel à _infer_workspace_path() autorisé ici.
     requested_workspace = (request.workspace_path or "").strip() or ide_context.get("workspace_path")
     active_file_path = (
         ide_context.get("active_file_path")
@@ -563,6 +573,10 @@ def _apply_workspace_policy(
         open_files=open_files,
     )
 
+    logger.debug(
+        "[workspace] V2 -> {} (reason={}, fallback={})",
+        resolved.resolved_workspace, resolved.resolution_reason, resolved.used_fallback,
+    )
     return {
         "workspace_path": resolved.resolved_workspace,
         "active_file_path": active_file_path,
@@ -970,7 +984,10 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
         deps._TASK_ORCHESTRATOR.mark_running(record.task_id)  # type: ignore[union-attr]
         task_id = record.task_id
         envelope["task_id"] = task_id
-    ide_context = _apply_workspace_policy(request, channel, _extract_ide_context(request, channel))
+    try:
+        ide_context = _apply_workspace_policy(request, channel, _extract_ide_context(request, channel))
+    except WorkspacePolicyError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     runtime_context = _build_runtime_context(request, channel, envelope, ide_context)
     runtime_context_token = _push_request_runtime_context(runtime_context)
     tool_runtime_tokens: Dict[str, Any] = {}
@@ -1030,32 +1047,6 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
         # Inject attachment context into message if files were uploaded
         effective_message = _build_effective_message(request.message, request.attachments)
         if request.use_agent:
-            # Mode agent - on peut capturer les tool calls
-            thinking_steps.append({"step": "thinking", "content": "Analyse de la requete..."})
-
-            # Verifier si des outils seront utilises
-            if deps.lumena.tool_system:
-                # Simuler la detection d'outils
-                keywords = {
-                    "recherche": "web_search",
-                    "google": "web_search",
-                    "cherche": "web_search",
-                    "fichier": "read_file",
-                    "ouvre": "open_application",
-                    "code": "code_search",
-                    "memoire": "memory_recall",
-                    "souviens": "memory_recall"
-                }
-
-                for kw, tool in keywords.items():
-                    if kw in request.message.lower():
-                        tool_calls.append({
-                            "tool": tool,
-                            "args": {"query": request.message},
-                            "status": "executing"
-                        })
-                        thinking_steps.append({"step": "tool", "content": f"Utilisation de {tool}..."})
-
             call_coro = _call_lumena_with_auto_resume_on_timeout(
                 method_name=call_method,
                 message=effective_message,
@@ -1069,10 +1060,6 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
                 response, call_meta = await asyncio.wait_for(call_coro, timeout=global_timeout_sec)
             else:
                 response, call_meta = await call_coro
-
-            # Marquer les outils comme termines
-            for tc in tool_calls:
-                tc["status"] = "success"
         else:
             call_coro = _call_lumena_with_auto_resume_on_timeout(
                 method_name=call_method,
@@ -1305,7 +1292,21 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
             deps._TASK_ORCHESTRATOR.mark_running(record.task_id)  # type: ignore[union-attr]
             task_id = record.task_id
             envelope["task_id"] = task_id
-        ide_context = _apply_workspace_policy(request, channel, _extract_ide_context(request, channel))
+        try:
+            ide_context = _apply_workspace_policy(request, channel, _extract_ide_context(request, channel))
+        except WorkspacePolicyError as e:
+            error_payload = {
+                "type": "error",
+                "content": e.detail,
+                "channel": channel,
+                "client": client_name,
+                "request_id": envelope.get("request_id"),
+                "conversation_id": envelope.get("conversation_id"),
+                "task_id": task_id,
+                "trace_id": None,
+            }
+            yield f"data: {json.dumps(_stream_payload(error_payload))}\n\n"
+            return
         runtime_context = _build_runtime_context(request, channel, envelope, ide_context)
         runtime_context_token = _push_request_runtime_context(runtime_context)
         mode = "agent" if request.use_agent else "chat"
@@ -2033,6 +2034,6 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
     )
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under the Apache License, Version 2.0
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

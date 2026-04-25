@@ -299,11 +299,11 @@ def _resolve_default_workspace_path() -> str:
 # ── Module-level constants (computed once at import time) ────────────────────
 
 DEFAULT_WORKSPACE_PATH = _resolve_default_workspace_path()
-RUNTIME_CONTEXT_V2_ENABLED = _env_flag("LUMENA_RUNTIME_CONTEXT_V2", False)
-WORKSPACE_POLICY_V2_ENABLED = _env_flag("LUMENA_WORKSPACE_POLICY_V2", False)
+RUNTIME_CONTEXT_V2_ENABLED = _env_flag("LUMENA_RUNTIME_CONTEXT_V2", True)
+WORKSPACE_POLICY_V2_ENABLED = _env_flag("LUMENA_WORKSPACE_POLICY_V2", True)
 TASK_ORCHESTRATOR_V1_ENABLED = _env_flag("LUMENA_TASK_ORCHESTRATOR_V1", False)
-STREAM_EVENT_V2_ENABLED = _env_flag("LUMENA_STREAM_EVENT_V2", False)
-OMNICHANNEL_ENVELOPE_V1_ENABLED = _env_flag("LUMENA_OMNICHANNEL_ENVELOPE_V1", False)
+STREAM_EVENT_V2_ENABLED = _env_flag("LUMENA_STREAM_EVENT_V2", True)
+OMNICHANNEL_ENVELOPE_V1_ENABLED = _env_flag("LUMENA_OMNICHANNEL_ENVELOPE_V1", True)
 AUTONOMY_ON_WEB_ENABLED = _env_flag("LUMENA_WEB_AUTONOMY_ENABLED", True)
 
 
@@ -502,6 +502,14 @@ async def lifespan(app: FastAPI):
         elif autonomy_meta.get("autonomy_enabled_on_web"):
             print(f"[AUTONOMY] Non actif ({autonomy_meta.get('autonomy_last_error') or 'startup skipped'})")
 
+        def _register_runtime_channel(channel: Any) -> None:
+            try:
+                from src.channels.manager import get_channel_manager
+
+                get_channel_manager().register_channel(channel)
+            except Exception as register_err:
+                logger.debug("[BOOT] channel manager register skip: {}", register_err)
+
         # Demarrer Telegram en arriere-plan
         try:
             if deps.setup_only_mode:
@@ -514,6 +522,7 @@ async def lifespan(app: FastAPI):
                 print("[TELEGRAM] Disabled by env LUMENA_DISABLE_TELEGRAM=1")
             else:
                 deps.telegram_channel = TelegramChannel()
+                _register_runtime_channel(deps.telegram_channel)
                 if deps.telegram_channel.is_available:
                     # Keywords qui declenchent le mode Agent
                     AGENT_KEYWORDS = [
@@ -954,6 +963,7 @@ async def lifespan(app: FastAPI):
                 print("[DISCORD] Disabled by env LUMENA_DISABLE_DISCORD=1")
             else:
                 deps.discord_channel_bot = _DiscordChan()
+                _register_runtime_channel(deps.discord_channel_bot)
                 if deps.discord_channel_bot.is_available:
 
                     async def discord_stream_callback(msg):
@@ -1004,6 +1014,7 @@ async def lifespan(app: FastAPI):
                 print("[TWITTER] Non configuré (TWITTER_BEARER_TOKEN / TWITTER_API_KEY manquants)")
             else:
                 deps.twitter_channel = TwitterChannel()
+                _register_runtime_channel(deps.twitter_channel)
                 _tw_mod._instance = deps.twitter_channel  # partage le singleton avec les handlers ReAct
                 if deps.twitter_channel.is_available:
 
@@ -1049,6 +1060,7 @@ async def lifespan(app: FastAPI):
                 print("[WHATSAPP] Disabled by env LUMENA_DISABLE_WHATSAPP=1")
             else:
                 deps.whatsapp_channel = WhatsAppChannel()
+                _register_runtime_channel(deps.whatsapp_channel)
                 if deps.whatsapp_channel.is_available:
                     async def whatsapp_callback(msg):
                         sender = msg.chat_id or msg.user_id

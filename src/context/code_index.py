@@ -88,55 +88,124 @@ class CodeIndex:
         # Chunker
         self.chunker = CodeChunker(project_root)
     
+    # ── Manifest ─────────────────────────────────────────────────────────────
+
+    @property
+    def _manifest_path(self) -> Path:
+        return self.persist_dir / "manifest.json"
+
+    def _write_manifest(self, chunk_count: int) -> None:
+        """Écrit le manifest après indexation réussie."""
+        import hashlib
+        import time as _time
+        # Hash XOR des mtimes de tous les fichiers source — léger et suffisant
+        mtime_hash = self._compute_mtime_hash()
+        manifest = {
+            "workspace": str(self.project_root),
+            "collection": self.collection_name,
+            "chunk_count": chunk_count,
+            "indexed_at": _time.time(),
+            "mtime_hash": mtime_hash,
+            "schema_version": 1,
+        }
+        try:
+            self._manifest_path.write_text(
+                json.dumps(manifest, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("[CodeIndex] manifest write failed: {}", exc)
+
+    def _compute_mtime_hash(self) -> str:
+        """Hash XOR des mtimes de tous les fichiers source du workspace."""
+        import hashlib
+        _EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".vue", ".css", ".html"}
+        _IGNORE = {"node_modules", ".git", "__pycache__", ".venv", "dist", "build", ".backups"}
+        h = 0
+        try:
+            for f in self.project_root.rglob("*"):
+                if f.is_file() and f.suffix.lower() in _EXTENSIONS:
+                    if any(part in _IGNORE for part in f.parts):
+                        continue
+                    try:
+                        h ^= int(f.stat().st_mtime * 1000)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+        return format(h & 0xFFFFFFFFFFFFFFFF, "016x")
+
+    def is_stale(self) -> bool:
+        """
+        Retourne True si l'index est absent, vide ou désynchronisé avec les fichiers source.
+        Basé sur le manifest — O(1) si rien n'a changé, O(n fichiers) sinon.
+        """
+        if not CHROMADB_AVAILABLE or self.collection is None:
+            return False  # pas d'index possible, rien à faire
+        if not self._manifest_path.exists():
+            return True   # jamais indexé
+        try:
+            manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return True   # manifest corrompu
+        if manifest.get("schema_version", 0) < 1:
+            return True
+        if self.collection.count() == 0:
+            return True
+        stored_hash = manifest.get("mtime_hash", "")
+        current_hash = self._compute_mtime_hash()
+        stale = stored_hash != current_hash
+        if stale:
+            logger.info("[CodeIndex] index stale détecté (mtime_hash changé)")
+        return stale
+
+    # ── Indexation ───────────────────────────────────────────────────────────
+
     def index_project(self, force_reindex: bool = False) -> int:
         """
         Indexe le projet entier.
-        
+
         Args:
-            force_reindex: Si True, réindexe même si déjà fait
-            
+            force_reindex: Si True, réindexe même si déjà indexé et à jour.
+
         Returns:
             Nombre de chunks indexés
         """
         if not CHROMADB_AVAILABLE:
             return 0
-        
-        # Vérifier si déjà indexé
+
         existing_count = self.collection.count()
-        if existing_count > 0 and not force_reindex:
-            logger.info(f"♻️ Index existant ({existing_count} chunks), skip")
+
+        # Skip si index frais et non forcé
+        if existing_count > 0 and not force_reindex and not self.is_stale():
+            logger.info(f"♻️ Index frais ({existing_count} chunks), skip")
             return existing_count
-        
+
         # Nettoyer si réindexation
-        if force_reindex and existing_count > 0:
+        if existing_count > 0:
             self.client.delete_collection(self.collection_name)
             self.collection = self.client.create_collection(
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}
             )
-        
+
         # Chunker le projet (toutes extensions supportées par défaut)
         chunks = self.chunker.chunk_project()
-        
+
         if not chunks:
             logger.warning("Aucun chunk à indexer")
             return 0
-        
+
         # Préparer les données pour ChromaDB
         ids = []
         documents = []
         metadatas = []
-        
+
         for chunk in chunks:
             ids.append(chunk.id)
-            
-            # Document = contenu enrichi pour l'embedding
             doc = f"{chunk.symbol_type}: {chunk.symbol_name or 'module'}\n"
             doc += f"File: {chunk.file_path}\n"
             doc += chunk.content
             documents.append(doc)
-            
-            # Métadonnées
             metadatas.append({
                 "file_path": chunk.file_path,
                 "symbol_name": chunk.symbol_name or "",
@@ -145,22 +214,27 @@ class CodeIndex:
                 "line_end": chunk.line_end,
                 "language": chunk.language,
             })
-        
-        # Indexer par batch
+
         batch_size = 100
         for i in range(0, len(ids), batch_size):
-            batch_ids = ids[i:i+batch_size]
-            batch_docs = documents[i:i+batch_size]
-            batch_meta = metadatas[i:i+batch_size]
-            
             self.collection.add(
-                ids=batch_ids,
-                documents=batch_docs,
-                metadatas=batch_meta
+                ids=ids[i:i+batch_size],
+                documents=documents[i:i+batch_size],
+                metadatas=metadatas[i:i+batch_size],
             )
-        
+
+        self._write_manifest(len(chunks))
         logger.info(f"✅ {len(chunks)} chunks indexés")
         return len(chunks)
+
+    def ensure_indexed(self) -> int:
+        """Auto-trigger : indexe si absent ou stale. Idempotent et safe à appeler à chaque tâche."""
+        if self.is_stale():
+            return self.index_project(force_reindex=True)
+        existing = self.collection.count() if (CHROMADB_AVAILABLE and self.collection) else 0
+        if existing == 0:
+            return self.index_project()
+        return existing
     
     def search(
         self, 
@@ -283,8 +357,17 @@ import threading as _threading
 _code_index_lock = _threading.Lock()
 
 
-def get_code_index(project_root: Optional[Path] = None) -> "CodeIndex":
-    """Retourne l'instance CodeIndex pour un workspace (isolée par projet)."""
+def get_code_index(
+    project_root: Optional[Path] = None,
+    auto_index: bool = True,
+) -> "CodeIndex":
+    """
+    Retourne l'instance CodeIndex pour un workspace (isolée par projet).
+
+    Args:
+        auto_index: Si True (défaut), déclenche automatiquement ensure_indexed()
+                    si l'index est absent ou stale. Passer False pour lecture seule.
+    """
     global _code_index_cache
     if project_root is None:
         raise ValueError("project_root requis")
@@ -292,7 +375,13 @@ def get_code_index(project_root: Optional[Path] = None) -> "CodeIndex":
     with _code_index_lock:
         if key not in _code_index_cache:
             _code_index_cache[key] = CodeIndex(project_root)
-        return _code_index_cache[key]
+        idx = _code_index_cache[key]
+    if auto_index:
+        try:
+            idx.ensure_indexed()
+        except Exception as exc:
+            logger.debug("[CodeIndex] ensure_indexed failed (fail-open): {}", exc)
+    return idx
 
 
 def clear_code_index_cache(project_root: Optional[Path] = None) -> None:
