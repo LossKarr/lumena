@@ -4,10 +4,10 @@
 LUMENA est une IA 3D autonome qui fonctionne 24/7 sur PC Windows.
 Elle observe, réfléchit, décide, agit et apprend - même sans interaction.
 
-Version: 1.0.22 (Lumena Aurora)
+Version: 1.0.23 (Lumena Aurora)
 """
 
-__version__ = "1.0.22"
+__version__ = "1.0.23"
 __codename__ = "Lumena Aurora"
 __author__ = "Losskarr-G.C"
 
