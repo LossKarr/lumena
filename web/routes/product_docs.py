@@ -763,13 +763,13 @@ ou installés depuis un fichier YAML. Actuellement <strong>{skills_count} skills
 <thead><tr><th>Module</th><th>LOC</th><th>Rôle</th></tr></thead>
 <tbody>
 <tr><td><code>embedding_cache.py</code></td><td>269</td><td>Cache local des embeddings (évite re-calcul)</td></tr>
-<tr><td><code>file_watcher.py</code></td><td>388</td><td>Surveillance fichiers — re-indexation automatique</td></tr>
+<tr><td><code>code_file_watcher.py</code></td><td>388</td><td>Surveillance fichiers code — re-indexation automatique</td></tr>
 <tr><td><code>migration.py</code></td><td>275</td><td>Migrations schéma mémoire (upgrades)</td></tr>
 </tbody>
 </table>
 
-<h3>Fichier permanent — MEMORY.md</h3>
-<p>Injecté dans chaque session LLM. Contient l'identité, les préférences et le contexte actif du projet.</p>
+<h3>Mémoire persistante</h3>
+<p>Stockée dans <code>data/memory/</code> via ChromaDB + BM25. Contient l'identité, les préférences et le contexte actif du projet — injectée dans chaque session LLM.</p>
 
 <h3>Journal quotidien + Insights</h3>
 <ul>

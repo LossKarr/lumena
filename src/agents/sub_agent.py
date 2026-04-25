@@ -973,8 +973,11 @@ class CodeAgent(SubAgent):
         self._SESSION_MEMORY_TTL = 4 * 3600  # 4 heures
         # P5: compteur d'échecs d'édition par fichier (réinitialisé à chaque tentative)
         self._edit_fail_for_path: dict[str, int] = {}
-        # P6: compteur de self-repair syntaxe (réinitialisé à chaque tentative)
+        # P6: compteur de self-repair syntaxe par fichier + snapshot dernier état valide
         self._self_repair_count: int = 0
+        self._self_repair_count_per_file: dict[str, int] = {}
+        self._syntax_clean_snapshot: dict[str, str] = {}  # path → dernier contenu syntaxiquement valide
+        self._edit_restricted_files: set[str] = set()     # fichiers restaurés → rappel persistant edit_lines/str_replace
         # P_ANTI_REREAD: nb de read_file par chemin (reset par tâche, pas par tentative)
         self._read_count_per_file: dict[str, int] = {}
         # OBS: compteurs pour metrics.jsonl (reset par tâche)
@@ -2180,6 +2183,9 @@ class CodeAgent(SubAgent):
         # Réinitialiser les compteurs d'état par tentative
         self._edit_fail_for_path = {}
         self._self_repair_count = 0
+        self._self_repair_count_per_file = {}
+        self._syntax_clean_snapshot = {}
+        self._edit_restricted_files = set()
         self._gate_retries_used = 0
 
         # ── P8 : CodeFileWatcher — bridge IDE ────────────────────────────────
@@ -3721,40 +3727,117 @@ class CodeAgent(SubAgent):
 
         # ── P6 : Self-repair syntaxe — tracker les erreurs répétées post-edit ──
         _edit_path_p6 = action.get("path", "")
+        # Capturer l'état de restriction AVANT que P6 le traite (le else peut faire discard)
+        _p6_key_pre = str(_edit_path_p6).replace("\\", "/").strip() if _edit_path_p6 else ""
+        _was_restricted_pre = bool(_p6_key_pre and _p6_key_pre in self._edit_restricted_files)
         if (
             action_type in ("edit_file", "apply_patch", "write_file", "edit_lines", "str_replace")
             and "✅" in str(observation)[:10]
             and _edit_path_p6
         ):
             _p6_syntax = ""
-            _p6_obs = str(observation)
-            if "⚠️ Erreur de syntaxe Python" in _p6_obs or "⚠️ Syntaxe" in _p6_obs:
+            # observation.full() capture summary + detail (str() ne retourne que le summary)
+            _p6_obs_full = (observation.full() if isinstance(observation, ActionResult) else str(observation)).lower()
+            _SYNTAX_PATTERNS = (
+                "erreur de syntaxe python", "syntaxeerror", "⚠️ syntaxe",
+                "unexpected token", "parse error", "failed to compile",
+                "unterminated", "invalid syntax",
+            )
+            _WEB_PATTERNS = (
+                "erreur web", "⚠️ web", "bracket imbalance", "js syntaxerror",
+                "js/ts bracket", "js erreur",
+            )
+            if any(p in _p6_obs_full for p in _SYNTAX_PATTERNS):
                 _p6_syntax = "syntaxe Python"
-            elif "⚠️ Erreur web" in _p6_obs or "⚠️ Web" in _p6_obs:
+            elif any(p in _p6_obs_full for p in _WEB_PATTERNS):
                 _p6_syntax = "syntaxe web (JS/HTML/CSS)"
+            _p6_key = str(_edit_path_p6).replace("\\", "/").strip()
             if _p6_syntax:
+                self._self_repair_count_per_file[_p6_key] = self._self_repair_count_per_file.get(_p6_key, 0) + 1
                 self._self_repair_count += 1
-                if self._self_repair_count > 3:
-                    # Trop de self-repairs → undo automatique et changer d'approche
-                    try:
-                        _undo_r = await self._execute_loop_action(
-                            {"action": "undo_edit", "path": _edit_path_p6}, snapshots=session_snapshots
-                        )
+                _p6_file_count = self._self_repair_count_per_file[_p6_key]
+                if _p6_file_count >= 3:
+                    # Seuil dépassé → restaurer depuis le dernier état syntaxiquement valide
+                    _restored_clean = False
+                    # Priorité : dernier état valide connu > snapshot pré-session
+                    _clean_snap = self._syntax_clean_snapshot.get(_p6_key) or (
+                        (session_snapshots or {}).get(_p6_key) or
+                        (session_snapshots or {}).get(_edit_path_p6)
+                    )
+                    if _clean_snap:
+                        try:
+                            _p6_abs = self._resolve_path(_edit_path_p6)
+                            _p6_abs.write_text(_clean_snap, encoding="utf-8")
+                            _restored_clean = True
+                            self._self_repair_count_per_file[_p6_key] = 0
+                            self._self_repair_count = 0
+                            self._edit_restricted_files.add(_p6_key)
+                            logger.warning(
+                                "[P6] {} erreurs {} sur {} → restauration dernier état valide",
+                                _p6_file_count, _p6_syntax, _edit_path_p6,
+                            )
+                        except Exception as _p6_exc:
+                            logger.warning("[P6] Restauration snapshot échouée: {}", _p6_exc)
+                    if _restored_clean:
                         messages.append({
                             "role": "user",
                             "content": (
-                                f"🔄 AUTO-UNDO après {self._self_repair_count} erreurs de {_p6_syntax} non résolues.\n"
-                                f"Résultat undo: {_undo_r}\n"
-                                "Relis le fichier COMPLET avec read_file et recommence avec une approche "
-                                "différente (moins de lignes modifiées à la fois)."
+                                f"🔄 RESTAURATION AUTOMATIQUE après {_p6_file_count} erreurs de {_p6_syntax} "
+                                f"non résolues sur `{_edit_path_p6}`.\n"
+                                f"Le fichier a été remis dans son **dernier état syntaxiquement valide** "
+                                f"(les edits valides précédents sont conservés, seuls les edits cassés sont annulés).\n\n"
+                                f"⛔ NOUVELLE STRATÉGIE OBLIGATOIRE pour `{_edit_path_p6}` :\n"
+                                f"1. Relis le fichier COMPLET avec `read_file` pour voir l'état actuel\n"
+                                f"2. Utilise `write_file` pour réécrire un bloc entier — PAS `edit_lines` fragmenté\n"
+                                f"3. Modifie 1 fonction à la fois maximum\n"
+                                f"4. Vérifie mentalement l'équilibre des accolades avant d'écrire"
                             ),
                         })
-                        self._self_repair_count = 0
-                    except Exception:
-                        pass
+                    else:
+                        # Fallback : undo_edit si aucun snapshot disponible
+                        try:
+                            _undo_r = await self._execute_loop_action(
+                                {"action": "undo_edit", "path": _edit_path_p6}, snapshots=session_snapshots
+                            )
+                            self._self_repair_count_per_file[_p6_key] = 0
+                            self._self_repair_count = 0
+                            self._edit_restricted_files.add(_p6_key)
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"🔄 AUTO-UNDO après {_p6_file_count} erreurs de {_p6_syntax} non résolues.\n"
+                                    f"Résultat undo: {_undo_r}\n"
+                                    "Relis le fichier COMPLET avec read_file et recommence avec `write_file` "
+                                    "bloc entier plutôt qu'`edit_lines` fragmenté."
+                                ),
+                            })
+                        except Exception:
+                            pass
             else:
-                # Edit réussi sans erreur → reset le compteur
+                # Edit réussi sans erreur syntaxique → mettre à jour le dernier état valide connu
+                try:
+                    _p6_abs_ok = self._resolve_path(_edit_path_p6)
+                    if _p6_abs_ok.exists():
+                        self._syntax_clean_snapshot[_p6_key] = _p6_abs_ok.read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+                self._self_repair_count_per_file[_p6_key] = 0
                 self._self_repair_count = 0
+                # Retirer la restriction si l'edit a réussi proprement
+                self._edit_restricted_files.discard(_p6_key)
+
+        # ── P6 : Rappel persistant pour fichiers post-restauration ──
+        # Utilise _was_restricted_pre (capturé avant P6) pour que le rappel survive
+        # même quand le else-branch de P6 vient de faire discard (edit valide)
+        if (
+            _was_restricted_pre
+            and action_type in ("edit_lines", "str_replace", "edit_file")
+        ):
+            observation += (
+                f"\n\n⚠️ RAPPEL : `{_edit_path_p6}` vient d'être restauré après des erreurs syntaxiques répétées. "
+                "Préfère `write_file` pour réécrire un bloc entier plutôt qu'`edit_lines` ligne par ligne. "
+                "Vérifie l'équilibre des accolades avant de valider."
+            )
 
         # ── Compteur read-only : détecter boucles de lecture sans écriture ──
         _passive_actions = ("read_file", "list_files", "grep", "search_in_files", "think",

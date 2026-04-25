@@ -577,6 +577,20 @@ def _apply_workspace_policy(
         "[workspace] V2 -> {} (reason={}, fallback={})",
         resolved.resolved_workspace, resolved.resolution_reason, resolved.used_fallback,
     )
+
+    # P1 strict : policy=explicit avec workspace invalide → refus, pas de fallback silencieux
+    if resolved.used_fallback and resolved.workspace_policy == "explicit":
+        logger.warning(
+            "[workspace] P1 refus strict — policy=explicit mais workspace introuvable: {!r}",
+            requested_workspace,
+        )
+        raise WorkspacePolicyError(
+            f"workspace_explicit_invalid: le workspace demandé '{requested_workspace}' "
+            "n'existe pas ou n'est pas un dossier valide. "
+            "Envoyez un chemin existant ou utilisez policy=default.",
+            status_code=422,
+        )
+
     return {
         "workspace_path": resolved.resolved_workspace,
         "active_file_path": active_file_path,

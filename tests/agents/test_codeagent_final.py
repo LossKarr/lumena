@@ -29,6 +29,15 @@ def _make_agent() -> CodeAgent:
     }
     agent._session_memory_last_used = 0.0
     agent._SESSION_MEMORY_TTL = 4 * 3600
+    # Attributs P6 self-repair
+    agent._self_repair_count = 0
+    agent._self_repair_count_per_file = {}
+    agent._syntax_clean_snapshot = {}
+    agent._edit_restricted_files = set()
+    agent._edit_fail_for_path = {}
+    agent._read_count_per_file = {}
+    agent._grep_zero_repeats = 0
+    agent._session_state = {"reads": {}, "edits": [], "errors": [], "grep_zero_results": {}}
     return agent
 
 

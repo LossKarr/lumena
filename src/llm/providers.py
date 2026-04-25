@@ -81,7 +81,18 @@ class ModelConfig:
 # Configuration des modèles disponibles
 AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     # === OLLAMA (Local) ===
-    
+    "qwen3-8b": ModelConfig(
+        name="qwen3-8b",
+        display_name="Qwen 3 8B (Local)",
+        provider=ProviderType.OLLAMA,
+        model_id="qwen3:8b",
+        context_window=32000,
+        max_output_tokens=4096,
+        supports_vision=False,
+        cost_per_million_tokens=0.0,
+        description="Modèle local rapide et gratuit",
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
     # === OPENAI ===
     "gpt-5.4": ModelConfig(
         name="gpt-5.4",
@@ -967,9 +978,9 @@ def get_free_models() -> List[ModelConfig]:
 
 # P5.1 — Modèles locaux validés par catégorie (utilisé par cu_router en mode local)
 LOCAL_VALIDATED_MODELS: Dict[str, List[str]] = {
-    "text": ["qwen3-8b", "qwen2.5-coder-14b", "deepseek-r1-7b", "lumena-v1"],
+    "text": ["qwen3-8b"],
     "vision": ["minicpm-v", "llava-llama3", "gemma3", "gemma4", "bakllava", "moondream"],
-    "code": ["qwen2.5-coder-14b", "deepseek-r1-7b"],
+    "code": ["qwen3-8b"],
 }
 
 
@@ -1499,10 +1510,8 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "o4-mini":                     {"code": 85, "speed": 65, "reasoning": 92, "creative": 62, "research": 82, "vision": 75, "web": 65},
     "gpt-5.3-codex":               {"code": 97, "speed": 55, "reasoning": 94, "creative": 70, "research": 88, "vision": 82, "web": 75},
     # ── Local (Ollama) ─────────────────────────────────────────────────────
-    "qwen2.5-coder-14b":           {"code": 72, "speed": 60, "reasoning": 55, "creative": 45, "research": 45, "vision":  0, "web": 35},
+
     "qwen3-8b":                    {"code": 60, "speed": 75, "reasoning": 58, "creative": 55, "research": 50, "vision":  0, "web": 38},
-    "deepseek-r1-7b":              {"code": 58, "speed": 70, "reasoning": 72, "creative": 45, "research": 50, "vision":  0, "web": 30},
-    "lumena-v1":                   {"code": 55, "speed": 80, "reasoning": 50, "creative": 60, "research": 45, "vision":  0, "web": 25},
 }
 
 

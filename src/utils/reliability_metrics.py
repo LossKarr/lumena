@@ -1,7 +1,7 @@
 """Reliability metrics — singleton thread-safe pour observer la fiabilité runtime.
 
 Agrège :
-- Décisions intent_router (intent/source/confidence)
+- Décisions workspace/pipeline (intent/source/confidence)
 - Refus de policy (mutations code bloquées)
 - Upgrades par stickiness / registry fallback
 - Erreurs tool execution

@@ -41,6 +41,8 @@ class GoalType(Enum):
     SOCIAL = "social"              # Interaction sociale
     MAINTENANCE = "maintenance"    # Maintenance système
     EXPLORATION = "exploration"    # Explorer/découvrir
+
+
 def _infer_goal_envelope_defaults(goal_type: GoalType, workspace: Optional[str]) -> tuple[str, str, bool]:
     """Retourne (tool_category, risk_level, requires_verification) pour un goal."""
     if goal_type == GoalType.SOCIAL:

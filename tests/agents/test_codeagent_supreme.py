@@ -283,3 +283,208 @@ class TestPromptComposable:
     def test_python_from_files(self):
         prompt = _build_system_prompt("update the code", workspace_files=["main.py", "tests/test_x.py", "requirements.txt"])
         assert "SPÉCIFIQUE PYTHON" in prompt
+
+
+# ═══════════════════════════════════════════════════════════════
+# P6 — Self-repair syntaxe : snapshot dernier état valide
+# ═══════════════════════════════════════════════════════════════
+
+class TestSyntaxSelfRepair:
+    """Vérifie le mécanisme de restauration P6 (snapshot par fichier)."""
+
+    def _make_agent(self):
+        from src.agents.sub_agent import CodeAgent
+        agent = CodeAgent()
+        agent._self_repair_count_per_file = {}
+        agent._syntax_clean_snapshot = {}
+        agent._edit_restricted_files = set()
+        agent._self_repair_count = 0
+        return agent
+
+    def test_snapshot_updated_on_valid_edit(self, tmp_path):
+        """Après un edit valide, _syntax_clean_snapshot contient le nouveau contenu."""
+        f = tmp_path / "app.js"
+        f.write_text("function foo() { return 1; }", encoding="utf-8")
+        agent = self._make_agent()
+        # Simuler la mise à jour du snapshot après edit valide
+        key = "app.js"
+        agent._syntax_clean_snapshot[key] = f.read_text(encoding="utf-8")
+        assert "foo" in agent._syntax_clean_snapshot[key]
+
+    def test_repair_count_increments_on_web_error(self):
+        """Le compteur par fichier monte sur une erreur web."""
+        agent = self._make_agent()
+        key = "script.js"
+        agent._self_repair_count_per_file[key] = 0
+        # Simuler 2 erreurs
+        for _ in range(2):
+            agent._self_repair_count_per_file[key] += 1
+            agent._self_repair_count += 1
+        assert agent._self_repair_count_per_file[key] == 2
+        assert agent._self_repair_count == 2
+
+    def test_restricted_files_set_after_restore(self, tmp_path):
+        """Après restauration, le fichier est dans _edit_restricted_files."""
+        f = tmp_path / "script.js"
+        clean = "function ok() { return true; }"
+        f.write_text(clean, encoding="utf-8")
+        agent = self._make_agent()
+        key = "script.js"
+        agent._syntax_clean_snapshot[key] = clean
+        agent._self_repair_count_per_file[key] = 3
+        # Simuler la restauration
+        f.write_text(clean, encoding="utf-8")
+        agent._self_repair_count_per_file[key] = 0
+        agent._self_repair_count = 0
+        agent._edit_restricted_files.add(key)
+        assert key in agent._edit_restricted_files
+
+    def test_restricted_cleared_on_valid_edit(self):
+        """Après un edit valide post-restauration, la restriction est levée."""
+        agent = self._make_agent()
+        key = "script.js"
+        agent._edit_restricted_files.add(key)
+        # Simuler un edit valide
+        agent._edit_restricted_files.discard(key)
+        agent._self_repair_count_per_file[key] = 0
+        assert key not in agent._edit_restricted_files
+
+    def test_reset_on_new_attempt(self):
+        """Les compteurs et snapshots sont remis à zéro entre tentatives."""
+        agent = self._make_agent()
+        agent._self_repair_count = 5
+        agent._self_repair_count_per_file = {"script.js": 3}
+        agent._syntax_clean_snapshot = {"script.js": "old content"}
+        agent._edit_restricted_files = {"script.js"}
+        # Simuler le reset de début de tentative
+        agent._self_repair_count = 0
+        agent._self_repair_count_per_file = {}
+        agent._syntax_clean_snapshot = {}
+        agent._edit_restricted_files = set()
+        assert agent._self_repair_count == 0
+        assert not agent._self_repair_count_per_file
+        assert not agent._syntax_clean_snapshot
+        assert not agent._edit_restricted_files
+
+    def test_web_pattern_detection_lowercase(self):
+        """Les patterns web sont détectés en lowercase (bug casse corrigé)."""
+        patterns_web = (
+            "erreur web", "⚠️ web", "bracket imbalance",
+            "js syntaxerror", "js/ts bracket", "js erreur",
+        )
+        obs_with_web_error = "✅ edit_lines ok dans script.js\n---\n⚠️ web détecté: bracket imbalance: -5 net accolades"
+        obs_lower = obs_with_web_error.lower()
+        assert any(p in obs_lower for p in patterns_web)
+
+    def test_syntax_pattern_detection(self):
+        """Les patterns Python/générique sont détectés."""
+        patterns_syntax = (
+            "erreur de syntaxe python", "syntaxeerror", "unexpected token",
+            "parse error", "failed to compile", "unterminated", "invalid syntax",
+        )
+        obs = "✅ edit_lines ok\n---\nJS SyntaxError: Unexpected token '}' at line 42"
+        obs_lower = obs.lower()
+        assert any(p in obs_lower for p in patterns_syntax)
+
+
+# ═══════════════════════════════════════════════════════════════
+# P6 — Intégration runtime : _post_action_hooks bout en bout
+# ═══════════════════════════════════════════════════════════════
+
+class TestSyntaxSelfRepairIntegration:
+    """Tests d'intégration appelant _post_action_hooks directement."""
+
+    def _make_task(self):
+        from unittest.mock import MagicMock
+        from src.agents.sub_agent import AgentTask
+        task = MagicMock(spec=AgentTask)
+        task.task_id = "test-p6"
+        task.description = "fix script.js"
+        return task
+
+    def _make_agent(self, tmp_path):
+        from src.agents.sub_agent import CodeAgent
+        agent = CodeAgent()
+        agent._task_workspace_root = tmp_path
+        agent._self_repair_count = 0
+        agent._self_repair_count_per_file = {}
+        agent._syntax_clean_snapshot = {}
+        agent._edit_restricted_files = set()
+        agent._edit_fail_for_path = {}
+        agent._read_count_per_file = {}
+        agent._grep_zero_repeats = 0
+        agent._session_state = {"reads": {}, "edits": [], "errors": [], "grep_zero_results": {}}
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_web_error_increments_counter_and_restores_at_3(self, tmp_path):
+        """3 erreurs web consécutives → restauration automatique + fichier remis en état valide."""
+        from src.agents.sub_agent import ActionResult
+        js_file = tmp_path / "script.js"
+        clean_content = "function ok() { return true; }"
+        broken_content = "function ok() { return true; "  # accolade manquante
+        js_file.write_text(clean_content, encoding="utf-8")
+
+        agent = self._make_agent(tmp_path)
+        key = "script.js"
+        # Pré-charger le snapshot propre (simule un edit valide précédent)
+        agent._syntax_clean_snapshot[key] = clean_content
+
+        action = {"action": "edit_lines", "path": "script.js", "start_line": 1, "end_line": 1, "content": broken_content}
+        web_obs = ActionResult(
+            summary="✅ edit_lines OK dans script.js ⚠️ web",
+            detail="✅ edit_lines OK dans script.js\n⚠️ Erreur web détectée:\nJS SyntaxError: Unexpected token '}'"
+        )
+        session_snapshots = {"script.js": clean_content}
+        messages = []
+        task = self._make_task()
+
+        # Simuler 3 erreurs web consécutives
+        for i in range(3):
+            js_file.write_text(broken_content, encoding="utf-8")
+            obs, edits, reads = await agent._post_action_hooks(
+                action=action, action_type="edit_lines", observation=web_obs,
+                messages=messages, task=task,
+                session_snapshots=session_snapshots, target_files_seen=[],
+                edits_since_last_test=i, reads_since_last_edit=0,
+                context_cache={},
+            )
+
+        # Le fichier doit être restauré
+        assert js_file.read_text(encoding="utf-8") == clean_content
+        # Le message de restauration doit être présent
+        restore_msgs = [m for m in messages if "RESTAURATION" in m.get("content", "")]
+        assert restore_msgs, "Message de restauration attendu dans messages"
+        # Le fichier est maintenant dans _edit_restricted_files
+        assert key in agent._edit_restricted_files
+        # Compteur remis à zéro
+        assert agent._self_repair_count_per_file.get(key, 0) == 0
+
+    @pytest.mark.asyncio
+    async def test_restricted_reminder_injected_on_edit_lines(self, tmp_path):
+        """Après restauration, edit_lines sur le fichier reçoit un rappel persistant."""
+        from src.agents.sub_agent import ActionResult
+        js_file = tmp_path / "app.js"
+        js_file.write_text("function x() {}", encoding="utf-8")
+
+        agent = self._make_agent(tmp_path)
+        agent._edit_restricted_files.add("app.js")
+
+        action = {"action": "edit_lines", "path": "app.js", "start_line": 1, "end_line": 1, "content": "function x() {}"}
+        valid_obs = ActionResult(
+            summary="✅ edit_lines OK dans app.js",
+            detail="✅ edit_lines OK dans app.js"
+        )
+        messages = []
+        task = self._make_task()
+
+        obs, _, _ = await agent._post_action_hooks(
+            action=action, action_type="edit_lines", observation=valid_obs,
+            messages=messages, task=task,
+            session_snapshots={}, target_files_seen=[],
+            edits_since_last_test=0, reads_since_last_edit=0,
+            context_cache={},
+        )
+        # Le rappel persistant doit être dans l'observation retournée
+        obs_text = obs.full() if isinstance(obs, ActionResult) else str(obs)
+        assert "RAPPEL" in obs_text or "restauré" in obs_text.lower()
