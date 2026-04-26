@@ -48,6 +48,14 @@ def test_ports_all_configurable():
     assert 'LUMENA_IDE_WS_PORT' in ide_bridge
 
 
+def test_web_static_mount_uses_source_tree():
+    import web.server as server_mod
+
+    reloaded = reload(server_mod)
+    assert reloaded._STATIC_DIR == Path("web/static").resolve()
+    assert reloaded._ASSETS_DIR == Path("web/dist/assets").resolve()
+
+
 def test_cors_dynamic(monkeypatch):
     import web.server as server_mod
 

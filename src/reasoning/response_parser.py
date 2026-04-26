@@ -288,14 +288,20 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
 
 
 def parse_plan(raw_response: str) -> List[TaskItem]:
-    """Parse un bloc PLAN depuis la reponse LLM. Retourne [] si absent."""
+    """Parse un bloc PLAN depuis la reponse LLM. Retourne [] si absent.
+
+    Les items [x] écrits par le modèle à l'itération 0 sont forcés à
+    completed=False : aucun outil n'a encore été exécuté, un [x] dans le
+    plan initial est toujours une hallucination d'avancement.
+    """
     match = _PLAN_RE.search(raw_response)
     if not match:
         return []
     tasks: List[TaskItem] = []
     for m in _TASK_LINE_RE.finditer(match.group(1)):
-        completed = m.group(1).lower() == "x"
-        tasks.append(TaskItem(description=m.group(2).strip(), completed=completed))
+        # Forcer completed=False quel que soit le [x] écrit par le modèle.
+        # L'état réel sera mis à jour par _update_plan_progress() au fil des outils.
+        tasks.append(TaskItem(description=m.group(2).strip(), completed=False))
     return tasks[:8]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project

@@ -31,9 +31,7 @@ class TestServeWorkspaceFile:
         from fastapi import HTTPException
 
         with pytest.raises(HTTPException) as exc:
-            asyncio.get_event_loop().run_until_complete(
-                serve_workspace_file("../../etc/passwd")
-            )
+            asyncio.run(serve_workspace_file("../../etc/passwd"))
         assert exc.value.status_code == 403
 
     def test_nonexistent_file_404(self):
@@ -42,9 +40,7 @@ class TestServeWorkspaceFile:
         from fastapi import HTTPException
 
         with pytest.raises(HTTPException) as exc:
-            asyncio.get_event_loop().run_until_complete(
-                serve_workspace_file("nonexistent_file_xyz.png")
-            )
+            asyncio.run(serve_workspace_file("nonexistent_file_xyz.png"))
         assert exc.value.status_code == 404
 
     def test_disallowed_extension_blocked(self, tmp_path):
@@ -52,14 +48,11 @@ class TestServeWorkspaceFile:
         import asyncio
         from fastapi import HTTPException
 
-        # Create a .exe file inside workspace
         with patch("web.routes.image_gen.WORKSPACE_DIR", tmp_path):
             bad_file = tmp_path / "malware.exe"
             bad_file.write_bytes(b"MZ")
             with pytest.raises(HTTPException) as exc:
-                asyncio.get_event_loop().run_until_complete(
-                    serve_workspace_file("malware.exe")
-                )
+                asyncio.run(serve_workspace_file("malware.exe"))
             assert exc.value.status_code == 403
 
     def test_valid_image_served(self, tmp_path):
@@ -69,9 +62,7 @@ class TestServeWorkspaceFile:
         with patch("web.routes.image_gen.WORKSPACE_DIR", tmp_path):
             img = tmp_path / "test.png"
             img.write_bytes(b"\x89PNG" + b"\x00" * 20)
-            response = asyncio.get_event_loop().run_until_complete(
-                serve_workspace_file("test.png")
-            )
+            response = asyncio.run(serve_workspace_file("test.png"))
             assert response.media_type == "image/png"
 
     def test_nested_path(self, tmp_path):
@@ -83,9 +74,7 @@ class TestServeWorkspaceFile:
             subdir.mkdir(parents=True)
             img = subdir / "cat.jpg"
             img.write_bytes(b"\xff\xd8\xff\xe0")  # JPEG magic
-            response = asyncio.get_event_loop().run_until_complete(
-                serve_workspace_file("images/2026-04-15/cat.jpg")
-            )
+            response = asyncio.run(serve_workspace_file("images/2026-04-15/cat.jpg"))
             assert response.media_type == "image/jpeg"
 
 

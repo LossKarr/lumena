@@ -42,6 +42,9 @@ class TestParsePlan:
         assert all(not t.completed for t in tasks)
 
     def test_parse_plan_with_completed(self):
+        """Les [x] du modèle à l'itération 0 sont ignorés : completed=False toujours.
+        Le modèle ne peut pas pré-marquer des étapes comme faites avant de les exécuter.
+        """
         raw = (
             "THOUGHT: OK\n\n"
             "PLAN:\n"
@@ -53,7 +56,7 @@ class TestParsePlan:
         loop = self._make_loop()
         tasks = loop._parse_plan(raw)
         assert len(tasks) == 2
-        assert tasks[0].completed is True
+        assert tasks[0].completed is False  # [x] initial ignoré
         assert tasks[1].completed is False
 
     def test_parse_plan_absent(self):
@@ -74,11 +77,13 @@ class TestParsePlan:
         assert len(tasks) == 8
 
     def test_parse_plan_case_insensitive(self):
+        """plan: en minuscule est reconnu. [X] initial est ignoré (completed=False)."""
         raw = "THOUGHT: ok\n\nplan:\n- [ ] Step one\n- [X] Step two\n\nACTION: FINAL\nACTION_INPUT: done\n"
         loop = self._make_loop()
         tasks = loop._parse_plan(raw)
         assert len(tasks) == 2
-        assert tasks[1].completed is True
+        assert tasks[0].completed is False
+        assert tasks[1].completed is False  # [X] initial ignoré
 
 
 # ── Tests _update_plan_progress ────────────────────────────────────

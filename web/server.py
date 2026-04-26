@@ -120,7 +120,7 @@ class _SecurityHeadersMiddleware:
                 headers = list(message.get("headers", []))
                 headers.extend(_SECURITY_HEADERS)
                 # Force no-cache on static assets + root page (pywebview cache)
-                if path.startswith("/static/") or path == "/":
+                if path.startswith("/static/") or path.startswith("/assets/") or path == "/":
                     headers.append(_NO_CACHE_HEADER)
                 message = {**message, "headers": headers}
             await send(message)
@@ -233,8 +233,11 @@ app.include_router(image_gen.router)
 # ── Static files and root page ──
 _WEB_DIR = Path(__file__).parent
 _DIST_DIR = _WEB_DIR / "dist"
-_STATIC_DIR = _DIST_DIR if _DIST_DIR.is_dir() else _WEB_DIR / "static"
+_STATIC_DIR = _WEB_DIR / "static"
+_ASSETS_DIR = _DIST_DIR / "assets"
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+if _ASSETS_DIR.is_dir():
+    app.mount("/assets", StaticFiles(directory=_ASSETS_DIR), name="assets")
 
 
 # ── Main ──

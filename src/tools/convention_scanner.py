@@ -134,7 +134,7 @@ def _compact_json(name: str, raw: str) -> str:
         if opts:
             interesting = ["target", "strict", "module", "moduleResolution",
                            "jsx", "esModuleInterop", "allowJs", "baseUrl"]
-            parts = [f"{k}={json.dumps(v)}" for k in interesting if k in opts]
+            parts = [f"{k}={json.dumps(opts[k])}" for k in interesting if k in opts]
             if parts:
                 lines.append("  compilerOptions: " + ", ".join(parts))
 

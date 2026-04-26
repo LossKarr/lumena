@@ -35,7 +35,7 @@ Repository = "https://github.com/Losskarr/lumena"
 Issues = "https://github.com/Losskarr/lumena/issues"
 
 [project.scripts]
-lumena = "lumena_ultime:main"
+lumena = "lumena_ultime:run"
 lumena-daemon = "run_daemon:main"
 lumena-telegram = "run_telegram:main"
 lumena-whatsapp = "run_whatsapp:main"

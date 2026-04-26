@@ -30,6 +30,7 @@ if not _IN_PYTEST:
         retention="7 days",
         compression="gz",
         enqueue=True,
+        encoding="utf-8",
     )
 
 from .personality import LumenaPersonality, Mood, DEFAULT_PERSONALITY

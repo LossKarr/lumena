@@ -173,7 +173,7 @@ class TestIonosDeployerSecurity:
         (project / "index.html").write_text("<h1>Hi</h1>")
 
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             deployer.deploy("test.fr", project)
         )
         assert not result.success
@@ -192,7 +192,7 @@ class TestIonosDeployerDeploy:
         (project / "style.css").write_text("body{}")
 
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             deployer.deploy("test.fr", project, dry_run=True)
         )
         assert result.success
@@ -208,7 +208,7 @@ class TestIonosDeployerDeploy:
         (project / "index.html").write_text("<h1>Hey</h1>")
 
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             deployer.deploy("test.fr", project)
         )
         assert result.success
@@ -220,7 +220,7 @@ class TestIonosDeployerDeploy:
         deployer.add_site("test.fr", "h", "u", "p")
 
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             deployer.deploy("test.fr", Path("/nonexistent/dir"))
         )
         assert not result.success
@@ -236,7 +236,7 @@ class TestIonosDeployerDeploy:
         (project / ".env").write_text("SECRET=bad")
 
         import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.run(
             deployer.deploy("test.fr", project)
         )
         assert result.success
@@ -252,7 +252,7 @@ class TestIonosDeployerDeploy:
         (project / "index.html").write_text("<h1>Test</h1>")
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(
+        asyncio.run(
             deployer.deploy("test.fr", project)
         )
 

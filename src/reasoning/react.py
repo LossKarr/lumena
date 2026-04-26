@@ -42,6 +42,7 @@ from .response_parser import (
     parse_plan as _parse_plan_fn,
     extract_balanced_json,
     parse_action_args as _parse_action_args_fn,
+    _action_inline_total as _ait_global,
 )
 from .prompt_builder import (
     is_length_finish_reason, has_unbalanced_delimiters,
@@ -90,6 +91,35 @@ def _generate_project_slug(query: str) -> str:
     words = [w for w in text.split() if w not in _NOISE and len(w) > 2]
     slug = "-".join(words[:3]) if words else "project"
     return re.sub(r"[^a-z0-9\-]", "", slug)[:40] or "project"
+
+
+_READ_SIG_BUCKET = 50  # granularité en lignes pour la détection de zone redondante
+
+
+def _compute_read_sig(tool_name: str, tool_args: dict) -> tuple:
+    """Empreinte (fichier, zone_bucket, intention) d'une action de lecture.
+
+    Deux lectures sont considérées redondantes si elles retournent la même
+    empreinte : même fichier, même bucket de zone (paliers de 50 lignes),
+    même intention/pattern.  Une progression (autre fichier, autre zone ou
+    autre cible) produit une empreinte différente.
+    """
+    B = _READ_SIG_BUCKET
+    if tool_name == "read_file":
+        p = str(tool_args.get("path", tool_args.get("file_path", "")))
+        s = int(tool_args.get("start_line") or 0)
+        e = int(tool_args.get("end_line") or s + 100)
+        return (p, (s // B, e // B), "read")
+    elif tool_name in ("grep_search", "search_in_code"):
+        p = str(tool_args.get("path", tool_args.get("directory", "")))
+        pat = str(tool_args.get("pattern", tool_args.get("query", "")))
+        return (p, None, pat)
+    elif tool_name == "find_files":
+        return (str(tool_args.get("path", "")), None, str(tool_args.get("pattern", "")))
+    elif tool_name == "list_directory":
+        return (str(tool_args.get("path", "")), None, "list")
+    else:
+        return (str(sorted(tool_args.keys())), None, tool_name)
 
 
 class ReActLoop:
@@ -172,6 +202,7 @@ class ReActLoop:
         self._plan_guard_retries: int = 0
         self._thought_leak_repairs: int = 0
         self._action_inline_count: int = 0  # Nombre de fois que ACTION inline a été détecté
+        self._after_delegate_success: bool = False  # True après delegate_task ✅ → skip repairs
         self._category_iter_counts: dict = {}  # category → nombre d'itérations consommées
         # P5 — profil comportemental par modèle (chargé dynamiquement à la première itération)
         self._model_profile = None
@@ -1121,9 +1152,13 @@ Maintenant, reflechis et reponds:"""
 
     def _parse_response(self, response: str) -> tuple[Thought, Action]:
         """Parse la reponse du LLM — delegue a response_parser."""
+        _prev_inline = _ait_global[0]
         thought, action, halluc_flag, pending = _parse_response_fn(response)
         self._last_thought_was_hallucinated = halluc_flag
         self._pending_multi_actions = pending
+        # P5 — action_inline_risk : tracker les inline détectés par le parser global
+        if _ait_global[0] > _prev_inline:
+            self._action_inline_count += _ait_global[0] - _prev_inline
         return thought, action
 
     def _parse_plan(self, raw_response: str) -> List[TaskItem]:
@@ -1244,11 +1279,18 @@ Maintenant, reflechis et reponds:"""
         # et provoque des blocages PLAN GUARD sur des tâches marquées par erreur.
         _is_read_only_mode = False  # v2: mode lecture seule supprimé
         _TRIVIAL_TOOLS = {
+            # Lecture / navigation fichiers
             "wait", "memory_add", "read_file", "list_files", "list_dir",
             "search_files", "search_code", "list_directory", "find_files",
+            "grep_search", "search_in_code", "view_file_outline",
+            # Mail info-only
             "mail_list_accounts", "mail_inbox", "mail_check", "memory_search",
-            "get_weather", "get_time", "health_check", "provider_info",
             "mail_account_upsert",
+            # Config / inspection système — ne représentent aucune action métier
+            "get_lumena_config", "get_system_info", "health_check",
+            "get_weather", "get_time", "provider_info",
+            # Listing modèles / ressources
+            "list_image_models", "ionos_list_sites", "ionos_list_files",
         }
 
         def _trivial_tool_matches_next_task() -> bool:
@@ -1496,8 +1538,16 @@ Maintenant, reflechis et reponds:"""
         _read_only_tools = frozenset({"read_file", "list_directory", "find_files",
                                        "grep_search", "search_in_code", "view_file_outline"})
         _post_edit_read_streak: int = 0   # nb d'iter read-only consécutives après une édition
+        _redundant_read_streak: int = 0   # lectures redondantes consécutives (même fichier+zone+intention)
+        _last_read_sig: tuple | None = None  # (fichier, zone_bucket, intention) de la dernière lecture
         _has_done_edits: bool = False      # au moins une écriture a eu lieu dans cette session
         _web_writes_count: int = 0         # nb de write_file sur fichiers web (.html/.css/.js)
+        # Guard pré-édition : détecte les boucles de lecture redondantes en phase d'exploration
+        # (avant tout edit). Seuil plus haut que le guard post-édition car l'exploration
+        # légitime peut lire plusieurs fichiers, mais une vraie boucle finit par revenir au même.
+        _pre_edit_redundant_streak: int = 0
+        _pre_edit_last_sig: tuple | None = None
+
 
         # ── Pipeline Direct : workflows connus exécutés sans boucle ReAct ──
         _pipeline_result = await self._try_direct_pipeline(query)
@@ -1640,6 +1690,13 @@ Maintenant, reflechis et reponds:"""
             # P5 — signaux comportementaux dérivés du profil (calculés une fois par itération)
             _parser_sev = getattr(self._model_profile, "parser_severity", "lenient") if self._model_profile else "lenient"
             _loop_risk = getattr(self._model_profile, "loop_risk", "low") if self._model_profile else "low"
+            # P5 — react_stability : seuil de stagnation adapté (unstable déclenche plus tôt)
+            _stagnation_limit = (
+                2 if getattr(self._model_profile, "react_stability", "stable") == "unstable" else 3
+            ) if self._model_profile else 3
+            # P5 — action_inline_risk : nb inline avant injection rappel format
+            _inline_risk = getattr(self._model_profile, "action_inline_risk", "low") if self._model_profile else "low"
+            _inline_reminder_thresh = 1 if _inline_risk == "high" else (2 if _inline_risk == "medium" else 0)
             # stop=["OBSERVATION:"] empêche le modèle d'écrire de fausses observations
             # Seul le système produit OBSERVATION: après exécution réelle d'un outil
             _react_stop = ["OBSERVATION:"]
@@ -1966,22 +2023,22 @@ Maintenant, reflechis et reponds:"""
                         "Après cette action, AGIS ou donne ta réponse FINAL."
                         + _stag_tool_hint
                     )
-                    # Après 3 stagnations consécutives : forcer la complétion du plan
-                    # pour que PLAN GUARD ne bloque pas le prochain FINAL
-                    if _stagnation_streak >= 3 and self._task_plan:
+                    # Après N stagnations consécutives : forcer la complétion du plan
+                    # (N=2 pour react_stability=unstable, N=3 sinon)
+                    if _stagnation_streak >= _stagnation_limit and self._task_plan:
                         logger.warning("⚠️ Stagnation critique ({}) — bypass PLAN GUARD pour débloquer FINAL", _stagnation_streak)
                         # NE PAS mentir sur l'état des tâches — juste bypasser le guard
                         self._plan_guard_retries = 3  # Empêche PLAN GUARD de bloquer
-                    # P3 HARD: Après 3 stagnations consécutives ET actions identiques → FORCER FINAL synthétique
+                    # P3 HARD: Après N stagnations consécutives ET actions identiques → FORCER FINAL synthétique
                     # Une progression légitime (lectures séquentielles avec args différents) est tolérée.
                     _actions_are_redundant = False
-                    if _stagnation_streak >= 3 and len(self.history) >= 3:
+                    if _stagnation_streak >= _stagnation_limit and len(self.history) >= 3:
                         _recent_actions = self.history[-3:]
                         _sig = (action.tool_name, str(action.tool_args))
                         _recent_sigs = [(h.action.tool_name, str(h.action.tool_args)) for h in _recent_actions]
                         # Si les 3 dernières actions + l'actuelle sont toutes identiques → vrai blocage
                         _actions_are_redundant = all(s == _sig for s in _recent_sigs)
-                    if _stagnation_streak >= 3 and _actions_are_redundant:
+                    if _stagnation_streak >= _stagnation_limit and _actions_are_redundant:
                         logger.error(
                             "🛑 Stagnation HARD ({}× consécutives, action identique) — FORCE FINAL synthétique",
                             _stagnation_streak,
@@ -2343,36 +2400,107 @@ Maintenant, reflechis et reponds:"""
                     self._mark_task_failed(f"repeated_failure_{action.tool_name}")
                     return message
 
-                # ── Détecteur de stagnation post-édition ──────────────────────
-                # Si Lumena a fait des éditions puis enchaîne N iter de read-only
-                # sans jamais agir → forcer auto-conclusion ou check_web_project
+                # ── Détecteur de stagnation post-édition (contextuel) ─────────
+                # Distingue les lectures progressives (nouveau fichier/zone/cible)
+                # des lectures vraiment redondantes (même fichier+zone+intention N fois).
+                # ── Guard pré-édition : boucle de lecture en phase d'exploration ──
+                # Détecte les relectures redondantes avant tout edit (ex: script.js lu 6x
+                # pendant une investigation, compaction → perte contexte → re-lecture).
+                if not _has_done_edits and action.tool_name in _read_only_tools:
+                    _curr_pre_sig = _compute_read_sig(action.tool_name, action.tool_args)
+                    _pre_progressive = (
+                        _pre_edit_last_sig is None
+                        or _curr_pre_sig[0] != _pre_edit_last_sig[0]
+                        or _curr_pre_sig[2] != _pre_edit_last_sig[2]
+                        or (
+                            _curr_pre_sig[1] is not None
+                            and _pre_edit_last_sig[1] is not None
+                            and _curr_pre_sig[1] != _pre_edit_last_sig[1]
+                        )
+                    )
+                    if _pre_progressive:
+                        _pre_edit_redundant_streak = 0
+                    else:
+                        _pre_edit_redundant_streak += 1
+                    _pre_edit_last_sig = _curr_pre_sig
+
+                    if _pre_edit_redundant_streak == 3:
+                        logger.warning(
+                            "⚠️ Boucle exploration: {} lectures redondantes sur même cible (pré-édition) — guidance injectée",
+                            _pre_edit_redundant_streak,
+                        )
+                        self._pending_loop_guidance = (
+                            "⚠️ Tu relis le même fichier/zone plusieurs fois sans avancer. "
+                            "Si le fichier est trop long, utilise `grep_search` pour cibler "
+                            "directement le symbole ou la ligne cherchée. "
+                            "Si la tâche est complexe, utilise `delegate_task` pour confier "
+                            "l'exploration à un agent spécialisé."
+                        )
+                    elif _pre_edit_redundant_streak >= 5:
+                        # Pas de FINAL forcé : rien n'a encore été édité, forcer FINAL
+                        # abandonnerait la tâche. On injecte une guidance maximale qui
+                        # sera la première chose que voit le modèle à l'itération suivante.
+                        logger.warning(
+                            "⚠️ Boucle exploration renforcée: {} lectures redondantes (pré-édition) — guidance obligatoire",
+                            _pre_edit_redundant_streak,
+                        )
+                        _finish_iteration(status="ok", summary=f"pre_edit_loop_guidance_reinforced_{_pre_edit_redundant_streak}")
+                        self._pending_loop_guidance = (
+                            "⚠️ STOP — tu relis la même cible depuis "
+                            f"{_pre_edit_redundant_streak} itérations sans progresser. "
+                            "Utilise OBLIGATOIREMENT `grep_search` avec le pattern exact "
+                            "ou `delegate_task` pour sortir de cette boucle. "
+                            "Ne relis pas le même fichier."
+                        )
+
                 if action.tool_name in _write_tools:
                     _has_done_edits = True
                     _post_edit_read_streak = 0
+                    _redundant_read_streak = 0
+                    _last_read_sig = None
+                    _pre_edit_redundant_streak = 0
+                    _pre_edit_last_sig = None
                 elif _has_done_edits and action.tool_name in _read_only_tools:
                     _post_edit_read_streak += 1
-                    if _post_edit_read_streak >= 4:
-                        # 4 iterations read-only après édition = stagnation verification
-                        # Injecter un GUIDANCE pour forcer la conclusion ou l'action
-                        if _post_edit_read_streak == 4:
+                    _curr_sig = _compute_read_sig(action.tool_name, action.tool_args)
+                    _is_progressive = (
+                        _last_read_sig is None
+                        or _curr_sig[0] != _last_read_sig[0]          # fichier différent
+                        or _curr_sig[2] != _last_read_sig[2]          # intention/pattern différent
+                        or (
+                            _curr_sig[1] is not None
+                            and _last_read_sig[1] is not None
+                            and _curr_sig[1] != _last_read_sig[1]     # zone différente
+                        )
+                    )
+                    if _is_progressive:
+                        _redundant_read_streak = 0
+                    else:
+                        _redundant_read_streak += 1
+                    _last_read_sig = _curr_sig
+
+                    # Guidance seulement si les lectures deviennent redondantes (≥2 redondantes)
+                    if _post_edit_read_streak >= 4 and _redundant_read_streak >= 2:
+                        if _redundant_read_streak == 2:
                             logger.warning(
-                                "⚠️ Stagnation post-édition: {} iter read-only après des éditions — guidance injectée",
-                                _post_edit_read_streak,
+                                "⚠️ Stagnation post-édition: {} lectures redondantes (même fichier/zone) — guidance injectée",
+                                _redundant_read_streak,
                             )
                             self._pending_loop_guidance = (
-                                "⚠️ STOP — tu as fait des modifications et tu vérifies en boucle depuis "
-                                f"{_post_edit_read_streak} itérations sans rien changer. "
+                                "⚠️ STOP — tu as fait des modifications et tu relis le même fichier/zone "
+                                f"depuis {_redundant_read_streak} itérations sans rien changer. "
                                 "Options : 1) Utilise `check_web_project` pour valider, "
                                 "2) Corrige un problème trouvé avec write_file/edit_file, "
                                 "3) Conclus avec FINAL_ANSWER si les corrections sont terminées."
                             )
-                        elif _post_edit_read_streak >= 6:
-                            # 6 iter = forçage total
+                        elif _redundant_read_streak >= 4 or _post_edit_read_streak >= 10:
+                            # Forçage uniquement sur vraie boucle redondante (4+ identiques)
+                            # ou si streak total dépasse 10 (garder un filet de sécurité)
                             logger.warning(
-                                "⚠️ Stagnation post-édition forcée FINAL après {} iter read-only",
-                                _post_edit_read_streak,
+                                "⚠️ Stagnation post-édition forcée FINAL: {} lectures redondantes / {} total read-only",
+                                _redundant_read_streak, _post_edit_read_streak,
                             )
-                            _finish_iteration(status="ok", summary=f"forced_final_post_edit_stagnation_{_post_edit_read_streak}")
+                            _finish_iteration(status="ok", summary=f"forced_final_post_edit_stagnation_redundant_{_redundant_read_streak}")
                             _recent_edits = [
                                 f"- {h.action.tool_name}({list(h.action.tool_args.keys())[:2]})"
                                 for h in self.history[-15:]
@@ -2389,6 +2517,8 @@ Maintenant, reflechis et reponds:"""
                     # Outil ni write ni read-only → reset streak
                     if action.tool_name not in ("parallel_tools",):
                         _post_edit_read_streak = 0
+                        _redundant_read_streak = 0
+                        _last_read_sig = None
 
                 # Ne pas compter comme répétition pour les outils exemptés
                 if action.tool_name not in exempt_tools:
@@ -2934,6 +3064,17 @@ Maintenant, reflechis et reponds:"""
                 answer = action.answer or ""
                 finish_reason = self._last_llm_meta.get("finish_reason")
                 self._run_meta["agent_final_finish_reason"] = finish_reason
+
+                # ── Chemin direct post-delegate_task ✅ : on saute tous les repairs ──
+                # L'instruction injectée était explicite → la réponse est fiable, on ne re-sonde pas.
+                if self._after_delegate_success:
+                    self._after_delegate_success = False  # consommé
+                    _finish_iteration(status="ok", summary="delegate_task_final_direct")
+                    message = answer if answer.strip() else (
+                        "Le CodeAgent a terminé avec succès. Consulte le workspace pour les fichiers créés."
+                    )
+                    self._mark_task_done("delegate_task_final_direct")
+                    return message
 
                 # ── Guard anti-thought-leak : le LLM a mis sa réflexion dans ACTION_INPUT au lieu de la réponse ──
                 # Cela arrive quand ACTION_INPUT est vide → fallback sur thought_content (ligne 1881)
@@ -3668,12 +3809,47 @@ Fichiers web créés: {', '.join(created_files) if created_files else 'Aucun'}
 Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{'style.css ' if not has_css else ''}{'script.js' if not has_js else ''}
 """
             
-            query = f"""Requête originale: {original_query}
+            # ── Post-succès delegate_task : chemin FINAL direct ──
+            # Après un delegate_task ✅, le rapport du CodeAgent EST la vérification.
+            # On force le chemin FINAL sans repasser par "continue" pour éviter
+            # les tours perdus sur thought_leak / reformulation inutile.
+            _is_delegate_success = (
+                action.tool_name in ("delegate_task", "delegate_task_bg")
+                and obs_text
+                and (obs_text.lstrip().startswith("✅") or "✅" in obs_text[:60])
+            )
+            if _is_delegate_success:
+                query = (
+                    f"Requête originale: {original_query}\n\n"
+                    f"Le CodeAgent a terminé avec succès :\n{obs_text[:3000]}\n\n"
+                    "INSTRUCTION : Rédige maintenant ta réponse finale à l'utilisateur en résumant "
+                    "ce qui a été accompli. Utilise OBLIGATOIREMENT :\n"
+                    "THOUGHT: (1 ligne)\n"
+                    "ACTION: FINAL\n"
+                    "ACTION_INPUT: [résumé clair de ce qui a été fait]"
+                )
+                self._after_delegate_success = True
+                _finish_iteration(status="ok", summary="delegate_task_success_direct_final")
+            else:
+                # P5 — action_inline_risk : injecter rappel format si inline détecté au-delà du seuil
+                _inline_hint = ""
+                if _inline_reminder_thresh > 0 and 0 < self._action_inline_count <= _inline_reminder_thresh + 2:
+                    _inline_hint = "\n\n⚠️ FORMAT: Écris ACTION: en début de ligne séparée (pas sur la même ligne que THOUGHT:)."
+                # Adapter le hint de conclusion selon l'avancement réel de la tâche
+                if is_web_request and (has_html or has_css or has_js):
+                    # Des fichiers web ont été créés : rappeler quand conclure
+                    _conclusion_hint = " Si tu as créé les 3 fichiers (HTML, CSS, JS), utilise ACTION: FINAL."
+                elif is_web_request and action.tool_name in _read_only_tools:
+                    # Tâche web mais en phase d'investigation (pas encore de fichiers) : orienter vers grep/ciblage
+                    _conclusion_hint = " Utilise grep_search ou read_file ciblé pour trouver l'information, puis agis."
+                else:
+                    _conclusion_hint = ""
+                query = f"""Requête originale: {original_query}
 {files_reminder}
-Observation de l'action précédente ({action.tool_name}): {obs_text}
+Observation de l'action précédente ({action.tool_name}): {obs_text}{_inline_hint}
 
-Continue à répondre à la question initiale. Si tu as créé les 3 fichiers (HTML, CSS, JS), utilise ACTION: FINAL."""
-            _finish_iteration(status="ok", summary=f"tool={action.tool_name}")
+Continue à répondre à la question initiale.{_conclusion_hint}"""
+                _finish_iteration(status="ok", summary=f"tool={action.tool_name}")
         
         # Si on atteint la limite, retourner la dernière observation si elle existe
         last_obs = None

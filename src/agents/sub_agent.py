@@ -2160,12 +2160,14 @@ class CodeAgent(SubAgent):
             task, prior_failures, attempt, model_name=_model_name_for_prompt,
         )
 
-        # P5 — signaux comportementaux : parser_severity et tool_call_quality
+        # P5 — signaux comportementaux : parser_severity, tool_call_quality, sub_agent_stability, file_section_threshold
         try:
             from ..llm.model_profile import get_model_profile as _gmp
             _attempt_profile = _gmp(_model_name_for_prompt)
             _parser_severity = _attempt_profile.parser_severity   # "strict"|"lenient"|"forgiving"
             _tool_call_quality = _attempt_profile.tool_call_quality  # "excellent"|"good"|"moderate"|"poor"
+            _sub_stability = _attempt_profile.sub_agent_stability     # "stable"|"moderate"|"unstable"
+            _file_thresh = _attempt_profile.file_section_threshold    # chars; 0 = désactivé
             if _tool_call_quality in ("moderate", "poor"):
                 # Injecter un rappel de format strict pour les modèles moins fiables
                 _fmt_hint = (
@@ -2176,9 +2178,16 @@ class CodeAgent(SubAgent):
                 logger.debug("[P5] tool_call_quality={} → rappel format injecté", _tool_call_quality)
             if _parser_severity == "forgiving":
                 logger.debug("[P5] parser_severity=forgiving pour '{}' — tolérance max activée", _model_name_for_prompt)
+            if _sub_stability == "unstable":
+                logger.debug("[P5] sub_agent_stability=unstable pour '{}' — escalade timeout accélérée", _model_name_for_prompt)
+            # Stocker le profil pour accès dans _execute_loop_action (file_section_threshold)
+            self._attempt_profile = _attempt_profile
         except Exception:
             _parser_severity = "lenient"
             _tool_call_quality = "good"
+            _sub_stability = "stable"
+            _file_thresh = 0
+            self._attempt_profile = None
 
         # Réinitialiser les compteurs d'état par tentative
         self._edit_fail_for_path = {}
@@ -2653,8 +2662,9 @@ class CodeAgent(SubAgent):
                         report.append(f"[iter {iteration}] Timeout #1 → compaction + hint décomposition")
                         logger.warning("[P6] Timeout #1 — compaction + hint décomposition (iter {})", iteration)
                         continue
-                    elif _timeout_count == 2:
+                    elif _timeout_count == 2 and _sub_stability != "unstable":
                         # 2e timeout → scope minimal, réponse courte forcée
+                        # (pour unstable: déjà escaladé au niveau 1, on abandonne directement)
                         if len(messages) > 4:
                             messages = messages[:2] + messages[-2:]
                         messages.append({
@@ -2670,15 +2680,18 @@ class CodeAgent(SubAgent):
                         logger.warning("[P6] Timeout #2 — scope minimal forcé (iter {})", iteration)
                         continue
                     else:
-                        # 3e timeout → abandon contrôlé, boucle externe reprend avec stratégie différente
-                        report.append(f"[iter {iteration}] Timeout #3 → abandon contrôlé")
-                        logger.warning("[P6] Timeout #3 — abandon, reprise boucle externe (iter {})", iteration)
+                        # Abandon contrôlé — stable: ≥3 timeouts ; unstable: ≥2 timeouts
+                        _abandon_msg = (
+                            f"CodeAgent bloqué ({_timeout_count} timeouts"
+                            + (" — abandon accéléré, modèle instable" if _sub_stability == "unstable" else " consécutifs")
+                            + "):\n" + "\n".join(report[-5:])
+                        )
+                        report.append(f"[iter {iteration}] Timeout #{_timeout_count} → abandon contrôlé")
+                        logger.warning("[P6] Timeout #{} — abandon, reprise boucle externe (iter {}, stability={})", _timeout_count, iteration, _sub_stability)
                         return AgentResult(
                             task_id=task.task_id,
                             success=False,
-                            output=self._enrich_summary(
-                                "CodeAgent bloqué (3 timeouts consécutifs):\n" + "\n".join(report[-5:])
-                            ),
+                            output=self._enrich_summary(_abandon_msg),
                             status_code=StatusCode.TIMEOUT,
                             meta={"iterations": iteration, "stuck": True, "attempt": attempt, "timeout_count": _timeout_count},
                         ), True
@@ -4515,6 +4528,19 @@ class CodeAgent(SubAgent):
                         detail + (
                             "\n\n💡 Le fichier est maintenant en mémoire complète. "
                             "Toute prochaine read_file servira le cache : préfère edit_lines / str_replace / grep."
+                        ),
+                    )
+                # P5 — file_section_threshold : couper les gros fichiers pour les modèles instables
+                _fst = getattr(getattr(self, "_attempt_profile", None), "file_section_threshold", 0)
+                if _fst > 0 and len(raw) > _fst and not action.get("start_line") and not _auto_full:
+                    _section_lines = raw[:_fst].split("\n")
+                    _numbered_sec = [f"{i+1:4d} | {l}" for i, l in enumerate(_section_lines)]
+                    _remaining = len(lines) - len(_section_lines)
+                    return ActionResult(
+                        f"✅ Lu: {_raw_path} section 1 ({len(_section_lines)} lignes) — {_remaining} lignes restantes",
+                        "\n".join(_numbered_sec) + (
+                            f"\n\n[SECTIONNEMENT actif: fichier {len(raw)//1000}k chars > seuil {_fst//1000}k. "
+                            f"Utilise read_file(path, start_line={len(_section_lines)+1}, end_line=...) pour la suite.]"
                         ),
                     )
                 if len(lines) > 300 and not action.get("start_line"):

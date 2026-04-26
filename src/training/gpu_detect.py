@@ -284,7 +284,7 @@ def check_finetuning_deps() -> dict[str, Any]:
             pass
 
     return {
-        "all_ok": len(missing) == 0 and torch_ok,
+        "all_ok": len(missing) == 0 and torch_ok and cuda_ok,
         "missing": missing,
         "installed": installed,
         "torch_ok": torch_ok,

@@ -145,9 +145,10 @@ async def finetuning_models(_auth=Depends(deps.verify_admin_token)):
             "hf_id_4bit": None,
             "hf_id_full": None,
             "vram_ft_min_gb": 0,
-            "finetune_ok": True,
+            "finetune_ok": False,
+            "trainability_reason": "Modèle auto-détecté sans mapping HF — non fine-tunable via ce pipeline",
             "already_installed": True,
-            "fits_vram": True,
+            "fits_vram": False,
             "auto_detected": True,
         })
 
@@ -327,6 +328,26 @@ def _run_job(req: StartRequest) -> None:
     """Run the full fine-tuning pipeline in a background thread."""
     global _active_job
     try:
+        # Fail-fast CUDA — évite une stacktrace unsloth incompréhensible pour l'utilisateur
+        try:
+            import torch as _torch
+            if not _torch.cuda.is_available():
+                _push_progress({
+                    "phase": "error",
+                    "message": (
+                        "❌ PyTorch CUDA non opérationnel (torch.cuda.is_available() = False). "
+                        "PyTorch CPU est installé à la place du build CUDA. "
+                        "Cliquez sur 'Installer dépendances' pour corriger."
+                    ),
+                })
+                return
+        except ImportError:
+            _push_progress({
+                "phase": "error",
+                "message": "❌ PyTorch non installé. Cliquez sur 'Installer dépendances' dans le panneau fine-tuning.",
+            })
+            return
+
         from src.training.pipeline import FinetuneConfig, ProgressCallback, run_finetuning, merge_and_save
         from src.training.data_prep import load_lumena_pool, convert_to_trl_format, split_dataset
         from src.training.export_gguf import convert_to_gguf, quantize_gguf, get_gguf_size_gb, cleanup_intermediate

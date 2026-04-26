@@ -10,12 +10,16 @@ Combine :
 """
 
 import asyncio
-import torch
 import json
 import sys
 import os
 from pathlib import Path
 from typing import Optional
+
+try:
+    import torch
+except ImportError:
+    torch = None  # type: ignore
 
 # 🔧 Configuration UTF-8 pour Windows
 if sys.platform == 'win32':
@@ -1115,5 +1119,10 @@ async def main():
         await lumena.lumena_core.shutdown()
 
 
-if __name__ == "__main__":
+def run():
+    """Entry point synchrone pour pyproject.toml [project.scripts]."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    run()
