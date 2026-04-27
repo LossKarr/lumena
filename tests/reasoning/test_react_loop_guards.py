@@ -47,6 +47,29 @@ class TestReActLoopGuards:
             assert loop.max_iterations == 35, f"max_iterations devrait être 35, got {loop.max_iterations}"
             assert loop.timeout_seconds == 900, f"timeout devrait être 900s, got {loop.timeout_seconds}"
 
+    def test_local_code_fix_detection_requires_anchor_or_file(self):
+        from src.reasoning.react import ReActLoop
+
+        assert ReActLoop._looks_like_local_code_fix(
+            "corrige le bug de la touche entrée dans main.js",
+            has_project_anchor=False,
+            inferred_intent="code_edit",
+        ) is True
+        assert ReActLoop._looks_like_local_code_fix(
+            "corrige le bug de la touche entrée",
+            has_project_anchor=False,
+            inferred_intent="question",
+        ) is False
+
+    def test_local_code_fix_detection_rejects_broad_rewrite(self):
+        from src.reasoning.react import ReActLoop
+
+        assert ReActLoop._looks_like_local_code_fix(
+            "réécris toute l'architecture du projet et fusionne tout",
+            has_project_anchor=True,
+            inferred_intent="code_edit",
+        ) is False
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

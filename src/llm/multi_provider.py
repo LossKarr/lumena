@@ -471,6 +471,62 @@ class MultiProviderLLM:
 
         return text
 
+    def _maybe_expand_max_tokens_for_model_switch(
+        self,
+        *,
+        requested_model: str,
+        target_model: str,
+        requested_max_tokens: int,
+    ) -> int:
+        """Évite de conserver le cap de sortie du modèle source après un auto-switch.
+
+        Cas réel observé :
+        - CodeAgent boucle sur `deepseek-chat`
+        - passe `llm.max_output_tokens` (= 8192)
+        - `chat()` auto-switch vers `deepseek-reasoner`
+        - mais garde 8192 comme plafond effectif
+
+        On n'élargit automatiquement le budget QUE si le caller a simplement
+        hérité du cap du modèle source (ou moins). Si le caller a déjà demandé
+        explicitement plus, on respecte sa valeur.
+        """
+        try:
+            target_cfg = get_model_config(target_model)
+        except Exception:
+            return requested_max_tokens
+
+        if not target_cfg:
+            return requested_max_tokens
+
+        source_cap = 0
+        if str(requested_model).strip().lower() == str(getattr(self, "model", "")).strip().lower():
+            try:
+                source_cap = int(getattr(self, "max_output_tokens", 0) or 0)
+            except Exception:
+                source_cap = 0
+        if source_cap <= 0:
+            try:
+                source_cfg = get_model_config(requested_model)
+                source_cap = int(getattr(source_cfg, "max_output_tokens", 0) or 0) if source_cfg else 0
+            except Exception:
+                source_cap = 0
+
+        target_cap = int(getattr(target_cfg, "max_output_tokens", 0) or 0)
+        if source_cap <= 0 or target_cap <= source_cap:
+            return requested_max_tokens
+
+        if requested_max_tokens <= source_cap:
+            logger.info(
+                "🔓 Auto-switch budget uplift: {} {} -> {} {}",
+                requested_model,
+                requested_max_tokens,
+                target_model,
+                target_cap,
+            )
+            return target_cap
+
+        return requested_max_tokens
+
     def _is_code_heavy_request(self, messages: List[Dict[str, str]], max_tokens: int) -> tuple[bool, Optional[str]]:
         auto_switch_raw = str(os.getenv("LUMENA_CODE_AUTOSWITCH_REASONER", "1")).strip().lower()
         if auto_switch_raw in {"0", "false", "off", "no"}:
@@ -924,6 +980,7 @@ class MultiProviderLLM:
 
         provider_for_call = provider
         model_for_call = model or self.model
+        max_tokens_for_call = max_tokens
         auto_switch_used = False
         auto_switch_reason: Optional[str] = None
 
@@ -935,6 +992,11 @@ class MultiProviderLLM:
                 auto_switch_used = True
                 auto_switch_reason = switch_reason or "code_task"
                 model_for_call = reasoner_model
+                max_tokens_for_call = self._maybe_expand_max_tokens_for_model_switch(
+                    requested_model=requested_model,
+                    target_model=model_for_call,
+                    requested_max_tokens=max_tokens,
+                )
                 logger.info(
                     "🔁 Auto-switch model for this turn: {} -> {} ({})",
                     requested_model,
@@ -959,7 +1021,7 @@ class MultiProviderLLM:
                 provider=provider_for_call,
                 messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=max_tokens_for_call,
                 model=model_for_call,
                 stop=stop,
             )
@@ -967,7 +1029,7 @@ class MultiProviderLLM:
                 provider=provider_for_call,
                 base_messages=messages,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=max_tokens_for_call,
                 initial_result=result,
                 model=model_for_call,
             )
@@ -990,11 +1052,16 @@ class MultiProviderLLM:
                     result.get("completion_tokens", "?"),
                 )
                 try:
+                    _retry_max_tokens = self._maybe_expand_max_tokens_for_model_switch(
+                        requested_model=requested_model,
+                        target_model=_reasoner_mdl,
+                        requested_max_tokens=max_tokens,
+                    )
                     _retry_result = await self._chat_provider_result(
                         provider=provider_for_call,
                         messages=messages,
                         temperature=temperature,
-                        max_tokens=max_tokens,
+                        max_tokens=_retry_max_tokens,
                         model=_reasoner_mdl,
                         stop=stop,
                     )
@@ -1002,7 +1069,7 @@ class MultiProviderLLM:
                         provider=provider_for_call,
                         base_messages=messages,
                         temperature=temperature,
-                        max_tokens=max_tokens,
+                        max_tokens=_retry_max_tokens,
                         initial_result=_retry_result,
                         model=_reasoner_mdl,
                     )
@@ -1861,8 +1928,11 @@ class MultiProviderLLM:
                         elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
                             content = reasoning_content
                             logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (contient du code)")
+                        elif len(reasoning_content.strip()) >= 200:
+                            content = reasoning_content.strip()
+                            logger.warning("⚠️ DeepSeek: content vide, reasoning_content descriptif accepté comme fallback ({} chars)", len(content))
                         else:
-                            logger.error("🚨 DeepSeek: content vide, reasoning_content ne contient que du texte descriptif → rejeté")
+                            logger.error("🚨 DeepSeek: content vide, reasoning_content trop court ({} chars) → rejeté", len(reasoning_content.strip()))
                             content = ""
                 except Exception:
                     _fence = _re.search(r'```(?:\w*)\n(.+?)```', reasoning_content, _re.DOTALL)
@@ -1872,9 +1942,12 @@ class MultiProviderLLM:
                     elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
                         content = reasoning_content
                         logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (exception)")
+                    elif len(reasoning_content.strip()) >= 200:
+                        content = reasoning_content.strip()
+                        logger.warning("⚠️ DeepSeek: content vide, reasoning_content descriptif accepté (exception, {} chars)", len(content))
                     else:
                         content = ""
-                        logger.error("🚨 DeepSeek: content vide, reasoning_content descriptif rejeté (exception)")
+                        logger.error("🚨 DeepSeek: content vide, reasoning_content trop court ({} chars) → rejeté (exception)", len(reasoning_content.strip()))
 
         # FIX: Détecter les réponses tronquées par limite de tokens
         finish_reason = choice.get("finish_reason", "")

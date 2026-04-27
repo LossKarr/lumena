@@ -5,6 +5,7 @@ Permet à Lumena de déléguer des tâches à des agents spécialisés.
 """
 
 import os
+import re
 from typing import Dict, Any, List, Optional, Callable, Awaitable
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -185,6 +186,29 @@ class StatusCode:
     AMBIGUOUS = "ambiguous"       # Tâche trop vague pour agir
 
 
+def _consume_architect_reread_budget(
+    budget: Dict[str, int],
+    path_key: str,
+    *,
+    default_budget: int = 2,
+) -> tuple[bool, int]:
+    """Autorise un petit nombre de relectures ciblées sur un fichier injecté.
+
+    Le guard "déjà injecté par l'Architect" est utile pour éviter les relectures
+    compulsives, mais il devient contre-productif si l'agent doit vérifier une
+    zone précise du fichier principal. On autorise donc un micro-budget local
+    par fichier et par tâche.
+    """
+    if not path_key:
+        return False, 0
+    remaining = int(budget.get(path_key, default_budget))
+    if remaining <= 0:
+        return False, 0
+    remaining -= 1
+    budget[path_key] = remaining
+    return True, remaining
+
+
 @dataclass
 class AgentResult:
     """Résultat d'une tâche d'agent."""
@@ -200,10 +224,35 @@ class AgentResult:
     completed_at: datetime = field(default_factory=datetime.now)
 
 
+def _failure_meta(
+    *,
+    report: list,
+    blocked_at: str,
+    task_description: str,
+    next_step: str,
+    **extra: Any,
+) -> dict:
+    """Meta structuré et exploitable pour les retours d'échec du sub-agent.
+
+    Fournit 4 champs cohérents sur tous les points d'abandon :
+    - attempted   : dernières actions tentées (trace lisible)
+    - blocked_at  : raison précise du blocage
+    - remaining   : description de ce qui reste à faire
+    - next_step   : recommandation concrète pour la reprise
+    """
+    return {
+        "attempted": list(report[-5:]) if report else [],
+        "blocked_at": blocked_at,
+        "remaining": task_description,
+        "next_step": next_step,
+        **extra,
+    }
+
+
 class SubAgent:
     """
     Agent spécialisé de base.
-    
+
     Chaque sub-agent a:
     - Un type spécifique
     - Un contexte limité (pas accès à tout)
@@ -414,6 +463,12 @@ class SubAgent:
                 output=f"⏱️ Timeout: la tâche a pris plus de {timeout_seconds}s",
                 status_code=StatusCode.TIMEOUT,
                 duration_ms=timeout_seconds * 1000,
+                meta=_failure_meta(
+                    report=[],
+                    blocked_at=f"timeout après {timeout_seconds}s",
+                    task_description=getattr(task, "description", ""),
+                    next_step="Découper la tâche en sous-tâches plus courtes ou augmenter le timeout",
+                ),
             )
             
         except Exception as e:
@@ -623,7 +678,7 @@ class ActionResult:
     def __getitem__(self, key):
         return str(self.summary)[key]
 
-    def full(self, max_detail: int = 6000) -> str:
+    def full(self, max_detail: int = 16000) -> str:
         """Retourne summary + detail pour injection dans les messages LLM."""
         if not self.detail:
             return self.summary
@@ -811,6 +866,50 @@ def _estimate_tokens(messages: list[dict]) -> int:
 _WEB_SIGNALS = (".html", ".css", ".js", ".ts", "website", "site web", "page web",
                 "frontend", "landing", "bootstrap", "tailwind", "react", "vue")
 _PY_SIGNALS = (".py", "python", "pytest", "django", "flask", "fastapi", "pip")
+
+
+def _extract_explicit_code_targets(task_description: str) -> set[str]:
+    """Extrait les basenames de fichiers explicitement mentionnés dans une tâche."""
+    if not task_description:
+        return set()
+    return {
+        m.group(0).lower()
+        for m in re.finditer(
+            r"\b[\w.\-]+\.(?:py|js|ts|tsx|jsx|html|css|json|md|ya?ml|toml)\b",
+            task_description,
+            re.IGNORECASE,
+        )
+    }
+
+
+def _is_local_bugfix_task(
+    task_description: str,
+    *,
+    workspace_path: Any = None,
+    resolved_intent: str = "auto",
+) -> bool:
+    """Détecte les correctifs locaux qui supportent mal les garde-fous lourds."""
+    desc = (task_description or "").lower()
+    if not desc:
+        return False
+    broad_scope_markers = (
+        "refonte", "rewrite", "réécris", "reécris", "from scratch",
+        "fusionne", "merge tout", "tout le projet", "whole project",
+        "architecture", "restructure", "migration", "migre",
+    )
+    if any(k in desc for k in broad_scope_markers):
+        return False
+    local_fix_markers = (
+        "corrige", "correct", "fix", "bug", "erreur", "crash", "plante",
+        "marche pas", "ne marche pas", "cassé", "casse", "bloque",
+        "touche", "entrée", "enter", "bouton", "click", "clic",
+        "répare", "repare",
+    )
+    file_targets = _extract_explicit_code_targets(task_description)
+    has_workspace_anchor = bool(workspace_path)
+    intent_ok = resolved_intent in {"modify", "read"}
+    local_signal = any(k in desc for k in local_fix_markers) or bool(file_targets)
+    return intent_ok and local_signal and (has_workspace_anchor or bool(file_targets))
 
 
 def _build_system_prompt(
@@ -1413,8 +1512,8 @@ class CodeAgent(SubAgent):
             return None
 
     def _record_session_read(self, path: str, content: str) -> None:
-        """Stocke le contenu complet du fichier pour éviter les relectures.
-        Web files (.html/.js/.css): 12000 chars. Autres: 4000 chars.
+        """Stocke le contenu du fichier pour éviter les relectures.
+        Cache: 120k chars max (couvre ~2000 lignes). Injection prompt: 12k chars.
         Éviction LRU : le fichier le moins récemment accédé est supprimé.
         N'enregistre PAS les lectures de sauvegarde (.backups/) — ce ne sont
         pas des fichiers réels du projet, et les confondre avec l'original par
@@ -1428,7 +1527,12 @@ class CodeAgent(SubAgent):
         # LRU: si déjà présent, supprimer pour réinsérer en fin (= accès récent)
         if path in files:
             del files[path]
-        files[path] = content[:12000]
+        # Stocker le contenu COMPLET (pas tronqué) pour servir les plages correctement.
+        # L'injection dans le prompt est tronquée à 12000 chars, mais le cache garde tout
+        # pour que start_line/end_line puissent être servis depuis le cache sans relecture.
+        # Le LRU à 12 fichiers empêche l'explosion mémoire.
+        _MAX_CACHE_CHARS = 120_000  # ~2000 lignes de code, suffisant pour la majorité des fichiers
+        files[path] = content[:_MAX_CACHE_CHARS]
         # Éjecter le moins récemment accédé si >12
         while len(files) > 12:
             oldest = next(iter(files))
@@ -2237,6 +2341,12 @@ class CodeAgent(SubAgent):
         # Skip sur retries (re-plan inutile si la 1ère exec a produit des observations concrètes).
         _mode_attempt = getattr(self, '_resolved_intent', 'auto')
         _workspace_path = getattr(self, '_task_workspace_root', None)
+        _local_bugfix_mode = _is_local_bugfix_task(
+            task.description,
+            workspace_path=_workspace_path,
+            resolved_intent=_mode_attempt,
+        )
+        _explicit_code_targets = _extract_explicit_code_targets(task.description)
         _files_listing = "\n".join(f"  - {f}" for f in (_project_files or [])[:50]) or "(vide)"
         _architect_injected_keys: set[str] = set()  # fichiers dont le contenu est déjà dans les messages
         # Déclenchement Architect :
@@ -2249,6 +2359,7 @@ class CodeAgent(SubAgent):
             _mode_attempt in ("modify", "create")
             and _project_exists
             and len(task.description) > 40
+            and not _local_bugfix_mode
         )
         if _is_complex_modify and attempt == 1:
             try:
@@ -2545,6 +2656,8 @@ class CodeAgent(SubAgent):
                 except Exception as _salvage_exc:
                     logger.debug("[CodeAgent] Salvage failed: {}", _salvage_exc)
 
+        _architect_reread_budget: Dict[str, int] = {}
+
         for iteration in range(1, max_iter + 1):
             # ── WorldModel : exposer l'itération courante aux hooks ──
             self._current_iter = iteration
@@ -2693,7 +2806,16 @@ class CodeAgent(SubAgent):
                             success=False,
                             output=self._enrich_summary(_abandon_msg),
                             status_code=StatusCode.TIMEOUT,
-                            meta={"iterations": iteration, "stuck": True, "attempt": attempt, "timeout_count": _timeout_count},
+                            meta=_failure_meta(
+                                report=report,
+                                blocked_at=f"{_timeout_count} timeouts consécutifs sur l'appel LLM (iter {iteration})",
+                                task_description=getattr(task, "description", ""),
+                                next_step="Réduire la taille du contexte ou découper la tâche en étapes plus courtes",
+                                iterations=iteration,
+                                stuck=True,
+                                attempt=attempt,
+                                timeout_count=_timeout_count,
+                            ),
                         ), True
                 else:
                     _llm_retries += 1
@@ -2805,7 +2927,16 @@ class CodeAgent(SubAgent):
                                         + (_rb_note or "")
                                     ),
                                     status_code=StatusCode.FAILURE,
-                                    meta={"iterations": iteration, "attempt": attempt, "trace": report, "gate_rollback": _rolled_back},
+                                    meta=_failure_meta(
+                                        report=report,
+                                        blocked_at=f"gate échec après {_gate_max_retries} retries : " + "; ".join(_gate.errors[:2]),
+                                        task_description=getattr(task, "description", ""),
+                                        next_step="Corriger les erreurs de vérification : " + "; ".join(_gate.errors[:2]),
+                                        iterations=iteration,
+                                        attempt=attempt,
+                                        trace=report,
+                                        gate_rollback=_rolled_back,
+                                    ),
                                 ), False
                 except Exception:
                     pass  # gate jamais bloquante
@@ -2870,7 +3001,24 @@ class CodeAgent(SubAgent):
                 if _architect_injected_keys and _pk and (
                     _pk in _architect_injected_keys or _pk_base in _architect_injected_keys
                 ) and not _is_backup_probe:
-                    _blocked_reason = "contenu déjà injecté par l'Architect au début de la session"
+                    _arch_budget_key = _pk_abs or _pk_base
+                    _arch_default_budget = 5 if (_local_bugfix_mode and _pk_base in _explicit_code_targets) else 2
+                    _allowed_arch_reread, _arch_remaining = _consume_architect_reread_budget(
+                        _architect_reread_budget,
+                        _arch_budget_key,
+                        default_budget=_arch_default_budget,
+                    )
+                    if _allowed_arch_reread:
+                        logger.info(
+                            "[CodeAgent] Guard Architect assoupli: {} sur {} ré-autorisé "
+                            "(budget restant {}/{})",
+                            action_type,
+                            _probe_path,
+                            _arch_remaining,
+                            _arch_default_budget,
+                        )
+                    else:
+                        _blocked_reason = "contenu déjà injecté par l'Architect au début de la session"
                 # (b) Session cache check : match STRICT par chemin absolu résolu.
                 # On ne match PLUS par basename seul, car `.backups/contact.html`
                 # et `contact.html` sont deux fichiers différents (cf. logs 2026-04-19 20:09).
@@ -2955,17 +3103,73 @@ class CodeAgent(SubAgent):
                     _blocked_reason = ""
 
                 if _blocked_reason:
-                    # Tenter de récupérer le contenu déjà en cache pour l'injecter dans le refus
+                    # Tenter de récupérer le contenu déjà en cache
                     _cached_txt = ""
                     try:
                         _files_read = self._session_memory.get("files_read", {})
                         for _ck, _cv in _files_read.items():
                             _cks = str(_ck).lower().replace("\\", "/")
                             if _cks == _pk or _cks.endswith("/" + _pk_base):
-                                _cached_txt = str(_cv)[:4000]
+                                _cached_txt = str(_cv)
                                 break
                     except Exception:
                         pass
+
+                    # ── CACHE-AS-SUCCESS: servir le contenu en cache comme lecture réussie
+                    # au lieu de bloquer, pour éviter les boucles de relecture (3-9 iter perdues).
+                    # Le LLM reçoit le fichier et peut avancer directement.
+                    #
+                    # FIX: si le LLM demande une plage (start_line) au-delà du contenu
+                    # en cache (tronqué à 12000 chars), on LAISSE PASSER la lecture
+                    # pour qu'il puisse voir la fin du fichier. Sinon le cache tronqué
+                    # est servi en boucle et le LLM ne voit jamais les lignes >932.
+                    _cache_covers_range = True
+                    if _cached_txt and isinstance(action, dict):
+                        _req_sl = action.get("start_line")
+                        if _req_sl is not None:
+                            try:
+                                _cached_line_count = _cached_txt.count("\n") + 1
+                                if int(_req_sl) > _cached_line_count:
+                                    _cache_covers_range = False
+                                    logger.info(
+                                        "[CodeAgent] CACHE-BYPASS iter={}: {} demande L{}+ mais cache ne couvre que {} lignes → lecture autorisée",
+                                        iteration, action_type, _req_sl, _cached_line_count,
+                                    )
+                            except (ValueError, TypeError):
+                                pass
+
+                    if _cached_txt and _cache_covers_range:
+                        # Si le LLM demande une plage spécifique, servir cette plage
+                        # depuis le cache complet au lieu de toujours tronquer à 12k.
+                        _serve_txt = _cached_txt
+                        if isinstance(action, dict):
+                            _sl = action.get("start_line")
+                            _el = action.get("end_line")
+                            if _sl is not None:
+                                try:
+                                    _all_lines = _cached_txt.split("\n")
+                                    _s = max(1, int(_sl))
+                                    _e = min(len(_all_lines), int(_el)) if _el is not None else len(_all_lines)
+                                    _slice = _all_lines[_s - 1 : _e]
+                                    _numbered = [f"{_s + i:4d} | {l}" for i, l in enumerate(_slice)]
+                                    _serve_txt = "\n".join(_numbered)
+                                except (ValueError, TypeError, IndexError):
+                                    pass
+                        if _serve_txt is _cached_txt:
+                            _serve_txt = _cached_txt[:12000]
+                        logger.info(
+                            "[CodeAgent] CACHE-AS-SUCCESS iter={}: {} sur {} servi depuis le cache ({} chars) — {}",
+                            iteration, action_type, _probe_path, len(_serve_txt), _blocked_reason,
+                        )
+                        report.append(f"[iter {iteration}] {action_type} servi depuis cache ({_probe_path})")
+                        messages.append({"role": "assistant", "content": raw_text})
+                        messages.append({"role": "user", "content":
+                            f"📄 Contenu de `{_probe_path}` (depuis le cache — ce fichier n'a pas changé depuis ta dernière lecture):\n"
+                            f"{_serve_txt}"
+                        })
+                        continue
+
+                    # Pas de contenu en cache → refus classique (rare)
                     logger.warning(
                         "[CodeAgent] BLOQUÉ iter={}: {} sur {} refusé ({})",
                         iteration, action_type, _probe_path, _blocked_reason,
@@ -2980,8 +3184,6 @@ class CodeAgent(SubAgent):
                         "c'est qu'elle n'existe pas sous cette forme — adapte ta recherche au contenu réel ci-dessous. "
                         "Si tu as fini, appelle `done` avec un summary."
                     )
-                    if _cached_txt:
-                        _refusal += f"\n\n📄 RAPPEL du contenu de `{_probe_path}` (extrait):\n{_cached_txt}"
                     messages.append({"role": "user", "content": _refusal})
                     continue
             observation = await self._execute_loop_action(action, snapshots=_session_snapshots)
@@ -3065,7 +3267,15 @@ class CodeAgent(SubAgent):
                     success=False,
                     output=self._enrich_summary(f"CodeAgent bloqué ({stuck_reason}):\n" + "\n".join(report[-5:])),
                     status_code=StatusCode.PARTIAL,
-                    meta={"iterations": iteration, "stuck": True, "attempt": attempt},
+                    meta=_failure_meta(
+                        report=report,
+                        blocked_at=stuck_reason,
+                        task_description=getattr(task, "description", ""),
+                        next_step="Changer d'approche : utiliser grep_search pour cibler, ou delegate_task vers un agent spécialisé",
+                        iterations=iteration,
+                        stuck=True,
+                        attempt=attempt,
+                    ),
                 ), True
 
             # ── Post-action hooks ──
@@ -3076,6 +3286,7 @@ class CodeAgent(SubAgent):
                 edits_since_last_test=edits_since_last_test,
                 reads_since_last_edit=reads_since_last_edit,
                 context_cache=_context_cache,
+                local_bugfix_mode=_local_bugfix_mode,
             )
 
             # ── Break immédiat si _post_action_hooks a levé _force_done ──
@@ -3090,7 +3301,15 @@ class CodeAgent(SubAgent):
                         "Aucune modification effectuée.\n" + "\n".join(report[-8:])
                     ),
                     status_code=StatusCode.PARTIAL,
-                    meta={"iterations": iteration, "force_done": True, "attempt": attempt},
+                    meta=_failure_meta(
+                        report=report,
+                        blocked_at="trop de lectures consécutives sans édition",
+                        task_description=getattr(task, "description", ""),
+                        next_step="Commencer à éditer les fichiers identifiés, ou utiliser grep_search pour cibler l'information exacte",
+                        iterations=iteration,
+                        force_done=True,
+                        attempt=attempt,
+                    ),
                 ), True
 
             # ── Compaction ──
@@ -3236,7 +3455,15 @@ class CodeAgent(SubAgent):
             success=False,
             output=self._enrich_summary(_graceful_output),
             status_code=StatusCode.PARTIAL,
-            meta={"iterations": max_iter, "attempt": attempt, "trace": report},
+            meta=_failure_meta(
+                report=report,
+                blocked_at=f"limite de {max_iter} itérations atteinte sans conclusion",
+                task_description=getattr(task, "description", ""),
+                next_step="Découper la tâche en étapes plus petites ou déléguer à un agent spécialisé",
+                iterations=max_iter,
+                attempt=attempt,
+                trace=report,
+            ),
         ), True
 
     # ── F2: Méthodes extraites de _single_code_attempt ──
@@ -3502,6 +3729,7 @@ class CodeAgent(SubAgent):
         session_snapshots: dict, target_files_seen: list[str],
         edits_since_last_test: int, reads_since_last_edit: int,
         context_cache: dict[str, str],
+        local_bugfix_mode: bool = False,
     ) -> tuple:
         """Hooks post-exécution: session memory, context, auto-reread, tests, nudge.
         Retourne (observation, edits_since_last_test, reads_since_last_edit)."""
@@ -3857,9 +4085,14 @@ class CodeAgent(SubAgent):
                             "read_files_batch", "read_batch", "batch_read")
         _active_actions = ("edit_file", "write_file", "edit_lines", "apply_patch", "str_replace",
                            "insert_at_anchor", "apply_patches", "batch_patch", "multi_patch")
-        _READS_BEFORE_NUDGE = 5
-        _READS_BEFORE_FORCE = 10
-        _READS_BEFORE_HARD_STOP = 15  # très permissif : seulement coupe les vraies boucles infinies
+        if local_bugfix_mode:
+            _READS_BEFORE_NUDGE = 8
+            _READS_BEFORE_FORCE = 16
+            _READS_BEFORE_HARD_STOP = 24
+        else:
+            _READS_BEFORE_NUDGE = 5
+            _READS_BEFORE_FORCE = 10
+            _READS_BEFORE_HARD_STOP = 15  # très permissif : seulement coupe les vraies boucles infinies
         if action_type in _passive_actions:
             reads_since_last_edit += 1
         elif action_type in _active_actions or action_type == "done":
@@ -4440,56 +4673,91 @@ class CodeAgent(SubAgent):
                     "mtime": _current_mtime,
                 }
                 if _prev_reads >= 2:
-                    _sess_mem = getattr(self, "_session_memory", None)
-                    _cached_content = ""
-                    if isinstance(_sess_mem, dict):
-                        _cached_content = _sess_mem.get("files_read", {}).get(_norm_key, "")
-                    if not _cached_content and abs_path.exists() and abs_path.is_file():
-                        # cache vide (LRU éjecté ?) → recharger UNE fois
-                        try:
-                            _cached_content = abs_path.read_text(encoding="utf-8", errors="replace")
-                            if hasattr(self, "_record_session_read"):
-                                try:
-                                    self._record_session_read(_norm_key, _cached_content)
-                                except Exception:
-                                    pass
-                        except Exception:
-                            _cached_content = ""
-                    if _cached_content:
-                        _read_counts[_norm_key] = _prev_reads + 1
-                        _cached_lines = _cached_content.count("\n") + 1
-                        logger.warning(
-                            "[CodeAgent] read_file({}) → cache servi (lecture #{})",
-                            _raw_path, _prev_reads + 1,
-                        )
-                        # Si le LLM a précisé une plage, on la lui sert depuis le cache
-                        if _req_start is not None and _req_end is not None:
+                    # ── FIX: si le fichier a été édité dans cette session,
+                    # le cache est périmé → reset le compteur et relire depuis le disque.
+                    # Sans ça, Guard 1 (CACHE-AS-SUCCESS) laisse passer mais Guard 2 ici
+                    # sert le vieux cache car _read_count_per_file n'est jamais reset post-edit.
+                    _was_edited = False
+                    _edits_done = getattr(self, "_session_memory", {}).get("edits_done", [])
+                    for _ed in _edits_done:
+                        _ed_file = _ed.split(":", 1)[0].strip().replace("\\", "/")
+                        if _ed_file == _norm_key or _ed_file.rsplit("/", 1)[-1] == _norm_key.rsplit("/", 1)[-1]:
                             try:
-                                _all_lines = _cached_content.split("\n")
-                                _s = max(1, int(_req_start))
-                                _e = min(len(_all_lines), int(_req_end))
-                                _slice = _all_lines[_s - 1 : _e]
-                                _numbered = [f"{_s + i:4d} | {l}" for i, l in enumerate(_slice)]
-                                return ActionResult(
-                                    f"📦 Cache: {_raw_path} L{_s}-{_e} (déjà lu {_prev_reads}× — sers le cache)",
-                                    "\n".join(_numbered) + (
-                                        "\n\n💡 Tu as déjà ce fichier en mémoire complète. "
-                                        "Préfère edit_lines / str_replace / grep plutôt que de relire."
-                                    ),
-                                )
+                                _ed_p = Path(_ed.split(":", 1)[0].strip())
+                                if not _ed_p.is_absolute():
+                                    _ed_p = (getattr(self, "_task_workspace_root", None) or Path.cwd()) / _ed_p
+                                _ed_abs = str(_ed_p.resolve()).replace("\\", "/").lower()
+                                _probe_abs = str(abs_path.resolve()).replace("\\", "/").lower() if abs_path.exists() else _norm_key.lower()
+                                if _ed_abs == _probe_abs:
+                                    _was_edited = True
+                                    break
                             except Exception:
                                 pass
-                        # Pas de plage : on renvoie le fichier complet + consigne
-                        return ActionResult(
-                            f"📦 Cache complet: {_raw_path} ({_cached_lines} lignes, lecture #{_prev_reads + 1})",
-                            (
-                                f"=== {_raw_path} (cache session) ===\n{_cached_content}\n\n"
-                                "💡 Ce fichier est en mémoire. Pour ne pas le relire :\n"
-                                "  • `edit_lines` (start_line/end_line + new_content) pour modifier\n"
-                                "  • `str_replace` (search/replace exact) pour modifier\n"
-                                "  • `grep` (pattern + path) si tu cherches une section précise"
-                            ),
+                    if _was_edited:
+                        # Reset compteur + invalider cache → la lecture fraîche passera
+                        _read_counts[_norm_key] = 0
+                        _sess_mem_ed = getattr(self, "_session_memory", None)
+                        if isinstance(_sess_mem_ed, dict):
+                            _files_read = _sess_mem_ed.get("files_read", {})
+                            _stale = [k for k in _files_read if k.replace("\\", "/") == _norm_key]
+                            for k in _stale:
+                                del _files_read[k]
+                        logger.info(
+                            "[CodeAgent] Guard2 read_file({}) reset (fichier édité) → lecture fraîche",
+                            _raw_path,
                         )
+                        # _prev_reads est maintenant 0 → on sort du bloc ">=2" et on lit normalement
+                    else:
+                        _sess_mem = getattr(self, "_session_memory", None)
+                        _cached_content = ""
+                        if isinstance(_sess_mem, dict):
+                            _cached_content = _sess_mem.get("files_read", {}).get(_norm_key, "")
+                        if not _cached_content and abs_path.exists() and abs_path.is_file():
+                            # cache vide (LRU éjecté ?) → recharger UNE fois
+                            try:
+                                _cached_content = abs_path.read_text(encoding="utf-8", errors="replace")
+                                if hasattr(self, "_record_session_read"):
+                                    try:
+                                        self._record_session_read(_norm_key, _cached_content)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                _cached_content = ""
+                        if _cached_content:
+                            _read_counts[_norm_key] = _prev_reads + 1
+                            _cached_lines = _cached_content.count("\n") + 1
+                            logger.warning(
+                                "[CodeAgent] read_file({}) → cache servi (lecture #{})",
+                                _raw_path, _prev_reads + 1,
+                            )
+                            # Si le LLM a précisé une plage, on la lui sert depuis le cache
+                            if _req_start is not None and _req_end is not None:
+                                try:
+                                    _all_lines = _cached_content.split("\n")
+                                    _s = max(1, int(_req_start))
+                                    _e = min(len(_all_lines), int(_req_end))
+                                    _slice = _all_lines[_s - 1 : _e]
+                                    _numbered = [f"{_s + i:4d} | {l}" for i, l in enumerate(_slice)]
+                                    return ActionResult(
+                                        f"📦 Cache: {_raw_path} L{_s}-{_e} (déjà lu {_prev_reads}× — sers le cache)",
+                                        "\n".join(_numbered) + (
+                                            "\n\n💡 Tu as déjà ce fichier en mémoire complète. "
+                                            "Préfère edit_lines / str_replace / grep plutôt que de relire."
+                                        ),
+                                    )
+                                except Exception:
+                                    pass
+                            # Pas de plage : on renvoie le fichier complet + consigne
+                            return ActionResult(
+                                f"📦 Cache complet: {_raw_path} ({_cached_lines} lignes, lecture #{_prev_reads + 1})",
+                                (
+                                    f"=== {_raw_path} (cache session) ===\n{_cached_content}\n\n"
+                                    "💡 Ce fichier est en mémoire. Pour ne pas le relire :\n"
+                                    "  • `edit_lines` (start_line/end_line + new_content) pour modifier\n"
+                                    "  • `str_replace` (search/replace exact) pour modifier\n"
+                                    "  • `grep` (pattern + path) si tu cherches une section précise"
+                                ),
+                            )
                 if not abs_path.exists():
                     return ActionResult(f"❌ Fichier non trouvé: {_raw_path} (résolu: {abs_path})")
                 # 2e lecture : AUTO-PROMOTION en lecture complète + cache
@@ -5766,6 +6034,9 @@ class SubAgentOrchestrator:
         to_remove = []
         
         for task_id, task_data in self.pending_tasks.items():
+            # Ne jamais archiver une tâche encore en cours : bg_status doit toujours répondre.
+            if task_data.get("status") not in ("completed", "failed", "cancelled"):
+                continue
             created_at = task_data.get("created_at")
             if created_at:
                 try:

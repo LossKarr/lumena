@@ -176,6 +176,35 @@ async def test_chat_auto_switches_to_reasoner_for_long_code_tasks(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_auto_switch_uplifts_inherited_deepseek_chat_budget(monkeypatch):
+    llm = MultiProviderLLM(model_name="deepseek-v3")
+    captured = {}
+
+    async def fake_deepseek_result(*args, **kwargs):
+        captured["model"] = kwargs.get("model")
+        captured["max_tokens"] = kwargs.get("max_tokens")
+        return {
+            "text": "ok",
+            "finish_reason": "stop",
+            "provider_used": "deepseek",
+            "model_used": kwargs.get("model") or llm.model,
+        }
+
+    monkeypatch.setattr(llm, "_chat_deepseek_result", fake_deepseek_result)
+
+    output = await llm.chat(
+        [{"role": "user", "content": "corrige ce code python et applique un patch propre"}],
+        max_tokens=llm.max_output_tokens,  # hérité du modèle source deepseek-chat (= 8192)
+    )
+    meta = llm.get_last_response_meta()
+
+    assert output == "ok"
+    assert "reasoner" in str(captured.get("model", "")).lower()
+    assert captured.get("max_tokens") == 65536
+    assert meta["auto_switch_used"] is True
+
+
+@pytest.mark.asyncio
 async def test_chat_keeps_deepseek_v3_when_not_code_heavy(monkeypatch):
     llm = MultiProviderLLM(model_name="deepseek-v3")
     captured = {}

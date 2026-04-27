@@ -21,6 +21,37 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+def test_architect_reread_budget_allows_two_then_stops():
+    """Le micro-budget Architect autorise 2 relectures ciblées, pas plus."""
+    from src.agents.sub_agent import _consume_architect_reread_budget
+
+    budget = {}
+    ok1, remaining1 = _consume_architect_reread_budget(budget, "js/game.js")
+    ok2, remaining2 = _consume_architect_reread_budget(budget, "js/game.js")
+    ok3, remaining3 = _consume_architect_reread_budget(budget, "js/game.js")
+
+    assert ok1 is True and remaining1 == 1
+    assert ok2 is True and remaining2 == 0
+    assert ok3 is False and remaining3 == 0
+
+
+def test_architect_reread_budget_respects_custom_default():
+    """Le budget custom permet plus de relectures pour un bugfix local ciblé."""
+    from src.agents.sub_agent import _consume_architect_reread_budget
+
+    budget = {}
+    allowed = []
+    remaining = []
+    for _ in range(6):
+        ok, rem = _consume_architect_reread_budget(budget, "js/game.js", default_budget=5)
+        allowed.append(ok)
+        remaining.append(rem)
+
+    assert allowed[:5] == [True, True, True, True, True]
+    assert allowed[5] is False
+    assert remaining[4] == 0
+
+
 @pytest.mark.asyncio
 async def test_hard_stop_blocks_6th_identical_read(tmp_path):
     """6ème lecture avec args EXACTEMENT identiques = refus 🛑."""

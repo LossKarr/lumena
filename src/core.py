@@ -34,6 +34,7 @@ if not _IN_PYTEST:
     )
 
 from .personality import LumenaPersonality, Mood, DEFAULT_PERSONALITY
+from .structured_state import StructuredState
 
 # Import des modules optionnels
 try:
@@ -170,6 +171,8 @@ class ConversationContext:
     def __init__(self, max_messages: int = 20):
         self.messages: List[Message] = []
         self.max_messages = max_messages
+        # ── État structuré parallèle (V1) ──
+        self.structured_state: StructuredState = StructuredState()
     
     def add_message(self, role: str, content: str, metadata: Dict[str, Any] = None):
         """Ajoute un message au contexte."""
@@ -193,6 +196,7 @@ class ConversationContext:
     def clear(self):
         """Vide le contexte."""
         self.messages = []
+        self.structured_state = StructuredState()
 
 
 class OllamaClient:

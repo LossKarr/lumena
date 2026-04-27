@@ -1424,8 +1424,23 @@ class ToolRegistry:
                     args[_canonical] = args.pop(_alias)
             _missing = [p for p in _required_params if p not in args or args[p] is None]
             if _missing:
+                # Construire un mini-exemple depuis le schema pour aider le modèle à récupérer
+                _props = tool_schema.get("properties", tool_schema) if isinstance(tool_schema, dict) else {}
+                _ex_parts = []
+                for _mp in _missing:
+                    _pschema = _props.get(_mp, {}) if isinstance(_props, dict) else {}
+                    _ptype = _pschema.get("type", "string") if isinstance(_pschema, dict) else "string"
+                    if _ptype == "array":
+                        _ex_parts.append(f'"{_mp}": ["valeur1"]')
+                    elif _ptype == "integer":
+                        _ex_parts.append(f'"{_mp}": 1')
+                    elif _ptype == "boolean":
+                        _ex_parts.append(f'"{_mp}": true')
+                    else:
+                        _ex_parts.append(f'"{_mp}": "valeur"')
+                _hint = f' — exemple: {{{", ".join(_ex_parts)}}}' if _ex_parts else ""
                 return Observation(
-                    content=f"Paramètre(s) requis manquant(s) pour '{name}': {', '.join(_missing)}",
+                    content=f"Paramètre(s) requis manquant(s) pour '{name}': {', '.join(_missing)}{_hint}",
                     success=False,
                 )
 

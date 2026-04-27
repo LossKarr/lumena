@@ -11,6 +11,7 @@ from .channel_envelope import ChannelEnvelope, ChannelContinuityRegistry
 from .task_orchestrator import TaskOrchestrator
 from .slo_monitor import SLOMonitor
 from .workspace_policy import WorkspaceResolution, resolve_workspace_for_request
+from .execution_ledger import ExecutionLedger, LedgerEntry, MUTATION_TOOLS
 
 __all__ = [
     "RuntimeContext",
@@ -24,6 +25,9 @@ __all__ = [
     "SLOMonitor",
     "WorkspaceResolution",
     "resolve_workspace_for_request",
+    "ExecutionLedger",
+    "LedgerEntry",
+    "MUTATION_TOOLS",
 ]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project

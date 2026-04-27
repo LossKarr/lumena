@@ -37,6 +37,13 @@ from .react_config import (
 
 
 from .tool_registry import ToolRegistry
+from ..runtime.execution_ledger import (
+    ExecutionLedger, MUTATION_TOOLS as _LEDGER_MUTATION_TOOLS,
+    INTENT_TO_MUTATION_FAMILY as _LEDGER_INTENT_FAMILIES,
+    _extract_target as _ledger_extract_target,
+    _extract_proof as _ledger_extract_proof,
+)
+from .agent_execution_state import AgentExecutionState, RunMetaProxy
 from .response_parser import (
     parse_response as _parse_response_fn,
     parse_plan as _parse_plan_fn,
@@ -94,6 +101,106 @@ def _generate_project_slug(query: str) -> str:
 
 
 _READ_SIG_BUCKET = 50  # granularité en lignes pour la détection de zone redondante
+
+
+def _extract_anchor_facts(text: str) -> str:
+    """
+    Extrait les faits structurés clés d'une observation avant compaction.
+    Retourne une ligne "📌 Ancres: ..." ou "" si rien de notable.
+    Couverture : snowflakes Discord (17-20 chiffres), patterns guild_id=/channel_id=/server_id=,
+    chemins Windows (C:\\...).
+    """
+    import re
+    facts: list[str] = []
+
+    # Snowflake IDs Discord (17-20 chiffres, pas dans un chemin)
+    for m in re.finditer(r'(?<![/\\.\d])\b(\d{17,20})\b(?![/\\.\d])', text):
+        facts.append(m.group(1))
+
+    # guild_id=... / channel_id=... (valeur alphanumérique ou entre backticks/guillemets)
+    for m in re.finditer(r'\b(?:guild_id|channel_id|server_id)\s*[=:]\s*[`"\']?(\w{6,})[`"\']?', text, re.IGNORECASE):
+        facts.append(f"{m.group(0).split('=')[0].split(':')[0].strip()}={m.group(1)}")
+
+    # Chemins Windows (C:\...) — juste le segment racine pour ne pas gonfler
+    for m in re.finditer(r'[A-Za-z]:\\(?:[^\s\n"\']{3,60})', text):
+        facts.append(m.group(0)[:80])
+
+    # Dédupliquer en conservant l'ordre
+    seen: set[str] = set()
+    unique: list[str] = []
+    for f in facts:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+
+    if not unique:
+        return ""
+    # Limiter à 10 ancres max pour ne pas gonfler le résumé
+    return "📌 Ancres: " + " | ".join(unique[:10]) + "\n"
+
+
+# Outils purement info/inspection : ne peuvent pas cocher une tâche métier
+# via le fallback séquentiel (ex: "config" dans get_lumena_config matcherait
+# faussement "Configurer les rôles" sans qu'aucune action métier ait été faite).
+_SEQ_FALLBACK_BLOCKLIST: frozenset[str] = frozenset({
+    "wait", "memory_add", "read_file", "list_files", "list_dir",
+    "search_files", "search_code", "list_directory", "find_files",
+    "grep_search", "search_in_code", "view_file_outline",
+    "mail_list_accounts", "mail_inbox", "mail_check", "memory_search",
+    "mail_account_upsert",
+    "get_lumena_config", "get_system_info", "health_check",
+    "get_weather", "get_time", "provider_info",
+    "list_image_models", "ionos_list_sites", "ionos_list_files",
+    "discord_list_guilds",
+})
+
+# ── Guard 5 : outils exploration/navigation ne peuvent PAS auto-avancer
+# une tâche dont le premier mot est un verbe d'action métier.
+# Ex : run_command("cd") ne peut pas cocher "Déléguer la correction au CodeAgent".
+_EXPLORATION_TOOLS_STRICT: frozenset[str] = frozenset({
+    "run_command", "run_shell", "exec_command",
+    "list_directory", "find_files", "list_files", "list_dir",
+    "grep_search", "search_in_code", "search_files", "search_code",
+    "read_file", "view_file_outline", "parallel_tools",
+})
+
+# Verbes d'action métier en début de tâche — signalent une tâche qui exige
+# une mutation réelle, pas juste une exploration.
+_BUSINESS_ACTION_STARTERS: frozenset[str] = frozenset({
+    "déléguer", "deleguer", "delegate",
+    "corriger", "correct", "fix",
+    "modifier", "modify",
+    "envoyer", "send",
+    "créer", "creer", "create",
+    "générer", "generer", "generate",
+    "déployer", "deployer", "deploy",
+    "écrire", "ecrire", "write",
+    "publier", "publish",
+    "supprimer", "delete",
+    "construire", "build",
+    "installer", "install",
+    "implémenter", "implementer", "implement",
+})
+
+
+def _normalize_guard_token(text: str) -> str:
+    """Normalise un verbe de tâche pour les guards de progression."""
+    token = (text or "").strip().lower()
+    if not token:
+        return ""
+    try:
+        repaired = token.encode("latin1").decode("utf-8")
+        if repaired:
+            token = repaired.lower()
+    except Exception:
+        pass
+    token = unicodedata.normalize("NFKD", token).encode("ascii", "ignore").decode("ascii")
+    return token.strip()
+
+
+_BUSINESS_ACTION_STARTERS_NORMALIZED: frozenset[str] = frozenset(
+    _normalize_guard_token(v) for v in _BUSINESS_ACTION_STARTERS
+)
 
 
 def _compute_read_sig(tool_name: str, tool_args: dict) -> tuple:
@@ -170,43 +277,227 @@ class ReActLoop:
         self.conversation_context = conversation_context  # Pour les requêtes de suivi
         self.active_skills_context = active_skills_context
         self.action_history: List[tuple] = []  # Pour détecter les actions répétées
-        self._consecutive_same_action = 0  # Phase 2.2: compteur pour détection de boucle
-        self._last_action_signature = None  # Phase 2.2: signature de la dernière action
-        self._pending_loop_guidance: Optional[str] = None  # guidance injectée dans prochaine observation
-        self._last_auto_advance_iter: int = -1  # garde: max 1 auto-avancement par itération
-        # ── Anti-aveuglement browser : track dernière itération où le modèle a "vu" ──
-        self._last_browser_visual_iter: int = -1  # dernier iter avec screenshot ou dom_state
-        self._browser_blind_streak: int = 0  # nb actions browser consécutives sans voir
         self.llm_meta_getter = llm_meta_getter
         self.max_final_repair_attempts = max(0, int(max_final_repair_attempts))
-        self._final_repair_attempts = 0
-        self._last_llm_meta: Dict[str, Any] = {}
         self.task_orchestrator = task_orchestrator
         self.task_id = (task_id or "").strip() or None
         self.is_weak_model = bool(is_weak_model)
         self.step_callback: Optional[Callable[[str, dict], None]] = step_callback
         self.runtime_ctx = runtime_ctx  # RuntimeContext snapshot (Phase 2)
-        self._run_meta: Dict[str, Any] = {
-            "agent_output_incomplete": False,
-            "agent_output_warning": None,
-            "agent_repair_attempts": 0,
-            "agent_final_finish_reason": None,
-        }
         # ── Plan TODO ──
         self._task_plan: List[TaskItem] = []
         self._plan_emitted: bool = False
         self._plan_last_emit_state: str = ""  # dédup: n'émet TODO_STATE que si changé
         self._iterations_without_progress: int = 0
         self._last_completed_task_count: int = 0
-        self._premature_final_retries: int = 0
-        self._plan_guard_retries: int = 0
-        self._thought_leak_repairs: int = 0
-        self._action_inline_count: int = 0  # Nombre de fois que ACTION inline a été détecté
-        self._after_delegate_success: bool = False  # True après delegate_task ✅ → skip repairs
-        self._category_iter_counts: dict = {}  # category → nombre d'itérations consommées
         # P5 — profil comportemental par modèle (chargé dynamiquement à la première itération)
         self._model_profile = None
         self._model_profile_applied_for: str = ""
+        # ── ExecutionLedger — source de vérité d'exécution (V1) ──
+        self.execution_ledger = ExecutionLedger()
+        # ── AgentExecutionState — état structuré (V1) ──
+        self.exec_state = AgentExecutionState()
+
+    # ── Propriétés-alias : compatibilité transitoire vers exec_state ─────
+    # Permettent à tout le code existant de continuer à écrire
+    # self._consecutive_same_action = X  et  if self._run_meta[...]:
+    # sans changement, tout en centralisant l'état dans exec_state.
+    # À retirer progressivement quand les consommateurs seront migrés.
+
+    # --- guards ---
+    @property
+    def _consecutive_same_action(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.consecutive_same_action
+    @_consecutive_same_action.setter
+    def _consecutive_same_action(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.consecutive_same_action = v
+
+    @property
+    def _last_action_signature(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.last_action_signature
+    @_last_action_signature.setter
+    def _last_action_signature(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.last_action_signature = v
+
+    @property
+    def _pending_loop_guidance(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.pending_loop_guidance
+    @_pending_loop_guidance.setter
+    def _pending_loop_guidance(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.pending_loop_guidance = v
+
+    @property
+    def _last_auto_advance_iter(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.last_auto_advance_iter
+    @_last_auto_advance_iter.setter
+    def _last_auto_advance_iter(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.last_auto_advance_iter = v
+
+    @property
+    def _last_browser_visual_iter(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.last_browser_visual_iter
+    @_last_browser_visual_iter.setter
+    def _last_browser_visual_iter(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.last_browser_visual_iter = v
+
+    @property
+    def _browser_blind_streak(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.browser_blind_streak
+    @_browser_blind_streak.setter
+    def _browser_blind_streak(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.browser_blind_streak = v
+
+    # --- repairs ---
+    @property
+    def _final_repair_attempts(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.final_repair_attempts
+    @_final_repair_attempts.setter
+    def _final_repair_attempts(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.final_repair_attempts = v
+
+    @property
+    def _hallucination_repair_attempts(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.hallucination_repair_attempts
+    @_hallucination_repair_attempts.setter
+    def _hallucination_repair_attempts(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.hallucination_repair_attempts = v
+
+    @property
+    def _thought_leak_repairs(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.thought_leak_repairs
+    @_thought_leak_repairs.setter
+    def _thought_leak_repairs(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.thought_leak_repairs = v
+
+    @property
+    def _premature_final_retries(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.premature_final_retries
+    @_premature_final_retries.setter
+    def _premature_final_retries(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.premature_final_retries = v
+
+    @property
+    def _plan_guard_retries(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.plan_guard_retries
+    @_plan_guard_retries.setter
+    def _plan_guard_retries(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.plan_guard_retries = v
+
+    @property
+    def _verbalization_redirects(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.verbalization_redirects
+    @_verbalization_redirects.setter
+    def _verbalization_redirects(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.verbalization_redirects = v
+
+    @property
+    def _action_inline_count(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.action_inline_count
+    @_action_inline_count.setter
+    def _action_inline_count(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.action_inline_count = v
+
+    @property
+    def _ledger_final_guard_used(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.ledger_final_guard_used
+    @_ledger_final_guard_used.setter
+    def _ledger_final_guard_used(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.ledger_final_guard_used = v
+
+    @property
+    def _pre_repair_answer(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.pre_repair_answer
+    @_pre_repair_answer.setter
+    def _pre_repair_answer(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.pre_repair_answer = v
+
+    @property
+    def _after_delegate_success(self):
+        self._ensure_exec_state()
+        return self.exec_state.repairs.after_delegate_success
+    @_after_delegate_success.setter
+    def _after_delegate_success(self, v):
+        self._ensure_exec_state()
+        self.exec_state.repairs.after_delegate_success = v
+
+    # --- budget ---
+    @property
+    def _category_iter_counts(self):
+        self._ensure_exec_state()
+        return self.exec_state.budget.iter_counts
+    @_category_iter_counts.setter
+    def _category_iter_counts(self, v):
+        self._ensure_exec_state()
+        self.exec_state.budget.iter_counts = v
+
+    # --- run_meta (proxy dict → RunMeta dataclass) ---
+    def _ensure_exec_state(self):
+        """Lazy-init exec_state si absent (ex: object.__new__ dans les tests)."""
+        if not hasattr(self, 'exec_state'):
+            self.exec_state = AgentExecutionState()
+
+    @property
+    def _run_meta(self):
+        self._ensure_exec_state()
+        return RunMetaProxy(self.exec_state.run_meta)
+    @_run_meta.setter
+    def _run_meta(self, v):
+        self._ensure_exec_state()
+        if isinstance(v, dict):
+            self.exec_state.run_meta.agent_output_incomplete = v.get("agent_output_incomplete", False)
+            self.exec_state.run_meta.agent_output_warning = v.get("agent_output_warning")
+            self.exec_state.run_meta.agent_repair_attempts = v.get("agent_repair_attempts", 0)
+            self.exec_state.run_meta.agent_final_finish_reason = v.get("agent_final_finish_reason")
+
+    # --- session tools ---
+    @property
+    def _all_session_tools(self):
+        self._ensure_exec_state()
+        return self.exec_state.all_session_tools
+    @_all_session_tools.setter
+    def _all_session_tools(self, v):
+        self._ensure_exec_state()
+        self.exec_state.all_session_tools = v
+
+    # --- last_llm_meta ---
+    @property
+    def _last_llm_meta(self):
+        self._ensure_exec_state()
+        return self.exec_state.last_llm_meta
+    @_last_llm_meta.setter
+    def _last_llm_meta(self, v):
+        self._ensure_exec_state()
+        self.exec_state.last_llm_meta = v
 
     @staticmethod
     def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -286,9 +577,16 @@ class ReActLoop:
         if not self._orchestrator_enabled():
             return
         try:
+            # Enrichir le checkpoint avec la projection du ledger (si disponible)
+            enriched = payload
+            if hasattr(self, 'execution_ledger') and self.execution_ledger.size > 0:
+                from ..runtime.task_orchestrator import TaskOrchestrator as _TO
+                enriched = _TO.enrich_checkpoint(
+                    payload, self.execution_ledger.checkpoint_projection(),
+                )
             mark_checkpoint = getattr(self.task_orchestrator, "mark_checkpoint", None)
             if callable(mark_checkpoint):
-                mark_checkpoint(self.task_id, payload)
+                mark_checkpoint(self.task_id, enriched)
         except Exception as exc:
             logger.debug("task orchestrator mark_checkpoint skipped: {}", exc)
 
@@ -296,6 +594,16 @@ class ReActLoop:
         if not self._orchestrator_enabled():
             return
         try:
+            # Enrichir le checkpoint final avec la projection du ledger
+            if hasattr(self, 'execution_ledger') and self.execution_ledger.size > 0:
+                from ..runtime.task_orchestrator import TaskOrchestrator as _TO
+                final_cp = _TO.enrich_checkpoint(
+                    {"phase": "done"},
+                    self.execution_ledger.checkpoint_projection(),
+                )
+                mark_checkpoint = getattr(self.task_orchestrator, "mark_checkpoint", None)
+                if callable(mark_checkpoint):
+                    mark_checkpoint(self.task_id, final_cp)
             mark_done = getattr(self.task_orchestrator, "mark_done", None)
             if callable(mark_done):
                 mark_done(self.task_id, result_summary=summary[:1000])
@@ -315,6 +623,257 @@ class ReActLoop:
                 )
         except Exception as exc:
             logger.debug("task orchestrator mark_waiting_io skipped: {}", exc)
+
+    # ── StructuredState: accès sûr au structured_state du ConversationContext ──
+
+    @property
+    def _structured_state(self):
+        """Retourne le StructuredState du ConversationContext, ou None si indisponible."""
+        ctx = getattr(self, 'conversation_context', None)
+        if ctx is not None and hasattr(ctx, 'structured_state'):
+            return ctx.structured_state
+        return None
+
+    def _feed_structured_tool(self, tool_name: str) -> None:
+        """Enregistre un outil dans le structured_state (recent_tools)."""
+        ss = self._structured_state
+        if ss is not None:
+            ss.record_tool(tool_name)
+
+    def _feed_structured_intent(self, intent: Optional[str]) -> None:
+        """Alimente last_intent avec la valeur classifiée."""
+        if intent is None:
+            return
+        ss = self._structured_state
+        if ss is not None:
+            ss.last_intent = str(intent).strip() or None
+
+    @staticmethod
+    def _infer_intent_from_query(query: str) -> Optional[str]:
+        """Inférence légère de l'intent depuis la requête (fallback sans classifier).
+
+        Retourne une valeur grossière parmi :
+        code_edit | discord | web_search | file_ops | create_project | conversation | question
+        Retourne None si aucun signal clair.
+        """
+        q = query.lower()
+        if any(k in q for k in ("discord", "salon", "channel", "serveur discord", "guild")):
+            return "discord"
+        if any(k in q for k in ("modifie", "edit", "corrige", "bug", "refactor", "implémente", "implement", "ajoute", "add", "crée", "create")):
+            if any(k in q for k in ("fichier", "file", "code", "fonction", "class", "méthode", "method", "module")):
+                return "code_edit"
+        if any(k in q for k in ("recherche", "search", "trouve", "find", "google", "web")):
+            return "web_search"
+        if any(k in q for k in ("projet", "project", "app", "application", "crée un", "create a", "génère", "generate")):
+            return "create_project"
+        if any(k in q for k in ("lis", "read", "ouvre", "open", "affiche", "show", "liste")):
+            return "file_ops"
+        if q.endswith("?") or any(k in q for k in ("comment", "pourquoi", "qu'est", "what is", "how", "why", "explique", "explain")):
+            return "question"
+        return None
+
+    def _feed_structured_clarification(self, question: str) -> None:
+        """Ajoute une question en attente au structured_state."""
+        ss = self._structured_state
+        if ss is not None:
+            ss.add_pending_question(question)
+
+    def _reset_structured_pending(self) -> None:
+        """Efface les questions en attente au début d'un nouveau run.
+
+        Le nouveau message de l'utilisateur résout implicitement les clarifications
+        précédemment émises — on repart d'un état propre.
+        """
+        ss = self._structured_state
+        if ss is not None:
+            ss.clear_pending_questions()
+
+    def _feed_structured_facts_from_runtime(self) -> None:
+        """Pose des established_facts fiables depuis le runtime_ctx."""
+        ss = self._structured_state
+        if ss is None:
+            return
+        rt = getattr(self, 'runtime_ctx', None)
+        if rt is None:
+            return
+        # channel — attribut commun aux deux variantes de RuntimeContext
+        channel = getattr(rt, 'channel', None) or getattr(rt, 'source_channel', None)
+        if channel:
+            ss.set_fact("channel", str(channel))
+        # workspace — préférer resolved_workspace (plus fiable) à workspace_path
+        workspace = getattr(rt, 'resolved_workspace', None) or getattr(rt, 'workspace_path', None)
+        if workspace:
+            ss.set_fact("workspace", str(workspace))
+        # fichier actif dans l'IDE (signal stable, fourni par le plugin)
+        active_file = getattr(rt, 'active_file_path', None)
+        if active_file:
+            ss.set_fact("active_file", str(active_file))
+        # active_project_path — projet actif récent (sans keyword gate : c'est un fait structurel)
+        # Uniquement si pas encore posé dans ce run et pas de workspace IDE explicite
+        if not ss.established_facts.get("active_project_path"):
+            _ide_ws = getattr(rt, 'resolved_workspace', None) or getattr(rt, 'workspace_path', None)
+            if not _ide_ws:
+                try:
+                    _lum_sf = getattr(self, 'tools', None)
+                    _lum_sf = getattr(_lum_sf, 'lumena', None) if _lum_sf else None
+                    _id_svc_sf = getattr(_lum_sf, '_identity_svc', None) if _lum_sf else None
+                    if _id_svc_sf is not None:
+                        from ..core_services.identity_service import IdentityService as _IDS_SF
+                        _ck_sf = _IDS_SF.resolve_channel_key(rt)
+                        _rpc_sf = _id_svc_sf.get_recent_code_context(_ck_sf) if _ck_sf else None
+                        if _rpc_sf:
+                            _path_sf = _rpc_sf.get("workspace_path", "")
+                            _slug_sf = _rpc_sf.get("project_slug", "")
+                            if _path_sf:
+                                ss.set_fact("active_project_path", _path_sf)
+                                if _slug_sf:
+                                    ss.set_fact("active_project_slug", _slug_sf)
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _looks_like_local_code_fix(
+        query: str,
+        *,
+        has_project_anchor: bool,
+        inferred_intent: Optional[str] = None,
+    ) -> bool:
+        """Heuristique conservative pour les correctifs/code local bornés.
+
+        But: desserrer les garde-fous de boucle sur les tâches de dev simples
+        sans relâcher les cas ambigus ou de refonte large.
+        """
+        q = (query or "").lower()
+        if not q:
+            return False
+        broad_scope_markers = (
+            "refonte", "rewrite", "réécris", "reécris", "from scratch",
+            "architecture", "restructure", "fusionne", "merge tout",
+            "tout le projet", "whole project", "réorganise", "migre",
+            "migration", "clean architecture", "full rewrite",
+        )
+        if any(k in q for k in broad_scope_markers):
+            return False
+        local_fix_markers = (
+            "corrige", "correct", "fix", "bug", "erreur", "crash", "plante",
+            "marche pas", "ne marche pas", "cassé", "casse", "bloque",
+            "touche", "entrée", "enter", "bouton", "click", "clic",
+            "fonctionne pas", "répare", "repare",
+        )
+        file_hint = bool(re.search(r"\b[\w.\-]+\.(?:py|js|ts|tsx|jsx|html|css|json|md|ya?ml|toml)\b", q))
+        intent_hint = inferred_intent in {"code_edit", "file_ops"}
+        local_signal = any(k in q for k in local_fix_markers) or file_hint or intent_hint
+        return local_signal and (has_project_anchor or file_hint)
+
+    def _is_direct_coding_request(self, query: str) -> bool:
+        """Détecte les tâches de dev simples qui supportent mal les guards lourds."""
+        has_anchor = False
+        ide_ctx = getattr(self.tools, "ide_context", {}) or {}
+        if ide_ctx.get("workspace_path") or ide_ctx.get("active_file_path"):
+            has_anchor = True
+        ss = self._structured_state
+        inferred_intent = ss.last_intent if ss is not None else None
+        if ss is not None:
+            facts = getattr(ss, "established_facts", {}) or {}
+            if facts.get("workspace") or facts.get("active_file"):
+                has_anchor = True
+        if not has_anchor:
+            _lum = getattr(self.tools, "lumena", None)
+            _id_svc = getattr(_lum, "_identity_svc", None) if _lum else None
+            if _id_svc is not None and self.runtime_ctx is not None:
+                try:
+                    from ..core_services.identity_service import IdentityService as _IDS
+                    _chan_key = _IDS.resolve_channel_key(self.runtime_ctx)
+                    _recent_ctx = _id_svc.get_recent_code_context(_chan_key) if _chan_key else None
+                    if _recent_ctx and _recent_ctx.get("workspace_path"):
+                        has_anchor = True
+                except Exception:
+                    pass
+        return self._looks_like_local_code_fix(
+            query,
+            has_project_anchor=has_anchor,
+            inferred_intent=inferred_intent,
+        )
+
+    # ── THOUGHT leak auto-clean ────────────────────────────────────────────
+
+    @staticmethod
+    def _strip_thought_leak_prefix(text: str) -> Optional[str]:
+        """Supprime les phrases de réflexion interne du début d'une réponse.
+
+        Retourne le texte nettoyé si du contenu utile reste (≥ 50 chars),
+        sinon None (la reformulation classique prendra le relais).
+        """
+        import re as _re
+
+        # Patterns de phrases internes à retirer du début.
+        # On retire phrase par phrase jusqu'à trouver du contenu utilisateur.
+        _STRIP_PATTERNS = [
+            # FR
+            _re.compile(
+                r"^(?:l['\u2018\u2019]utilisateur\s+(?:demande|veut|souhaite|a\s+demandé)[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:je\s+(?:dois|vais|peux)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:il\s+faut\s+que\s+je\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:(?:maintenant\s+que\s+j['\u2018\u2019]ai|après\s+avoir|sur\s+la\s+base\s+de|d['\u2018\u2019]après\s+les)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:(?:j['\u2018\u2019]ai\s+(?:déjà|maintenant|exécuté|effectué|analysé))[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:(?:rien\s+à\s+faire)[^.!?\n]{0,80}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            # EN
+            _re.compile(
+                r"^(?:the\s+user\s+(?:is\s+asking|wants|asked|requested)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:(?:i\s+(?:need\s+to|should|will)|i['\u2018\u2019](?:ll|ve)|let\s+me)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+            _re.compile(
+                r"^(?:(?:based\s+on|now\s+that\s+i\s+have|i\s+have\s+(?:already|now)|having\s+gathered)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+                _re.IGNORECASE,
+            ),
+        ]
+
+        cleaned = text.strip()
+        # On fait plusieurs passes (un prefix peut en cacher un autre)
+        for _ in range(5):
+            changed = False
+            for pat in _STRIP_PATTERNS:
+                m = pat.match(cleaned)
+                if m:
+                    cleaned = cleaned[m.end():].strip()
+                    changed = True
+                    break
+            if not changed:
+                break
+
+        # Sécurité : si on a trop nettoyé, retourner None
+        if not cleaned or len(cleaned) < 50:
+            return None
+        # Sécurité : si le résultat commence toujours par un prefix interne, abandonner
+        _cl = cleaned.lower()
+        _STILL_INTERNAL = (
+            "l'utilisateur", "je dois ", "je vais ", "il faut que je",
+            "the user ", "i need to", "i should ", "i will now",
+        )
+        if any(_cl.startswith(p) for p in _STILL_INTERNAL):
+            return None
+        return cleaned
 
     def _mark_task_failed(self, error: str) -> None:
         if not self._orchestrator_enabled():
@@ -763,6 +1322,58 @@ REGLES STRICTES:
 - Pour les operations fichiers, travaille d'abord dans ce workspace IDE.
 """
 
+        # --- Projet actif récent (continuité multi-tour) ---
+        # Injecté uniquement si la requête ressemble à une continuation et qu'un
+        # projet a été créé/modifié lors d'un tour précédent sur ce canal.
+        recent_project_context = ""
+        if not ide_workspace:  # Ne pas surcharger si l'IDE donne déjà le workspace
+            _rpc_path = ""
+            _rpc_slug = ""
+            # 1.3: Lire established_facts en priorité (zéro lock, déjà posé par _feed_structured_facts)
+            _ss_rpc = self._structured_state
+            if _ss_rpc is not None:
+                _rpc_path = _ss_rpc.established_facts.get("active_project_path", "")
+                _rpc_slug = _ss_rpc.established_facts.get("active_project_slug", "")
+            # Fallback: IdentityService si le fait n'est pas encore posé dans ce run
+            if not _rpc_path:
+                _lum_rpc = getattr(self.tools, "lumena", None)
+                _id_svc = getattr(_lum_rpc, "_identity_svc", None) if _lum_rpc else None
+                if _id_svc is not None and self.runtime_ctx is not None:
+                    try:
+                        from ..core_services.identity_service import IdentityService as _IDS
+                        _chan_key = _IDS.resolve_channel_key(self.runtime_ctx)
+                        _recent_ctx = _id_svc.get_recent_code_context(_chan_key) if _chan_key else None
+                        if _recent_ctx:
+                            _rpc_path = _recent_ctx.get("workspace_path", "")
+                            _rpc_slug = _recent_ctx.get("project_slug", "")
+                    except Exception as _rpc_exc:
+                        logger.debug("[RecentProject] Échec récupération contexte: {}", _rpc_exc)
+            if _rpc_path:
+                # 2.3: Liste élargie pour couvrir le français familier
+                _CONT_KW = (
+                    "corrige", "correct", "fix", "fixe", "bug",
+                    "continue", "suite", "fais la suite",
+                    "améliore", "ameliore", "complète", "complete",
+                    "marche pas", "ça bug", "ça crash", "ça plante",
+                    "refais", "re-fais", "le jeu", "le projet",
+                    "l'appli", "le site", "le code",
+                    "toujours pas", "ça marche toujours pas", "le dernier truc",
+                    "change-le", "relance-le", "encore une fois", "pas encore",
+                    "retente", "le même", "le truc", "c'est encore",
+                    "reessaie", "réessaie", "reprends", "retravaille",
+                )
+                _is_continuation = any(k in query_lower for k in _CONT_KW)
+                if _is_continuation:
+                    _label = _rpc_slug or _rpc_path.replace("\\", "/").rsplit("/", 1)[-1]
+                    recent_project_context = (
+                        f"\n## PROJET ACTIF RÉCENT (priorité continuité) :\n"
+                        f"- Chemin : `{_rpc_path}`\n"
+                        f"- Nom : {_label}\n"
+                        f"- Ce projet a été créé/modifié lors d'un tour récent.\n"
+                        f"- Réutilise ce chemin **en priorité** pour `delegate_task` "
+                        f"ou toute opération sur le projet, sans relancer find_files.\n"
+                    )
+
         # --- Sandbox Docker (necessaire pour choix d'outil correct) ---
         sandbox_context = ""
         try:
@@ -955,6 +1566,7 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
 {active_skills_section}
 {mail_accounts_context}
 {ide_runtime_context}
+{recent_project_context}
 {sandbox_context}
 {video_context}
 {_recent_failures_section}
@@ -1191,6 +1803,9 @@ Maintenant, reflechis et reponds:"""
 
         hints = _TOOL_COMPLETION_HINTS.get(tool_name, [])
         tool_lower = tool_name.lower()
+        # Guard 5 pré-calculé : si l'outil est exploratoire, aucune tâche métier
+        # ne peut être marquée par aucune voie (sem, seq, auto).
+        _is_exploration_for_guard5 = tool_name in _EXPLORATION_TOOLS_STRICT
 
         _any_matched = False
         _has_specific_match = False  # True si au moins un arg/tool/obs match (pas juste hint)
@@ -1200,6 +1815,19 @@ Maintenant, reflechis et reponds:"""
             if task.completed:
                 continue
             desc_lower = task.description.lower()
+
+            # Guard 5 : outil exploratoire ne peut jamais cocher une tâche métier
+            if _is_exploration_for_guard5:
+                _task_desc_norm = _normalize_guard_token(desc_lower)
+                if any(
+                    _task_desc_norm == starter or _task_desc_norm.startswith(starter + " ")
+                    for starter in _BUSINESS_ACTION_STARTERS_NORMALIZED
+                ):
+                    logger.debug(
+                        "[PLAN] Guard 5 (sémantique): tâche métier '{}' non marquable par {} (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue  # ignore ce task, passe au suivant
 
             hint_match = any(h in desc_lower for h in hints)
             tool_match = tool_lower in desc_lower
@@ -1251,7 +1879,11 @@ Maintenant, reflechis et reponds:"""
         # Le break est DANS le if pour ne pas bloquer sur une tâche non-matchante
         # (ex: étape 2 "Identifier X" ne contient pas "scan" → continuer vers étape 3).
         _seq_matched = False
-        if not _any_matched and not observation_has_failure:
+        # Les outils purement info/inspection ne peuvent pas cocher une tâche métier
+        # via le fallback séquentiel : "config" dans get_lumena_config matcherait
+        # faussement "Configurer les rôles" sans que rien n'ait été fait.
+        _seq_fallback_blocked = tool_name in _SEQ_FALLBACK_BLOCKLIST
+        if not _any_matched and not observation_has_failure and not _seq_fallback_blocked:
             tool_words = {w for w in tool_lower.replace("_", " ").split() if len(w) > 2}
             for task in self._task_plan:
                 if not task.completed:
@@ -1310,6 +1942,10 @@ Maintenant, reflechis et reponds:"""
             # sont marquées completed d'un coup sans rapport avec le contenu réel)
             if self._last_auto_advance_iter == iteration:
                 pass  # déjà auto-avancé cette itération
+            # Garde 1b: parallel_tools agrège plusieurs sous-outils et ne doit jamais
+            # auto-avancer à lui seul une tâche métier via ce fallback générique.
+            elif tool_name == "parallel_tools":
+                pass
             # Garde 2: pas d'auto-avancement trop tôt (itération 0) sauf si
             # l'observation contient un marqueur de succès explicite (✅)
             elif iteration < 1 and "\u2705" not in (observation_content or ""):
@@ -1327,10 +1963,27 @@ Maintenant, reflechis et reponds:"""
                 for task in self._task_plan:
                     if not task.completed:
                         desc_lower = task.description.lower()
-                        # Extraire les noms d'outils potentiels dans la description
+
+                        # Guard 5 : un outil d'exploration ne peut pas auto-avancer
+                        # une tâche métier (premier mot = verbe d'action).
+                        # Ex : run_command("cd") ne peut pas cocher "Déléguer …".
+                        if (
+                            tool_name in _EXPLORATION_TOOLS_STRICT
+                            and any(
+                                _normalize_guard_token(desc_lower) == starter
+                                or _normalize_guard_token(desc_lower).startswith(starter + " ")
+                                for starter in _BUSINESS_ACTION_STARTERS_NORMALIZED
+                            )
+                        ):
+                            logger.debug(
+                                "[PLAN] Guard 5: tâche métier '{}' non marquable par outil exploratoire {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+
+                        # Guard 4 : la description référence un outil spécifique qui
+                        # n'est pas le tool courant → l'auto-avancement est illégitime
                         _tool_refs = _re_plan.findall(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', desc_lower)
-                        # Si la description référence un outil spécifique ET ce n'est
-                        # pas le tool courant → l'auto-avancement est illégitime
                         if _tool_refs and tool_name.lower() not in _tool_refs:
                             logger.debug(
                                 "[PLAN] Auto-avancement bloqué: '{}' référence {} mais tool={} (iter {})",
@@ -1375,6 +2028,80 @@ Maintenant, reflechis et reponds:"""
             return  # Aucun changement, ne pas spammer le SSE
         self._plan_last_emit_state = state
         logger.info("TODO_STATE:" + state)
+
+    def _reconcile_plan_from_delegate_success(self, obs_text: str, iteration: int) -> int:
+        """Réconcilie le plan après un succès delegate_task.
+
+        Contourne la limite _MAX_COMPLETIONS_PER_CALL=2 pour les rapports de
+        CodeAgent qui couvrent plusieurs étapes en un seul appel.
+
+        Stratégie en deux passes :
+        1. Matching sémantique : cherche des marqueurs de succès dans obs_text
+           qui correspondent aux descriptions de tâches du plan.
+        2. Fallback global : si plan court (≤5 tâches) + succès clair + une seule
+           délégation → marquer tout le reste comme complété par le rapport.
+
+        Retourne le nombre de tâches marquées completed.
+        """
+        if not self._task_plan:
+            return 0
+
+        obs_lower = obs_text.lower()
+
+        # Marqueurs de succès génériques dans le rapport CodeAgent
+        _success_markers = (
+            "✅", "créé", "corrigé", "réparé", "terminé", "généré",
+            "modifié", "écrit", "ajouté", "supprimé", "renommé",
+            "bug fix", "fixed", "done", "complete", "success",
+        )
+        _has_clear_success = any(m in obs_lower for m in _success_markers)
+
+        marked = 0
+
+        # Passe 1 : matching sémantique entre obs_text et descriptions de tâches
+        for task in self._task_plan:
+            if task.completed:
+                continue
+            desc_lower = task.description.lower()
+            # Chercher des mots significatifs de la description dans l'observation
+            _words = [w for w in desc_lower.split() if len(w) > 4]
+            _word_hits = sum(1 for w in _words if w in obs_lower)
+            # 2+ mots de la description trouvés dans le rapport = match suffisant
+            if _word_hits >= 2:
+                task.completed = True
+                task.completed_at_iteration = iteration
+                task.completed_by_tool = "delegate_task:report"
+                marked += 1
+                logger.debug(
+                    "[PLAN] Réconciliation delegate: '{}' marquée via rapport ({} mots matchés)",
+                    task.description, _word_hits,
+                )
+
+        # Passe 2 : fallback global pour plans courts avec succès évident
+        _remaining = [t for t in self._task_plan if not t.completed]
+        if (
+            _has_clear_success
+            and len(self._task_plan) <= 5
+            and _remaining
+        ):
+            for task in _remaining:
+                task.completed = True
+                task.completed_at_iteration = iteration
+                task.completed_by_tool = "delegate_task:report:fallback"
+                marked += 1
+                logger.debug(
+                    "[PLAN] Réconciliation fallback: '{}' marquée (plan court + succès clair)",
+                    task.description,
+                )
+
+        if marked:
+            logger.info(
+                "[PLAN] Réconciliation delegate_task: {} tâche(s) marquée(s) completed (iter {})",
+                marked, iteration,
+            )
+            self._emit_plan_state(context_tool="delegate_task")
+
+        return marked
 
     async def run(self, query: str) -> str:
         """
@@ -1505,48 +2232,55 @@ Maintenant, reflechis et reponds:"""
                 except Exception:
                     _intent_for_filter = None
                 self.tools.apply_context_filter(query, intent=_intent_for_filter)
+                # ── StructuredState V1 : alimenter last_intent (classifier) ──
+                self._feed_structured_intent(_intent_for_filter)
+                # Fallback léger si le classifier n'a rien donné
+                if _intent_for_filter is None:
+                    self._feed_structured_intent(self._infer_intent_from_query(query))
+        else:
+            # Classifier non invoqué (_caller_set_allowed=True) : fallback keyword
+            self._feed_structured_intent(self._infer_intent_from_query(query))
 
         single_file_creation_intent = self._is_single_file_creation_request(original_query)
-        self._run_meta = {
-            "agent_output_incomplete": False,
-            "agent_output_warning": None,
-            "agent_repair_attempts": 0,
-            "agent_final_finish_reason": None,
-        }
-        self._final_repair_attempts = 0
-        self._hallucination_repair_attempts = 0
-        self._last_llm_meta = {}
-        # Reset détection de boucle pour éviter contamination entre runs successifs
-        self._consecutive_same_action = 0
-        self._last_action_signature = None
-        self._pending_loop_guidance = None
-        self._last_auto_advance_iter = -1
-        last_read_signature: Optional[tuple[str, int, Optional[int]]] = None
-        repeated_read_count = 0
-        _listed_dirs: set = set()  # Track already-listed directories to prevent loops
-        browser_fail_streak = 0
-        web_fetch_fail_streak = 0
-        _read_file_path_counter: Dict[str, int] = {}  # Compteur read_file par path
-        _read_file_ranges_seen: Dict[str, set] = {}  # Plages déjà lues par path
-        _read_file_reread_counter: Dict[str, int] = {}  # Nb relectures (plages déjà vues)
-        _previous_thoughts: List[str] = []  # Historique des thoughts pour détection stagnation
-        _stagnation_streak: int = 0  # Compteur consécutif de stagnations détectées
-        _exploratory_since_productive: int = 0  # Compteur exploratoire depuis dernière action productive
-        # Détecteur de stagnation post-édition : read-only loop après des écritures
+        # ── Reset état structuré pour ce run ──
+        self.exec_state.reset()
+        self.execution_ledger.clear()
+        # ── StructuredState V1 : nouveau run = questions en attente résolues ──
+        self._reset_structured_pending()
+        # Effacer le projet actif pour le re-évaluer depuis get_recent_code_context.
+        _ss_reset = self._structured_state
+        if _ss_reset is not None:
+            _ss_reset.remove_fact("active_project_path")
+            _ss_reset.remove_fact("active_project_slug")
+        # ── StructuredState V1 : faits fiables depuis runtime_ctx ──
+        self._feed_structured_facts_from_runtime()
+        _direct_coding_mode = self._is_direct_coding_request(query)
+        if _direct_coding_mode:
+            self._run_meta["agent_output_warning"] = "direct_coding_mode"
+        # Alias locaux vers guards (les locals existants pointent dans exec_state)
+        _g = self.exec_state.guards
+        last_read_signature = _g.last_read_signature
+        repeated_read_count = _g.repeated_read_count
+        _listed_dirs = _g.listed_dirs
+        browser_fail_streak = _g.browser_fail_streak
+        web_fetch_fail_streak = _g.web_fetch_fail_streak
+        _read_file_path_counter = _g.read_file_path_counter
+        _read_file_ranges_seen = _g.read_file_ranges_seen
+        _read_file_reread_counter = _g.read_file_reread_counter
+        _previous_thoughts = _g.previous_thoughts
+        _stagnation_streak = _g.stagnation_streak
+        _exploratory_since_productive = _g.exploratory_since_productive
         _write_tools = frozenset({"write_file", "edit_file", "apply_patch", "create_directory",
                                    "run_command", "check_web_project"})
         _read_only_tools = frozenset({"read_file", "list_directory", "find_files",
                                        "grep_search", "search_in_code", "view_file_outline"})
-        _post_edit_read_streak: int = 0   # nb d'iter read-only consécutives après une édition
-        _redundant_read_streak: int = 0   # lectures redondantes consécutives (même fichier+zone+intention)
-        _last_read_sig: tuple | None = None  # (fichier, zone_bucket, intention) de la dernière lecture
-        _has_done_edits: bool = False      # au moins une écriture a eu lieu dans cette session
-        _web_writes_count: int = 0         # nb de write_file sur fichiers web (.html/.css/.js)
-        # Guard pré-édition : détecte les boucles de lecture redondantes en phase d'exploration
-        # (avant tout edit). Seuil plus haut que le guard post-édition car l'exploration
-        # légitime peut lire plusieurs fichiers, mais une vraie boucle finit par revenir au même.
-        _pre_edit_redundant_streak: int = 0
-        _pre_edit_last_sig: tuple | None = None
+        _post_edit_read_streak = _g.post_edit_read_streak
+        _redundant_read_streak = _g.redundant_read_streak
+        _last_read_sig = _g.last_read_sig
+        _has_done_edits = _g.has_done_edits
+        _web_writes_count = _g.web_writes_count
+        _pre_edit_redundant_streak = _g.pre_edit_redundant_streak
+        _pre_edit_last_sig = _g.pre_edit_last_sig
 
 
         # ── Pipeline Direct : workflows connus exécutés sans boucle ReAct ──
@@ -1694,6 +2428,8 @@ Maintenant, reflechis et reponds:"""
             _stagnation_limit = (
                 2 if getattr(self._model_profile, "react_stability", "stable") == "unstable" else 3
             ) if self._model_profile else 3
+            if _direct_coding_mode:
+                _stagnation_limit = max(_stagnation_limit, 4)
             # P5 — action_inline_risk : nb inline avant injection rappel format
             _inline_risk = getattr(self._model_profile, "action_inline_risk", "low") if self._model_profile else "low"
             _inline_reminder_thresh = 1 if _inline_risk == "high" else (2 if _inline_risk == "medium" else 0)
@@ -2157,49 +2893,51 @@ Maintenant, reflechis et reponds:"""
                         repeated_read_count = 0
 
                     # Guard par path : distinguer nouvelles plages vs relectures
-                    _range_key = (start_line, end_line)
-                    _read_file_path_counter[target_path] = _read_file_path_counter.get(target_path, 0) + 1
-                    _rf_count = _read_file_path_counter[target_path]
-                    if target_path not in _read_file_ranges_seen:
-                        _read_file_ranges_seen[target_path] = set()
-                    _is_reread = _range_key in _read_file_ranges_seen[target_path]
-                    _read_file_ranges_seen[target_path].add(_range_key)
-                    if _is_reread:
-                        _read_file_reread_counter[target_path] = _read_file_reread_counter.get(target_path, 0) + 1
-                    _reread_count = _read_file_reread_counter.get(target_path, 0)
-                    # Seuils adaptatifs : fichiers longs tolèrent plus de lectures distinctes
-                    _max_total = max(8, len(_read_file_ranges_seen[target_path]) + 4)  # au moins 8
-                    if _rf_count >= 4:
-                        logger.warning(
-                            "⚠️ read_file sur '{}' appelé {}x ({}x nouvelles plages, {}x relectures)",
-                            target_path,
-                            _rf_count,
-                            len(_read_file_ranges_seen[target_path]),
-                            _reread_count,
-                        )
-                    # Forcer FINAL si trop de relectures OU trop de lectures totales
-                    if _reread_count >= 3 or _rf_count >= _max_total:
-                        _reason = (
-                            f"relectures={_reread_count}" if _reread_count >= 3
-                            else f"total={_rf_count}/{_max_total}"
-                        )
-                        logger.warning(
-                            "⚠️ read_file stagnation sur '{}' — forçage FINAL ({})",
-                            target_path,
-                            _reason,
-                        )
-                        _finish_iteration(status="ok", summary=f"forced_final_read_stagnation_{_reason}")
-                        summary_parts = []
-                        for h in self.history[-5:]:
-                            if h.observation and h.observation.content:
-                                summary_parts.append(h.observation.content[:300])
-                        message = (
-                            f"J'ai analysé le fichier '{target_path}' en détail. "
-                            "Voici ce que j'ai trouvé :\n\n"
-                            + "\n".join(summary_parts[-2:])
-                        )
-                        self._mark_task_done(message)
-                        return message
+                    # path vide = appel sans argument → échoue au registry, on ne tracke pas
+                    if target_path:
+                        _range_key = (start_line, end_line)
+                        _read_file_path_counter[target_path] = _read_file_path_counter.get(target_path, 0) + 1
+                        _rf_count = _read_file_path_counter[target_path]
+                        if target_path not in _read_file_ranges_seen:
+                            _read_file_ranges_seen[target_path] = set()
+                        _is_reread = _range_key in _read_file_ranges_seen[target_path]
+                        _read_file_ranges_seen[target_path].add(_range_key)
+                        if _is_reread:
+                            _read_file_reread_counter[target_path] = _read_file_reread_counter.get(target_path, 0) + 1
+                        _reread_count = _read_file_reread_counter.get(target_path, 0)
+                        # Seuils adaptatifs : fichiers longs tolèrent plus de lectures distinctes
+                        _max_total = max(8, len(_read_file_ranges_seen[target_path]) + 4)  # au moins 8
+                        if _rf_count >= 4:
+                            logger.warning(
+                                "⚠️ read_file sur '{}' appelé {}x ({}x nouvelles plages, {}x relectures)",
+                                target_path,
+                                _rf_count,
+                                len(_read_file_ranges_seen[target_path]),
+                                _reread_count,
+                            )
+                        # Forcer FINAL si trop de relectures OU trop de lectures totales
+                        if _reread_count >= 3 or _rf_count >= _max_total:
+                            _reason = (
+                                f"relectures={_reread_count}" if _reread_count >= 3
+                                else f"total={_rf_count}/{_max_total}"
+                            )
+                            logger.warning(
+                                "⚠️ read_file stagnation sur '{}' — forçage FINAL ({})",
+                                target_path,
+                                _reason,
+                            )
+                            _finish_iteration(status="ok", summary=f"forced_final_read_stagnation_{_reason}")
+                            summary_parts = []
+                            for h in self.history[-5:]:
+                                if h.observation and h.observation.content:
+                                    summary_parts.append(h.observation.content[:300])
+                            message = (
+                                f"J'ai analysé le fichier '{target_path}' en détail. "
+                                "Voici ce que j'ai trouvé :\n\n"
+                                + "\n".join(summary_parts[-2:])
+                            )
+                            self._mark_task_done(message)
+                            return message
 
                 # Outils exemptés de détection de répétition (normaux d'être appelés plusieurs fois)
                 exempt_tools = [
@@ -2347,18 +3085,44 @@ Maintenant, reflechis et reponds:"""
                             _ctx: Dict[str, Any] = {}
                             # ── Déduire le workspace projet depuis l'historique ou la query ──
                             _esc_project_path = None
+                            # 4.1: Priorité 0 — established_facts (zéro lock, déjà résolu)
+                            try:
+                                _ss_esc = self._structured_state
+                                if _ss_esc is not None:
+                                    _ef_esc_path = _ss_esc.established_facts.get("active_project_path", "")
+                                    if _ef_esc_path and os.path.isdir(_ef_esc_path):
+                                        _esc_project_path = _ef_esc_path
+                                        logger.info("[ReAct] Escalade: project_path depuis established_facts: {}", _ef_esc_path[:80])
+                            except Exception:
+                                pass
+                            # Priorité 1 — IdentityService si le fait n'est pas posé
+                            if not _esc_project_path:
+                                try:
+                                    _id_svc_esc = getattr(_lum, "_identity_svc", None)
+                                    if _id_svc_esc is not None and self.runtime_ctx is not None:
+                                        from ..core_services.identity_service import IdentityService as _IDS_E
+                                        _ck_esc = _IDS_E.resolve_channel_key(self.runtime_ctx)
+                                        _rpc_esc = _id_svc_esc.get_recent_code_context(_ck_esc) if _ck_esc else None
+                                        if _rpc_esc:
+                                            _rpc_path_esc = _rpc_esc.get("workspace_path", "")
+                                            if _rpc_path_esc and os.path.isdir(_rpc_path_esc):
+                                                _esc_project_path = _rpc_path_esc
+                                                logger.info("[ReAct] Escalade: project_path depuis contexte récent: {}", _rpc_path_esc[:80])
+                                except Exception:
+                                    pass
                             # 1. Chemin explicite dans la query
-                            _esc_qm = re.search(
-                                r'([A-Za-z]:\\[^\s]+?[\\/]workspace[\\/][\w\-]+)', query,
-                            )
-                            if not _esc_qm:
-                                _esc_qm = re.search(r'(workspace[\\/][\w\-]+)', query)
-                            if _esc_qm:
-                                _cand = _esc_qm.group(1)
-                                if not os.path.isabs(_cand) and _root:
-                                    _cand = os.path.join(str(_root), _cand)
-                                if os.path.isdir(_cand):
-                                    _esc_project_path = _cand
+                            if not _esc_project_path:
+                                _esc_qm = re.search(
+                                    r'([A-Za-z]:\\[^\s]+?[\\/]workspace[\\/][\w\-]+)', query,
+                                )
+                                if not _esc_qm:
+                                    _esc_qm = re.search(r'(workspace[\\/][\w\-]+)', query)
+                                if _esc_qm:
+                                    _cand = _esc_qm.group(1)
+                                    if not os.path.isabs(_cand) and _root:
+                                        _cand = os.path.join(str(_root), _cand)
+                                    if os.path.isdir(_cand):
+                                        _esc_project_path = _cand
                             # 2. Extraire depuis les file_path des actions récentes
                             if not _esc_project_path:
                                 for _h in reversed(self.history[-10:]):
@@ -2407,6 +3171,8 @@ Maintenant, reflechis et reponds:"""
                 # Détecte les relectures redondantes avant tout edit (ex: script.js lu 6x
                 # pendant une investigation, compaction → perte contexte → re-lecture).
                 if not _has_done_edits and action.tool_name in _read_only_tools:
+                    _pre_edit_guidance_at = 5 if _direct_coding_mode else 3
+                    _pre_edit_guidance_hard_at = 8 if _direct_coding_mode else 5
                     _curr_pre_sig = _compute_read_sig(action.tool_name, action.tool_args)
                     _pre_progressive = (
                         _pre_edit_last_sig is None
@@ -2424,7 +3190,7 @@ Maintenant, reflechis et reponds:"""
                         _pre_edit_redundant_streak += 1
                     _pre_edit_last_sig = _curr_pre_sig
 
-                    if _pre_edit_redundant_streak == 3:
+                    if _pre_edit_redundant_streak == _pre_edit_guidance_at:
                         logger.warning(
                             "⚠️ Boucle exploration: {} lectures redondantes sur même cible (pré-édition) — guidance injectée",
                             _pre_edit_redundant_streak,
@@ -2436,7 +3202,7 @@ Maintenant, reflechis et reponds:"""
                             "Si la tâche est complexe, utilise `delegate_task` pour confier "
                             "l'exploration à un agent spécialisé."
                         )
-                    elif _pre_edit_redundant_streak >= 5:
+                    elif _pre_edit_redundant_streak >= _pre_edit_guidance_hard_at:
                         # Pas de FINAL forcé : rien n'a encore été édité, forcer FINAL
                         # abandonnerait la tâche. On injecte une guidance maximale qui
                         # sera la première chose que voit le modèle à l'itération suivante.
@@ -2461,6 +3227,10 @@ Maintenant, reflechis et reponds:"""
                     _pre_edit_redundant_streak = 0
                     _pre_edit_last_sig = None
                 elif _has_done_edits and action.tool_name in _read_only_tools:
+                    _post_edit_guidance_total = 6 if _direct_coding_mode else 4
+                    _post_edit_guidance_redundant = 3 if _direct_coding_mode else 2
+                    _post_edit_force_redundant = 6 if _direct_coding_mode else 4
+                    _post_edit_force_total = 14 if _direct_coding_mode else 10
                     _post_edit_read_streak += 1
                     _curr_sig = _compute_read_sig(action.tool_name, action.tool_args)
                     _is_progressive = (
@@ -2480,8 +3250,8 @@ Maintenant, reflechis et reponds:"""
                     _last_read_sig = _curr_sig
 
                     # Guidance seulement si les lectures deviennent redondantes (≥2 redondantes)
-                    if _post_edit_read_streak >= 4 and _redundant_read_streak >= 2:
-                        if _redundant_read_streak == 2:
+                    if _post_edit_read_streak >= _post_edit_guidance_total and _redundant_read_streak >= _post_edit_guidance_redundant:
+                        if _redundant_read_streak == _post_edit_guidance_redundant:
                             logger.warning(
                                 "⚠️ Stagnation post-édition: {} lectures redondantes (même fichier/zone) — guidance injectée",
                                 _redundant_read_streak,
@@ -2493,7 +3263,7 @@ Maintenant, reflechis et reponds:"""
                                 "2) Corrige un problème trouvé avec write_file/edit_file, "
                                 "3) Conclus avec FINAL_ANSWER si les corrections sont terminées."
                             )
-                        elif _redundant_read_streak >= 4 or _post_edit_read_streak >= 10:
+                        elif _redundant_read_streak >= _post_edit_force_redundant or _post_edit_read_streak >= _post_edit_force_total:
                             # Forçage uniquement sur vraie boucle redondante (4+ identiques)
                             # ou si streak total dépasse 10 (garder un filet de sécurité)
                             logger.warning(
@@ -2708,6 +3478,8 @@ Maintenant, reflechis et reponds:"""
                 self._mark_task_checkpoint(checkpoint_payload)
                 self._mark_task_waiting_io("clarification_required", checkpoint=checkpoint_payload)
                 self._run_meta["agent_output_warning"] = "clarification_required"
+                # ── StructuredState V1 : enregistrer la question en attente ──
+                self._feed_structured_clarification(question)
                 _finish_iteration(status="ok", summary="clarify_waiting_io")
                 return question
             
@@ -2808,7 +3580,8 @@ Maintenant, reflechis et reponds:"""
                         # Mail envoyé
                         (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", ["mail_send", "send_email", "mail_reply_message"]),
                     ]
-                    _tools_used_this_session = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
+                    # _all_session_tools survit aux compactions — plus fiable que self.history
+                    _tools_used_this_session = self._all_session_tools
                     # ── Conversation-aware: inclure les outils des requêtes précédentes ──
                     _conv_tools: set = set()
                     try:
@@ -3061,6 +3834,116 @@ Maintenant, reflechis et reponds:"""
                     if _hb_noplan:
                         continue
 
+                # ── ExecutionLedger FINAL guard ──────────────────────────────
+                # Si le FINAL prétend avoir fait des mutations mais que le ledger
+                # ne contient aucune mutation réussie, bloquer une fois et forcer
+                # l'agent à exécuter réellement les outils.
+                # Garde conservateur : n'intervient que si :
+                #   1) la réponse FINAL affirme avoir agi (regex léger)
+                #   2) le ledger ne contient AUCUNE mutation réussie
+                #   3) on n'a pas déjà retry via ce guard
+                _ledger_guard_triggered = False
+                if not getattr(self, '_ledger_final_guard_used', False):
+                    _final_text_lower = ((action.answer or "") + " " + (thought.content or "")).lower()
+                    _CLAIM_PATTERNS = (
+                        "j'ai créé", "j'ai crée", "j'ai envoyé", "j'ai envoye",
+                        "j'ai écrit", "j'ai modifié", "j'ai configuré", "j'ai planifié",
+                        "j'ai enregistré", "j'ai sauvegardé", "j'ai généré",
+                        "c'est fait", "c'est envoyé", "c'est créé",
+                        "i created", "i wrote", "i sent", "i saved", "i configured",
+                        "fichier créé", "fichier écrit", "message envoyé",
+                    )
+                    _claims_action = any(p in _final_text_lower for p in _CLAIM_PATTERNS)
+                    if _claims_action and not self.execution_ledger.has_any_mutation():
+                        self._ledger_final_guard_used = True
+                        _ledger_guard_triggered = True
+                        _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
+                        logger.warning(
+                            "[LEDGER GUARD] FINAL prétend avoir agi mais aucune mutation dans le ledger "
+                            "(outils réussis: {}) — retry",
+                            _led_tools,
+                        )
+                        self.history.pop()
+                        query = (
+                            f"Requête originale: {original_query}\n\n"
+                            "⛔ Tu as déclaré avoir accompli une action (création, envoi, écriture…) "
+                            "mais le journal d'exécution ne contient AUCUNE mutation réussie.\n\n"
+                            f"Outils exécutés avec succès: {', '.join(_led_tools)}\n\n"
+                            "Tu DOIS appeler l'outil approprié et ATTENDRE le résultat "
+                            "avant de conclure avec FINAL."
+                        )
+                        _finish_iteration(status="ok", summary="ledger_final_guard_blocked")
+                if _ledger_guard_triggered:
+                    continue
+
+                # ── Heuristique H2 : mutations présentes mais hors famille attendue ──
+                # Exemple : intent="discord" mais seules des mutations "write_file" existent.
+                if (not getattr(self, '_ledger_final_guard_used', False)
+                        and not _ledger_guard_triggered
+                        and _claims_action
+                        and self.execution_ledger.has_any_mutation()):
+                    _ss_guard = self._structured_state
+                    _guard_intent = _ss_guard.last_intent if _ss_guard else None
+                    _expected_family = _LEDGER_INTENT_FAMILIES.get(_guard_intent, frozenset())
+                    if _expected_family and not self.execution_ledger.has_mutation_in_family(_expected_family):
+                        self._ledger_final_guard_used = True
+                        _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
+                        logger.warning(
+                            "[LEDGER GUARD H2] Mutations existent mais hors famille '{}' — retry",
+                            _guard_intent,
+                        )
+                        self.history.pop()
+                        query = (
+                            f"Requête originale: {original_query}\n\n"
+                            f"⛔ Tu as déclaré avoir agi pour une tâche '{_guard_intent}' "
+                            f"mais aucun outil de la catégorie attendue n'a été exécuté.\n\n"
+                            f"Outils exécutés: {', '.join(_led_tools)}\n\n"
+                            "Appelle l'outil approprié avant de conclure."
+                        )
+                        _finish_iteration(status="ok", summary=f"ledger_guard_h2_wrong_family_{_guard_intent}")
+                        continue
+
+                # ── Heuristique H3 : cible explicite mentionnée mais aucune mutation pour elle ──
+                # Repair léger fire-once. Plus conservateur que H2 :
+                #   - flag propre (_ledger_h3_guard_used), pas _ledger_final_guard_used
+                #   - message ⚠️ (vérification), pas ⛔ (blocage dur)
+                #   - ne tire pas si H2 a déjà escaladé (_ledger_final_guard_used)
+                if (not getattr(self, '_ledger_h3_guard_used', False)
+                        and not getattr(self, '_ledger_final_guard_used', False)
+                        and _claims_action
+                        and self.execution_ledger.has_any_mutation()):
+                    import re as _re_h3
+                    _target_hint_h3: Optional[str] = None
+                    _channel_match_h3 = _re_h3.search(r'#([\w\-]{2,32})', original_query)
+                    if _channel_match_h3:
+                        _target_hint_h3 = _channel_match_h3.group(1)
+                    else:
+                        _file_match_h3 = _re_h3.search(
+                            r'[\w\-]+\.(py|js|ts|html|css|json|md|txt|yaml|toml)', original_query
+                        )
+                        if _file_match_h3:
+                            _target_hint_h3 = _file_match_h3.group(0)
+                    if _target_hint_h3 and not self.execution_ledger.has_mutation_for_target_hint(_target_hint_h3):
+                        self._ledger_h3_guard_used = True
+                        _led_tools_h3 = self.execution_ledger.successful_actions() or ["AUCUN"]
+                        logger.warning(
+                            "[LEDGER GUARD H3] Cible '{}' mentionnée mais aucune mutation pour cette cible"
+                            " — repair léger (outils: {})",
+                            _target_hint_h3,
+                            _led_tools_h3,
+                        )
+                        self.history.pop()
+                        query = (
+                            f"Requête originale: {original_query}\n\n"
+                            f"⚠️ Tu affirmes avoir agi, et une mutation a bien eu lieu, "
+                            f"mais aucune action ne semble concerner la cible « {_target_hint_h3} ».\n\n"
+                            f"Outils exécutés: {', '.join(_led_tools_h3)}\n\n"
+                            "Vérifie que tu as bien traité la bonne cible, "
+                            "puis agis dessus si ce n'est pas encore fait avant de conclure."
+                        )
+                        _finish_iteration(status="ok", summary=f"ledger_guard_h3_target_{_target_hint_h3}")
+                        continue
+
                 answer = action.answer or ""
                 finish_reason = self._last_llm_meta.get("finish_reason")
                 self._run_meta["agent_final_finish_reason"] = finish_reason
@@ -3090,6 +3973,10 @@ Maintenant, reflechis et reponds:"""
                     "l'utilisateur veut",
                     "l'utilisateur a demandé",
                     "l'utilisateur a sollicité",
+                    "l'utilisateur me pose",
+                    "me demande comment",
+                    "me demande de",
+                    "me demande si",
                     "je dois maintenant",
                     "je vais maintenant synthétiser",
                     "je vais maintenant formuler",
@@ -3097,6 +3984,8 @@ Maintenant, reflechis et reponds:"""
                     "je vais maintenant résumer",
                     "je vais maintenant répondre",
                     "je vais maintenant donner",
+                    "je vais répondre directement",
+                    "je réponds directement",
                     "je dois analyser",
                     "je dois vérifier",
                     "je dois d'abord",
@@ -3109,6 +3998,8 @@ Maintenant, reflechis et reponds:"""
                     "sur la base de",
                     "après avoir analysé",
                     "d'après les résultats",
+                    "rien à faire ici",
+                    "rien à faire,",
                     # EN — internal reasoning prefixes
                     "the user is asking",
                     "the user wants",
@@ -3133,16 +4024,25 @@ Maintenant, reflechis et reponds:"""
                     "having gathered",
                 )
                 _is_reasoning_prefix = any(_answer_lower.startswith(p) for p in _INTERNAL_PREFIXES)
-                _thought_leaked = bool(answer) and (
-                    _is_reasoning_prefix
+                _thought_leaked = (
+                    # Cas 1 : réponse non vide mais commence par un préfixe de réflexion interne
+                    (bool(answer) and _is_reasoning_prefix)
                     or (
-                        # answer == thought ET contient des marqueurs de réflexion interne
-                        bool(thought.content)
+                        # Cas 2 : answer == thought ET contient des marqueurs de réflexion interne
+                        bool(answer)
+                        and bool(thought.content)
                         and answer.strip() == thought.content.strip()
                         and any(k in _answer_lower for k in (
                             "l'utilisateur", "je dois ", "je vais ", "il faut que je",
                             "the user ", "i need to", "i should ",
                         ))
+                    )
+                    or (
+                        # Cas 3 : ACTION: FINAL sans ACTION_INPUT (answer vide/whitespace) + thought présent
+                        # → le modèle a déclaré FINAL mais n'a rien écrit pour l'utilisateur
+                        not (answer or "").strip()
+                        and bool(thought.content)
+                        and action.action_type == ActionType.FINAL_ANSWER
                     )
                 )
                 # P5 — modèles à thought_leak_risk élevé ont droit à plus de repairs
@@ -3151,14 +4051,43 @@ Maintenant, reflechis et reponds:"""
                     3 if getattr(self._model_profile, "thought_leak_risk", "low") == "medium" else
                     2
                 ) if self._model_profile else 2
+                # ── AUTO-CLEAN: Cas 1 (préfixe de réflexion interne) ──
+                # Au lieu de forcer une reformulation coûteuse (1-3 iter perdues),
+                # on tente de nettoyer le texte en supprimant les phrases internes
+                # du début pour extraire la réponse utile directement.
+                if _thought_leaked and _is_reasoning_prefix and answer and len(answer) > 100:
+                    _cleaned_answer = self._strip_thought_leak_prefix(answer)
+                    if _cleaned_answer and len(_cleaned_answer) >= 50:
+                        logger.info(
+                            "🔧 THOUGHT leak auto-nettoyé: {} chars → {} chars (économise une reformulation)",
+                            len(answer), len(_cleaned_answer),
+                        )
+                        action = Action(
+                            action_type=ActionType.FINAL_ANSWER,
+                            answer=_cleaned_answer,
+                            tool_name=action.tool_name,
+                            tool_args=action.tool_args,
+                        )
+                        answer = _cleaned_answer
+                        _thought_leaked = False  # cleaned, no need to repair
+
                 if _thought_leaked and self._thought_leak_repairs < _max_tleak:
                     self._thought_leak_repairs += 1
                     logger.warning(
                         f"⚠️ THOUGHT leaké comme réponse finale (tentative {self._thought_leak_repairs}/{_max_tleak}) - reformulation demandée"
                     )
+                    # Conserver l'analyse faite dans ce thought pour ne pas la perdre.
+                    _leaked_analysis = ""
+                    if thought.content and len(thought.content.strip()) > 80:
+                        _thought_excerpt = thought.content.strip()[:600]
+                        _leaked_analysis = (
+                            f"\nAnalyse déjà effectuée (réutilise-la, ne refais pas les mêmes lectures) :\n"
+                            f"{_thought_excerpt}{'...' if len(thought.content.strip()) > 600 else ''}\n"
+                        )
                     self.history.pop()
                     query = (
-                        f"Requête originale: {original_query}\n\n"
+                        f"Requête originale: {original_query}\n"
+                        f"{_leaked_analysis}\n"
                         "⚠️ Tu as mis ta réflexion interne dans ACTION_INPUT au lieu d'une vraie réponse.\n"
                         "Maintenant écris ta RÉPONSE DIRECTE à l'utilisateur dans ACTION_INPUT:\n\n"
                         "THOUGHT: (bref)\n"
@@ -3167,6 +4096,54 @@ Maintenant, reflechis et reponds:"""
                     )
                     _finish_iteration(status="ok", summary="thought_leaked_repair")
                     continue
+
+                # ── VERBALIZATION REDIRECT ──────────────────────────────────
+                # Détecte quand le LLM verbalise un plan/raisonnement dans sa réponse
+                # finale au lieu d'exécuter un tool call. Marqueurs : **THOUGHT:**,
+                # **PLAN:**, "je délègue", "je vais déléguer" sans tool call effectif.
+                # Au lieu de tronquer ou reformuler, on redirige : le texte est conservé
+                # comme message assistant et on relance un tour avec un nudge pour que
+                # le LLM appelle le tool approprié.
+                _MAX_VERB_REDIRECTS = 2
+                if answer and self._verbalization_redirects < _MAX_VERB_REDIRECTS:
+                    _answer_for_check = (answer or "").strip()
+                    _al = _answer_for_check.lower()
+                    _has_internal_markers = (
+                        "**thought:**" in _al
+                        or "**plan:**" in _al
+                        or "**thought :**" in _al
+                        or "**plan :**" in _al
+                    )
+                    _has_verbalized_delegation = bool(
+                        any(p in _al for p in (
+                            "je délègue", "je vais déléguer", "je délègue au",
+                            "i will delegate", "i'll delegate", "delegating to",
+                        ))
+                        and not any(
+                            h.action and h.action.action_type not in (ActionType.FINAL_ANSWER,)
+                            and h.action.tool_name and "delegate" in (h.action.tool_name or "").lower()
+                            for h in self.history[-3:]
+                        )
+                    )
+                    if _has_internal_markers or _has_verbalized_delegation:
+                        self._verbalization_redirects += 1
+                        logger.warning(
+                            "🔄 VERBALIZATION REDIRECT {}/{}: réponse finale contient un plan/raisonnement "
+                            "sans tool call — redirection vers un nouveau tour",
+                            self._verbalization_redirects, _MAX_VERB_REDIRECTS,
+                        )
+                        # Conserver le raisonnement du LLM dans l'historique
+                        self.history.pop()
+                        query = (
+                            f"Requête originale: {original_query}\n\n"
+                            f"Ton analyse (réutilise-la) :\n{_answer_for_check[:800]}\n\n"
+                            "⚠️ Tu as verbalisé ton plan au lieu de l'exécuter.\n"
+                            "N'ÉCRIS PAS ce que tu vas faire — FAIS-LE.\n"
+                            "Appelle le tool approprié (delegate_task, web_search, etc.) "
+                            "via ACTION/ACTION_INPUT MAINTENANT."
+                        )
+                        _finish_iteration(status="ok", summary="verbalization_redirect")
+                        continue
 
                 # Si la réponse est vide ou juste des points, utiliser la dernière observation
                 if not answer or answer.strip() in ["", "...", "......", "Je n'ai pas de réponse", "Je n'ai pas de réponse."]:
@@ -3304,6 +4281,75 @@ Maintenant, reflechis et reponds:"""
                         success=observation.success,
                     )
                 step.observation = observation
+
+                # Fix 3.2: Vérifier que write_file/apply_patch produit un fichier non-vide
+                # (uniquement sur chemins absolus pour éviter les faux positifs sur chemins relatifs)
+                if observation.success and action.tool_name in ("write_file", "apply_patch"):
+                    _wf_path = (action.tool_args or {}).get("path") or (action.tool_args or {}).get("file_path", "")
+                    if _wf_path and os.path.isabs(_wf_path):
+                        try:
+                            if os.path.isfile(_wf_path) and os.path.getsize(_wf_path) == 0:
+                                observation = Observation(
+                                    content=f"❌ ERREUR : le fichier `{_wf_path}` a été écrit mais est VIDE (0 octet). L'écriture a échoué silencieusement. Recommence avec le contenu complet.",
+                                    success=False,
+                                )
+                                step.observation = observation
+                                logger.warning("[Fix3.2] {} → fichier vide: {}", action.tool_name, _wf_path)
+                        except Exception:
+                            pass
+
+                # ── ExecutionLedger V1 : enregistrer chaque action exécutée ──
+                try:
+                    _led_target = _ledger_extract_target(
+                        action.tool_name, action.tool_args or {},
+                    )
+                    _led_proof = _ledger_extract_proof(
+                        action.tool_name, observation.content or "", observation.success,
+                    )
+                    _led_intent = None
+                    _ss_for_led = self._structured_state
+                    if _ss_for_led is not None:
+                        _led_intent = _ss_for_led.last_intent
+                    self.execution_ledger.append(
+                        iteration=i,
+                        action=action.tool_name,
+                        target=_led_target,
+                        success=observation.success,
+                        proof=_led_proof,
+                        meta={
+                            "duration_ms": round(_tool_exec_duration * 1000, 1),
+                            "intent": _led_intent,
+                        },
+                    )
+                except Exception as _led_exc:
+                    logger.debug("[ExecutionLedger] Échec enregistrement: {}", _led_exc)
+
+                # ── Mission A : mémoriser le projet actif après mutation sur workspace ──
+                # Permet au tour suivant de réutiliser ce projet sans find_files.
+                if observation.success and _led_target and action.tool_name in _LEDGER_MUTATION_TOOLS:
+                    _ws_match = re.search(r'(.+?[/\\]workspace[/\\][\w\-]+)', _led_target.replace("\\", "/"))
+                    if _ws_match:
+                        try:
+                            _lum_mem = getattr(self.tools, "lumena", None)
+                            _id_svc_mem = getattr(_lum_mem, "_identity_svc", None) if _lum_mem else None
+                            if _id_svc_mem is not None and self.runtime_ctx is not None:
+                                from ..core_services.identity_service import IdentityService as _IDS_M
+                                _ck_mem = _IDS_M.resolve_channel_key(self.runtime_ctx)
+                                if _ck_mem:
+                                    _ws_path = _ws_match.group(1)
+                                    _slug = _ws_path.replace("\\", "/").rsplit("/", 1)[-1]
+                                    _id_svc_mem.remember_code_context(_ck_mem, _ws_path, project_slug=_slug)
+                                    logger.debug("[RecentProject] Mémorisé: {} → {}", _ck_mem, _ws_path)
+                                    # Poser immédiatement dans established_facts pour ce run
+                                    _ss_proj = self._structured_state
+                                    if _ss_proj is not None:
+                                        _ss_proj.set_fact("active_project_path", _ws_path)
+                                        _ss_proj.set_fact("active_project_slug", _slug)
+                        except Exception as _mem_exc:
+                            logger.debug("[RecentProject] Mémorisation échouée: {}", _mem_exc)
+
+                # ── StructuredState V1 : alimenter recent_tools ──
+                self._feed_structured_tool(action.tool_name)
 
                 # ── P1.7: Auto-expand filtre après exécution d'outil ──
                 if hasattr(self.tools, '_allowed_tools') and self.tools._allowed_tools is not None:
@@ -3641,6 +4687,7 @@ Maintenant, reflechis et reponds:"""
                 else:
                     _OBS_COMPACT_LIMIT = 3000   # seuil bas pour les outils qui retournent des rapports
                 if _raw_obs_len > _OBS_COMPACT_LIMIT:
+                    _anchor = _extract_anchor_facts(step.observation.content)
                     if _tool_name_compact in (
                         "delegate_task", "create_project", "generate_website",
                         "write_website_files", "website_build",
@@ -3649,7 +4696,7 @@ Maintenant, reflechis et reponds:"""
                         _c_head = step.observation.content[:600]
                         _c_tail = step.observation.content[-200:]
                         _c_body = (
-                            f"{_c_head}\n[...{_raw_obs_len - 800} chars compactés — "
+                            f"{_anchor}{_c_head}\n[...{_raw_obs_len - 800} chars compactés — "
                             f"contenu disponible sur demande...]\n{_c_tail}"
                         )
                     elif _tool_name_compact in ("run_command", "execute_code", "dev_run_fix"):
@@ -3657,12 +4704,13 @@ Maintenant, reflechis et reponds:"""
                         _c_head = step.observation.content[:400]
                         _c_tail = step.observation.content[-400:]
                         _c_body = (
-                            f"{_c_head}\n[...sortie tronquée ({_raw_obs_len} chars)...]\n{_c_tail}"
+                            f"{_anchor}{_c_head}\n[...sortie tronquée ({_raw_obs_len} chars)...]\n{_c_tail}"
                         )
                     elif _tool_name_compact in (
                         "read_file", "search_in_code", "grep_search", "find_files",
                     ):
                         # Lectures fichiers : seuil élevé atteint → garder 3000 chars (début)
+                        # Pas d'ancre ici : le contenu brut est déjà préservé intégralement
                         _c_body = (
                             step.observation.content[:3000]
                             + f"\n[...{_raw_obs_len - 3000} chars omis — relire avec plage de lignes si nécessaire...]"
@@ -3671,7 +4719,7 @@ Maintenant, reflechis et reponds:"""
                         _c_head = step.observation.content[:500]
                         _c_tail = step.observation.content[-300:]
                         _c_body = (
-                            f"{_c_head}\n[...{_raw_obs_len - 800} chars compactés...]\n{_c_tail}"
+                            f"{_anchor}{_c_head}\n[...{_raw_obs_len - 800} chars compactés...]\n{_c_tail}"
                         )
                     step = ReActStep(
                         thought=step.thought,
@@ -3686,6 +4734,9 @@ Maintenant, reflechis et reponds:"""
                         f"({_tool_name_compact})"
                     )
             # 6. Ajouter à l'historique
+            # Accumuler le nom de l'outil dans le set session (survit aux compactions)
+            if action.tool_name:
+                self._all_session_tools.add(action.tool_name)
             self.history.append(step)
 
             # 6.1 Guard: progression du plan TODO
@@ -3819,6 +4870,9 @@ Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{
                 and (obs_text.lstrip().startswith("✅") or "✅" in obs_text[:60])
             )
             if _is_delegate_success:
+                # Réconcilier le plan avant le FINAL — contourne _MAX_COMPLETIONS_PER_CALL=2
+                # pour les rapports CodeAgent qui couvrent plusieurs étapes d'un coup
+                self._reconcile_plan_from_delegate_success(obs_text, i)
                 query = (
                     f"Requête originale: {original_query}\n\n"
                     f"Le CodeAgent a terminé avec succès :\n{obs_text[:3000]}\n\n"

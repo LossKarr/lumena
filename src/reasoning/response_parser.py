@@ -235,7 +235,9 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
     thought = Thought(content=thought_content)
 
     if action_name.upper() == "FINAL":
-        final_answer = action_input if action_input else thought_content
+        # Ne jamais recycler thought_content comme réponse finale :
+        # si action_input est vide, on retourne "" → react.py déclenchera le repair.
+        final_answer = action_input if action_input else ""
         # Unwrap JSON {"response":"..."} généré par erreur par certains LLM
         if final_answer and final_answer.strip().startswith('{') and final_answer.strip().endswith('}'):
             try:

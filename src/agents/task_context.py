@@ -31,11 +31,11 @@ from loguru import logger
 # et les chemins sans espaces en texte libre.
 _PATH_QUOTED_RE = re.compile(
     r'["\']'
-    r'([A-Za-z]:\\[^"\'<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^"\'<>|*?]+)'
+    r'([A-Za-z]:\\[^"\'<>|*?]+|[\\/](?:Users|workspace)[^"\'<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^"\'<>|*?]+)'
     r'["\']'
 )
 _PATH_BARE_RE = re.compile(
-    r'([A-Za-z]:\\[^\s\'"<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^\s\'"<>|*?]+)'
+    r'([A-Za-z]:\\[^\s\'"<>|*?]+|[\\/](?:Users|workspace)[^\s\'"<>|*?]+|/(?:home|Users|var|tmp|opt|workspace)[^\s\'"<>|*?]+)'
 )
 
 
@@ -147,13 +147,27 @@ class TaskContext:
                 confidence = 1.0
                 logger.info("TaskContext: project_path explicite: {}", pp)
             else:
-                # Le dossier n'existe pas encore (création)
-                resolved_path = pp
-                source = "explicit_param_new"
-                confidence = 0.9
-                if intent == "auto":
-                    intent = "create"
-                logger.info("TaskContext: project_path (nouveau): {}", pp)
+                # ── FIX: le chemin n'existe pas — chercher le même nom de projet
+                # dans d'autres dossiers datés du workspace (ex: 2026-04-27/snake →
+                # trouvé dans 2026-04-26/snake).
+                _relocated = cls._find_project_in_dated_dirs(pp)
+                if _relocated:
+                    resolved_path = _relocated
+                    target_path = _relocated
+                    source = "explicit_param_relocated"
+                    confidence = 0.95
+                    logger.info(
+                        "TaskContext: project_path relocalisé: {} → {} (dossier daté différent)",
+                        pp, _relocated,
+                    )
+                else:
+                    # Le dossier n'existe pas encore (création)
+                    resolved_path = pp
+                    source = "explicit_param_new"
+                    confidence = 0.9
+                    if intent == "auto":
+                        intent = "create"
+                    logger.info("TaskContext: project_path (nouveau): {}", pp)
 
         # 2. Extraction depuis le texte
         if resolved_path is None:
@@ -252,7 +266,7 @@ class TaskContext:
             # D'abord : chemins entre guillemets (supportent les espaces)
             for match in _PATH_QUOTED_RE.findall(text):
                 cleaned = match.rstrip(".,;:!?)")
-                p = Path(cleaned)
+                p = TaskContext._normalize_extracted_path(cleaned)
                 # Accepter même si le dossier n'existe pas encore
                 # (on vérifie que le parent existe comme heuristique)
                 if p.is_dir() or (p.parent.is_dir() and not p.suffix):
@@ -261,7 +275,7 @@ class TaskContext:
             # Ensuite : chemins bare (sans espaces)
             for match in _PATH_BARE_RE.finditer(text):
                 raw = match.group(0).rstrip(".,;:!?)")
-                p = Path(raw)
+                p = TaskContext._normalize_extracted_path(raw)
                 if p.is_dir() or (p.parent.is_dir() and not p.suffix):
                     return p
                 # Le chemin peut avoir des espaces (ex: "projet fusee") —
@@ -273,7 +287,7 @@ class TaskContext:
                     if not word_clean or word_clean[0] in ('"', "'", '\\', '/'):
                         break
                     extended = extended + " " + word_clean
-                    pe = Path(extended)
+                    pe = TaskContext._normalize_extracted_path(extended)
                     if pe.is_dir():
                         return pe
                     # Si le parent n'existe plus, inutile de continuer
@@ -281,6 +295,62 @@ class TaskContext:
                         break
 
         return None
+
+    @staticmethod
+    def _normalize_extracted_path(raw: str) -> Path:
+        """Normalise un chemin extrait du texte libre.
+
+        Cas géré :
+        - chemin Windows absolu normal : `C:\\...`
+        - chemin Windows sans drive perdu dans une string : `\\Users\\...`
+        - chemin slash-style sur Windows : `/Users/...` ou `/workspace/...`
+        """
+        cleaned = (raw or "").strip()
+        if cleaned:
+            _looks_drive_less_windows = bool(
+                re.match(r'^[\\/](?:Users|workspace)(?:[\\/]|$)', cleaned, re.IGNORECASE)
+            )
+            if _looks_drive_less_windows:
+                _drive = Path.cwd().drive
+                if _drive:
+                    cleaned = _drive + cleaned.replace("/", "\\")
+        return Path(cleaned)
+
+    @staticmethod
+    def _find_project_in_dated_dirs(original: Path) -> Optional[Path]:
+        """Cherche un projet dans d'autres dossiers datés du workspace.
+
+        Si le chemin ``workspace/2026-04-27/snake-3d`` n'existe pas mais que
+        ``workspace/2026-04-26/snake-3d`` existe, retourne ce dernier.
+
+        Ne cherche que dans le parent commun (workspace/) parmi les dossiers
+        dont le nom matche YYYY-MM-DD. Retourne le match le plus récent.
+        """
+        _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+        try:
+            project_name = original.name
+            # Le parent du chemin daté : workspace/2026-04-27/snake → parent.parent = workspace/
+            dated_parent = original.parent  # workspace/2026-04-27
+            if not _DATE_RE.match(dated_parent.name):
+                return None  # pas un chemin workspace/YYYY-MM-DD/project
+            ws_root = dated_parent.parent  # workspace/
+            if not ws_root.is_dir():
+                return None
+
+            candidates: List[Path] = []
+            for d in ws_root.iterdir():
+                if d.is_dir() and _DATE_RE.match(d.name) and d != dated_parent:
+                    candidate = d / project_name
+                    if candidate.is_dir():
+                        candidates.append(candidate)
+
+            if not candidates:
+                return None
+            # Trier par date décroissante → retourner le plus récent
+            candidates.sort(key=lambda p: p.parent.name, reverse=True)
+            return candidates[0]
+        except Exception:
+            return None
 
     @staticmethod
     def _scan_project_files(path: Path, max_files: int = 100) -> List[str]:

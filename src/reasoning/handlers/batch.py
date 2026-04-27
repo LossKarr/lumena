@@ -197,8 +197,22 @@ async def read_files_batch_handler(
 
         lines = content.splitlines()
         total = len(lines)
-        s = max(1, int(start_line)) if start_line is not None else 1
-        e = min(total, int(end_line)) if end_line is not None else total
+        # Normalise start_line/end_line : accepte int, str numérique, ou liste (prend premier élément)
+        def _to_int_or_none(v: Any) -> Optional[int]:
+            if v is None:
+                return None
+            if isinstance(v, list):
+                v = v[0] if v else None
+                if v is None:
+                    return None
+            try:
+                return int(v)
+            except (ValueError, TypeError):
+                return None
+        _sl = _to_int_or_none(start_line)
+        _el = _to_int_or_none(end_line)
+        s = max(1, _sl) if _sl is not None else 1
+        e = min(total, _el) if _el is not None else total
         if s > total:
             s = total
         if e < s:

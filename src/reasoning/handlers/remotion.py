@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -367,13 +368,18 @@ async def generate_video_handler(
         # Renommer le dossier si le LLM a proposé un meilleur titre
         _new_dir = WORKSPACE_DIR / date_str / _plan_title_slug
         if not _new_dir.exists():
-            project_dir.rename(_new_dir)
-            project_dir = _new_dir
+            # Sur Windows, Path.rename() peut échouer avec WinError 5 (Access Denied)
+            # si des handles de fichiers sont encore ouverts dans le dossier.
+            # Le rename est cosmétique (meilleur slug) — on garde le nom d'origine si ça échoue.
+            try:
+                shutil.move(str(project_dir), str(_new_dir))
+                project_dir = _new_dir
+            except (OSError, shutil.Error) as _rename_err:
+                logger.warning(
+                    "[video] Rename dossier ignoré ({}) — on conserve le nom d'origine '{}'",
+                    _rename_err, project_dir.name,
+                )
             project_dir.mkdir(parents=True, exist_ok=True)
-            # Recréer public/ si des assets avaient été copiés
-            if _assets_map:
-                _new_public = project_dir / "public"
-                _new_public.mkdir(parents=True, exist_ok=True)
 
     scaffold_files = scaffold_remotion_project(
         output_dir=project_dir,

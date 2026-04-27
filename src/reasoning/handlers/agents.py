@@ -43,38 +43,81 @@ async def delegate_task_handler(
             if _mem and hasattr(_mem, "get_context_for_prompt"):
                 _mem_fn = _mem.get_context_for_prompt
 
+        # ── Mission C : si project_path absent, tenter le contexte projet récent ──
+        # Permet de réutiliser le dernier projet créé/modifié sans fuzzy-match risqué.
+        _effective_project_path = project_path
+        if not _effective_project_path:
+            try:
+                _id_svc = getattr(_lum, "_identity_svc", None) if _lum else None
+                _rt_ctx = getattr(ctx, "runtime_ctx", None) or getattr(_lum, "runtime_ctx", None)
+                if _id_svc is not None and _rt_ctx is not None:
+                    from ...core_services.identity_service import IdentityService as _IDS
+                    _ck = _IDS.resolve_channel_key(_rt_ctx)
+                    _rpc = _id_svc.get_recent_code_context(_ck) if _ck else None
+                    if _rpc:
+                        import os as _os
+                        _rpc_path = _rpc.get("workspace_path", "")
+                        if _rpc_path and _os.path.isdir(_rpc_path):
+                            _effective_project_path = _rpc_path
+                            logger.info(
+                                "delegate_task: project_path depuis contexte récent: {}",
+                                _rpc_path[:80],
+                            )
+            except Exception as _rpc_exc:
+                logger.debug("delegate_task: récupération contexte récent échouée: {}", _rpc_exc)
+
         task_ctx = TaskContext.from_delegate_call(
             description=description,
             context=context,
-            project_path=project_path,
+            project_path=_effective_project_path,
             runtime_root=ctx.runtime_root,
             resolve_workspace_fn=resolve_workspace,
             memory_fn=_mem_fn,
         )
 
         # ── Guard anti-fuzzy-routing ──────────────────────────────────────
-        # Si la résolution vient du registre avec une confiance < 0.90 et que
+        # Si la résolution vient du registre avec une confiance < seuil et que
         # l'agent n'a pas fourni de project_path explicite → on rejette.
         # Cela empêche de modifier le mauvais projet sur un match ambigu.
+        #
+        # Seuil dynamique :
+        # - 0.80 si le nom du projet résolu apparaît dans la description (signal fort)
+        # - 0.90 par défaut (match ambigu)
         _REGISTRY_CONF_THRESHOLD = 0.90
+        _REGISTRY_CONF_THRESHOLD_RELAXED = 0.80
         if (
             not project_path
             and task_ctx.resolution_source.startswith("registry:")
             and task_ctx.confidence < _REGISTRY_CONF_THRESHOLD
         ):
             _matched = str(task_ctx.workspace_path or "?")
-            logger.warning(
-                "delegate_task: fuzzy routing rejeté — conf={:.2f} < {:.2f}, match={}",
-                task_ctx.confidence, _REGISTRY_CONF_THRESHOLD, _matched,
-            )
-            return HandlerResult.fail(
-                f"⛔ Projet ambigu (confiance {task_ctx.confidence:.0%} < 90%). "
-                f"Le registre a trouvé `{_matched}` mais le match n'est pas assez précis. "
-                "Fournis `project_path` explicitement dans ton appel `delegate_task` "
-                "pour éviter de modifier le mauvais projet. "
-                "Exemple : `delegate_task(description='...', project_path='C:\\\\...\\\\workspace\\\\mon-projet')`",
-                handler_name="delegate_task",
-            )
+            # Vérifier si le nom du projet apparaît dans la description — signal de non-ambiguïté
+            try:
+                from pathlib import Path as _P
+                _project_name = _P(_matched).name.lower()
+                _desc_lower = (description or "").lower()
+                _name_in_desc = bool(_project_name) and len(_project_name) >= 3 and _project_name in _desc_lower
+            except Exception:
+                _name_in_desc = False
+
+            if _name_in_desc and task_ctx.confidence >= _REGISTRY_CONF_THRESHOLD_RELAXED:
+                logger.info(
+                    "delegate_task: fuzzy routing accepté (conf={:.2f}, nom '{}' trouvé dans description)",
+                    task_ctx.confidence, _project_name,
+                )
+            else:
+                logger.warning(
+                    "delegate_task: fuzzy routing rejeté — conf={:.2f} < {:.2f}, match={}",
+                    task_ctx.confidence, _REGISTRY_CONF_THRESHOLD, _matched,
+                )
+                return HandlerResult.fail(
+                    f"⛔ Projet ambigu (confiance {task_ctx.confidence:.0%} < 90%). "
+                    f"Le registre a trouvé `{_matched}` mais le match n'est pas assez précis. "
+                    "Fournis `project_path` explicitement dans ton appel `delegate_task` "
+                    "pour éviter de modifier le mauvais projet. "
+                    "Exemple : `delegate_task(description='...', project_path='C:\\\\...\\\\workspace\\\\mon-projet')`",
+                    handler_name="delegate_task",
+                )
         # ─────────────────────────────────────────────────────────────────
 
         safe_context = task_ctx.to_legacy_dict()
@@ -92,18 +135,41 @@ async def delegate_task_handler(
 
         result = await delegate_to_agent_full(description, agent_type, safe_context)
 
+        # ── Vérification que les fichiers annoncés existent réellement ──
+        _missing_artifacts: list = []
+        if result.artifacts and result.success:
+            import os as _os_art
+            for _art_path in result.artifacts[:20]:
+                try:
+                    if not (_os_art.path.isfile(str(_art_path)) and _os_art.path.getsize(str(_art_path)) > 0):
+                        _missing_artifacts.append(str(_art_path))
+                except Exception:
+                    pass
+
         # ── Rapport structuré ──
         _icon = "✅" if result.success else "❌"
         _duration = f"{result.duration_ms / 1000:.1f}s" if result.duration_ms else "N/A"
         _artifacts_str = ""
         if result.artifacts:
             _artifacts_str = "\n**Fichiers** : " + ", ".join(f"`{a}`" for a in result.artifacts[:20])
-        _iterations = result.meta.get("iterations", "?") if result.meta else "?"
+        if _missing_artifacts:
+            _artifacts_str += "\n⚠️ **Fichiers annoncés mais absents ou vides** : " + ", ".join(f"`{p}`" for p in _missing_artifacts)
+        _meta = result.meta or {}
+        _iterations = _meta.get("iterations", "?")
         _report = (
             f"{_icon} **{agent_type}Agent terminé** ({_duration}, {_iterations} itérations)"
             f"{_artifacts_str}\n\n"
             f"{result.output}"
         )
+        # Sur échec : ajouter le contexte exploitable pour la reprise
+        if not result.success and _meta.get("blocked_at"):
+            _failure_lines = []
+            if _meta.get("attempted"):
+                _failure_lines.append("**Dernières actions tentées** :\n" + "\n".join(f"- {a}" for a in _meta["attempted"][-3:]))
+            _failure_lines.append(f"**Bloqué à** : {_meta['blocked_at']}")
+            if _meta.get("next_step"):
+                _failure_lines.append(f"**Prochaine étape recommandée** : {_meta['next_step']}")
+            _report += "\n\n" + "\n".join(_failure_lines)
         return HandlerResult.ok(_report, handler_name="delegate_task")
     except ImportError:
         return HandlerResult.fail(
@@ -136,10 +202,32 @@ async def delegate_task_bg_handler(
             if _mem and hasattr(_mem, "get_context_for_prompt"):
                 _mem_fn = _mem.get_context_for_prompt
 
+        # ── Mission C : si project_path absent, tenter le contexte projet récent ──
+        _effective_project_path_bg = project_path
+        if not _effective_project_path_bg:
+            try:
+                _id_svc_bg = getattr(_lum, "_identity_svc", None) if _lum else None
+                _rt_ctx_bg = getattr(ctx, "runtime_ctx", None) or getattr(_lum, "runtime_ctx", None)
+                if _id_svc_bg is not None and _rt_ctx_bg is not None:
+                    from ...core_services.identity_service import IdentityService as _IDS_BG
+                    _ck_bg = _IDS_BG.resolve_channel_key(_rt_ctx_bg)
+                    _rpc_bg = _id_svc_bg.get_recent_code_context(_ck_bg) if _ck_bg else None
+                    if _rpc_bg:
+                        import os as _os_bg
+                        _rpc_path_bg = _rpc_bg.get("workspace_path", "")
+                        if _rpc_path_bg and _os_bg.path.isdir(_rpc_path_bg):
+                            _effective_project_path_bg = _rpc_path_bg
+                            logger.info(
+                                "delegate_task_bg: project_path depuis contexte récent: {}",
+                                _rpc_path_bg[:80],
+                            )
+            except Exception as _rpc_exc_bg:
+                logger.debug("delegate_task_bg: récupération contexte récent échouée: {}", _rpc_exc_bg)
+
         task_ctx = TaskContext.from_delegate_call(
             description=description,
             context=context,
-            project_path=project_path,
+            project_path=_effective_project_path_bg,
             runtime_root=ctx.runtime_root,
             resolve_workspace_fn=resolve_workspace,
             memory_fn=_mem_fn,

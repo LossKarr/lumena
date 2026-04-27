@@ -371,6 +371,31 @@ def event_loop():
 
 
 @pytest.fixture(autouse=True)
+def _ensure_current_event_loop(event_loop):
+    """Rétablit un event loop courant ouvert pour les tests sync.
+
+    Certains tests/fixtures async ferment le loop courant laissé dans la policy.
+    Les tests synchrones qui font encore `asyncio.get_event_loop().run_until_complete(...)`
+    doivent toujours retrouver un loop valide.
+    """
+    try:
+        current = asyncio.get_event_loop_policy().get_event_loop()
+        if current.is_closed():
+            asyncio.set_event_loop(event_loop)
+    except RuntimeError:
+        asyncio.set_event_loop(event_loop)
+
+    yield
+
+    try:
+        current = asyncio.get_event_loop_policy().get_event_loop()
+        if current.is_closed():
+            asyncio.set_event_loop(event_loop)
+    except RuntimeError:
+        asyncio.set_event_loop(event_loop)
+
+
+@pytest.fixture(autouse=True)
 def _drain_hooks():
     """
     Nettoie le singleton HookSystem après chaque test.

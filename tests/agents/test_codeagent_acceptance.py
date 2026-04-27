@@ -261,6 +261,17 @@ class TestExternalWorkspaceAcceptance:
             f"Le workspace {ctx.workspace_path} est dans Lumena — isolation défaillante"
         )
 
+    def test_drive_less_windows_path_from_text_recovers_drive(self):
+        """Un chemin extrait du texte sans drive Windows doit être normalisé."""
+        from src.agents.task_context import TaskContext
+
+        raw = r'Corrige le projet dans "\Users\charl\Desktop\lumena\workspace\2026-04-26\echo-drift"'
+        path = TaskContext._extract_path_from_texts([raw])
+
+        assert path is not None
+        assert str(path).lower().endswith(r"users\charl\desktop\lumena\workspace\2026-04-26\echo-drift")
+        assert path.drive, "Le drive Windows doit être restauré"
+
     def test_code_index_singleton_keyed_by_workspace(self, external_workspace: Path, tmp_path: Path):
         """get_code_index() doit retourner des instances distinctes par workspace."""
         try:

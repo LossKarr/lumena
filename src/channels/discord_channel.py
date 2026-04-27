@@ -41,6 +41,7 @@ def _split_smart(text: str, max_len: int = 1900) -> List[str]:
     return [c for c in chunks if c]
 
 from .base import BaseChannel, ChannelMessage, ChannelType
+from ..runtime.channel_envelope import ChannelEnvelope, ChannelContinuityRegistry
 
 try:
     import discord
@@ -90,10 +91,60 @@ class DiscordChannel(BaseChannel):
         self._channel_cache: dict = {}  # {name: id}
         # Redirections en attente : {user_id: {"from_ch": id, "to_ch": id, "to_name": str}}
         self._pending_redirect: dict = {}
+        # ── Runtime continuity registry (V1) ──
+        self._continuity_registry = ChannelContinuityRegistry()
     
     def set_stream_callback(self, callback) -> None:
         """Définit un callback de streaming (async generator) pour les réponses Discord."""
         self._stream_callback = callback
+
+    def _resolve_conversation_id(
+        self, message: Any, *, is_dm: bool = False,
+    ) -> tuple:
+        """Résout un conversation_id stable via le ChannelContinuityRegistry.
+
+        Chemin de résolution :
+        1. Thread Discord → thread_id comme conversation_id explicite
+        2. DM → ``dm_{user_id}`` comme conversation_id explicite
+        3. Canal + Utilisateur → clé de session ``discord::{channel_id}::{user_id}``
+           Le registry résout la continuité par client_session si la session
+           existe déjà, sinon génère un nouvel id.
+
+        Retourne (conversation_id, conversation_source).
+        """
+        channel_id = str(message.channel.id)
+        user_id = str(message.author.id)
+        guild_id = str(message.guild.id) if message.guild else None
+
+        # 1. Thread Discord → conversation explicite par thread
+        thread_id = None
+        try:
+            if hasattr(message.channel, 'parent_id') and message.channel.parent_id:
+                thread_id = channel_id  # c'est un thread
+        except Exception:
+            pass
+
+        # 2. DM → conversation explicite par user
+        if is_dm:
+            explicit_id = f"dm_{user_id}"
+        elif thread_id:
+            explicit_id = f"thread_{thread_id}"
+        else:
+            explicit_id = None
+
+        # 3. Build envelope et résoudre via le registry
+        session_key = f"{channel_id}::{user_id}"
+        envelope = ChannelEnvelope.from_request(
+            channel="discord",
+            client=f"discord_{guild_id or 'dm'}",
+            request_id=f"req_{message.id}",
+            conversation_id=explicit_id,
+            message_id=str(message.id),
+            task_id=None,
+            client_caps={"session_id": session_key},
+        )
+        resolved = self._continuity_registry.resolve(envelope)
+        return resolved.conversation_id, resolved.conversation_source
 
     @property
     def is_available(self) -> bool:
@@ -189,6 +240,11 @@ class DiscordChannel(BaseChannel):
 
                 if not should_respond:
                     return
+
+                # ── Résolution conversation_id via ChannelContinuityRegistry ──
+                _conv_id, _conv_source = self._resolve_conversation_id(
+                    message, is_dm=is_dm,
+                )
 
                 # ── Réaction "je lis" sur le message reçu ─────────────────────
                 try:
@@ -299,6 +355,8 @@ class DiscordChannel(BaseChannel):
                     attachments=[a.url for a in message.attachments],
                     metadata={
                         "message_id": str(message.id),
+                        "conversation_id": _conv_id,
+                        "conversation_source": _conv_source,
                         "is_dm": is_dm,
                         "is_mention": is_mention,
                         "is_passive_mention": is_name_mention,

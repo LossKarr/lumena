@@ -391,6 +391,21 @@ class TaskOrchestrator:
                     out.append(record.to_dict())
             return out
 
+    @staticmethod
+    def enrich_checkpoint(
+        payload: Dict[str, Any],
+        ledger_projection: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Merge un checkpoint payload avec une projection du ledger.
+
+        Si ledger_projection est None ou vide, retourne le payload inchangé.
+        Le ledger est la source de vérité — le checkpoint ne fait que projeter.
+        """
+        enriched = dict(payload)
+        if ledger_projection and isinstance(ledger_projection, dict):
+            enriched["ledger"] = ledger_projection
+        return enriched
+
     def stats(self) -> Dict[str, Any]:
         with self._lock:
             total = len(self._tasks)

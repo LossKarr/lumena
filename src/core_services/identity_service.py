@@ -13,6 +13,7 @@ from loguru import logger
 
 from .base_service import BaseService
 from ..utils.persistence import atomic_write_json
+from ..structured_state import StructuredState
 
 
 class IdentityService(BaseService):
@@ -329,6 +330,15 @@ class IdentityService(BaseService):
             except Exception as e:
                 logger.warning(f"Erreur chargement contexte Discord {ctx_key}: {e}")
 
+        # ── structured_state parallèle (V1) ──
+        state_file = self.data_dir / "discord_contexts" / f"{ctx_key}.state.json"
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text(encoding="utf-8"))
+                ctx.structured_state = StructuredState.from_dict(state_data)
+            except Exception as e:
+                logger.debug(f"structured_state Discord non chargé {ctx_key}: {e}")
+
         self._discord_contexts[ctx_key] = ctx
         # LRU eviction (P1)
         _max = getattr(self, '_max_contexts', 500)
@@ -369,6 +379,9 @@ class IdentityService(BaseService):
                     ctx_dir.mkdir(parents=True, exist_ok=True)
                     data = [{"role": m.role, "content": m.content} for m in ctx.messages]
                     atomic_write_json(ctx_dir / f"{ctx_key}.json", data)
+                    # ── structured_state parallèle (V1) ──
+                    if hasattr(ctx, 'structured_state') and not ctx.structured_state.is_empty():
+                        atomic_write_json(ctx_dir / f"{ctx_key}.state.json", ctx.structured_state.to_dict())
             except Exception as e:
                 logger.warning(f"Erreur sauvegarde contexte Discord {ctx_key}: {e}")
 
@@ -420,6 +433,15 @@ Tu parles avec : {name}
             except Exception as e:
                 logger.warning(f"Erreur chargement contexte Telegram {tg_id}: {e}")
 
+        # ── structured_state parallèle (V1) ──
+        state_file = self.data_dir / "tg_contexts" / f"{tg_id}.state.json"
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text(encoding="utf-8"))
+                ctx.structured_state = StructuredState.from_dict(state_data)
+            except Exception as e:
+                logger.debug(f"structured_state Telegram non chargé {tg_id}: {e}")
+
         self._tg_contexts[tg_id] = ctx
         # LRU eviction (P1)
         _max = getattr(self, '_max_contexts', 500)
@@ -435,6 +457,9 @@ Tu parles avec : {name}
                 ctx_dir.mkdir(parents=True, exist_ok=True)
                 data = [{"role": m.role, "content": m.content} for m in context.messages]
                 atomic_write_json(ctx_dir / f"{tg_id}.json", data)
+                # ── structured_state parallèle (V1) ──
+                if hasattr(context, 'structured_state') and not context.structured_state.is_empty():
+                    atomic_write_json(ctx_dir / f"{tg_id}.state.json", context.structured_state.to_dict())
             except Exception as e:
                 logger.warning(f"Erreur sauvegarde contexte Telegram {tg_id}: {e}")
 
@@ -469,10 +494,18 @@ Tu parles avec : {name}
             except Exception as e:
                 logger.warning(f"Erreur chargement contexte WhatsApp {phone}: {e}")
 
+        # ── structured_state parallèle (V1) ──
+        state_file = self.data_dir / "wa_contexts" / f"{phone}.state.json"
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text(encoding="utf-8"))
+                ctx.structured_state = StructuredState.from_dict(state_data)
+            except Exception as e:
+                logger.debug(f"structured_state WhatsApp non chargé {phone}: {e}")
+
         self._wa_contexts[phone] = ctx
         _max = getattr(self, '_max_contexts', 500)
         while len(self._wa_contexts) > _max:
-            # Evict oldest entry
             oldest = next(iter(self._wa_contexts))
             del self._wa_contexts[oldest]
         return ctx
@@ -485,6 +518,9 @@ Tu parles avec : {name}
                 ctx_dir.mkdir(parents=True, exist_ok=True)
                 data = [{"role": m.role, "content": m.content} for m in context.messages]
                 atomic_write_json(ctx_dir / f"{phone}.json", data)
+                # ── structured_state parallèle (V1) ──
+                if hasattr(context, 'structured_state') and not context.structured_state.is_empty():
+                    atomic_write_json(ctx_dir / f"{phone}.state.json", context.structured_state.to_dict())
             except Exception as e:
                 logger.warning(f"Erreur sauvegarde contexte WhatsApp {phone}: {e}")
 
@@ -519,6 +555,14 @@ Tu parles avec : {name}
                 logger.debug(f"🌐 Contexte Web chargé ({len(ctx.messages)} msgs)")
             except Exception as e:
                 logger.warning(f"Erreur chargement contexte Web: {e}")
+        # ── structured_state parallèle (V1) ──
+        state_file = self.data_dir / "web_contexts" / f"{self._WEB_CONTEXT_KEY}.state.json"
+        if state_file.exists():
+            try:
+                state_data = json.loads(state_file.read_text(encoding="utf-8"))
+                ctx.structured_state = StructuredState.from_dict(state_data)
+            except Exception as e:
+                logger.debug(f"structured_state Web non chargé: {e}")
         return ctx
 
     def _save_web_context(self, context):
@@ -529,6 +573,12 @@ Tu parles avec : {name}
                 ctx_dir.mkdir(parents=True, exist_ok=True)
                 data = [{"role": m.role, "content": m.content} for m in context.messages]
                 atomic_write_json(ctx_dir / f"{self._WEB_CONTEXT_KEY}.json", data)
+                # ── structured_state parallèle (V1) ──
+                if hasattr(context, 'structured_state') and not context.structured_state.is_empty():
+                    atomic_write_json(
+                        ctx_dir / f"{self._WEB_CONTEXT_KEY}.state.json",
+                        context.structured_state.to_dict(),
+                    )
             except Exception as e:
                 logger.warning(f"Erreur sauvegarde contexte Web: {e}")
 

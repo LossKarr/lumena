@@ -39,6 +39,46 @@ def _ok_msg(data: Dict[str, Any], label: str) -> str:
 # Cache module-level pour le guild auto-détecté (évite un appel API à chaque commande)
 _auto_guild_id: str | None = None
 
+# Chemin du fichier de persistance (chargé au démarrage, mis à jour à chaque auto-detect)
+def _discord_state_path() -> "Path":
+    import os
+    from pathlib import Path
+    base = os.getenv("LUMENA_DATA_DIR", "") or str(Path(__file__).resolve().parents[3] / "data")
+    return Path(base) / "memory" / "discord_state.json"
+
+
+def _load_discord_state() -> None:
+    """Charge le guild_id persisté depuis le démarrage précédent."""
+    global _auto_guild_id
+    if _auto_guild_id:
+        return
+    try:
+        import json
+        p = _discord_state_path()
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            gid = data.get("guild_id", "")
+            if gid:
+                _auto_guild_id = gid
+                logger.debug("[Discord] Guild restauré depuis discord_state.json: {}", gid)
+    except Exception as e:
+        logger.debug("[Discord] Chargement discord_state.json échoué: {}", e)
+
+
+def _save_discord_state(guild_id: str) -> None:
+    """Persiste le guild_id pour les sessions suivantes."""
+    try:
+        import json
+        p = _discord_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"guild_id": guild_id}, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        logger.debug("[Discord] Sauvegarde discord_state.json échouée: {}", e)
+
+
+# Charger l'état persisté dès l'import du module
+_load_discord_state()
+
 
 def _resolve_guild_id(guild_id: str | None) -> str:
     """Résout le guild_id : valeur explicite > env > auto-detect depuis le bot connecté."""
@@ -80,6 +120,7 @@ async def _resolve_guild_id_async(guild_id: str | None) -> str:
                     if guilds and isinstance(guilds, list):
                         _auto_guild_id = str(guilds[0]["id"])
                         logger.info("[Discord] Guild auto-détecté: {} ({})", guilds[0].get("name"), _auto_guild_id)
+                        _save_discord_state(_auto_guild_id)
                         return _auto_guild_id
     except Exception as e:
         logger.debug("[Discord] Auto-detect guild échoué: {}", e)
@@ -154,6 +195,28 @@ async def _resolve_channel_id(channel_id: str, channel_name: str | None = None,
 
 # ─── Handlers ───────────────────────────────────────────────────────────────
 
+async def discord_list_guilds(ctx: HandlerContext) -> HandlerResult:
+    """Liste tous les serveurs Discord accessibles au bot (étape zéro pour obtenir un guild_id)."""
+    try:
+        from ...tools.discord_admin import list_guilds
+        r = await list_guilds()
+        if not r.get("ok"):
+            return HandlerResult.fail(f"Erreur Discord: {r.get('error')}", handler_name="discord_list_guilds")
+        guilds = r.get("data", [])
+        if not guilds:
+            return HandlerResult.ok("Aucun serveur Discord accessible pour ce bot.", handler_name="discord_list_guilds")
+        lines = ["**Serveurs Discord accessibles :**"]
+        for g in guilds:
+            name = g.get("name", "?")
+            gid = g.get("id", "?")
+            owner = "👑 " if g.get("owner") else ""
+            lines.append(f"- {owner}**{name}** — ID: `{gid}`")
+        lines.append("\nUtilise l'ID souhaité dans les autres commandes Discord.")
+        return HandlerResult.ok("\n".join(lines), handler_name="discord_list_guilds")
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}", handler_name="discord_list_guilds")
+
+
 async def discord_server_info(ctx: HandlerContext, *, guild_id: str = None) -> HandlerResult:
     """Récupère les infos du serveur Discord (nom, membres, channels, etc.)."""
     try:
@@ -226,9 +289,10 @@ async def discord_list_channels(ctx: HandlerContext, *, guild_id: str = None) ->
                 cat_children[pid].append(ch)
             else:
                 orphans.append(ch)
-        # Mettre à jour le cache nom→id pendant qu'on a la liste
+        # Mettre à jour le cache nom→(id, type) pendant qu'on a la liste
+        # IMPORTANT: doit être un tuple (id, type) comme _resolve_channel_id l'attend
         _channel_name_cache[guild_id] = {
-            ch["name"].lower(): ch["id"]
+            ch["name"].lower(): (ch["id"], ch.get("type", 0))
             for ch in channels
             if isinstance(ch, dict) and ch.get("type") != 4
         }
@@ -451,6 +515,40 @@ async def discord_delete_message(ctx: HandlerContext, *, channel_id: str, messag
         return HandlerResult.fail(f"Erreur: {e}")
 
 
+# ─── Permissions channels ────────────────────────────────────────────────────
+
+async def discord_set_channel_permissions(
+    ctx: HandlerContext, *,
+    channel_id: str,
+    overwrite_id: str,
+    allow: int = 0,
+    deny: int = 0,
+    overwrite_type: int = 0,
+) -> HandlerResult:
+    """
+    Pose un permission overwrite sur un channel ou une catégorie Discord.
+    Bits utiles : VIEW_CHANNEL=0x400, SEND_MESSAGES=0x800, READ_MESSAGE_HISTORY=0x10000.
+    overwrite_type : 0=rôle, 1=membre.
+    Exemple — rendre invisible à @everyone : overwrite_id=guild_id, deny=1024, allow=0.
+    """
+    try:
+        from ...tools.discord_admin import set_channel_permission
+        r = await set_channel_permission(
+            channel_id, overwrite_id,
+            allow=allow, deny=deny, overwrite_type=overwrite_type,
+        )
+        if not r.get("ok"):
+            return HandlerResult.fail(f"Erreur Discord: {r.get('error')}", handler_name="discord_set_channel_permissions")
+        action = "autorisé" if allow and not deny else "refusé" if deny and not allow else "modifié"
+        return HandlerResult.ok(
+            f"✅ Permissions {action} sur channel `{channel_id}` pour overwrite `{overwrite_id}`\n"
+            f"  allow={allow} | deny={deny}",
+            handler_name="discord_set_channel_permissions",
+        )
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}", handler_name="discord_set_channel_permissions")
+
+
 # ─── Rôles ──────────────────────────────────────────────────────────────────
 
 async def discord_list_roles(ctx: HandlerContext, *, guild_id: str = None) -> HandlerResult:
@@ -566,9 +664,10 @@ async def discord_list_members(ctx: HandlerContext, *, guild_id: str = None, lim
         return HandlerResult.fail(f"Erreur: {e}")
 
 
-async def discord_kick(ctx: HandlerContext, *, guild_id: str, user_id: str) -> HandlerResult:
+async def discord_kick(ctx: HandlerContext, *, guild_id: str = None, user_id: str) -> HandlerResult:
     """Expulse (kick) un membre du serveur Discord."""
     try:
+        guild_id = await _resolve_guild_id_async(guild_id)
         from ...tools.discord_admin import kick_member
         r = await kick_member(guild_id, user_id)
         if not r.get("ok"):
@@ -578,10 +677,11 @@ async def discord_kick(ctx: HandlerContext, *, guild_id: str, user_id: str) -> H
         return HandlerResult.fail(f"Erreur: {e}")
 
 
-async def discord_ban(ctx: HandlerContext, *, guild_id: str, user_id: str,
+async def discord_ban(ctx: HandlerContext, *, guild_id: str = None, user_id: str,
                       reason: str = "", delete_days: int = 0) -> HandlerResult:
     """Bannit un membre du serveur Discord."""
     try:
+        guild_id = await _resolve_guild_id_async(guild_id)
         from ...tools.discord_admin import ban_member
         r = await ban_member(guild_id, user_id, reason=reason, delete_message_days=delete_days)
         if not r.get("ok"):
@@ -591,9 +691,10 @@ async def discord_ban(ctx: HandlerContext, *, guild_id: str, user_id: str,
         return HandlerResult.fail(f"Erreur: {e}")
 
 
-async def discord_unban(ctx: HandlerContext, *, guild_id: str, user_id: str) -> HandlerResult:
+async def discord_unban(ctx: HandlerContext, *, guild_id: str = None, user_id: str) -> HandlerResult:
     """Retire le ban d'un membre du serveur Discord."""
     try:
+        guild_id = await _resolve_guild_id_async(guild_id)
         from ...tools.discord_admin import unban_member
         r = await unban_member(guild_id, user_id)
         if not r.get("ok"):
@@ -625,9 +726,10 @@ async def discord_create_invite(ctx: HandlerContext, *, channel_id: str,
         return HandlerResult.fail(f"Erreur: {e}")
 
 
-async def discord_list_invites(ctx: HandlerContext, *, guild_id: str) -> HandlerResult:
+async def discord_list_invites(ctx: HandlerContext, *, guild_id: str = None) -> HandlerResult:
     """Liste toutes les invitations actives du serveur."""
     try:
+        guild_id = await _resolve_guild_id_async(guild_id)
         from ...tools.discord_admin import list_invites
         r = await list_invites(guild_id)
         if not r.get("ok"):
@@ -655,59 +757,67 @@ async def discord_list_invites(ctx: HandlerContext, *, guild_id: str) -> Handler
 # ─── Handler Definitions ─────────────────────────────────────────────────────
 
 def get_discord_admin_handler_defs() -> List[HandlerDef]:
-    """Retourne les 24 handlers d'administration Discord."""
+    """Retourne les handlers d'administration Discord."""
     return [
         HandlerDef(
+            name="discord_list_guilds",
+            description="Liste tous les serveurs Discord accessibles au bot. À appeler en premier pour obtenir un guild_id quand il n'est pas connu.",
+            parameters={"properties": {}, "required": []},
+            handler=discord_list_guilds,
+            category="discord",
+            source_module="handlers.discord_admin",
+        ),
+        HandlerDef(
             name="discord_server_info",
-            description="Affiche les infos du serveur Discord (nom, membres, boost level, owner)",
-            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord"}}, "required": ["guild_id"]},
+            description="Affiche les infos du serveur Discord (nom, membres, boost level, owner). guild_id est auto-détecté si absent.",
+            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"}}, "required": []},
             handler=discord_server_info,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_server_configure",
-            description="Modifie le nom ou la description du serveur Discord",
+            description="Modifie le nom ou la description du serveur Discord. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "name": {"type": "string", "description": "Nouveau nom du serveur"},
                 "description": {"type": "string", "description": "Nouvelle description"},
-            }, "required": ["guild_id"]},
+            }, "required": []},
             handler=discord_server_configure,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_list_channels",
-            description="Liste tous les channels et catégories du serveur Discord",
-            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord"}}, "required": ["guild_id"]},
+            description="Liste tous les channels et catégories du serveur Discord. guild_id est auto-détecté si absent — appeler directement sans connaître l'ID.",
+            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"}}, "required": []},
             handler=discord_list_channels,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_create_category",
-            description="Crée une catégorie (dossier) pour organiser les channels",
+            description="Crée une catégorie (dossier) pour organiser les channels. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "name": {"type": "string", "description": "Nom de la catégorie"},
                 "position": {"type": "integer", "description": "Position d'affichage (0 = tout en haut)"},
-            }, "required": ["guild_id", "name"]},
+            }, "required": ["name"]},
             handler=discord_create_category,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_create_channel",
-            description="Crée un channel Discord (text, voice, announcement, forum, stage)",
+            description="Crée un channel Discord (text, voice, announcement, forum, stage). guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "name": {"type": "string", "description": "Nom du channel à créer"},
                 "channel_type": {"type": "string", "description": "text | voice | announcement | forum | stage", "default": "text"},
                 "topic": {"type": "string", "description": "Description/sujet du channel"},
                 "parent_id": {"type": "string", "description": "ID de la catégorie parente"},
                 "position": {"type": "integer", "description": "Position d'affichage (0 = tout en haut)"},
-            }, "required": ["guild_id", "name"]},
+            }, "required": ["name"]},
             handler=discord_create_channel,
             category="discord",
             source_module="handlers.discord_admin",
@@ -824,106 +934,125 @@ def get_discord_admin_handler_defs() -> List[HandlerDef]:
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
+            name="discord_set_channel_permissions",
+            description=(
+                "Pose un permission overwrite sur un channel ou une catégorie Discord. "
+                "Bits : VIEW_CHANNEL=1024, SEND_MESSAGES=2048, READ_MESSAGE_HISTORY=65536. "
+                "Pour rendre un salon invisible à @everyone : overwrite_id=guild_id, deny=1024, overwrite_type=0. "
+                "overwrite_type : 0=rôle, 1=membre."
+            ),
+            parameters={"properties": {
+                "channel_id": {"type": "string", "description": "ID du channel ou de la catégorie Discord"},
+                "overwrite_id": {"type": "string", "description": "ID du rôle (overwrite_type=0) ou du membre (overwrite_type=1). Pour @everyone utiliser le guild_id."},
+                "allow": {"type": "integer", "description": "Bits des permissions à autoriser (0 = aucune)", "default": 0},
+                "deny": {"type": "integer", "description": "Bits des permissions à refuser (0 = aucune)", "default": 0},
+                "overwrite_type": {"type": "integer", "description": "0 = rôle (défaut), 1 = membre", "default": 0},
+            }, "required": ["channel_id", "overwrite_id"]},
+            handler=discord_set_channel_permissions,
+            category="discord",
+            source_module="handlers.discord_admin",
+        ),
+        HandlerDef(
             name="discord_list_roles",
-            description="Liste tous les rôles du serveur Discord avec leur couleur et permissions",
-            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord"}}, "required": ["guild_id"]},
+            description="Liste tous les rôles du serveur Discord avec leur couleur et permissions. guild_id est auto-détecté si absent.",
+            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"}}, "required": []},
             handler=discord_list_roles,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_create_role",
-            description="Crée un rôle dans le serveur Discord",
+            description="Crée un rôle dans le serveur Discord. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "name": {"type": "string", "description": "Nom du rôle à créer"},
                 "color": {"type": "integer", "description": "Couleur décimale (ex: 16734003 pour orange, 3447003 pour bleu). 0 = pas de couleur", "default": 0},
                 "hoist": {"type": "boolean", "description": "Afficher séparément dans la liste", "default": False},
                 "mentionable": {"type": "boolean", "description": "Mentionnable par tous", "default": False},
                 "permissions": {"type": "array", "items": {"type": "string"},
                                 "description": "Liste de permissions: admin, manage_guild, manage_channels, kick_members, ban_members, send_messages"},
-            }, "required": ["guild_id", "name"]},
+            }, "required": ["name"]},
             handler=discord_create_role,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_delete_role",
-            description="Supprime un rôle du serveur Discord",
+            description="Supprime un rôle du serveur Discord. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "role_id": {"type": "string", "description": "ID du rôle à supprimer"},
-            }, "required": ["guild_id", "role_id"]},
+            }, "required": ["role_id"]},
             handler=discord_delete_role,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_assign_role",
-            description="Assigne un rôle à un membre du serveur",
+            description="Assigne un rôle à un membre du serveur. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "user_id": {"type": "string", "description": "ID de l'utilisateur Discord"},
                 "role_id": {"type": "string", "description": "ID du rôle à assigner"},
-            }, "required": ["guild_id", "user_id", "role_id"]},
+            }, "required": ["user_id", "role_id"]},
             handler=discord_assign_role,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_remove_role",
-            description="Retire un rôle à un membre du serveur",
+            description="Retire un rôle à un membre du serveur. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "user_id": {"type": "string", "description": "ID de l'utilisateur Discord"},
                 "role_id": {"type": "string", "description": "ID du rôle à retirer"},
-            }, "required": ["guild_id", "user_id", "role_id"]},
+            }, "required": ["user_id", "role_id"]},
             handler=discord_remove_role,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_list_members",
-            description="Liste les membres du serveur Discord (username, rôles, bots)",
+            description="Liste les membres du serveur Discord (username, rôles, bots). guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "limit": {"type": "integer", "default": 50, "description": "Nombre max de membres à retourner"},
-            }, "required": ["guild_id"]},
+            }, "required": []},
             handler=discord_list_members,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_kick",
-            description="Expulse (kick) un membre du serveur — il peut revenir avec une invitation",
+            description="Expulse (kick) un membre du serveur — il peut revenir avec une invitation. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "user_id": {"type": "string", "description": "ID de l'utilisateur à expulser"},
-            }, "required": ["guild_id", "user_id"]},
+            }, "required": ["user_id"]},
             handler=discord_kick,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_ban",
-            description="Bannit définitivement un membre du serveur Discord",
+            description="Bannit définitivement un membre du serveur Discord. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "user_id": {"type": "string", "description": "ID de l'utilisateur à bannir"},
                 "reason": {"type": "string", "description": "Raison du ban (visible dans les logs)"},
                 "delete_days": {"type": "integer", "description": "Jours de messages à supprimer (0-7)", "default": 0},
-            }, "required": ["guild_id", "user_id"]},
+            }, "required": ["user_id"]},
             handler=discord_ban,
             category="discord",
             source_module="handlers.discord_admin",
         ),
         HandlerDef(
             name="discord_unban",
-            description="Lève le ban d'un membre du serveur Discord",
+            description="Lève le ban d'un membre du serveur Discord. guild_id est auto-détecté si absent.",
             parameters={"properties": {
-                "guild_id": {"type": "string", "description": "ID du serveur Discord"},
+                "guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"},
                 "user_id": {"type": "string", "description": "ID de l'utilisateur à débannir"},
-            }, "required": ["guild_id", "user_id"]},
+            }, "required": ["user_id"]},
             handler=discord_unban,
             category="discord",
             source_module="handlers.discord_admin",
@@ -942,8 +1071,8 @@ def get_discord_admin_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="discord_list_invites",
-            description="Liste toutes les invitations actives du serveur Discord",
-            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord"}}, "required": ["guild_id"]},
+            description="Liste toutes les invitations actives du serveur Discord. guild_id est auto-détecté si absent.",
+            parameters={"properties": {"guild_id": {"type": "string", "description": "ID du serveur Discord (optionnel — auto-détecté si absent)"}}, "required": []},
             handler=discord_list_invites,
             category="discord",
             source_module="handlers.discord_admin",

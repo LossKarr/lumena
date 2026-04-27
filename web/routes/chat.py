@@ -529,6 +529,60 @@ def _build_channel_envelope(request: ChatRequest, channel: str) -> Dict[str, Any
     return envelope
 
 
+def _extract_dated_workspace(msg: str, default_workspace: str) -> Optional[str]:
+    """Extrait une date du message utilisateur et résout le workspace correspondant.
+
+    Patterns reconnus :
+    - "du 26/04", "le 26/04/2026", "du 26-04"
+    - "hier", "avant-hier", "avant hier"
+    - "d'hier", "yesterday"
+
+    Retourne le chemin du workspace daté s'il existe, sinon None.
+    """
+    import re as _re
+    from datetime import date, timedelta
+    from pathlib import Path as _P
+
+    today = date.today()
+    target_date: Optional[date] = None
+
+    # Pattern 1: "du DD/MM" ou "du DD/MM/YYYY" ou "le DD/MM"
+    _date_match = _re.search(
+        r"(?:du|le|de|from)\s+(\d{1,2})[/\-](\d{1,2})(?:[/\-](\d{2,4}))?",
+        msg,
+    )
+    if _date_match:
+        _d, _m = int(_date_match.group(1)), int(_date_match.group(2))
+        _y_raw = _date_match.group(3)
+        _y = int(_y_raw) if _y_raw else today.year
+        if _y < 100:
+            _y += 2000
+        try:
+            target_date = date(_y, _m, _d)
+        except ValueError:
+            pass
+
+    # Pattern 2: "avant-hier" / "avant hier" (AVANT "hier" pour éviter le faux match)
+    if target_date is None and _re.search(r"avant[- ]hier", msg):
+        target_date = today - timedelta(days=2)
+
+    # Pattern 3: "hier" / "d'hier" / "yesterday"
+    if target_date is None and _re.search(r"\bhier\b|yesterday", msg):
+        target_date = today - timedelta(days=1)
+
+    if target_date is None or target_date == today:
+        return None
+
+    # Construire le chemin workspace de cette date.
+    # DEFAULT_WORKSPACE_PATH = workspace/ (racine), les projets sont dans workspace/YYYY-MM-DD/
+    _ws_base = _P(default_workspace)
+    _dated_dir = _ws_base / target_date.strftime("%Y-%m-%d")
+    if not _dated_dir.is_dir():
+        return None
+
+    return str(_dated_dir)
+
+
 def _apply_workspace_policy(
     request: ChatRequest,
     channel: str,
@@ -551,6 +605,44 @@ def _apply_workspace_policy(
     # ── Chemin V2 — resolve_workspace_for_request est la SEULE source de vérité ──
     # Aucun appel à _infer_workspace_path() autorisé ici.
     requested_workspace = (request.workspace_path or "").strip() or ide_context.get("workspace_path")
+
+    # ── DATE EXTRACTION: si le message mentionne une date explicite (ex: "du 26/04",
+    # "hier", "d'avant-hier"), chercher le projet dans le workspace de cette date
+    # au lieu du workspace du jour. Cela évite le FALLBACK quand l'utilisateur
+    # parle d'un projet créé à une date antérieure.
+    if not requested_workspace:
+        _msg_lower = (request.message or "").lower()
+        _extracted_ws = _extract_dated_workspace(_msg_lower, DEFAULT_WORKSPACE_PATH)
+        if _extracted_ws:
+            requested_workspace = _extracted_ws
+            logger.info(
+                "[workspace] date extraite du message → {}",
+                _extracted_ws[:120],
+            )
+
+    # Si aucun workspace demandé, tenter le projet actif récent du canal avant le fallback date.
+    if not requested_workspace:
+        try:
+            import os as _os_wp
+            _lum_wp = deps.lumena
+            _id_svc_wp = getattr(_lum_wp, "_identity_svc", None) if _lum_wp else None
+            if _id_svc_wp is not None:
+                from src.core_services.identity_service import IdentityService as _IDS_WP
+                _conv_id = getattr(request, "conversation_id", None) or "default"
+                _ck_wp = f"{channel}:{_conv_id}"
+                _rpc_wp = _id_svc_wp.get_recent_code_context(_ck_wp)
+                if not _rpc_wp:
+                    _rpc_wp = _id_svc_wp.get_recent_code_context(f"{channel}:default")
+                if _rpc_wp:
+                    _rpc_path_wp = _rpc_wp.get("workspace_path", "")
+                    if _rpc_path_wp and _os_wp.path.isdir(_rpc_path_wp):
+                        requested_workspace = _rpc_path_wp
+                        logger.debug(
+                            "[workspace] recent_context → {} (canal={}, conv={})",
+                            _rpc_path_wp[:80], channel, _conv_id,
+                        )
+        except Exception as _wp_exc:
+            logger.debug("[workspace] recent_context lookup échoué: {}", _wp_exc)
     active_file_path = (
         ide_context.get("active_file_path")
         or _normalize_existing_file(request.active_file_path)
@@ -577,6 +669,20 @@ def _apply_workspace_policy(
         "[workspace] V2 -> {} (reason={}, fallback={})",
         resolved.resolved_workspace, resolved.resolution_reason, resolved.used_fallback,
     )
+
+    # 4.3: Signal d'observabilité — fallback sur requête qui ressemble à du code
+    if resolved.used_fallback:
+        _q_lower = (request.message or "").lower()
+        _CODE_KW_FALLBACK = (
+            "corrige", "fix", "bug", "code", "jeu", "game", "script", "fichier",
+            "write_file", "edit_file", "projet", "project", "refais", "delegate",
+            "compile", "python", "javascript", "html", "css", "app", "site",
+        )
+        if any(k in _q_lower for k in _CODE_KW_FALLBACK):
+            logger.warning(
+                "[workspace] FALLBACK sur requête code — canal={} requête={!r}",
+                channel, _q_lower[:120],
+            )
 
     # P1 strict : policy=explicit avec workspace invalide → refus, pas de fallback silencieux
     if resolved.used_fallback and resolved.workspace_policy == "explicit":

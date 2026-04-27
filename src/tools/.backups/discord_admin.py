@@ -142,14 +142,6 @@ async def delete_channel(channel_id: str) -> Dict[str, Any]:
     return await _request("DELETE", f"/channels/{channel_id}")
 
 
-async def set_channel_permission(channel_id: str, overwrite_id: str,
-                                  allow: int = 0, deny: int = 0,
-                                  overwrite_type: int = 0) -> Dict[str, Any]:
-    """Pose un permission overwrite sur un channel. type 0=rôle, 1=membre."""
-    payload = {"allow": str(allow), "deny": str(deny), "type": overwrite_type}
-    return await _request("PUT", f"/channels/{channel_id}/permissions/{overwrite_id}", json=payload)
-
-
 # ─── Messages ────────────────────────────────────────────────────────────────
 
 async def send_message(channel_id: str, content: str = "", embed: Dict = None) -> Dict[str, Any]:
