@@ -85,3 +85,21 @@ class TestSandboxWorkdir:
         from src.utils.docker_sandbox import should_use_sandbox
         with patch("src.utils.docker_sandbox.get_sandbox_mode", return_value="auto"):
             assert should_use_sandbox('cd /d "C:\\proj" && sed -n "1,5p" f') is True
+
+    def test_should_use_sandbox_localhost_curl_stays_local(self):
+        """curl localhost doit verifier l'hote, pas le container Docker."""
+        from src.utils.docker_sandbox import should_use_sandbox
+        with patch("src.utils.docker_sandbox.get_sandbox_mode", return_value="auto"):
+            assert should_use_sandbox("curl -s http://localhost:3000/health") is False
+
+    def test_should_use_sandbox_loopback_ip_stays_local(self):
+        """127.0.0.1 reste local meme avec curl."""
+        from src.utils.docker_sandbox import should_use_sandbox
+        with patch("src.utils.docker_sandbox.get_sandbox_mode", return_value="auto"):
+            assert should_use_sandbox("curl http://127.0.0.1:8080") is False
+
+    def test_should_use_sandbox_external_curl_stays_sandboxed(self):
+        """Un vrai endpoint externe continue de passer par Docker."""
+        from src.utils.docker_sandbox import should_use_sandbox
+        with patch("src.utils.docker_sandbox.get_sandbox_mode", return_value="auto"):
+            assert should_use_sandbox("curl -I https://example.com") is True

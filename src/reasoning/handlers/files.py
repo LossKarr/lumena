@@ -30,6 +30,7 @@ from ...tools.tree_sitter_parser import parse_file_outline
 try:
     from ...tools.file_guardrails import (
         PathSecurityError,
+        _is_within,
         check_path_boundary,
         check_read_blacklist,
         check_write_blacklist,
@@ -37,10 +38,35 @@ try:
     )
 except ImportError:
     PathSecurityError = Exception
+    _is_within = None
     check_path_boundary = None
     check_read_blacklist = None
     check_write_blacklist = None
     check_delete_allowed = None
+
+
+def _assert_write_boundary(resolved: Path, ctx: HandlerContext) -> None:
+    """Lève PathSecurityError si resolved est hors workspace/lumena_root.
+
+    À appeler en tête de chaque handler mutatif, juste après resolve_path().
+    Empêche qu'un OutsideAccessGrant de lecture soit détourné en vecteur d'écriture.
+    Silencieux si file_guardrails non disponible (mode test léger).
+    """
+    if ctx.file_guardrails is None or _is_within is None:
+        return
+    try:
+        lr = ctx.lumena_root.resolve()
+        wr = ctx.file_guardrails._workspace_root().resolve()
+        rp = resolved.resolve() if resolved.exists() else resolved
+        if not (_is_within(rp, lr) or _is_within(rp, wr)):
+            raise PathSecurityError(
+                f"Écriture refusée: {rp} est hors des limites autorisées. "
+                "Un grant de lecture ne permet jamais d'écrire hors workspace."
+            )
+    except PathSecurityError:
+        raise
+    except Exception:
+        pass  # Erreur de résolution — ne pas bloquer, laisser le handler gérer
 
 # Imports optionnels (même pattern que react.py)
 try:
@@ -624,6 +650,11 @@ async def write_file_handler(
                 path,
                 project_name=project,
             )
+        # P0.2: vérifier la boundary avant toute écriture (couvre le chemin IDE direct)
+        try:
+            _assert_write_boundary(target_path, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="write_file")
         # P0.2: block writes to protected zones (.env, data/, models/, backups/)
         if check_write_blacklist is not None:
             try:
@@ -792,6 +823,10 @@ async def create_zip_handler(
 
         if out_zip.suffix.lower() != ".zip":
             out_zip = out_zip.with_suffix(".zip")
+        try:
+            _assert_write_boundary(out_zip, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="create_zip")
         if out_zip.exists() and out_zip.is_dir():
             return HandlerResult.fail(
                 f"❌ create_zip: le chemin de sortie est un dossier: {out_zip}",
@@ -855,6 +890,10 @@ async def edit_file_handler(
         return HandlerResult.ok("❌ Module apply_patch non disponible", handler_name="edit_file")
     try:
         resolved = ctx.resolve_path(file_path)
+        try:
+            _assert_write_boundary(resolved, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="edit_file")
         existed_before, before_content = _before_snapshot(resolved)
 
         result = await _edit_file_fn(
@@ -1089,6 +1128,10 @@ async def insert_at_anchor_handler(
     """
     try:
         resolved = ctx.resolve_path(path)
+        try:
+            _assert_write_boundary(resolved, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="insert_at_anchor")
         if check_write_blacklist is not None:
             try:
                 check_write_blacklist(resolved, ctx.lumena_root)
@@ -1159,6 +1202,10 @@ async def apply_patch_handler(
     try:
         # D'abord essayer de résoudre le chemin via le système normal (workspace inclus)
         resolved = ctx.resolve_path(file_path)
+        try:
+            _assert_write_boundary(resolved, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
 
         # Si le fichier résolu existe, utiliser edit_file directement (plus robuste)
         if resolved.exists():
@@ -1449,6 +1496,10 @@ async def undo_edit_handler(ctx: HandlerContext, file_path: str = "") -> Handler
 
         latest = sessions[0]
         target = ctx.resolve_path(file_path)
+        try:
+            _assert_write_boundary(target, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="undo_edit")
 
         # Trouver le fichier dans le backup (chemin relatif ou par nom)
         backup_file: Optional[Path] = None
@@ -1499,6 +1550,10 @@ async def create_directory_handler(
                 if stripped:
                     target = _Path(stripped)
             target = ctx.runtime_root / target
+        try:
+            _assert_write_boundary(target, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="create_directory")
         target.mkdir(parents=True, exist_ok=exist_ok)
         return HandlerResult.ok(f"✅ Répertoire créé: {target}", handler_name="create_directory")
     except FileExistsError:

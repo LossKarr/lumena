@@ -11,6 +11,7 @@ def registry():
 @pytest.fixture(autouse=True)
 def _enforce_mode(monkeypatch):
     monkeypatch.setenv("LUMENA_STRICT_CODE_DELEGATION", "enforce")
+    monkeypatch.delenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", raising=False)
 
 
 @pytest.fixture
@@ -110,6 +111,28 @@ def test_run_command_in_project_blocked(registry, fake_project):
         REACT,
     )
     assert obs is not None
+
+
+def test_run_command_in_project_allowed_when_shell_flag_enabled(registry, fake_project, monkeypatch):
+    monkeypatch.setenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "1")
+    from src.reasoning.caller_context import REACT
+    obs = registry._policy_check(
+        "run_command",
+        {"command": "node server.js", "cwd": "/fake/demo-project"},
+        REACT,
+    )
+    assert obs is None
+
+
+def test_run_shell_in_project_allowed_when_shell_flag_enabled(registry, fake_project, monkeypatch):
+    monkeypatch.setenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "true")
+    from src.reasoning.caller_context import REACT
+    obs = registry._policy_check(
+        "run_shell",
+        {"command": "npm start", "cwd": "/fake/demo-project"},
+        REACT,
+    )
+    assert obs is None
 
 
 def test_run_command_curl_outside_allowed(registry, fake_project):

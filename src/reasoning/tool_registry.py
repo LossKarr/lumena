@@ -50,6 +50,12 @@ def _strict_mode() -> str:
     return val
 
 
+def _react_allow_project_shell() -> bool:
+    """Flag de test: autorise les shell tools REACT dans un projet suivi."""
+    raw = (os.getenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "0") or "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _extract_path_from_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
     """Extrait le chemin cible depuis les arguments d'un outil muteur.
 
@@ -330,15 +336,20 @@ class ToolRegistry:
                 if "tool_calls" not in filtered and kw:
                     _bad_args = [k for k in kw.keys() if k != "execute_fn"]
                     logger.warning(f"parallel_tools: args directs détectés ({_bad_args}) — format tool_calls requis")
-                    from .handlers.contracts import HandlerResult as _HR
-                    return _HR.fail(
+                    _err = (
                         f"Erreur: parallel_tools attend tool_calls=[{{\"name\": \"outil\", \"args\": {{...}}}}]. "
                         f"Tu as envoyé des args directs ({_bad_args}). "
                         f"Appelle l'outil directement (ex: ACTION: discord_send) au lieu de parallel_tools."
-                    ).to_legacy_str()
+                    )
+                    return Observation(content=_err, success=False)
                 filtered["execute_fn"] = _self_execute
                 result = await _pt_handler(ctx, **filtered)
-                return result.to_legacy_str()
+                # Transmettre l'Observation structurée directement (sub_results peuplés)
+                return Observation(
+                    content=result.output,
+                    success=result.success,
+                    sub_results=result.sub_results,
+                )
 
             self.tools["parallel_tools"]["handler"] = _parallel_tools_wrapper
 
@@ -1087,6 +1098,14 @@ class ToolRegistry:
         # n'importe quel fichier, on ne peut pas se fier à l'extension du cwd).
         _is_shell = name in ("run_command", "run_shell", "exec_command")
         if _is_shell:
+            if _react_allow_project_shell():
+                logger.warning(
+                    "[policy] REACT shell autorise par flag: {} sur {} (projet {})",
+                    name,
+                    path_str,
+                    proj.get("slug", "?") if isinstance(proj, dict) else "?",
+                )
+                return None
             _cmd = str((args or {}).get("command", "")).strip().lower()
             _readonly_prefixes = (
                 "python -m http.server", "python3 -m http.server",
@@ -1273,6 +1292,17 @@ class ToolRegistry:
                 return Observation(content=msg, success=False)
 
         return None
+
+    def get_tool_module_category(self, tool_name: str) -> str:
+        """Return the registered module category for a tool name."""
+        return self._tool_modules.get(tool_name, "")
+
+    def get_tool_semantic_category(self, tool_name: str) -> str:
+        """Return the semantic category for a tool name."""
+        module_cat = self.get_tool_module_category(tool_name)
+        if not module_cat:
+            return ""
+        return get_semantic_category(module_cat)
 
     async def execute(
         self,
@@ -1524,6 +1554,10 @@ class ToolRegistry:
                     self._observation_cache_hits.pop(_sk, None)
                 if _stale:
                     logger.debug("Cache invalidé: {} entrées (après {})", len(_stale), name)
+
+            # Observation structurée directe (ex: parallel_tools avec sub_results)
+            if isinstance(result, Observation):
+                return result
 
             if isinstance(result, str):
                 raw = result.strip()

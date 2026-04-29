@@ -321,6 +321,8 @@ def get_process_manager(work_dir: Optional[Path] = None) -> ProcessManager:
     global _process_manager
     if _process_manager is None:
         _process_manager = ProcessManager(work_dir)
+    elif work_dir is not None:
+        _process_manager.work_dir = Path(work_dir)
     return _process_manager
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project

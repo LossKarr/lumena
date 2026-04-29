@@ -75,6 +75,98 @@ except ImportError:
     INTENT_CLASSIFIER_AVAILABLE = False
     RequestMode = None
 
+try:
+    from src.tools.file_guardrails import OutsideAccessGrant
+    _OUTSIDE_GRANT_AVAILABLE = True
+except ImportError:
+    OutsideAccessGrant = None  # type: ignore[assignment,misc]
+    _OUTSIDE_GRANT_AVAILABLE = False
+
+
+# ---------------------------------------------------------------------------
+# Détection d'accès hors workspace sur demande explicite utilisateur
+# ---------------------------------------------------------------------------
+
+_WIN_PATH_RE = re.compile(r'[A-Za-z]:\\(?:[^\s\'"<>|*?\r\n\\][^\s\'"<>|*?\r\n]*)')
+_UNIX_PATH_RE = re.compile(r'/(?:home|Users|mnt|media|tmp)/[^\s\'"<>|*?\r\n]+')
+
+_NAMED_USER_DIRS: List[tuple] = [
+    ("downloads", "Downloads"),
+    ("téléchargements", "Downloads"),
+    ("telechargements", "Downloads"),
+    ("documents", "Documents"),
+    ("bureau", "Desktop"),
+    ("desktop", "Desktop"),
+    ("images", "Pictures"),
+    ("pictures", "Pictures"),
+    ("photos", "Pictures"),
+    ("music", "Music"),
+    ("musique", "Music"),
+    ("videos", "Videos"),
+    ("vidéos", "Videos"),
+]
+
+_PC_SCOPE_KEYWORDS = (
+    "hors workspace",
+    "hors du workspace",
+    "sur mon pc",
+    "sur l'ordinateur",
+    "sur le disque",
+    "sur mon disque",
+    "sur mon ordi",
+    "outside workspace",
+    "outside the workspace",
+    "my computer",
+    "mon ordinateur",
+)
+
+
+def _detect_outside_access_grant(query: str) -> "OutsideAccessGrant":  # type: ignore[return]
+    """Analyse la requête et retourne un grant d'accès hors workspace borné.
+
+    Seule la lecture est accordée. L'écriture reste toujours interdite hors workspace.
+    Si aucune intention explicite n'est détectée, retourne un grant vide (aucun accès).
+    """
+    if not _OUTSIDE_GRANT_AVAILABLE:
+        return None  # type: ignore[return-value]
+
+    q_lower = query.lower()
+    allowed_roots: List[Path] = []
+
+    # 1. Chemins absolus Windows explicites dans la requête
+    for m in _WIN_PATH_RE.finditer(query):
+        p = Path(m.group(0))
+        root = p if p.is_dir() else p.parent
+        if root not in allowed_roots:
+            allowed_roots.append(root)
+
+    # 2. Chemins absolus Unix explicites
+    for m in _UNIX_PATH_RE.finditer(query):
+        p = Path(m.group(0))
+        root = p if p.is_dir() else p.parent
+        if root not in allowed_roots:
+            allowed_roots.append(root)
+
+    # 3. Répertoires utilisateur nommés (Downloads, Documents, Bureau…)
+    home = Path.home()
+    for keyword, dir_name in _NAMED_USER_DIRS:
+        if keyword in q_lower:
+            candidate = home / dir_name
+            if candidate not in allowed_roots:
+                allowed_roots.append(candidate)
+
+    # 4. Scope "PC/disque" générique → home uniquement (conservateur)
+    if not allowed_roots:
+        for kw in _PC_SCOPE_KEYWORDS:
+            if kw in q_lower:
+                allowed_roots.append(home)
+                break
+
+    if not allowed_roots:
+        return OutsideAccessGrant.none()
+
+    return OutsideAccessGrant.for_paths(*allowed_roots)
+
 
 def _env_flag(name: str, default: bool = False) -> bool:
     val = os.environ.get(name, "").strip().lower()
@@ -1727,6 +1819,12 @@ Conversations et apprentissages de la journée.
         tools._tools_desc_cache = None
         tools._observation_cache.clear()
         tools._caller_set_allowed = False
+        # Accès hors workspace : borné aux chemins/répertoires explicitement mentionnés.
+        # Pas de bypass global — seule une mention explicite dans la requête accorde un grant.
+        _outside_grant = _detect_outside_access_grant(query) if _OUTSIDE_GRANT_AVAILABLE else None
+        tools._outside_access_grant = _outside_grant
+        if hasattr(tools, '_v2_context') and tools._v2_context is not None:
+            tools._v2_context.outside_access_grant = _outside_grant
         _is_ollama = (
             hasattr(c.llm, 'provider') and
             str(getattr(c.llm.provider, 'value', c.llm.provider)) == "ollama"
@@ -1922,6 +2020,9 @@ Conversations et apprentissages de la journée.
         tools._tools_desc_cache = None
         tools._observation_cache.clear()
         tools._caller_set_allowed = False
+        tools._outside_access_grant = OutsideAccessGrant.none() if _OUTSIDE_GRANT_AVAILABLE else None
+        if hasattr(tools, '_v2_context') and tools._v2_context is not None:
+            tools._v2_context.outside_access_grant = None  # Mode autonome — verrou total
         if allowed_tools:
             tools._allowed_tools = set(allowed_tools)
             tools._tools_desc_cache = None

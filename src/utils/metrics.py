@@ -35,6 +35,10 @@ def record_task_metrics(
         from src.config.codeagent_flags import CODING_METRICS
         if not CODING_METRICS:
             return
+        # Rejeter silencieusement les entrées sans task_id réel (orphelines/synthétiques)
+        _task_id = str(task_id).strip()[:120]
+        if not _task_id:
+            return
         # Enrichir avec les métriques gate (P7)
         if extra is None:
             extra = {}
@@ -54,7 +58,7 @@ def record_task_metrics(
 
         entry: dict[str, Any] = {
             "ts": time.time(),
-            "task_id": str(task_id)[:120],
+            "task_id": _task_id,
             "model": str(model_name)[:80],
             "attempt": int(attempt),
             "iterations": int(iterations),

@@ -20,6 +20,52 @@ class PathSecurityError(Exception):
     """Raised when a file operation targets a forbidden path."""
 
 
+@dataclass
+class OutsideAccessGrant:
+    """Per-turn bounded grant for accessing paths outside workspace.
+
+    Only read/list/search is grantable via this mechanism. Write and delete
+    outside workspace remain forbidden regardless of any grant.
+
+    Usage: built by _detect_outside_access_grant(query) in agent_service.py
+    and attached to HandlerContext for the duration of one turn.
+    """
+
+    # Roots/paths the agent may read from outside workspace this turn.
+    allowed_roots: List[Path] = field(default_factory=list)
+    allow_read: bool = False
+    # Write and delete are never granted here — kept explicit as False.
+    allow_write: bool = False
+    allow_delete: bool = False
+
+    def permits_read(self, resolved: Path) -> bool:
+        """Return True if *resolved* falls under a granted root."""
+        if not self.allow_read or not self.allowed_roots:
+            return False
+        try:
+            rp = resolved.resolve()
+        except (OSError, ValueError):
+            rp = resolved
+        for root in self.allowed_roots:
+            try:
+                root_r = root.resolve()
+            except (OSError, ValueError):
+                root_r = root
+            if _is_within(rp, root_r) or rp == root_r:
+                return True
+        return False
+
+    @classmethod
+    def none(cls) -> "OutsideAccessGrant":
+        """No outside access — default state."""
+        return cls()
+
+    @classmethod
+    def for_paths(cls, *paths: Path) -> "OutsideAccessGrant":
+        """Grant read access to specific paths or directory roots."""
+        return cls(allowed_roots=list(paths), allow_read=True)
+
+
 def _resolve_safe(path: Path) -> Path:
     """Resolve a path without following symlinks outside the project."""
     try:
@@ -314,11 +360,19 @@ class WorkspaceFileGuardrails:
         matches.sort(key=_score, reverse=True)
         return matches[0]
 
-    def resolve_user_path(self, path: str, want_dir: bool = False) -> Path:
+    def resolve_user_path(
+        self,
+        path: str,
+        want_dir: bool = False,
+        outside_grant: Optional[OutsideAccessGrant] = None,
+    ) -> Path:
         """Resolve a read/list/edit path with workspace fallback.
 
         After resolution, enforces boundary check: result must be within
-        lumena_root or workspace_root.  Raises PathSecurityError otherwise.
+        lumena_root or workspace_root, OR covered by an explicit
+        OutsideAccessGrant (read-only, bounded to declared roots).
+
+        Raises PathSecurityError if the path is outside all allowed bounds.
         """
         candidate = Path(path)
 
@@ -367,13 +421,22 @@ class WorkspaceFileGuardrails:
                     else:
                         resolved = self.lumena_root / candidate
 
-        # P0.2: Boundary check — must be inside lumena_root or workspace_root
-        check_path_boundary(
-            _resolve_safe(resolved),
-            self.lumena_root,
-            self._workspace_root(),
+        # P0.2: Boundary check — result must be inside lumena_root or workspace_root.
+        rp = _resolve_safe(resolved)
+        lr = self.lumena_root.resolve()
+        wr = self._workspace_root().resolve()
+        within_bounds = _is_within(rp, lr) or _is_within(rp, wr)
+        if within_bounds:
+            return resolved
+
+        # Outside normal bounds — only allowed if the grant explicitly covers it.
+        if outside_grant is not None and outside_grant.permits_read(rp):
+            logger.debug(f"[guardrails] Accès hors workspace accordé par grant: {rp}")
+            return resolved
+
+        raise PathSecurityError(
+            f"Accès refusé: chemin hors des limites autorisées ({rp})"
         )
-        return resolved
 
     def should_use_workspace(self, path: str) -> bool:
         """Return True when the path should be redirected into workspace."""
@@ -458,6 +521,16 @@ class WorkspaceFileGuardrails:
 
         if original.is_absolute():
             target = original
+            # Écriture vers un chemin absolu : vérification boundary stricte.
+            # Aucun grant ne permet l'écriture hors workspace.
+            rp = _resolve_safe(target)
+            lr = self.lumena_root.resolve()
+            wr = self._workspace_root().resolve()
+            if not (_is_within(rp, lr) or _is_within(rp, wr)):
+                raise PathSecurityError(
+                    f"Écriture refusée: {rp} est hors des limites autorisées. "
+                    "Les écritures hors workspace ne sont jamais permises."
+                )
         else:
             target = self.lumena_root / original
         return target, False, ""

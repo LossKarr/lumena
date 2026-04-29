@@ -221,6 +221,33 @@ class TestUpdatePlanProgress:
         loop._update_plan_progress("create_pdf", {"filename": "rapport_france.pdf"}, "OK", 1)
         assert loop._task_plan[0].completed is True
 
+    def test_run_command_dir_does_not_mark_launch_task_by_hint_only(self):
+        loop = self._make_loop([
+            "Vérifier que le dossier SynthVault existe et contient server.js",
+            "Lancer le serveur sur le port 3000",
+        ])
+        loop._update_plan_progress(
+            "run_command",
+            {"command": 'cd "C:\\tmp\\SynthVault" && dir server.js'},
+            "Répertoire de C:\\tmp\\SynthVault\nserver.js",
+            1,
+        )
+        assert loop._task_plan[0].completed is False
+        assert loop._task_plan[1].completed is False
+
+    def test_process_status_can_mark_server_launch_task(self):
+        loop = self._make_loop([
+            "Lancer le serveur sur le port 3000 avec run_command en arrière-plan",
+        ])
+        loop._update_plan_progress(
+            "process_status",
+            {"process_id": "abc123"},
+            "Statut du processus abc123\nStatut: running\nCommande: node server.js",
+            2,
+        )
+        assert loop._task_plan[0].completed is True
+        assert loop._task_plan[0].completed_by_tool == "process_status"
+
     # ── Tests browser interaction tools (P1/P3 fix) ──
 
     def test_browser_dom_state_matches_analyser_page(self):

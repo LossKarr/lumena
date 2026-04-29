@@ -4,34 +4,41 @@
 Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-7536%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-8177%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
+![Version](https://img.shields.io/badge/version-v1.0.26-orange)
+
+> **⚠️ Version Bêta — v1.0.26**
+> Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 ---
 
 ## Qu'est-ce que Lumena
 
-Lumena est une plateforme d'agent IA qui combine un **raisonnement ReAct** (Think → Act → Observe), **511 outils** intégrés répartis en 18 packs contextuels, une **mémoire vectorielle** persistante (ChromaDB), et un **contrôle complet du PC** (clavier, souris, navigateur, apps).
+Lumena est un **assistant personnel IA autonome** — pas un chatbot, pas un wrapper API. Il planifie, exécute des actions réelles sur votre machine, vérifie ses propres résultats, et corrige ses erreurs.
 
-Ce n'est pas un wrapper API. C'est un agent qui planifie, exécute, vérifie, et corrige ses propres erreurs.
+Concrètement : vous lui dites *"crée-moi un site vitrine pour mon restaurant et envoie-le moi par mail"*, il le fait. Pas en vous donnant du code à copier — en l'exécutant lui-même, fichier par fichier, jusqu'à confirmation que ça marche.
+
+Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** répartis en 18 packs, **mémoire vectorielle** persistante (ChromaDB), et **contrôle complet du PC** (clavier, souris, navigateur, apps).
 
 ### Points forts
 
 | Domaine | Détail |
 |---|---|
 | **LLM** | 10 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — fallback chaîné automatique |
-| **Raisonnement** | Boucle ReAct avec 18 packs d'outils contextuels, 8 types de sub-agents (code, research, debug, refactor, browser, planner, file, orchestrator), CodeAgent en arrière-plan avec progression temps réel |
+| **Raisonnement** | Boucle ReAct 30 iter, CodeAgent pleinement opérationnel — agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) en intégration active |
 | **Outils** | 511 handlers V2 dans 18 packs : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use |
 | **Documents** | 36 handlers, 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
-| **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 39 modèles, 13 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image) |
+| **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 39 modèles, 15 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image) |
 | **Mémoire** | 4 niveaux : session, ChromaDB vectorielle, Knowledge Graph, BM25 — embedding cache, file watcher |
 | **Autonomie** | Scheduler CRON, goals auto-évalués, curiosité, self_improve, cycle quotidien de skills |
 | **Computer Use** | Cascade native CU (Anthropic→OpenAI→Google→fallback), pywinauto, vision (Gemini→Claude→Ollama→OCR) |
 | **Fine-tuning** | Pipeline local LoRA→GGUF→Ollama automatique, 30 modèles, détection GPU nvidia-smi |
-| **Voix** | STT (faster-whisper GPU) + TTS (Coqui XTTS / Piper / pyttsx3) |
+| **Voix** | STT (Whisper) + TTS (Piper / Coqui XTTS provider) — *pipeline de base opérationnel, intégration avancée en cours* |
 | **Web** | FastAPI + interface admin complète, chat temps réel (SSE), WebSocket IDE bridge, panel workspaces CodeAgent |
 | **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard, rate limiter, path traversal guard |
-| **Tests** | 7 536 tests, 0 failed, ~90s sur Windows |
+| **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, parallel_tools avec résultats structurés par sous-appel |
+| **Tests** | 8 177 tests, 0 failed, ~173s suite complète |
 
 ---
 
@@ -111,6 +118,21 @@ python run_telegram.py
 python run_twitter.py
 ```
 
+### Configuration minimale
+
+Lumena fonctionne avec **une seule clé API** pour démarrer. Le minimum absolu dans `.env` :
+
+```env
+# Au choix — une seule suffit pour commencer
+ANTHROPIC_API_KEY=sk-ant-...
+# ou
+OPENAI_API_KEY=sk-...
+# ou
+DEEPSEEK_API_KEY=sk-...   # moins cher, très performant
+```
+
+Tout le reste (Telegram, Discord, sandbox Docker, mémoire vectorielle) est optionnel et configurable depuis l'interface web.
+
 ### One-Click Install (Wizard Web)
 
 Accéder à `http://localhost:8080/setup` pour un assistant guidé qui configure
@@ -125,69 +147,93 @@ docker-compose up -d
 
 ---
 
+## Exemples d'usage
+
+```
+# Développement
+"Crée une API REST Express pour gérer une liste de tâches, avec tests unitaires"
+"Corrige le bug dans src/auth.py — les tokens expirent trop tôt"
+"Refactorise la classe UserService pour séparer la logique métier du repository"
+
+# Fichiers & documents
+"Génère une facture PDF pour le client Dupont — 3 prestations, TVA 20%"
+"Lis tous les PDF dans /Downloads et résume les points clés dans un fichier texte"
+
+# Web & communication
+"Publie un message sur mon serveur Discord #annonces avec le résumé de la semaine"
+"Envoie un mail à mon équipe avec le rapport de progression du projet"
+
+# Autonomie
+"Surveille le dossier /projets et résume les nouveaux fichiers chaque matin à 9h"
+"Lance le serveur Node.js du projet SynthVault et dis-moi s'il démarre correctement"
+```
+
+---
+
 ## Architecture
 
 ```
 src/
-├── core.py                 # LumenaCore — cerveau principal (1 088L)
+├── core.py                 # LumenaCore — cerveau principal
 ├── reasoning/
-│   ├── react.py            # Boucle ReAct V4 (3 511L)
-│   ├── react_config.py     # Config, enums, constantes (373L)
-│   ├── tool_registry.py    # ToolRegistry — 18 packs contextuels (1 583L)
-│   ├── intent_router.py    # Router LLM-first + fallback regex (533L)
-│   ├── response_parser.py  # Parsing ReAct pur (292L)
-│   ├── prompt_builder.py   # Heuristiques statiques (177L)
-│   ├── caller_context.py   # Contexte appelant (injection sous-agents)
-│   ├── file_categories.py  # Catégorisation fichiers projet
+│   ├── react.py            # Boucle ReAct (4 953L)
+│   ├── react_config.py     # Config, enums, constantes (400L)
+│   ├── tool_registry.py    # ToolRegistry — 18 packs contextuels (1 763L)
+│   ├── intent_router.py    # Router LLM-first + fallback regex
+│   ├── response_parser.py  # Parsing ReAct (312L)
+│   ├── prompt_builder.py   # Heuristiques statiques (258L)
 │   └── handlers/           # 18 packs, 511 outils V2
-│       ├── browser.py      # Playwright stealth v2 (54 handlers)
+│       ├── browser.py      # Playwright stealth v2 (68 handlers)
 │       ├── documents.py    # 36 handlers PDF/DOCX (factures, contrats…)
-│       ├── image_gen.py    # 13 handlers génération d'images (12 providers, 39 modèles)
-│       ├── ide.py          # 46 handlers IDE bridge
-│       ├── stripe_api.py   # 37 handlers Stripe
-│       ├── computer_use.py # 25 handlers CU
-│       ├── discord_admin.py # 25 handlers Discord
+│       ├── image_gen.py    # 15 handlers génération d'images (12 providers, 39 modèles)
+│       ├── ide.py          # 36 handlers IDE bridge
+│       ├── stripe_api.py   # 33 handlers Stripe
+│       ├── computer_use.py # 30 handlers CU
+│       ├── discord_admin.py # 29 handlers Discord
+│       ├── osint.py        # 16 handlers OSINT
 │       └── ...             # + autres modules
 ├── llm/
-│   └── multi_provider.py   # 10 providers LLM, fallback chaîné, retry intra-provider (3 268L)
+│   └── multi_provider.py   # 10 providers LLM, fallback chaîné, retry intra-provider
 ├── memory/
-│   ├── chromadb_store.py   # Mémoire vectorielle persistante
-│   ├── knowledge_graph.py  # Relations entre entités
-│   ├── bm25_index.py       # Recherche textuelle classique
-│   └── embedding_cache.py  # Cache embeddings
+│   ├── chromadb_store.py   # Mémoire vectorielle persistante (966L)
+│   ├── knowledge_graph.py  # Relations entre entités (286L)
+│   ├── bm25_index.py       # Recherche textuelle classique (291L)
+│   └── embedding_cache.py  # Cache embeddings (273L)
 ├── autonomy/
-│   ├── scheduler.py        # Tâches CRON parallèles
-│   ├── daemon.py           # Boucle autonome 24/7
-│   ├── goals.py            # Objectifs autonomes
-│   ├── curiosity.py        # Exploration thématique
-│   ├── self_improve.py     # Auto-amélioration
-│   └── ops_handlers.py     # 15+ handlers opérationnels
+│   ├── scheduler.py        # Tâches CRON parallèles (1 617L)
+│   ├── daemon.py           # Boucle autonome 24/7 (785L)
+│   ├── goals.py            # Objectifs autonomes (498L)
+│   ├── curiosity.py        # Exploration thématique (444L)
+│   ├── self_improve.py     # Auto-amélioration (1 003L)
+│   └── ops_handlers.py     # 15+ handlers opérationnels (2 508L)
 ├── computer_use/
-│   ├── cu_router.py        # Router multi-provider
-│   ├── native_cu.py        # Cascade native Anthropic→OpenAI→Google
-│   ├── controller.py       # Souris, clavier, fenêtres pywinauto
-│   ├── vision.py           # Gemini → Claude → Ollama → OCR
-│   └── cu_agent_loop.py    # Boucle screenshot → LLM → action
+│   ├── cu_router.py        # Router multi-provider (200L)
+│   ├── native_cu.py        # Cascade native Anthropic→OpenAI→Google (932L)
+│   ├── controller.py       # Souris, clavier, fenêtres pywinauto (1 169L)
+│   ├── vision.py           # Gemini → Claude → Ollama → OCR (1 274L)
+│   └── cu_agent_loop.py    # Boucle screenshot → LLM → action (972L)
 ├── agents/
-│   └── sub_agent.py        # 8 types d'agents, CodeAgent bg + progression temps réel (5 973L)
-├── services/
-│   └── image_gen.py        # 12 providers image, 39 modèles, fallback auto
+│   └── sub_agent.py        # CodeAgent + orchestrateur multi-agents, cancel coopératif, registre bg
 ├── training/               # Pipeline fine-tuning LoRA → GGUF → Ollama
 ├── perception/             # Lecture documents, knowledge extraction
-├── voice/                  # STT (faster-whisper GPU) + TTS (Coqui XTTS / Piper)
-├── tools/                  # IDE bridge, compaction, code index
-├── utils/                  # Docker sandbox, persistence, sanitizer, SSRF guard
-└── core_services/          # Services fragmentés du core
+├── voice/                  # STT Whisper + TTS Piper — en développement actif
+│   ├── stt.py              # Transcription vocale (882L)
+│   ├── tts.py              # Synthèse vocale (711L)
+│   ├── assistant_loop.py   # Boucle vocale interactive (577L)
+│   └── providers/          # xtts_provider.py, piper_provider.py
+├── tools/                  # IDE bridge (364L), compaction, code index
+├── utils/                  # Docker sandbox (365L), persistence, sanitizer (431L), SSRF guard
+└── core_services/          # 13 services modulaires
 
 web/
 ├── server.py               # FastAPI + Uvicorn (port 8080)
-├── routes/                 # 15 fichiers routes API (workspaces, product_docs…)
-├── static/                 # JS + CSS modulaires (main.js, workspaces.js…)
+├── routes/                 # 18 fichiers routes — 93 endpoints API
+├── static/                 # 15 fichiers JS (6 824L) + 9 fichiers CSS
 └── index.html              # Interface admin complète (vanilla JS ES modules)
 
 assets/templates/           # 13 templates Jinja2 (documents pro)
 models/                     # Modèles TTS Piper + pipeline fine-tuning
-tests/                      # 7 536 tests pytest
+tests/                      # 8 177 tests pytest
 ```
 
 ---
@@ -209,7 +255,7 @@ Copier `.env.example` vers `.env`. Variables principales :
 | `LUMENA_SANDBOX_MODE` | Mode sandbox : `auto` / `always` / `never` | `auto` |
 | `LUMENA_AUTONOMY_EXECUTE_ACTIONS` | Autoriser les actions autonomes | `0` |
 
-Voir `.env.example` pour la liste complète (149 variables documentées, 23 groupes).
+Voir `.env.example` pour la liste complète (~150 variables documentées).
 
 ---
 
@@ -304,6 +350,25 @@ Ou depuis l'interface web : panneau **Fine-tuning** → **Installer les dépenda
 | 8 Go | Mistral 7B, DeepSeek-R1 7B |
 | 10 Go | Qwen3 8B, LLaMA 3.3 8B |
 | 24 Go | Gemma3 27B |
+
+---
+
+## Questions fréquentes
+
+**Est-ce que Lumena peut accéder à internet ?**
+Oui — recherche web, scraping, APIs REST, téléchargement de fichiers.
+
+**Est-ce que Lumena peut modifier des fichiers sur mon PC ?**
+Oui. C'est l'un de ses points forts — elle lit, écrit, exécute. C'est aussi pourquoi le mode sandbox (`LUMENA_SANDBOX_MODE=auto`) est recommandé au départ.
+
+**Quel modèle LLM faut-il pour que ça marche bien ?**
+DeepSeek V3 (API peu coûteuse, très performante pour les tâches de code et d'orchestration), Claude Sonnet 4, ou GPT-4o. Les modèles locaux Ollama fonctionnent mais sont moins fiables sur les tâches complexes.
+
+**Est-ce que mes données restent chez moi ?**
+Oui si vous utilisez Ollama (modèles locaux). Avec les providers cloud (OpenAI, Anthropic, etc.), les conversations transitent par leurs APIs selon leurs CGU respectives.
+
+**Est-ce qu'il faut être développeur pour l'utiliser ?**
+Pour l'installation : oui, un minimum de confort avec un terminal est nécessaire aujourd'hui. L'interface web est accessible une fois installé.
 
 ---
 

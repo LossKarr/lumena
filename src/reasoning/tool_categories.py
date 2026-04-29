@@ -341,6 +341,10 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "config_manager": "system",
     "heartbeat_self": "autonomy",
     "uncategorized": "system",
+    # Cohérence — catégories utilisées dans certains HandlerDef.category
+    # mais absentes de la table principale.
+    "code":               "codebase",
+    "security_offensive": "security",
 }
 
 

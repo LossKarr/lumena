@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 
 from .context import HandlerContext
-from .contracts import HandlerResult
+from .contracts import HandlerResult, SubToolResult
 from .registry_v2 import HandlerDef
 
 # Import optionnel compaction
@@ -71,10 +71,27 @@ async def _summarize_large_output(command: str, output: str, limit: int) -> Opti
 
 # ─── Handlers ──────────────────────────────────────────────────────────────
 
+def _should_background_command(command: str) -> bool:
+    """Detecte les commandes serveur/dev qui ne doivent pas bloquer REACT."""
+    import re as _re_bg
+
+    patterns = (
+        r"\bnode\s+server\.js\b",
+        r"\bnode\s+\S*app\.js\b",
+        r"\b(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:dev|start|serve)\b",
+        r"\bpython\s+-m\s+http\.server\b",
+        r"\buvicorn\b",
+        r"\bflask\s+run\b",
+    )
+    lowered = command.strip().lower()
+    return any(_re_bg.search(pattern, lowered) for pattern in patterns)
+
+
 async def run_command_handler(
     ctx: HandlerContext, command: str,
     stdin_input: str = "", timeout: int = 0,
     cwd: Optional[str] = None,
+    background: bool = False,
 ) -> HandlerResult:
     """Execute une commande shell de manière asynchrone (non-bloquante)."""
     try:
@@ -133,12 +150,19 @@ async def run_command_handler(
         import re as _re_cd_extract
         _cwd = str(ctx.lumena_root) if ctx.lumena_root else None
         _cd_prefix_m = _re_cd_extract.match(
-            r'^cd\s+/d\s+"([^"]+)"\s*(?:&&|;)\s*(.*)',
+            r'^\s*cd\s+(?:/d\s+)?(?:"([^"]+)"|\'([^\']+)\'|([^&;]+?))\s*(?:&&|;)\s*(.+)$',
             command, _re_cd_extract.IGNORECASE | _re_cd_extract.DOTALL,
         )
         if _cd_prefix_m:
-            _extracted_cwd = _cd_prefix_m.group(1).strip()
-            _rest_cmd = _cd_prefix_m.group(2).strip()
+            _extracted_cwd = next(
+                (
+                    group.strip()
+                    for group in _cd_prefix_m.groups()[:3]
+                    if group and group.strip()
+                ),
+                "",
+            )
+            _rest_cmd = _cd_prefix_m.group(4).strip()
             if _rest_cmd:
                 import os as _os_cd
                 if _os_cd.path.isdir(_extracted_cwd):
@@ -149,6 +173,19 @@ async def run_command_handler(
         if cwd:
             _cwd = cwd
             logger.info("[run_command] cwd explicite: {}", cwd[:200])
+
+        if background or _should_background_command(command):
+            from ...tools.process_manager import get_process_manager
+
+            process_manager = get_process_manager(Path(_cwd) if _cwd else None)
+            bg_output, process_id = await process_manager.run_background(
+                command=command,
+                wait_ms_before_async=800,
+                timeout_s=timeout_sec if timeout and timeout > 0 else 60,
+            )
+            if process_id:
+                logger.info("[run_command] background id: {}", process_id)
+            return HandlerResult.ok(bg_output, handler_name="run_command")
 
         # ── Auto-traduction commandes Linux → Windows ──
         import sys as _sys_plat
@@ -601,20 +638,46 @@ async def parallel_tools_handler(
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     lines = [f"⚡ parallel_tools: {len(normalized)} appel(s) exécuté(s)"]
+    sub_results: List[SubToolResult] = []
+    all_success = True
+
     for idx, result in enumerate(results, start=1):
         call = normalized[idx - 1]
         if isinstance(result, Exception):
+            sub = SubToolResult(
+                tool_name=call["name"],
+                success=False,
+                content=str(result)[:400],
+                status_code="exception",
+                args=call["args"],
+            )
+            all_success = False
             lines.append(f"❌ {idx}. {call['name']}: Erreur: {result}")
         else:
-            success = getattr(result, "success", True)
-            content = getattr(result, "content", str(result))
-            status = "✅" if success else "❌"
-            preview = (content or "").strip().replace("\n", " ")
+            _obs_success = getattr(result, "success", True)
+            _obs_content = (getattr(result, "content", str(result)) or "")
+            if not _obs_success:
+                all_success = False
+            preview = _obs_content.strip().replace("\n", " ")
             if len(preview) > 160:
                 preview = preview[:160] + "..."
+            sub = SubToolResult(
+                tool_name=call["name"],
+                success=_obs_success,
+                content=_obs_content[:400],
+                status_code="success" if _obs_success else "failed",
+                args=call["args"],
+            )
+            status = "✅" if _obs_success else "❌"
             lines.append(f"{status} {idx}. {call['name']}: {preview}")
+        sub_results.append(sub)
 
-    return HandlerResult.ok("\n".join(lines), handler_name="parallel_tools")
+    return HandlerResult(
+        success=all_success,
+        output="\n".join(lines),
+        handler_name="parallel_tools",
+        sub_results=tuple(sub_results),
+    )
 
 # ─── Handler: get_recent_src_changes ──────────────────────────────────────────
 
@@ -755,6 +818,11 @@ def get_system_handler_defs() -> List[HandlerDef]:
                             "les problèmes Windows avec les chemins accentués ou les espaces."
                         ),
                         "default": "",
+                    },
+                    "background": {
+                        "type": "boolean",
+                        "description": "Si true, lance la commande en arriere-plan et rend la main tout de suite. Recommande pour les serveurs locaux.",
+                        "default": False,
                     },
                 },
                 "required": ["command"],

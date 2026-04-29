@@ -49,6 +49,9 @@ export async function sendMessage(){
   logC(`"${message.substring(0,50)}..."`,`info`);
   input.value='';input.style.height='auto';
   isLoading=true;
+  _pendingCancel=false; // Réinitialiser l'annulation différée pour ce nouveau run
+  _abortController=new AbortController();
+  _setSendBtnStop(true);
   // Reset checkpoint dedup state pour ce nouveau message
   window._lastCheckpointText=null;window._lastCheckpointEl=null;window._lastCheckpointCount=1;
 
@@ -193,7 +196,7 @@ export async function sendMessage(){
   try{
     const h={'Content-Type':'application/json'};
     if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-    const response=await fetch(`${API_BASE}/api/chat/stream`,{method:'POST',headers:h,body:JSON.stringify(reqBody)});
+    const response=await fetch(`${API_BASE}/api/chat/stream`,{method:'POST',headers:h,body:JSON.stringify(reqBody),signal:_abortController.signal});
     if(!response.ok){const _err=await response.json().catch(()=>({}));throw new Error(_err.detail||`HTTP ${response.status}`);}
     if(!response.body)throw new Error('SSE indisponible');
 
@@ -204,7 +207,10 @@ export async function sendMessage(){
     while(true){
       let done,value;
       try{({done,value}=await reader.read());}
-      catch(readErr){throw new Error('Stream interrompu: '+readErr.message);}
+      catch(readErr){
+        if(readErr.name==='AbortError')throw readErr;
+        throw new Error('Stream interrompu: '+readErr.message);
+      }
       if(done)break;
       buffer+=decoder.decode(value,{stream:true});
       const lines=buffer.split('\n\n');buffer=lines.pop()||'';
@@ -363,6 +369,17 @@ export async function sendMessage(){
             window._streamingMsgEl.innerHTML=_renderMarkdown(esc(window._streamingRaw)).replace(/\n/g,'<br>');
             window._streamingMsgEl.closest('.msg-group').scrollIntoView({block:'end',behavior:'smooth'});
           }
+          else if(data.type==='stream_id'){
+            window._currentStreamId=data.stream_id;
+            // Annulation différée : Stop cliqué avant réception du stream_id
+            if(_pendingCancel){
+              const _h={'Content-Type':'application/json'};
+              if(ADMIN_TOKEN)_h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+              fetch(`${API_BASE}/api/chat/cancel`,{method:'POST',headers:_h,body:JSON.stringify({stream_id:data.stream_id})}).catch(()=>{});
+              window._currentStreamId=null;
+              _pendingCancel=false;
+            }
+          }
           else if(data.type==='heartbeat'){/* keep alive */}
           updateActivityStats();
         }catch(e){}
@@ -413,14 +430,26 @@ export async function sendMessage(){
       pushActivity('error','','Aucune reponse recue — cliquez Reessayer');
     }
     updateActivityStats();
+    _abortController=null;
+    _setSendBtnStop(false);
   }catch(e){
     if(_thinkingTimer){clearInterval(_thinkingTimer);_thinkingTimer=null;}
     thinking.remove();stopActivityFeed();
-    addMsg('assistant','Erreur de connexion.');
-    pushActivity('error','',e.message);
-    logC(e.message,'error');
+    const _streamEl=document.getElementById('streaming-msg');if(_streamEl)_streamEl.remove();
+    window._streamingMsgEl=null;window._streamingRaw='';
+    if(e.name==='AbortError'){
+      addMsg('assistant','Génération interrompue.');
+      pushActivity('checkpoint','','Annulé par l\'utilisateur');
+      logC('Stream annulé','warning');
+    }else{
+      addMsg('assistant','Erreur de connexion.');
+      pushActivity('error','',e.message);
+      logC(e.message,'error');
+    }
   }
   isLoading=false;
+  _abortController=null;
+  _setSendBtnStop(false);
 }
 
 export function retryLastMessage(){
@@ -428,6 +457,36 @@ export function retryLastMessage(){
   const input=document.getElementById('message-input');
   input.value=_lastSentMessage;
   sendMessage();
+}
+
+export function cancelStream(){
+  const sid=window._currentStreamId;
+  if(sid){
+    // stream_id déjà connu → annulation immédiate
+    const h={'Content-Type':'application/json'};
+    if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+    fetch(`${API_BASE}/api/chat/cancel`,{method:'POST',headers:h,body:JSON.stringify({stream_id:sid})}).catch(()=>{});
+    window._currentStreamId=null;
+  }else if(isLoading){
+    // stream_id pas encore reçu → poser le flag pour annulation dès réception
+    _pendingCancel=true;
+  }
+  if(_abortController){_abortController.abort();}
+}
+
+function _setSendBtnStop(isStop){
+  const btn=document.getElementById('send-btn');
+  if(!btn)return;
+  if(isStop){
+    btn.className='btn-stop';
+    btn.title='Arrêter';
+    btn.innerHTML='<i data-lucide="square" style="width:16px;height:16px"></i>';
+  }else{
+    btn.className='btn-send';
+    btn.title='Envoyer';
+    btn.innerHTML='<i data-lucide="arrow-up"></i>';
+  }
+  if(window.lucide)window.lucide.createIcons({nodes:[btn]});
 }
 
 /* ============================================================

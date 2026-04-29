@@ -11,6 +11,7 @@ Chaque handler est une fonction async standalone:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,37 @@ from loguru import logger
 from .context import HandlerContext
 from .contracts import HandlerResult
 from .registry_v2 import HandlerDef
+
+
+def _get_task_orchestrator():
+    """Retourne le TaskOrchestrator global, ou None si non disponible."""
+    try:
+        from ...core_services import deps
+        return getattr(deps, "_TASK_ORCHESTRATOR", None)
+    except Exception:
+        return None
+
+
+async def _watch_delegate_cancel(
+    parent_task_id: str,
+    exec_task: "asyncio.Task[Any]",
+    poll_interval: float = 0.3,
+) -> None:
+    """Surveille le cancel du parent SSE et annule exec_task si demandé."""
+    try:
+        orch = _get_task_orchestrator()
+        if orch is None:
+            return
+        while not exec_task.done():
+            await asyncio.sleep(poll_interval)
+            try:
+                if orch.is_cancel_requested(parent_task_id):
+                    exec_task.cancel()
+                    return
+            except Exception:
+                pass
+    except asyncio.CancelledError:
+        pass
 
 
 # ─── Sub-Agent Handlers ───────────────────────────────────────────────────
@@ -133,7 +165,39 @@ async def delegate_task_handler(
 
         logger.info("delegate_task: {}", task_ctx.summary())
 
-        result = await delegate_to_agent_full(description, agent_type, safe_context)
+        # ── Canal cancel coopératif ───────────────────────────────────────────
+        _parent_task_id = ctx.runtime_task_id
+        if _parent_task_id:
+            _orch = _get_task_orchestrator()
+            # Rejet immédiat si déjà annulé avant de lancer le sous-agent
+            if _orch and _orch.is_cancel_requested(_parent_task_id):
+                return HandlerResult.fail(
+                    "🚫 Tâche annulée — sous-agent non démarré.",
+                    handler_name="delegate_task",
+                    status_code="cancelled",
+                )
+            from ...agents.sub_agent import _register_active_delegate, _unregister_active_delegate
+            _exec_task: asyncio.Task = asyncio.create_task(
+                delegate_to_agent_full(description, agent_type, safe_context)
+            )
+            _register_active_delegate(_parent_task_id, _exec_task)
+            _watcher = asyncio.create_task(
+                _watch_delegate_cancel(_parent_task_id, _exec_task)
+            )
+            try:
+                result = await _exec_task
+            except asyncio.CancelledError:
+                logger.info("[delegate_task] sous-agent annulé (parent={})", _parent_task_id)
+                return HandlerResult.fail(
+                    "🚫 Sous-agent interrompu : tâche parent annulée.",
+                    handler_name="delegate_task",
+                    status_code="cancelled",
+                )
+            finally:
+                _unregister_active_delegate(_parent_task_id)
+                _watcher.cancel()
+        else:
+            result = await delegate_to_agent_full(description, agent_type, safe_context)
 
         # ── Vérification que les fichiers annoncés existent réellement ──
         _missing_artifacts: list = []
@@ -170,7 +234,12 @@ async def delegate_task_handler(
             if _meta.get("next_step"):
                 _failure_lines.append(f"**Prochaine étape recommandée** : {_meta['next_step']}")
             _report += "\n\n" + "\n".join(_failure_lines)
-        return HandlerResult.ok(_report, handler_name="delegate_task")
+        # Propager le succès/échec réel du sous-agent dans HandlerResult.
+        # Si result.success=False, observation.success sera False → _update_plan_progress
+        # ne sera pas appelé et aucune tâche ne sera cochée à tort.
+        if result.success:
+            return HandlerResult.ok(_report, handler_name="delegate_task", status_code=result.status_code)
+        return HandlerResult.fail(_report, handler_name="delegate_task", status_code=result.status_code)
     except ImportError:
         return HandlerResult.fail(
             "❌ Module sub_agent non disponible",
@@ -390,7 +459,7 @@ async def bg_status_handler(
             if task_info:
                 _status = task_info.get("status", "unknown")
                 _status_icon = {
-                    "running": "🔄", "done": "✅", "failed": "❌",
+                    "running": "🔄", "done": "✅", "failed": "❌", "cancelled": "🚫",
                 }.get(_status, "❓")
 
                 # Progression détaillée si disponible
@@ -417,7 +486,17 @@ async def bg_status_handler(
                     result_text += f"\n**Démarré**: {task_info['started_at']}"
                 if task_info.get("finished_at"):
                     result_text += f"\n**Terminé**: {task_info['finished_at']}"
-                return HandlerResult.ok(result_text, handler_name="bg_status")
+                # Propager le statut réel dans HandlerResult.
+                if _status == "failed":
+                    return HandlerResult.fail(
+                        result_text, output=result_text,
+                        handler_name="bg_status", status_code="failed",
+                    )
+                if _status == "cancelled":
+                    return HandlerResult.ok(
+                        result_text, handler_name="bg_status", status_code="cancelled"
+                    )
+                return HandlerResult.ok(result_text, handler_name="bg_status", status_code=_status)
         except ImportError:
             pass
         except Exception as _e:
@@ -470,46 +549,74 @@ async def bg_status_handler(
 
 
 async def bg_list_handler(ctx: HandlerContext) -> HandlerResult:
-    """Liste toutes les tâches background."""
+    """Liste toutes les tâches background (agents + shell)."""
+    _AGENT_ICONS = {"running": "🔄", "done": "✅", "failed": "❌", "cancelled": "🚫"}
+    _SHELL_ICONS = {
+        "pending": "⏳", "running": "🔄", "completed": "✅",
+        "failed": "❌", "cancelled": "⚠️",
+    }
+    lines: List[str] = []
+
+    # ── 1. Tâches agent background ──
+    try:
+        from ...agents.sub_agent import get_orchestrator
+        orchestrator = get_orchestrator()
+        for tid, info in orchestrator.pending_tasks.items():
+            _s = info.get("status", "?")
+            _icon = _AGENT_ICONS.get(_s, "❓")
+            _desc = (info.get("description") or "")[:60]
+            lines.append(f"• `{tid}` {_icon} **agent** ({_s}) — {_desc}")
+    except Exception:
+        pass
+
+    # ── 2. Tâches shell background ──
     try:
         from ...background.manager import get_task_manager
-
         manager = get_task_manager()
-        tasks = await manager.get_all_tasks()
-
-        if not tasks:
-            return HandlerResult.ok(
-                "📋 Aucune tâche en arrière-plan",
-                handler_name="bg_list",
-            )
-
-        result = "📋 **Tâches en arrière-plan**\n\n"
-        for t in tasks:
-            status_icon = {
-                "pending": "⏳",
-                "running": "🔄",
-                "completed": "✅",
-                "failed": "❌",
-                "cancelled": "⚠️",
-            }.get(t["status"], "❓")
-            result += f"• `{t['id']}` {status_icon} **{t['name']}** ({t['status']})\n"
-
-        return HandlerResult.ok(result, handler_name="bg_list")
+        shell_tasks = await manager.get_all_tasks()
+        for t in shell_tasks:
+            _icon = _SHELL_ICONS.get(t["status"], "❓")
+            lines.append(f"• `{t['id']}` {_icon} **{t['name']}** ({t['status']})")
     except ImportError:
-        return HandlerResult.fail(
-            "❌ Module background non disponible",
-            handler_name="bg_list",
-        )
+        pass
     except Exception as e:
-        return HandlerResult.fail(
-            f"❌ Erreur: {e}", handler_name="bg_list"
-        )
+        logger.debug("bg_list shell tasks: {}", e)
+
+    if not lines:
+        return HandlerResult.ok("📋 Aucune tâche en arrière-plan", handler_name="bg_list")
+
+    return HandlerResult.ok(
+        "📋 **Tâches en arrière-plan**\n\n" + "\n".join(lines),
+        handler_name="bg_list",
+    )
 
 
 async def bg_cancel_handler(
     ctx: HandlerContext, task_id: str
 ) -> HandlerResult:
-    """Annule une tâche en cours."""
+    """Annule une tâche en cours (agent bg ou shell)."""
+
+    # ── 1. Tâches agent background (ca_* / task_*) ──
+    if task_id.startswith("ca_") or task_id.startswith("task_"):
+        try:
+            from ...agents.sub_agent import cancel_bg_agent_task
+            if cancel_bg_agent_task(task_id):
+                return HandlerResult.ok(
+                    f"✅ Tâche agent `{task_id}` annulée",
+                    handler_name="bg_cancel",
+                    status_code="cancelled",
+                )
+            else:
+                return HandlerResult.fail(
+                    f"❌ Tâche agent `{task_id}` introuvable ou déjà terminée",
+                    handler_name="bg_cancel",
+                )
+        except ImportError:
+            pass
+        except Exception as _e:
+            logger.debug("bg_cancel agent lookup: {}", _e)
+
+    # ── 2. Tâches shell background ──
     try:
         from ...background.manager import get_task_manager
 

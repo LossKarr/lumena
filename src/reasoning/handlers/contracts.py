@@ -9,7 +9,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Dict, Optional
+
+
+@dataclass
+class SubToolResult:
+    """Résultat structuré d'un sous-appel exécuté via parallel_tools."""
+
+    tool_name: str
+    success: bool
+    content: str
+    status_code: str = ""
+    proof: Optional[str] = None
+    args: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -23,6 +35,7 @@ class HandlerResult:
         error: Message d'erreur si success=False, None sinon.
         duration_ms: Duree d'execution en millisecondes (rempli automatiquement par le wrapper).
         handler_name: Nom du handler qui a produit ce resultat (pour le debug).
+        sub_results: Résultats structurés des sous-outils (parallel_tools uniquement).
     """
 
     success: bool
@@ -30,6 +43,8 @@ class HandlerResult:
     error: Optional[str] = None
     duration_ms: float = 0.0
     handler_name: str = ""
+    status_code: str = ""  # AgentResult.status_code propagé (success/partial/error…)
+    sub_results: tuple = ()  # tuple[SubToolResult] — peuplé par parallel_tools_handler
 
     def to_legacy_str(self) -> str:
         """
@@ -41,18 +56,19 @@ class HandlerResult:
         return self.output
 
     @staticmethod
-    def ok(output: str, *, handler_name: str = "") -> HandlerResult:
+    def ok(output: str, *, handler_name: str = "", status_code: str = "") -> HandlerResult:
         """Cree un resultat succes."""
-        return HandlerResult(success=True, output=output, handler_name=handler_name)
+        return HandlerResult(success=True, output=output, handler_name=handler_name, status_code=status_code)
 
     @staticmethod
-    def fail(error: str, *, output: str = "", handler_name: str = "") -> HandlerResult:
+    def fail(error: str, *, output: str = "", handler_name: str = "", status_code: str = "") -> HandlerResult:
         """Cree un resultat erreur. output contient le message d'erreur formate pour legacy."""
         return HandlerResult(
             success=False,
             output=output or error,
             error=error,
             handler_name=handler_name,
+            status_code=status_code,
         )
 
 

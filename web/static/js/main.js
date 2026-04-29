@@ -24,7 +24,7 @@ import {
 
 // ── Chat ──
 import {
-  setupTextarea, quickSend, sendMessage, retryLastMessage,
+  setupTextarea, quickSend, sendMessage, retryLastMessage, cancelStream,
   addMsg, buildMetaHtml, normalizeEdit, mergeEdits,
   toggleDiffView, copyDiffContent, buildDiffViewerHtml,
   toggleDiffFile, toggleAllDiffs, acceptAllEdits, buildDocumentsHtml,
@@ -98,7 +98,7 @@ Object.assign(window, {
   openSidebar, closeSidebar, toggleSidebar, startActivityFeed, pushActivity,
   updateActivityStats, stopActivityFeed,
   // chat
-  setupTextarea, quickSend, sendMessage, retryLastMessage,
+  setupTextarea, quickSend, sendMessage, retryLastMessage, cancelStream,
   addMsg, buildMetaHtml, normalizeEdit, mergeEdits,
   toggleDiffView, copyDiffContent, buildDiffViewerHtml,
   toggleDiffFile, toggleAllDiffs, acceptAllEdits, buildDocumentsHtml,
@@ -181,7 +181,7 @@ window._shutdownLumena = async function() {
   q('btn-clear-chat', () => { if (confirm('Effacer la conversation ?')) clearChatHistory(); });
   q('btn-attach-file', () => document.getElementById('file-upload-input').click());
   q('btn-toggle-focus', () => toggleFocus());
-  q('send-btn', () => sendMessage());
+  q('send-btn', () => { if(isLoading) cancelStream(); else sendMessage(); });
   const fileInput = document.getElementById('file-upload-input');
   if (fileInput) fileInput.addEventListener('change', e => handleFileSelect(e));
 })();

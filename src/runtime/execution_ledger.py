@@ -35,21 +35,64 @@ class LedgerEntry:
 
 # ── Outils considérés comme des mutations (actions vérifiables) ──────────────
 MUTATION_TOOLS: frozenset[str] = frozenset({
+    # ── Fichiers & code ──────────────────────────────────────────────────────
     "write_file", "edit_file", "apply_patch", "create_file",
     "delete_file", "create_directory", "delete_directory",
+    "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
+    # ── Shell / exécution ────────────────────────────────────────────────────
     "run_command", "run_shell", "exec_command",
-    "discord_send", "discord_send_message", "discord_create_channel",
-    "telegram_send_message", "mail_send", "send_email",
-    "generate_website", "serve_website", "edit_website",
-    "write_website_files", "create_project", "create_skill",
-    "create_pdf", "create_docx", "create_pptx", "create_xlsx",
-    "create_csv", "create_invoice_pdf", "create_from_template",
+    # ── Web & projets ────────────────────────────────────────────────────────
+    "generate_website", "serve_website", "edit_website", "write_website_files",
+    "create_project", "create_skill",
+    # ── Documents ────────────────────────────────────────────────────────────
+    "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv",
+    "create_invoice_pdf", "create_from_template",
+    "create_html", "create_markdown", "create_email_html",
+    "create_ics", "create_vcard", "create_meeting_report",
+    "create_zip", "create_batch_documents",
+    "edit_docx", "edit_pptx", "edit_xlsx",
+    "annotate_pdf", "add_watermark", "assemble_document", "convert_document",
+    # ── Images & vidéos ──────────────────────────────────────────────────────
+    "generate_image", "edit_image", "generate_thumbnail", "generate_thumbnail_pro",
+    "generate_logo", "generate_svg", "upscale_image",
+    "remove_background", "replace_background", "sketch_to_image", "compose_image",
+    "generate_video", "edit_video",
+    # ── Discord ──────────────────────────────────────────────────────────────
+    "discord_send", "discord_send_message", "discord_send_embed",
+    "discord_create_channel", "discord_create_category", "discord_create_invite",
+    "discord_create_role", "discord_delete_channel", "discord_delete_message",
+    "discord_delete_role", "discord_modify_channel", "discord_pin", "discord_unpin",
+    "discord_assign_role", "discord_remove_role",
+    "discord_ban", "discord_unban", "discord_kick",
+    "discord_set_channel_permissions", "discord_server_configure",
+    # ── Messagerie ───────────────────────────────────────────────────────────
+    "telegram_send_message", "telegram_send_document",
+    "mail_send", "send_email", "mail_reply_message", "mail_delete_message",
+    "mail_move_message", "mail_remove_account", "mail_account_upsert",
+    "send_critical_sms",
+    "send_whatsapp_message", "send_whatsapp_document",
+    "send_whatsapp_photo", "send_whatsapp_audio", "send_message",
+    # ── Twitter / X ──────────────────────────────────────────────────────────
+    "twitter_post_tweet", "twitter_reply", "twitter_like", "twitter_compose_thread",
+    # ── Stripe ───────────────────────────────────────────────────────────────
+    "stripe_create_product", "stripe_update_product", "stripe_delete_product",
+    "stripe_create_price", "stripe_create_payment_link", "stripe_update_payment_link",
+    "stripe_create_customer", "stripe_update_customer",
+    "stripe_create_subscription", "stripe_cancel_subscription",
+    "stripe_create_invoice", "stripe_send_invoice", "stripe_void_invoice",
+    "stripe_add_invoice_item", "stripe_create_checkout_session",
+    "stripe_create_coupon", "stripe_delete_coupon", "stripe_create_refund",
+    # ── GitHub / Git ─────────────────────────────────────────────────────────
     "github_repo_create", "github_file_write", "github_push_directory",
-    "delegate_task", "delegate_task_bg",
-    "memory_save", "memory_store",
+    "git_add", "git_commit", "git_push_pull", "git_init",
+    # ── Notion ───────────────────────────────────────────────────────────────
+    "notion_create_page", "notion_update_page", "notion_add_to_database",
+    # ── Ionos / hébergement ──────────────────────────────────────────────────
+    "deploy_to_ionos", "update_ionos_files",
+    # ── Mémoire & tâches ─────────────────────────────────────────────────────
+    "memory_save", "memory_store", "memory_add",
     "schedule_task", "create_task",
-    "insert_at_anchor", "edit_by_lines", "str_replace",
-    "multi_edit_file",
+    "delegate_task", "delegate_task_bg",
 })
 
 

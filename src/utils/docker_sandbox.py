@@ -99,6 +99,9 @@ _LOCAL_COMMANDS = frozenset({
 
 # Pattern PowerShell cmdlet (Get-Process, Select-Object, etc.)
 _PS_CMDLET_PATTERN = _re.compile(r'(?:^|[|;&]\s*)[A-Z][a-z]+-[A-Z]', _re.IGNORECASE)
+_LOCALHOST_PATTERN = _re.compile(
+    r"(?i)\b(?:https?://)?(?:localhost|127\.0\.0\.1|\[::1\]|::1)(?::\d+)?(?:/|\b)"
+)
 
 
 def should_use_sandbox(command: str) -> bool:
@@ -138,6 +141,10 @@ def should_use_sandbox(command: str) -> bool:
 
     # Si la commande contient des cmdlets PowerShell (Verb-Noun) → local
     if _PS_CMDLET_PATTERN.search(cmd_stripped):
+        return False
+
+    # Les probes localhost/127.0.0.1/::1 doivent rester sur l'hôte.
+    if _LOCALHOST_PATTERN.search(cmd_stripped):
         return False
 
     # Sinon → sandbox Docker

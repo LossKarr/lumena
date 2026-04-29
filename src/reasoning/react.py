@@ -15,11 +15,17 @@ import json
 import os
 import re
 import platform
+import threading
 import unicodedata
 import subprocess
 import difflib
 from time import perf_counter
 from loguru import logger
+
+# Cancel token registry: thread_id → threading.Event
+# Enregistré depuis chat.py avant le démarrage du thread agent.
+# Vérifié entre chaque itération pour stopper la boucle sans ctypes.
+_REACT_CANCEL_EVENTS: Dict[int, Any] = {}
 
 # ── Imports depuis react_config (constantes, enums, flags) ─────────
 from .react_config import (
@@ -43,6 +49,85 @@ from ..runtime.execution_ledger import (
     _extract_target as _ledger_extract_target,
     _extract_proof as _ledger_extract_proof,
 )
+# ── Semantic tool families for anti-hallucination guard ──────────────────────
+_HC_TOOLS_FILE = frozenset({
+    "write_file", "edit_file", "apply_patch", "insert_at_anchor", "edit_by_lines",
+    "str_replace", "multi_edit_file", "create_file", "create_html", "create_markdown",
+    "create_from_template", "create_email_html", "create_ics", "create_vcard",
+    "create_meeting_report", "create_zip",
+})
+_HC_TOOLS_DOC = frozenset({
+    "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv",
+    "create_invoice_pdf", "create_batch_documents", "edit_docx", "edit_pptx",
+    "edit_xlsx", "annotate_pdf", "add_watermark", "assemble_document", "convert_document",
+})
+_HC_TOOLS_SITE = frozenset({
+    "generate_website", "serve_website", "edit_website", "write_website_files",
+    "create_project", "delegate_task", "delegate_task_bg",
+})
+_HC_TOOLS_TASK = frozenset({
+    "create_task", "schedule_task", "memory_save", "memory_store", "memory_add", "create_skill",
+})
+_HC_TOOLS_MAIL = frozenset({"mail_send", "send_email", "mail_reply_message"})
+_HC_TOOLS_DISCORD = frozenset({
+    "discord_send", "discord_send_message", "discord_send_embed",
+    "discord_create_channel", "discord_create_category", "discord_create_invite",
+    "discord_create_role", "discord_delete_channel", "discord_delete_message",
+    "discord_delete_role", "discord_modify_channel", "discord_pin", "discord_unpin",
+    "discord_assign_role", "discord_remove_role", "discord_ban", "discord_unban",
+    "discord_kick", "discord_set_channel_permissions", "discord_server_configure",
+})
+_HC_TOOLS_MESSAGING = frozenset({
+    "telegram_send_message", "telegram_send_document",
+    "send_whatsapp_message", "send_whatsapp_document", "send_whatsapp_photo",
+    "send_whatsapp_audio", "send_message", "send_critical_sms",
+})
+_HC_TOOLS_SOCIAL = frozenset({
+    "twitter_post_tweet", "twitter_reply", "twitter_like", "twitter_compose_thread",
+})
+_HC_TOOLS_STRIPE = frozenset({
+    "stripe_create_product", "stripe_update_product", "stripe_delete_product",
+    "stripe_create_price", "stripe_create_payment_link", "stripe_update_payment_link",
+    "stripe_create_customer", "stripe_update_customer", "stripe_create_subscription",
+    "stripe_cancel_subscription", "stripe_create_invoice", "stripe_send_invoice",
+    "stripe_void_invoice", "stripe_add_invoice_item", "stripe_create_checkout_session",
+    "stripe_create_coupon", "stripe_delete_coupon", "stripe_create_refund",
+})
+_HC_TOOLS_GITHUB = frozenset({
+    "github_repo_create", "github_file_write", "github_push_directory",
+    "git_add", "git_commit", "git_push_pull", "git_init",
+})
+_HC_TOOLS_IMAGE = frozenset({
+    "generate_image", "edit_image", "generate_thumbnail", "generate_thumbnail_pro",
+    "generate_logo", "generate_svg", "upscale_image", "remove_background",
+    "replace_background", "sketch_to_image", "compose_image", "generate_video", "edit_video",
+})
+_HC_TOOLS_NOTION = frozenset({"notion_create_page", "notion_update_page", "notion_add_to_database"})
+_HC_TOOLS_RUNTIME = frozenset({
+    "process_status", "health_check", "web_fetch",
+    "browser_navigate", "browser_get_content", "browser_dom_state",
+})
+_HC_TOOLS_ANY_CREATE = (
+    _HC_TOOLS_FILE | _HC_TOOLS_DOC | _HC_TOOLS_SITE | _HC_TOOLS_TASK
+    | _HC_TOOLS_GITHUB | _HC_TOOLS_STRIPE | _HC_TOOLS_IMAGE | _HC_TOOLS_NOTION
+    | _HC_TOOLS_DISCORD
+)
+_HC_TOOLS_ANY_SEND = _HC_TOOLS_MAIL | _HC_TOOLS_MESSAGING | _HC_TOOLS_DISCORD | _HC_TOOLS_SOCIAL | _HC_TOOLS_GITHUB
+
+_HINT_ONLY_PROOF_REQUIRED_TOOLS = frozenset({"run_command", "run_shell", "exec_command"})
+_SERVER_RUNTIME_CLAIM_RE = re.compile(
+    r"\b(serveur|server|processus|localhost|127\.0\.0\.1|::1|port\s*\d+).{0,40}"
+    r"(lanc[ée]|demarr|démarr|running|tourne|actif|accessible|en ligne)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_runtime_server_claim_proof(text: str, successful_tools: set[str]) -> bool:
+    if not text or not _SERVER_RUNTIME_CLAIM_RE.search(text):
+        return False
+    return any(tool in successful_tools for tool in _HC_TOOLS_RUNTIME)
+# ─────────────────────────────────────────────────────────────────────────────
+
 from .agent_execution_state import AgentExecutionState, RunMetaProxy
 from .response_parser import (
     parse_response as _parse_response_fn,
@@ -139,68 +224,24 @@ def _extract_anchor_facts(text: str) -> str:
     return "📌 Ancres: " + " | ".join(unique[:10]) + "\n"
 
 
-# Outils purement info/inspection : ne peuvent pas cocher une tâche métier
-# via le fallback séquentiel (ex: "config" dans get_lumena_config matcherait
-# faussement "Configurer les rôles" sans qu'aucune action métier ait été faite).
-_SEQ_FALLBACK_BLOCKLIST: frozenset[str] = frozenset({
-    "wait", "memory_add", "read_file", "list_files", "list_dir",
-    "search_files", "search_code", "list_directory", "find_files",
-    "grep_search", "search_in_code", "view_file_outline",
-    "mail_list_accounts", "mail_inbox", "mail_check", "memory_search",
-    "mail_account_upsert",
-    "get_lumena_config", "get_system_info", "health_check",
-    "get_weather", "get_time", "provider_info",
-    "list_image_models", "ionos_list_sites", "ionos_list_files",
-    "discord_list_guilds",
-})
-
-# ── Guard 5 : outils exploration/navigation ne peuvent PAS auto-avancer
-# une tâche dont le premier mot est un verbe d'action métier.
-# Ex : run_command("cd") ne peut pas cocher "Déléguer la correction au CodeAgent".
-_EXPLORATION_TOOLS_STRICT: frozenset[str] = frozenset({
-    "run_command", "run_shell", "exec_command",
-    "list_directory", "find_files", "list_files", "list_dir",
-    "grep_search", "search_in_code", "search_files", "search_code",
-    "read_file", "view_file_outline", "parallel_tools",
-})
-
-# Verbes d'action métier en début de tâche — signalent une tâche qui exige
-# une mutation réelle, pas juste une exploration.
-_BUSINESS_ACTION_STARTERS: frozenset[str] = frozenset({
-    "déléguer", "deleguer", "delegate",
-    "corriger", "correct", "fix",
-    "modifier", "modify",
-    "envoyer", "send",
-    "créer", "creer", "create",
-    "générer", "generer", "generate",
-    "déployer", "deployer", "deploy",
-    "écrire", "ecrire", "write",
-    "publier", "publish",
-    "supprimer", "delete",
-    "construire", "build",
-    "installer", "install",
-    "implémenter", "implementer", "implement",
-})
-
-
-def _normalize_guard_token(text: str) -> str:
-    """Normalise un verbe de tâche pour les guards de progression."""
-    token = (text or "").strip().lower()
-    if not token:
-        return ""
-    try:
-        repaired = token.encode("latin1").decode("utf-8")
-        if repaired:
-            token = repaired.lower()
-    except Exception:
-        pass
-    token = unicodedata.normalize("NFKD", token).encode("ascii", "ignore").decode("ascii")
-    return token.strip()
-
-
-_BUSINESS_ACTION_STARTERS_NORMALIZED: frozenset[str] = frozenset(
-    _normalize_guard_token(v) for v in _BUSINESS_ACTION_STARTERS
+# ── Politique de preuve et complétion du plan ─────────────────────────────────
+# Extraite dans plan_evidence.py pour isolation et testabilité.
+from .plan_evidence import (
+    _SEQ_FALLBACK_BLOCKLIST,
+    _EXPLORATION_TOOLS_STRICT,
+    _BUSINESS_ACTION_STARTERS,
+    _BUSINESS_ACTION_STARTERS_NORMALIZED,
+    _normalize_guard_token,
+    _VERIFY_TASK_KEYWORDS,
+    _VERIFY_PROOF_TOOLS,
+    _VERIFY_OBS_PROOF_MARKERS,
+    classify_observation,
+    is_verify_task,
+    has_sufficient_proof,
+    reconcile_delegate_report,
+    task_completion_status,
 )
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _compute_read_sig(tool_name: str, tool_args: dict) -> tuple:
@@ -488,6 +529,16 @@ class ReActLoop:
     def _all_session_tools(self, v):
         self._ensure_exec_state()
         self.exec_state.all_session_tools = v
+
+    @property
+    def _successful_session_tools(self):
+        """Outils dont l'observation.success était True — seule preuve fiable."""
+        self._ensure_exec_state()
+        return self.exec_state.successful_session_tools
+    @_successful_session_tools.setter
+    def _successful_session_tools(self, v):
+        self._ensure_exec_state()
+        self.exec_state.successful_session_tools = v
 
     # --- last_llm_meta ---
     @property
@@ -1784,25 +1835,20 @@ Maintenant, reflechis et reponds:"""
             return
 
         # Signaux d'échec : si l'observation contient un marqueur d'erreur, ne rien cocher
-        _FAIL_MARKERS = (
-            "introuvable", "échoué", "echoue", "erreur", "error",
-            "failed", "not found", "impossible", "⛔",
-            "timeout commande", "timed out", "timeout:",
-        )
-        # Marqueurs de succès qui annulent un faux-positif d'échec
-        _SUCCESS_OVERRIDE = ("open", "ouvert", "✅", "succès", "succes", "accessible", "réussi", "reussi")
         obs_lower = (observation_content or "").lower()
-        observation_has_failure = any(fm in obs_lower for fm in _FAIL_MARKERS)
-        # Si l'observation contient AUSSI un signal de succès, ce n'est pas un échec
-        # (ex: ping timeout MAIS ports OPEN → succès global)
-        if observation_has_failure and any(sm in obs_lower for sm in _SUCCESS_OVERRIDE):
-            observation_has_failure = False
-        # Note : ❌ seul n'est PAS un marqueur d'échec. Un résultat négatif
-        # (ex: "❌ Aucun port ouvert") est une observation valide, pas une erreur.
-        # Les vrais échecs sont déjà couverts par _FAIL_MARKERS (erreur, failed, etc.).
+        _fail, _overridden = classify_observation(observation_content)
+        # ❌ seul n'est PAS un marqueur d'échec — voir plan_evidence._FAIL_MARKERS.
+        observation_has_failure = _fail and not _overridden
 
         hints = _TOOL_COMPLETION_HINTS.get(tool_name, [])
         tool_lower = tool_name.lower()
+        tool_module_category = ""
+        tool_semantic_category = ""
+        try:
+            tool_module_category = self.tools.get_tool_module_category(tool_name)
+            tool_semantic_category = self.tools.get_tool_semantic_category(tool_name)
+        except Exception:
+            pass
         # Guard 5 pré-calculé : si l'outil est exploratoire, aucune tâche métier
         # ne peut être marquée par aucune voie (sem, seq, auto).
         _is_exploration_for_guard5 = tool_name in _EXPLORATION_TOOLS_STRICT
@@ -1853,6 +1899,19 @@ Maintenant, reflechis et reponds:"""
                         obs_match = True
 
             is_specific = arg_match or tool_match or obs_match
+            _proof_for_task = has_sufficient_proof(
+                tool_name,
+                observation_content,
+                task.description,
+                tool_module_category,
+                tool_semantic_category,
+            )
+            if hint_match and not is_specific and tool_name in _HINT_ONLY_PROOF_REQUIRED_TOOLS and not _proof_for_task:
+                logger.debug(
+                    "[PLAN] Hint-only bloqué: '{}' non marquable par {} sans preuve spécifique (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
             if hint_match or is_specific:
                 # Hint-only (pas d'arg/tool/obs spécifique) → max 1 tâche par itération
                 if not is_specific and _any_matched and not _has_specific_match:
@@ -1865,9 +1924,20 @@ Maintenant, reflechis et reponds:"""
                         _MAX_COMPLETIONS_PER_CALL, task.description, iteration,
                     )
                     break
+                # Verify-gate : une tâche de vérification exige une preuve réelle.
+                # Présence de fichiers, hint de tool, ou ✅ générique ne suffisent pas.
+                if is_verify_task(desc_lower) and not _proof_for_task:
+                    logger.debug(
+                        "[PLAN] Verify-gate (sem): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
                 task.completed = True
                 task.completed_at_iteration = iteration
                 task.completed_by_tool = tool_name
+                task.completion_status = task_completion_status(
+                    tool_name, desc_lower, tool_semantic_category, tool_module_category,
+                )
                 _any_matched = True
                 _completed_this_call += 1
                 if is_specific:
@@ -1889,9 +1959,25 @@ Maintenant, reflechis et reponds:"""
                 if not task.completed:
                     desc_lower = task.description.lower()
                     if tool_words and any(tw in desc_lower for tw in tool_words):
+                        # Verify-gate : le fallback séquentiel n'est pas une preuve réelle.
+                        if is_verify_task(desc_lower) and not has_sufficient_proof(
+                            tool_name,
+                            observation_content,
+                            task.description,
+                            tool_module_category,
+                            tool_semantic_category,
+                        ):
+                            logger.debug(
+                                "[PLAN] Verify-gate (seq): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
                         task.completed = True
                         task.completed_at_iteration = iteration
                         task.completed_by_tool = f"{tool_name}:seq"
+                        task.completion_status = task_completion_status(
+                            tool_name, desc_lower, tool_semantic_category, tool_module_category,
+                        )
                         _seq_matched = True
                         logger.debug(
                             "[PLAN] Fallback séquentiel: '%s' marquée via %s (iter %d)",
@@ -1954,7 +2040,19 @@ Maintenant, reflechis et reponds:"""
             elif (
                 observation_content
                 and len(observation_content.strip()) >= 10
-                and (tool_name not in _TRIVIAL_TOOLS or _trivial_tool_matches_next_task())
+                and (
+                    tool_name not in _TRIVIAL_TOOLS
+                    or _trivial_tool_matches_next_task()
+                    # Un outil de vérification (health_check, run_command…) avec preuve
+                    # réelle n'est pas trivial même s'il figure dans _TRIVIAL_TOOLS.
+                    or has_sufficient_proof(
+                        tool_name,
+                        observation_content,
+                        "",
+                        tool_module_category,
+                        tool_semantic_category,
+                    )
+                )
             ):
                 # Garde 4: si la tâche mentionne explicitement un nom d'outil différent
                 # du tool actuel, ne PAS auto-avancer (ex: tâche dit "check_web_project"
@@ -1990,9 +2088,26 @@ Maintenant, reflechis et reponds:"""
                                 task.description, _tool_refs, tool_name, iteration,
                             )
                             break
+                        # Verify-gate : l'auto-avancement générique ne constitue pas
+                        # une preuve pour les étapes de vérification fonctionnelle.
+                        if is_verify_task(desc_lower) and not has_sufficient_proof(
+                            tool_name,
+                            observation_content,
+                            task.description,
+                            tool_module_category,
+                            tool_semantic_category,
+                        ):
+                            logger.debug(
+                                "[PLAN] Verify-gate (auto): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
                         task.completed = True
                         task.completed_at_iteration = iteration
                         task.completed_by_tool = f"{tool_name}:auto"
+                        task.completion_status = task_completion_status(
+                            tool_name, desc_lower, tool_semantic_category, tool_module_category,
+                        )
                         self._last_auto_advance_iter = iteration
                         logger.debug(
                             "[PLAN] Fallback auto-avancement: '{}' marquée via {} (iter {})",
@@ -2032,75 +2147,12 @@ Maintenant, reflechis et reponds:"""
     def _reconcile_plan_from_delegate_success(self, obs_text: str, iteration: int) -> int:
         """Réconcilie le plan après un succès delegate_task.
 
-        Contourne la limite _MAX_COMPLETIONS_PER_CALL=2 pour les rapports de
-        CodeAgent qui couvrent plusieurs étapes en un seul appel.
-
-        Stratégie en deux passes :
-        1. Matching sémantique : cherche des marqueurs de succès dans obs_text
-           qui correspondent aux descriptions de tâches du plan.
-        2. Fallback global : si plan court (≤5 tâches) + succès clair + une seule
-           délégation → marquer tout le reste comme complété par le rapport.
-
-        Retourne le nombre de tâches marquées completed.
+        Délègue la logique de décision à reconcile_delegate_report() (plan_evidence.py)
+        et gère l'émission de l'état du plan côté React loop.
         """
-        if not self._task_plan:
-            return 0
-
-        obs_lower = obs_text.lower()
-
-        # Marqueurs de succès génériques dans le rapport CodeAgent
-        _success_markers = (
-            "✅", "créé", "corrigé", "réparé", "terminé", "généré",
-            "modifié", "écrit", "ajouté", "supprimé", "renommé",
-            "bug fix", "fixed", "done", "complete", "success",
-        )
-        _has_clear_success = any(m in obs_lower for m in _success_markers)
-
-        marked = 0
-
-        # Passe 1 : matching sémantique entre obs_text et descriptions de tâches
-        for task in self._task_plan:
-            if task.completed:
-                continue
-            desc_lower = task.description.lower()
-            # Chercher des mots significatifs de la description dans l'observation
-            _words = [w for w in desc_lower.split() if len(w) > 4]
-            _word_hits = sum(1 for w in _words if w in obs_lower)
-            # 2+ mots de la description trouvés dans le rapport = match suffisant
-            if _word_hits >= 2:
-                task.completed = True
-                task.completed_at_iteration = iteration
-                task.completed_by_tool = "delegate_task:report"
-                marked += 1
-                logger.debug(
-                    "[PLAN] Réconciliation delegate: '{}' marquée via rapport ({} mots matchés)",
-                    task.description, _word_hits,
-                )
-
-        # Passe 2 : fallback global pour plans courts avec succès évident
-        _remaining = [t for t in self._task_plan if not t.completed]
-        if (
-            _has_clear_success
-            and len(self._task_plan) <= 5
-            and _remaining
-        ):
-            for task in _remaining:
-                task.completed = True
-                task.completed_at_iteration = iteration
-                task.completed_by_tool = "delegate_task:report:fallback"
-                marked += 1
-                logger.debug(
-                    "[PLAN] Réconciliation fallback: '{}' marquée (plan court + succès clair)",
-                    task.description,
-                )
-
+        marked = reconcile_delegate_report(self._task_plan, obs_text, iteration)
         if marked:
-            logger.info(
-                "[PLAN] Réconciliation delegate_task: {} tâche(s) marquée(s) completed (iter {})",
-                marked, iteration,
-            )
             self._emit_plan_state(context_tool="delegate_task")
-
         return marked
 
     async def run(self, query: str) -> str:
@@ -2293,6 +2345,22 @@ Maintenant, reflechis et reponds:"""
         for i in range(self.max_iterations):
             self._current_iteration = i  # Exposé pour réduction mémoire dynamique
             logger.debug(f"Iteration {i+1}")
+            # ── Cancel user check ENTRE itérations ──────────────────────────────
+            _rl_tid = threading.current_thread().ident
+            if _rl_tid:
+                _ce = _REACT_CANCEL_EVENTS.get(_rl_tid)
+                if _ce is not None and _ce.is_set():
+                    raise SystemExit("user_cancelled_react")
+            # ── Cancel via TaskOrchestrator (stream parent annulé) ──────────────
+            if self._orchestrator_enabled():
+                try:
+                    if self.task_orchestrator.is_cancel_requested(self.task_id):
+                        logger.info("[ReAct] cancel_requested task={}", self.task_id)
+                        raise SystemExit("task_orchestrator_cancel")
+                except SystemExit:
+                    raise
+                except Exception:
+                    pass
             # ── Deadline dynamique : check ENTRE itérations (les outils longs finissent proprement) ──
             if hasattr(self, '_timeout_deadline') and perf_counter() > self._timeout_deadline:
                 raise asyncio.TimeoutError()
@@ -3563,37 +3631,34 @@ Maintenant, reflechis et reponds:"""
                     _answer_text_guard = (action.answer or "").lower()
                     _combined_text = _thought_text + " " + _answer_text_guard
                     _HALLUCINATION_PATTERNS = [
-                        # français
-                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b", ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "discord_delete_channel", "discord_edit_channel", "memory_save", "create_file", "telegram_send_message", "telegram_send_document", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents", "create_zip", "run_command", "mail_send", "memory_add", "generate_video", "edit_video", "delegate_task"]),
-                        (r"\bla tâche a été (créée|planifiée|enregistrée|programmée)\b", ["create_task", "schedule_task", "delegate_task"]),
-                        (r"\bj[''`]ai bien (enregistré|planifié|créé|envoyé|configuré)\b", ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "generate_website", "serve_website", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "telegram_send_document", "telegram_send_message", "create_zip", "run_command", "mail_send", "memory_add", "generate_video", "edit_video", "delegate_task"]),
-                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", ["create_task", "write_file", "send_message", "discord_create_channel", "generate_website", "serve_website", "edit_website", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_invoice_pdf", "create_from_template", "generate_video", "edit_video", "delegate_task"]),
-                        # Discord: doit avoir envoyé un message ou créé un canal pour prétendre avoir agi
-                        (r"\bdiscord.{0,30}(animé|anime|géré|gere|organisé|organise|avec succès|avec succes)\b", ["discord_send_message", "discord_send", "discord_create_channel"]),
-                        (r"\b(animé|anime).{0,20}discord\b", ["discord_send_message", "discord_send", "discord_create_channel"]),
-                        (r"\b(salon|channel|canal).{0,20}(créé|crée|supprimé|supprime)\b", ["discord_create_channel", "discord_delete_channel"]),
-                        (r"\b(message|messages|fichier|document|zip).{0,20}(envoyé|envoye|posté|poste|publié|publie)\b", ["discord_send_message", "discord_send", "telegram_send_message", "telegram_send_document", "send_whatsapp_message", "send_message", "mail_send"]),
-                        # Apprentissage: doit avoir cherché avant de prétendre avoir appris
-                        (r"\bj[''`]ai (appris|découvert|exploré|explore|recherché|recherche|étudié|etudie)\b", ["web_search", "web_search_brave", "ddg_search", "web_fetch", "memory_search", "browser_navigate", "browser_get_content"]),
-                        # GitHub : push / créer repo / commit
-                        (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|pushé sur github|commit réussi|commit reussi|fichier poussé)\b", ["github_repo_create", "github_file_write", "github_push_directory"]),
-                        # Mail envoyé
-                        (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", ["mail_send", "send_email", "mail_reply_message"]),
+                        # Générique création/planification/envoi → famille cohérente attendue
+                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|configuré|configure|programmé|programme|ajouté|ajoute|sauvegardé|sauvegarde)\b", _HC_TOOLS_ANY_CREATE),
+                        (r"\bj[''`]ai (envoyé|envoye|expedié|expedie)\b", _HC_TOOLS_ANY_SEND),
+                        (r"\bla tâche a été (créée|planifiée|enregistrée|programmée)\b", _HC_TOOLS_TASK),
+                        (r"\bj[''`]ai bien (enregistré|planifié|créé|configuré)\b", _HC_TOOLS_ANY_CREATE),
+                        (r"\bj[''`]ai bien (envoyé|envoye)\b", _HC_TOOLS_ANY_SEND),
+                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", _HC_TOOLS_ANY_CREATE),
+                        # Discord
+                        (r"\bdiscord.{0,30}(animé|anime|géré|gere|organisé|organise|avec succès|avec succes)\b", _HC_TOOLS_DISCORD),
+                        (r"\b(animé|anime).{0,20}discord\b", _HC_TOOLS_DISCORD),
+                        (r"\b(salon|channel|canal).{0,20}(créé|crée|supprimé|supprime)\b", _HC_TOOLS_DISCORD),
+                        (r"\b(message|messages|fichier|document|zip).{0,20}(envoyé|envoye|posté|poste|publié|publie)\b", _HC_TOOLS_MESSAGING | _HC_TOOLS_MAIL | _HC_TOOLS_DISCORD | _HC_TOOLS_SOCIAL),
+                        # Apprentissage — pas une mutation, pas de faux positif
+                        (r"\bj[''`]ai (appris|découvert|exploré|explore|recherché|recherche|étudié|etudie)\b", frozenset({"web_search", "web_search_brave", "ddg_search", "web_fetch", "memory_search", "browser_navigate", "browser_get_content"})),
+                        # GitHub / Git
+                        (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|pushé sur github|commit réussi|commit reussi|fichier poussé)\b", _HC_TOOLS_GITHUB),
+                        # Mail
+                        (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", _HC_TOOLS_MAIL),
+                        # Images / vidéos / logos
+                        (r"\b(image|logo|thumbnail|vignette|svg|vidéo|video).{0,30}(généré|genere|créé|crée|produit|rendu)\b", _HC_TOOLS_IMAGE),
+                        # Stripe (forme masc./fém. : créé/créée, annulé/annulée, envoyé/envoyée)
+                        (r"\b(produit|abonnement|facture|paiement|remboursement).{0,20}(créé[e]?|crée[e]?|envoyé[e]?|annulé[e]?)\b", _HC_TOOLS_STRIPE),
+                        # Notion
+                        (r"\b(page|base de données|database).{0,20}(créée|ajoutée|mise à jour)\b", _HC_TOOLS_NOTION),
                     ]
-                    # _all_session_tools survit aux compactions — plus fiable que self.history
-                    _tools_used_this_session = self._all_session_tools
-                    # ── Conversation-aware: inclure les outils des requêtes précédentes ──
-                    _conv_tools: set = set()
-                    try:
-                        _web_ctx = getattr(self.tools, "_web_context", None) or []
-                        for _msg in _web_ctx:
-                            _msg_content = (_msg.get("content") or "").lower()
-                            for _p2, _et2 in _HALLUCINATION_PATTERNS:
-                                if re.search(_p2, _msg_content, re.IGNORECASE):
-                                    _conv_tools.update(_et2)
-                    except Exception:
-                        pass
-                    _all_known_tools = _tools_used_this_session | _conv_tools
+                    # Seuls les outils dont l'observation.success=True comptent comme preuve
+                    _tools_used_this_session = self._successful_session_tools
+                    _all_known_tools = _tools_used_this_session
                     # Exclusion : références temporelles au passé ("j'ai créé plus tôt", "que j'avais envoyé hier")
                     # → le LLM parle d'une action passée, pas d'une action de cette session.
                     _TEMPORAL_BYPASS_RE = re.compile(
@@ -3603,10 +3668,13 @@ Maintenant, reflechis et reponds:"""
                         re.IGNORECASE,
                     )
                     _has_temporal_ref = bool(_TEMPORAL_BYPASS_RE.search(_combined_text))
+                    _has_runtime_claim_proof = _has_runtime_server_claim_proof(_combined_text, _tools_used_this_session)
                     _hallucination_blocked = False
                     if self._premature_final_retries < 2 and not _has_temporal_ref:
                         for _pattern, _expected_tools in _HALLUCINATION_PATTERNS:
                             if re.search(_pattern, _combined_text, re.IGNORECASE):
+                                if _expected_tools == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof:
+                                    continue
                                 # Vérifie si AU MOINS l'un des outils attendus a été appelé
                                 if not any(t in _all_known_tools for t in _expected_tools):
                                     self._premature_final_retries += 1
@@ -3766,31 +3834,18 @@ Maintenant, reflechis et reponds:"""
                     _ht = (thought.content or "").lower()
                     _at = (action.answer or "").lower()
                     _ct = _ht + " " + _at
-                    _tu = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
+                    # Seuls les outils dont l'observation.success=True comptent comme preuve
+                    _tu = self._successful_session_tools
                     _HP_NOPLAN = [
-                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|envoyé|envoye|configuré|configure|programmé|programme|executé|execute|ajouté|ajoute|sauvegardé|sauvegarde)\b",
-                         ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "discord_create_channel", "memory_save", "create_file", "telegram_send_message", "generate_website", "serve_website", "edit_website", "create_project", "create_skill", "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv", "create_invoice_pdf", "create_from_template", "create_html", "create_markdown", "create_email_html", "create_ics", "create_vcard", "create_batch_documents", "delegate_task"]),
-                        (r"\bj[''`]ai bien (enregistré|planifié|créé|envoyé|configuré)\b",
-                         ["create_task", "schedule_task", "write_file", "send_message", "discord_send", "discord_send_message", "generate_website", "serve_website", "create_skill", "create_pdf", "create_docx", "delegate_task"]),
-                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b",
-                         ["create_task", "write_file", "send_message", "discord_create_channel", "generate_website", "serve_website", "edit_website", "create_pdf", "delegate_task"]),
-                        (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|commit réussi|commit reussi)\b",
-                         ["github_repo_create", "github_file_write", "github_push_directory"]),
-                        (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b",
-                         ["mail_send", "send_email", "mail_reply_message"]),
+                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|configuré|configure|programmé|programme|ajouté|ajoute|sauvegardé|sauvegarde)\b", _HC_TOOLS_ANY_CREATE),
+                        (r"\bj[''`]ai (envoyé|envoye|expedié|expedie)\b", _HC_TOOLS_ANY_SEND),
+                        (r"\bj[''`]ai bien (enregistré|planifié|créé|configuré)\b", _HC_TOOLS_ANY_CREATE),
+                        (r"\bj[''`]ai bien (envoyé|envoye)\b", _HC_TOOLS_ANY_SEND),
+                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", _HC_TOOLS_ANY_CREATE),
+                        (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|commit réussi|commit reussi)\b", _HC_TOOLS_GITHUB),
+                        (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", _HC_TOOLS_MAIL),
                     ]
-                    # Conversation-aware tools (même logique que le guard principal)
-                    _conv_tools_np: set = set()
-                    try:
-                        _web_ctx_np = getattr(self.tools, "_web_context", None) or []
-                        for _msg_np in _web_ctx_np:
-                            _msg_c_np = (_msg_np.get("content") or "").lower()
-                            for _p3, _et3 in _HP_NOPLAN:
-                                if re.search(_p3, _msg_c_np, re.IGNORECASE):
-                                    _conv_tools_np.update(_et3)
-                    except Exception:
-                        pass
-                    _all_known_np = _tu | _conv_tools_np
+                    _all_known_np = _tu
                     _hb_noplan = False
                     # Bypass: si un outil de création non listé dans _HP_NOPLAN a été utilisé,
                     # le LLM rapporte un vrai résultat — ne pas bloquer
@@ -3811,9 +3866,14 @@ Maintenant, reflechis et reponds:"""
                         r"tout\s+[àa]\s+l[''']instant|juste\s+avant)\b",
                         _ct, re.IGNORECASE,
                     ))
+                    _has_runtime_claim_proof_np = _has_runtime_server_claim_proof(_ct, _all_known_np)
                     if self._premature_final_retries < 2 and not _has_temporal_ref_np:
                         for _p, _et in _HP_NOPLAN:
-                            if re.search(_p, _ct, re.IGNORECASE) and not any(t in _all_known_np for t in _et):
+                            if re.search(_p, _ct, re.IGNORECASE):
+                                if _et == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof_np:
+                                    continue
+                                if any(t in _all_known_np for t in _et):
+                                    continue
                                 self._premature_final_retries += 1
                                 logger.warning(
                                     "[HALLUCINATION GUARD] Action non exécutée (sans plan): {} — retry {}/2",
@@ -3845,6 +3905,7 @@ Maintenant, reflechis et reponds:"""
                 _ledger_guard_triggered = False
                 if not getattr(self, '_ledger_final_guard_used', False):
                     _final_text_lower = ((action.answer or "") + " " + (thought.content or "")).lower()
+                    _runtime_claim_for_final = _has_runtime_server_claim_proof(_final_text_lower, self._successful_session_tools)
                     _CLAIM_PATTERNS = (
                         "j'ai créé", "j'ai crée", "j'ai envoyé", "j'ai envoye",
                         "j'ai écrit", "j'ai modifié", "j'ai configuré", "j'ai planifié",
@@ -3854,7 +3915,7 @@ Maintenant, reflechis et reponds:"""
                         "fichier créé", "fichier écrit", "message envoyé",
                     )
                     _claims_action = any(p in _final_text_lower for p in _CLAIM_PATTERNS)
-                    if _claims_action and not self.execution_ledger.has_any_mutation():
+                    if _claims_action and not _runtime_claim_for_final and not self.execution_ledger.has_any_mutation():
                         self._ledger_final_guard_used = True
                         _ledger_guard_triggered = True
                         _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
@@ -3881,6 +3942,7 @@ Maintenant, reflechis et reponds:"""
                 if (not getattr(self, '_ledger_final_guard_used', False)
                         and not _ledger_guard_triggered
                         and _claims_action
+                        and not _runtime_claim_for_final
                         and self.execution_ledger.has_any_mutation()):
                     _ss_guard = self._structured_state
                     _guard_intent = _ss_guard.last_intent if _ss_guard else None
@@ -3911,6 +3973,7 @@ Maintenant, reflechis et reponds:"""
                 if (not getattr(self, '_ledger_h3_guard_used', False)
                         and not getattr(self, '_ledger_final_guard_used', False)
                         and _claims_action
+                        and not _runtime_claim_for_final
                         and self.execution_ledger.has_any_mutation()):
                     import re as _re_h3
                     _target_hint_h3: Optional[str] = None
@@ -3990,6 +4053,14 @@ Maintenant, reflechis et reponds:"""
                     "je dois vérifier",
                     "je dois d'abord",
                     "je dois ensuite",
+                    "je lance ",
+                    "je lance`",
+                    "je vais lire ",
+                    "je vais vérifier ",
+                    "je vais chercher ",
+                    "je vais appeler ",
+                    "je vais utiliser ",
+                    "je vais grep",
                     "j'ai exécuté les",
                     "j'ai déjà exécuté",
                     "j'ai déjà effectué une recherche",
@@ -4096,6 +4167,23 @@ Maintenant, reflechis et reponds:"""
                     )
                     _finish_iteration(status="ok", summary="thought_leaked_repair")
                     continue
+
+                elif _thought_leaked:
+                    # Repairs épuisés — tenter de nettoyer le THOUGHT prefix au lieu
+                    # de retourner le raisonnement interne brut à l'utilisateur.
+                    _stripped = self._strip_thought_leak_prefix(answer) if answer else None
+                    if _stripped and len(_stripped) >= 20:
+                        logger.warning(
+                            "⚠️ THOUGHT leak non résolu après {}/{} tentatives — strip forcé ({} chars)",
+                            _max_tleak, _max_tleak, len(answer) - len(_stripped),
+                        )
+                        action = Action(
+                            action_type=ActionType.FINAL_ANSWER,
+                            answer=_stripped,
+                            tool_name=action.tool_name,
+                            tool_args=action.tool_args,
+                        )
+                        answer = _stripped
 
                 # ── VERBALIZATION REDIRECT ──────────────────────────────────
                 # Détecte quand le LLM verbalise un plan/raisonnement dans sa réponse
@@ -4235,12 +4323,15 @@ Maintenant, reflechis et reponds:"""
                         self.step_callback(action.tool_name, action.tool_args or {})
                     except Exception as e:
                         logger.debug(f"Step callback: {e}")
-                # Propager le budget temps restant au HandlerContext
+                # Propager le budget temps restant et le task_id au HandlerContext
                 if hasattr(self, '_loop_start_time') and hasattr(self.tools, '_v2_context'):
                     from time import perf_counter as _pc
                     _elapsed = _pc() - self._loop_start_time
                     _total = float(self.timeout_seconds or 600) + getattr(self, '_tool_time_total', 0.0)
                     self.tools._v2_context.budget_seconds = max(0.0, _total - _elapsed)
+                    # Cancel canal : propager le parent task_id pour delegate_task
+                    if self.task_id:
+                        self.tools._v2_context.runtime_task_id = self.task_id
                 # Mesurer le temps outil pour exclure du timeout de raisonnement
                 from .caller_context import REACT as _CALLER_REACT
                 _tool_exec_start = perf_counter()
@@ -4250,6 +4341,18 @@ Maintenant, reflechis et reponds:"""
                     caller=_CALLER_REACT,
                 )
                 _tool_exec_duration = perf_counter() - _tool_exec_start
+                # ── Cancel post-outil : stopper avant de réinjecter l'observation ──
+                # Si le parent a été annulé PENDANT l'outil (ex: delegate_task long),
+                # on coupe ici pour ne pas injecter un résultat orphelin dans la boucle.
+                if self._orchestrator_enabled():
+                    try:
+                        if self.task_orchestrator.is_cancel_requested(self.task_id):
+                            logger.info("[ReAct] cancel détecté post-outil task={}", self.task_id)
+                            raise SystemExit("task_orchestrator_cancel")
+                    except SystemExit:
+                        raise
+                    except Exception:
+                        pass
                 # Repousser la deadline du temps passé dans l'outil
                 # → seul le temps de raisonnement (LLM) compte pour le timeout
                 if hasattr(self, '_timeout_deadline'):
@@ -4323,6 +4426,30 @@ Maintenant, reflechis et reponds:"""
                     )
                 except Exception as _led_exc:
                     logger.debug("[ExecutionLedger] Échec enregistrement: {}", _led_exc)
+
+                # ── ExecutionLedger : expansion des sous-outils parallel_tools ──
+                if action.tool_name == "parallel_tools":
+                    _sub_results_pt = getattr(observation, "sub_results", ())
+                    for _sub in _sub_results_pt:
+                        try:
+                            _sub_target = _ledger_extract_target(_sub.tool_name, _sub.args)
+                            _sub_proof = _ledger_extract_proof(
+                                _sub.tool_name, _sub.content, _sub.success
+                            )
+                            self.execution_ledger.append(
+                                iteration=i,
+                                action=_sub.tool_name,
+                                target=_sub_target,
+                                success=_sub.success,
+                                proof=_sub_proof,
+                                meta={
+                                    "duration_ms": 0.0,
+                                    "intent": _led_intent,
+                                    "via": "parallel_tools",
+                                },
+                            )
+                        except Exception as _sub_led_exc:
+                            logger.debug("[ExecutionLedger] parallel_tools sub: {}", _sub_led_exc)
 
                 # ── Mission A : mémoriser le projet actif après mutation sur workspace ──
                 # Permet au tour suivant de réutiliser ce projet sans find_files.
@@ -4737,6 +4864,9 @@ Maintenant, reflechis et reponds:"""
             # Accumuler le nom de l'outil dans le set session (survit aux compactions)
             if action.tool_name:
                 self._all_session_tools.add(action.tool_name)
+                # N'ajouter aux outils réussis que si l'observation indique un succès réel
+                if observation.success:
+                    self._successful_session_tools.add(action.tool_name)
             self.history.append(step)
 
             # 6.1 Guard: progression du plan TODO
@@ -4866,6 +4996,7 @@ Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{
             # les tours perdus sur thought_leak / reformulation inutile.
             _is_delegate_success = (
                 action.tool_name in ("delegate_task", "delegate_task_bg")
+                and observation.success           # preuve structurelle, pas juste le badge ✅
                 and obs_text
                 and (obs_text.lstrip().startswith("✅") or "✅" in obs_text[:60])
             )

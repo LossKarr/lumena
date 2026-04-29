@@ -19,5 +19,5 @@ export function logC(message,type='info'){
 }
 
 export function clearConsole(){
-  document.getElementById('console-output').innerHTML='<span style="color:var(--ok)"><i data-lucide="sparkles"></i> Lumena v1.0.0 - Beta 2026 Console</span>\n<span style="color:var(--muted)">[INFO] Console effacee</span>';
+  document.getElementById('console-output').innerHTML='<span style="color:var(--ok)"><i data-lucide="sparkles"></i> Lumena Beta-v1.0 Console</span>\n<span style="color:var(--muted)">[INFO] Console effacee</span>';
 }

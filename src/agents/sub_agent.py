@@ -628,16 +628,32 @@ class SubAgent:
         try:
             tool_system = get_tool_system()
             result = await tool_system.execute_tool_by_name(tool_name, args)
+            _result_str = str(result) if result is not None else ""
+            _outcome = _classify_tool_outcome(_result_str.lower())
             audit.log_action(
                 self.name, tool_name, args,
-                task_id=task_id, success=True,
-                result_summary=str(result)[:200] if result else None,
+                task_id=task_id, outcome=_outcome,
+                result_summary=_result_str[:200],
             )
             return result
+        except asyncio.TimeoutError:
+            audit.log_action(
+                self.name, tool_name, args,
+                task_id=task_id, outcome="timeout",
+                result_summary="asyncio.TimeoutError",
+            )
+            raise
+        except PermissionError as e:
+            audit.log_action(
+                self.name, tool_name, args,
+                task_id=task_id, outcome="policy_denied",
+                result_summary=str(e),
+            )
+            raise
         except Exception as e:
             audit.log_action(
                 self.name, tool_name, args,
-                task_id=task_id, success=False,
+                task_id=task_id, outcome="exception",
                 result_summary=str(e),
             )
             raise
@@ -655,8 +671,106 @@ class SubAgent:
         return await self._call_tool(tool_name, args)
 
 
+# ── Registre des délégations actives (cancel coopératif) ────────────────────
+# parent_task_id (TaskOrchestrator) → asyncio.Task en cours d'exécution.
+# Permet d'annuler une délégation depuis n'importe quel composant externe.
+import threading as _threading_delegate
+_active_delegates: Dict[str, "asyncio.Task[Any]"] = {}
+_active_delegates_lock: _threading_delegate.Lock = _threading_delegate.Lock()
+
+
+def _register_active_delegate(parent_task_id: str, task: "asyncio.Task[Any]") -> None:
+    with _active_delegates_lock:
+        _active_delegates[parent_task_id] = task
+
+
+def _unregister_active_delegate(parent_task_id: str) -> None:
+    with _active_delegates_lock:
+        _active_delegates.pop(parent_task_id, None)
+
+
+def cancel_active_delegate(parent_task_id: str) -> bool:
+    """Annule la délégation active associée à parent_task_id. Thread-safe."""
+    with _active_delegates_lock:
+        t = _active_delegates.get(parent_task_id)
+    if t and not t.done():
+        t.cancel()
+        return True
+    return False
+
+
+def is_delegate_active(parent_task_id: str) -> bool:
+    with _active_delegates_lock:
+        return parent_task_id in _active_delegates
+
+
+# ── Registre des tâches agent background ────────────────────────────────────
+# task_id (ca_*) → asyncio.Task — permet l'annulation réelle et le cleanup.
+import threading as _threading_bg
+_bg_agent_tasks: Dict[str, "asyncio.Task[Any]"] = {}
+_bg_agent_tasks_lock: _threading_bg.Lock = _threading_bg.Lock()
+
+
+def _register_bg_agent(task_id: str, task: "asyncio.Task[Any]") -> None:
+    with _bg_agent_tasks_lock:
+        _bg_agent_tasks[task_id] = task
+
+
+def _unregister_bg_agent(task_id: str) -> None:
+    with _bg_agent_tasks_lock:
+        _bg_agent_tasks.pop(task_id, None)
+
+
+def cancel_bg_agent_task(task_id: str) -> bool:
+    """Annule une tâche agent background par son task_id. Thread-safe.
+
+    Retourne True si la tâche était active et a été annulée,
+    False si introuvable ou déjà terminée.
+    """
+    with _bg_agent_tasks_lock:
+        t = _bg_agent_tasks.get(task_id)
+    if t and not t.done():
+        t.cancel()
+        return True
+    return False
+
+
+def is_bg_agent_active(task_id: str) -> bool:
+    """True si la tâche bg est enregistrée et non terminée."""
+    with _bg_agent_tasks_lock:
+        t = _bg_agent_tasks.get(task_id)
+    return t is not None and not t.done()
+
+
 _CODE_AGENT_MAX_ITER = int(os.environ.get("LUMENA_CODE_AGENT_MAX_ITER", "50"))
 _CODE_AGENT_MAX_OUTER_RETRIES = int(os.environ.get("LUMENA_CODE_AGENT_MAX_OUTER_RETRIES", "3"))  # Boucle externe
+
+# ── Classification structurée des outcomes d'appels outils ───────────────────
+_OUTCOME_NOT_FOUND: frozenset = frozenset({
+    "non trouvé", "not found", "introuvable", "aucun outil", "unknown tool",
+})
+_OUTCOME_POLICY: frozenset = frozenset({
+    "permission denied", "accès refusé", "policy denied",
+    "interdit", "non autorisé", "forbidden", "access denied",
+})
+_OUTCOME_EXCEPTION: frozenset = frozenset({
+    "nameerror", "attributeerror", "keyerror", "typeerror",
+})
+
+
+def _classify_tool_outcome(result_lower: str) -> str:
+    """Retourne l'outcome structuré d'un appel outil à partir du résultat texte.
+
+    Ordre de priorité : tool_not_found > policy_denied > exception > success.
+    N'est utilisé que lorsque l'outil retourne une chaîne sans lever d'exception.
+    """
+    if any(p in result_lower for p in _OUTCOME_NOT_FOUND):
+        return "tool_not_found"
+    if any(p in result_lower for p in _OUTCOME_POLICY):
+        return "policy_denied"
+    if any(p in result_lower for p in _OUTCOME_EXCEPTION):
+        return "exception"
+    return "success"
 
 
 @dataclass
@@ -6362,6 +6476,15 @@ class SubAgentOrchestrator:
                             await _r
                     except Exception:
                         pass
+            except asyncio.CancelledError:
+                # Annulation coopérative : mise à jour du statut, pas de callback
+                self.pending_tasks[task_id].update({
+                    "status": "cancelled",
+                    "finished_at": datetime.now().isoformat(),
+                })
+                self._save_to_disk()
+                logger.info("[SubAgent] bg task {} cancelled", task_id)
+                raise
             except Exception as exc:
                 logger.error("[SubAgent] bg task {} failed: {}", task_id, exc)
                 self.pending_tasks[task_id].update({
@@ -6378,8 +6501,11 @@ class SubAgentOrchestrator:
                             await _r
                     except Exception:
                         pass
+            finally:
+                _unregister_bg_agent(task_id)
 
-        asyncio.create_task(_run_and_store())
+        _bg_task = asyncio.create_task(_run_and_store())
+        _register_bg_agent(task_id, _bg_task)
         logger.info("[SubAgent] 🚀 Tâche bg lancée: {} ({})", task_id, agent_type.value)
         return task_id
 

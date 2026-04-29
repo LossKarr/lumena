@@ -289,6 +289,12 @@ _DOC_SECTIONS = [
         "icon": "sparkles",
         "title": "Vue d'ensemble",
         "content": """
+<div class="doc-callout doc-callout-warn" style="border-left:4px solid #f59e0b;margin-bottom:18px">
+  <strong>⚠️ Version Beta — Lumena Beta-v1.0</strong><br>
+  Cette version est une <strong>bêta publique</strong>. Certaines fonctionnalités sont encore en développement actif.
+  Des anomalies de comportement peuvent survenir ponctuellement. Les corrections sont déployées en continu.
+</div>
+
 <p class="doc-lead">Lumena est un assistant IA personnel autonome conçu pour fonctionner 24/7.
 Elle raisonne, mémorise, agit, apprend et interagit dans le monde réel à travers 5 canaux simultanés,
 {tools_count} outils natifs et une personnalité stable.</p>
@@ -373,6 +379,10 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
   — assistant guidé qui configure les providers, clés API, workspace et Telegram en quelques clics.
 </div>
 <p>Voir la section <strong>Déploiement</strong> pour les détails complets.</p>
+
+<div class="doc-callout" style="text-align:right;color:var(--muted);font-size:11px;border:none;padding-top:0">
+  Lumena — Beta-v1.0
+</div>
 """,
     },
     {
@@ -388,9 +398,9 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
     <li>Conversation naturelle multi-sujets</li>
     <li>Adaptation du ton (formel, informel, technique)</li>
     <li>Émotions authentiques et humeur évolutive</li>
-    <li>Parole (TTS Coqui XTTS + Piper) et écoute (STT Whisper)</li>
+    <li>Voix : pipeline STT/TTS intégré (Whisper + Piper) — <em>fonctionnalités de base opérationnelles, intégration avancée en cours de développement</em></li>
     <li>5 canaux simultanés : Web, Telegram, Discord, Twitter, CLI</li>
-    <li>IDE bridge WebSocket bidirectionnel (33 outils VSCode/Cursor)</li>
+    <li>IDE bridge WebSocket bidirectionnel (36 outils VSCode/Cursor)</li>
   </ul>
 </div>
 
@@ -410,7 +420,7 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
   <ul>
     <li>Recherche web (DuckDuckGo, Brave Search)</li>
     <li>Playwright stealth v2 (10 techniques anti-détection, UA rotatifs)</li>
-    <li>52 outils browser natifs (formulaires, clics, scraping, screenshots…)</li>
+    <li>68 outils browser natifs (formulaires, clics, scraping, screenshots…)</li>
     <li>Recherche approfondie multi-sources (deep_research)</li>
     <li>SSRF guard : bloque localhost, IPs privées, DNS rebinding</li>
   </ul>
@@ -419,7 +429,7 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 <div class="doc-cap-card">
   <h4>Développement</h4>
   <ul>
-    <li>8 types d'agents : Code, Research, Debug, Refactor, Browser, Planner, File + Orchestrator</li>
+    <li><strong>CodeAgent</strong> pleinement opérationnel — agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) architecturés et en intégration active</li>
     <li>Boucle 30 iter + outer retry 3× avec approche différente</li>
     <li>Auto-test après 3 edits consécutifs, ruff lint natif</li>
     <li>Projets web complets from scratch (HTML/CSS/JS/Python)</li>
@@ -469,7 +479,7 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
     <li>Anti-injection shell (command_sanitizer.py)</li>
     <li>Path traversal guard (file_guardrails.py)</li>
     <li>Sandbox Docker, retry intra-provider, context overflow guard</li>
-    <li>OSINT (domaines, emails, IPs, Shodan) — 13 outils</li>
+    <li>OSINT (domaines, emails, IPs, Shodan) — 16 outils</li>
   </ul>
 </div>
 
@@ -478,7 +488,7 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
   <ul>
     <li>12 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax, Z.AI (CogView-4)</li>
     <li>39 modèles — de gratuits (Gemini Flash, HuggingFace SDXL, CogView-4-Flash) à ultra (Flux 2 Max, Imagen 4 Ultra)</li>
-    <li>13 handlers ReAct : generate, edit (inpaint/outpaint/erase), compose (multi-images), thumbnail, thumbnail-pro (pipeline LLM), headlines, logo, upscale, remove/replace background, sketch-to-image, SVG vectoriel</li>
+    <li>15 handlers ReAct : generate, edit (inpaint/outpaint/erase), compose (multi-images), thumbnail, thumbnail-pro (pipeline LLM), headlines, logo, upscale, remove/replace background, sketch-to-image, SVG vectoriel</li>
     <li>Mode <code>auto</code> : sélection automatique du meilleur modèle disponible (fallback par tier de qualité Q10→Q5)</li>
     <li>8 templates de prompt : <code>photo</code>, <code>illustration</code>, <code>3d_render</code>, <code>pixel_art</code>, <code>watercolor</code>, <code>anime</code>, <code>logo</code>, <code>icon</code></li>
     <li>Édition avancée : inpainting (masque), outpainting (extension), search-and-replace, erase object</li>
@@ -533,7 +543,7 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 <tr><td>Mémoire vectorielle</td><td>ChromaDB + Knowledge Graph + BM25</td></tr>
 <tr><td>Interface web</td><td>FastAPI + SPA (HTML/JS vanilla ES modules, Vite build)</td></tr>
 <tr><td>Messagerie</td><td>Telegram Bot API, Discord.py 2.x, Tweepy 4.x</td></tr>
-<tr><td>Voix</td><td>Whisper (STT) + Coqui XTTS / Piper (TTS)</td></tr>
+<tr><td>Voix</td><td>Whisper (STT) + Piper (TTS) — <em>en développement actif</em></td></tr>
 <tr><td>Automatisation web</td><td>Playwright stealth v2 (10 techniques anti-détection)</td></tr>
 <tr><td>Documents</td><td>WeasyPrint PDF + 13 templates Jinja2</td></tr>
 <tr><td>Vidéo</td><td>Remotion 4.x (React TSX → MP4) — rendu Node.js local ou Docker sandbox</td></tr>
@@ -546,19 +556,66 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 <h3>Boucle de raisonnement — ReAct</h3>
 <div class="doc-code-block">
 <pre>
-┌─────────────────────────────────────────────────────┐
-│                  BOUCLE REACT                       │
-│                                                     │
-│  Message entrant                                    │
-│       ↓                                             │
-│  Classification d'intention                         │
-│  (chat / tool_direct / react / project)             │
-│       ↓                                             │
-│  THOUGHT → ACTION → OBSERVATION → THOUGHT…          │
-│  (max 25 itérations, timeout 900s)                  │
-│       ↓                                             │
-│  Réponse finale → Canal de sortie                   │
-└─────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────┐
+ │                       MESSAGE ENTRANT                        │
+ └─────────────────────────────┬────────────────────────────────┘
+                               │
+                               ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │  CLASSIFICATION                                              │
+ │  intent_classifier ──► chat · tool_direct · react · project │
+ │  apply_context_filter ──► outils filtrés selon l'intention   │
+ └─────────────────────────────┬────────────────────────────────┘
+                               │
+                               ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │  INITIALISATION RUN                                          │
+ │  reset exec_state · ledger · established_facts               │
+ │  contexte ChromaDB · profil modèle P5 · skills actifs        │
+ └─────────────────────────────┬────────────────────────────────┘
+                               │
+           ╔═══════════════════╧══════════════════════╗
+           ║            BOUCLE  (max 30 iter)          ║
+           ║                                           ║
+           ║  ① Context guard                          ║
+           ║    >75% fenêtre ──► compaction urgence    ║
+           ║                         │                 ║
+           ║  ② LLM call             ▼                 ║
+           ║    stop=["OBSERVATION:"]                  ║
+           ║    timeout 240–300s (adapté au modèle)    ║
+           ║         │                                 ║
+           ║    vide ──► retry format                  ║
+           ║    tronqué ──► continuation automatique   ║
+           ║         │                                 ║
+           ║  ③ Parse réponse                          ║
+           ║    THOUGHT  +  ACTION                     ║
+           ║         │                                 ║
+           ║    ┌────┴────────────┐                    ║
+           ║    │                 │                    ║
+           ║  FINAL          TOOL CALL                 ║
+           ║    │                 │                    ║
+           ║  Ledger guard    Exécution outil           ║
+           ║  mutation réelle?   │                     ║
+           ║  ✗ ──► retry    write verify (Fix 3.2)    ║
+           ║  ✓ ──► sortie       │                     ║
+           ║                OBSERVATION                ║
+           ║                → history · ledger         ║
+           ║                → hallucination check      ║
+           ║                     │                     ║
+           ║  ④ Guards fins de boucle                  ║
+           ║    même action 3× ──► change approach     ║
+           ║    is_stuck ──► outer retry (+0.05 temp)  ║
+           ╚═══════════════════╤══════════════════════╝
+                               │
+                               ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │  TIMEOUT GLOBAL  ──►  message contextuel (projet ? serveur ?)│
+ └─────────────────────────────┬────────────────────────────────┘
+                               │
+                               ▼
+ ┌──────────────────────────────────────────────────────────────┐
+ │  RÉPONSE FINALE  ──►  Web SSE · Telegram · Discord · CLI     │
+ └──────────────────────────────────────────────────────────────┘
 </pre>
 </div>
 
@@ -570,6 +627,10 @@ le LLM d'écrire de fausses observations</li>
 <li><strong>Compaction automatique</strong> — résumé head+tail si historique trop long</li>
 <li><strong>Parallel tools</strong> — exécution simultanée d'outils indépendants</li>
 <li><strong>Observation limit dynamique</strong> — adapté par type d'intention (chat, react, project)</li>
+<li><strong>established_facts priorité 0</strong> — chemin projet lu sans verrou depuis <code>StructuredState</code>, fallback IdentityService</li>
+<li><strong>Verbalization redirect</strong> — monologue interne (<code>**THOUGHT:**</code>, "je délègue") détecté et redirigé vers une action concrète</li>
+<li><strong>Vérification write_file</strong> — après chaque écriture, contrôle existence + taille &gt; 0 du fichier produit</li>
+<li><strong>Ledger guard FINAL</strong> — Lumena ne peut pas conclure sans mutation réelle dans le ledger d'outils réussis</li>
 </ul>
 
 <h3>Structure du projet</h3>
@@ -597,15 +658,15 @@ lumena/
 │   │   ├── providers.py            # {models_count} modèles dans AVAILABLE_MODELS
 │   │   └── output_normalizer.py    # Normalisation réponses LLM
 │   ├── reasoning/
-│   │   ├── react.py                # Boucle ReAct (3 511L façade)
+│   │   ├── react.py                # Boucle ReAct (4 953L façade)
 │   │   ├── react_config.py         # Config, enums, constantes (373L)
-│   │   ├── tool_registry.py        # Registre {tools_count} outils (1 583L)
+│   │   ├── tool_registry.py        # Registre {tools_count} outils (1 763L)
 │   │   ├── response_parser.py      # Parsing ReAct (292L)
-│   │   ├── prompt_builder.py       # Heuristiques prompt (177L)
+│   │   ├── prompt_builder.py       # Heuristiques prompt (258L)
 │   │   └── handlers/               # {handler_modules} modules handlers V2
 │   ├── tools/                      # {tools_modules} modules d'outils bas niveau
 │   ├── agents/
-│   │   └── sub_agent.py            # CodeAgent 8 types + délégation (5 973L)
+│   │   └── sub_agent.py            # CodeAgent 8 types + délégation (6 752L)
 │   ├── skills/                     # Moteur de skills (loader, skill, sync, tools)
 │   ├── channels/                   # Telegram, Discord, Twitter, IDE bridge
 │   ├── computer_use/               # Cascade native CU + pywinauto + vision
@@ -620,9 +681,9 @@ lumena/
 │   └── prompts/                    # Prompt builder
 ├── web/                            # Panel de contrôle (FastAPI + SPA)
 │   ├── routes/                     # {routes_count} endpoints API (14 fichiers)
-│   └── static/                     # 14 fichiers JS + 8 fichiers CSS
+│   └── static/                     # 15 fichiers JS + 9 fichiers CSS
 ├── assets/templates/               # 13 templates Jinja2 (documents pro)
-├── data/                           # 21 répertoires runtime
+├── data/                           # 31 répertoires runtime
 ├── tests/                          # {test_files} fichiers de tests pytest
 ├── skills/                         # {skills_count} skills installés
 ├── models/                         # Modèles TTS Piper + pipeline fine-tuning
@@ -763,7 +824,7 @@ ou installés depuis un fichier YAML. Actuellement <strong>{skills_count} skills
 <thead><tr><th>Module</th><th>LOC</th><th>Rôle</th></tr></thead>
 <tbody>
 <tr><td><code>embedding_cache.py</code></td><td>269</td><td>Cache local des embeddings (évite re-calcul)</td></tr>
-<tr><td><code>code_file_watcher.py</code></td><td>388</td><td>Surveillance fichiers code — re-indexation automatique</td></tr>
+<tr><td><code>code_file_watcher.py</code></td><td>171</td><td>Surveillance fichiers code — re-indexation automatique</td></tr>
 <tr><td><code>migration.py</code></td><td>275</td><td>Migrations schéma mémoire (upgrades)</td></tr>
 </tbody>
 </table>
@@ -824,11 +885,11 @@ auto_learning_system.py ─── curation automatique des données
         "icon": "bot",
         "title": "Autonomie & Planification",
         "content": """
-<h3>Daemon 24/7 — <code>daemon.py</code> (713L)</h3>
+<h3>Daemon 24/7 — <code>daemon.py</code> (785L)</h3>
 <p>Lumena tourne en arrière-plan en permanence. Elle agit sans être sollicitée selon ses tâches CRON,
 ses objectifs actifs et les événements de ses canaux de communication.</p>
 
-<h3>Scheduler CRON — <code>scheduler.py</code> (1 458L)</h3>
+<h3>Scheduler CRON — <code>scheduler.py</code> (1 617L)</h3>
 <p>Parallélisation des tâches non-critiques, <code>setup_default_tasks()</code>, clé d'idempotence <code>handler:window:hash</code>.</p>
 <table class="doc-table">
 <thead><tr><th>Tâche</th><th>Fréquence</th><th>Description</th></tr></thead>
@@ -846,10 +907,10 @@ ses objectifs actifs et les événements de ses canaux de communication.</p>
 <table class="doc-table">
 <thead><tr><th>Fichier</th><th>LOC</th><th>Rôle</th></tr></thead>
 <tbody>
-<tr><td><code>goals.py</code></td><td>391</td><td>Gestion objectifs autonomes (create, track, complete). Persistés dans <code>data/goals/</code></td></tr>
-<tr><td><code>curiosity.py</code></td><td>440</td><td>Exploration thématique autonome — choisit des sujets à étudier</td></tr>
-<tr><td><code>self_improve.py</code></td><td>923</td><td>Analyse erreurs → génère des skills auto, corrige ses propres faiblesses</td></tr>
-<tr><td><code>ops_handlers.py</code></td><td>2 444</td><td>15+ handlers opérationnels, <code>_STATE_LOCK</code> thread-safe</td></tr>
+<tr><td><code>goals.py</code></td><td>498</td><td>Gestion objectifs autonomes (create, track, complete). Persistés dans <code>data/goals/</code></td></tr>
+<tr><td><code>curiosity.py</code></td><td>444</td><td>Exploration thématique autonome — choisit des sujets à étudier</td></tr>
+<tr><td><code>self_improve.py</code></td><td>1 003</td><td>Analyse erreurs → génère des skills auto, corrige ses propres faiblesses</td></tr>
+<tr><td><code>ops_handlers.py</code></td><td>2 508</td><td>15+ handlers opérationnels, <code>_STATE_LOCK</code> thread-safe</td></tr>
 </tbody>
 </table>
 
@@ -875,7 +936,7 @@ Vague 3 — Finalisation et assemblage
 </tbody>
 </table>
 
-<h3>Système de plans — <code>plan_manager.py</code> (317L)</h3>
+<h3>Système de plans — <code>src/tools/plan_manager.py</code> (321L)</h3>
 <div class="doc-code-block">
 <pre>
 Plan créé → étapes décomposées automatiquement
@@ -907,21 +968,27 @@ Plan créé → étapes décomposées automatiquement
         "icon": "terminal",
         "title": "CodeAgent",
         "content": """
-<p class="doc-lead">Le CodeAgent est un sous-agent spécialisé (<code>sub_agent.py</code> — 5 973 LOC) qui travaille en boucle
+<p class="doc-lead">Le CodeAgent est un sous-agent spécialisé (<code>sub_agent.py</code> — 6 752 LOC) qui travaille en boucle
 itérative autonome pour les tâches de développement complexes.</p>
 
-<h3>8 types d'agents</h3>
+<h3>Architecture multi-agents — 8 types</h3>
+
+<div class="doc-callout doc-callout-warn">
+  <strong>État d'intégration :</strong> Le <code>CodeAgent</code> est l'agent de production, pleinement opérationnel.
+  Les agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) sont architecturés et enregistrés dans l'orchestrateur — leur activation complète et leur routage automatique sont en cours de développement actif.
+</div>
+
 <table class="doc-table">
-<thead><tr><th>Type</th><th>Spécialité</th></tr></thead>
+<thead><tr><th>Type</th><th>Spécialité</th><th>État</th></tr></thead>
 <tbody>
-<tr><td><code>CodeAgent</code></td><td>Écriture et modification de code (défaut)</td></tr>
-<tr><td><code>ResearchAgent</code></td><td>Recherche dans le codebase, documentation</td></tr>
-<tr><td><code>FileAgent</code></td><td>Opérations fichiers (création, déplacement, renommage)</td></tr>
-<tr><td><code>DebugAgent</code></td><td>Diagnostic et correction de bugs</td></tr>
-<tr><td><code>RefactorAgent</code></td><td>Restructuration et nettoyage de code</td></tr>
-<tr><td><code>BrowserAgent</code></td><td>Navigation web et scraping</td></tr>
-<tr><td><code>PlannerAgent</code></td><td>Décomposition de tâches complexes</td></tr>
-<tr><td><code>SubAgentOrchestrator</code></td><td>Orchestration de plusieurs sous-agents en parallèle</td></tr>
+<tr><td><code>CodeAgent</code></td><td>Écriture, modification, tests — boucle LLM 30 itérations</td><td class="ok">✅ Production</td></tr>
+<tr><td><code>DebugAgent</code></td><td>Diagnostic et correction de bugs, analyse de stack traces</td><td class="warn">⚙️ Intégration</td></tr>
+<tr><td><code>RefactorAgent</code></td><td>Restructuration et nettoyage de code sans régression</td><td class="warn">⚙️ Intégration</td></tr>
+<tr><td><code>ResearchAgent</code></td><td>Recherche web + mémoire vectorielle multi-sources</td><td class="warn">⚙️ Intégration</td></tr>
+<tr><td><code>BrowserAgent</code></td><td>Navigation web autonome et scraping</td><td class="warn">⚙️ Intégration</td></tr>
+<tr><td><code>FileAgent</code></td><td>Opérations fichiers en masse (lecture, écriture, recherche)</td><td class="warn">⚙️ Intégration</td></tr>
+<tr><td><code>PlannerAgent</code></td><td>Décomposition de tâches complexes en sous-étapes DAG</td><td class="warn">⚙️ Intégration</td></tr>
+<tr><td><code>SubAgentOrchestrator</code></td><td>Orchestration parallèle, routage automatique, anti-cycles</td><td class="ok">✅ Production</td></tr>
 </tbody>
 </table>
 
@@ -937,7 +1004,8 @@ Boucle interne (max 30 itérations) :
        ↓
   Exécution de l'action
        ↓
-  Observation du résultat (8 000 chars max)
+  Observation du résultat (16 000 chars max)
+  Cache lecture LRU 120k chars / 12 fichiers en session
        ↓
   LLM → action suivante → … → "done"
        ↓
@@ -965,7 +1033,7 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
 </tbody>
 </table>
 
-<h3>7 guardrails automatiques</h3>
+<h3>10 guardrails automatiques</h3>
 <div class="doc-guard-grid">
   <div class="doc-guard-item">
     <div class="doc-guard-icon"><i data-lucide="search"></i></div>
@@ -1002,6 +1070,21 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
     <strong>Outer retry</strong>
     <p>Si 3 boucles internes échouent → approche différente avec historique complet des échecs</p>
   </div>
+  <div class="doc-guard-item">
+    <div class="doc-guard-icon"><i data-lucide="file-check"></i></div>
+    <strong>Vérification écriture</strong>
+    <p>Après write_file/apply_patch : vérifie que le fichier existe et n'est pas vide (chemins absolus)</p>
+  </div>
+  <div class="doc-guard-item">
+    <div class="doc-guard-icon"><i data-lucide="trash-2"></i></div>
+    <strong>Cache invalidation</strong>
+    <p>Cache lecture (120k LRU) invalidé après chaque edit — pas de contenu périmé</p>
+  </div>
+  <div class="doc-guard-item">
+    <div class="doc-guard-icon"><i data-lucide="message-square-warning"></i></div>
+    <strong>Verbalization redirect</strong>
+    <p>Détecte monologue interne (<code>**THOUGHT:**</code>, "je délègue") sans action → nudge pour agir</p>
+  </div>
 </div>
 
 <h3>Modules complémentaires</h3>
@@ -1011,7 +1094,7 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
 <tr><td><code>session_manager.py</code></td><td>217</td><td>Gestion de sessions CodeAgent (persistence, restore)</td></tr>
 <tr><td><code>session.py</code></td><td>208</td><td>Modèle de données session (état, historique actions)</td></tr>
 <tr><td><code>audit_log.py</code></td><td>151</td><td>Journal d'audit de toutes les actions exécutées</td></tr>
-<tr><td><code>forking_agent.py</code></td><td>234</td><td>Exécution parallèle de sous-tâches (fork + merge)</td></tr>
+<tr><td><code>forking_agent.py</code></td><td>216</td><td>Exécution parallèle de sous-tâches (fork + merge)</td></tr>
 </tbody>
 </table>
 """,
@@ -1030,7 +1113,7 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
     </div>
     <p>SPA complète avec 25+ panels : chat SSE streaming, mémoire, outils, tâches, configuration, logs,
     émotions, identité, console, éditeur de fichiers, live trace, apprentissage, fine-tuning, Stripe…</p>
-    <div class="doc-channel-tech">FastAPI + HTML/JS vanilla + ES Modules — 14 fichiers JS (6 128L) + 8 fichiers CSS</div>
+    <div class="doc-channel-tech">FastAPI + HTML/JS vanilla + ES Modules — 15 fichiers JS (6 824L) + 9 fichiers CSS</div>
   </div>
 
   <div class="doc-channel-card">
@@ -1049,8 +1132,8 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
       <h4>Discord</h4>
     </div>
     <p>Serveur dédié avec administration complète : canaux, rôles, messages programmés,
-    morning briefing quotidien à 10h. 25 handlers V2 dans <code>discord_admin.py</code>.</p>
-    <div class="doc-channel-tech"><code>discord_channel.py</code> (726L) — Discord.py 2.x</div>
+    morning briefing quotidien à 10h. 29 handlers V2 dans <code>discord_admin.py</code>.</p>
+    <div class="doc-channel-tech"><code>discord_channel.py</code> (805L) — Discord.py 2.x</div>
   </div>
 
   <div class="doc-channel-card">
@@ -1058,8 +1141,8 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
       <span class="doc-channel-icon" style="background:#1da1f2"><i data-lucide="twitter" style="width:18px;height:18px;color:#fff"></i></span>
       <h4>Twitter / X</h4>
     </div>
-    <p>Publication et monitoring de mentions. Polling actif toutes les 90 secondes. 10 handlers V2.</p>
-    <div class="doc-channel-tech"><code>twitter_channel.py</code> (575L) — Tweepy 4.x — <code>run_twitter.py</code></div>
+    <p>Publication et monitoring de mentions. Polling actif toutes les 90 secondes. 13 handlers V2.</p>
+    <div class="doc-channel-tech"><code>twitter_channel.py</code> (579L) — Tweepy 4.x — <code>run_twitter.py</code></div>
   </div>
 
   <div class="doc-channel-card">
@@ -1068,8 +1151,12 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
       <h4>CLI + Voix</h4>
     </div>
     <p>Mode terminal direct (<code>src/cli.py</code> 712L, interface Rich interactive).
-    STT via Whisper (<code>stt.py</code> 878L), TTS via Coqui XTTS + Piper (<code>tts.py</code> 707L), boucle vocale (<code>assistant_loop.py</code> 567L).</p>
-    <div class="doc-channel-tech">Whisper + Coqui XTTS + Piper — <code>models/piper/fr_FR-siwis-low.onnx</code></div>
+    Pipeline vocal intégré : STT via Whisper (<code>src/voice/stt.py</code> 882L), TTS via Piper (<code>src/voice/tts.py</code> 711L), boucle vocale (<code>src/voice/assistant_loop.py</code> 577L).</p>
+    <div class="doc-channel-tech doc-channel-wip">
+      Whisper + Piper — <code>models/piper/fr_FR-siwis-low.onnx</code>
+      <span class="doc-badge-wip">En développement actif</span>
+      — Transcription et synthèse vocale de base disponibles. La boucle vocale interactive (wake word, conversation continue, interruption) est en cours d'intégration industrielle.
+    </div>
   </div>
 
   <div class="doc-channel-card">
@@ -1077,9 +1164,9 @@ Boucle externe : si bloqué (is_stuck) → retry avec température +0.05
       <span class="doc-channel-icon" style="background:#2563eb"><i data-lucide="monitor" style="width:18px;height:18px;color:#fff"></i></span>
       <h4>IDE Bridge (WebSocket)</h4>
     </div>
-    <p>Connexion bidirectionnelle Lumena ↔ VSCode/Cursor. 33 handlers IDE : open, read, write, terminal,
+    <p>Connexion bidirectionnelle Lumena ↔ VSCode/Cursor. 36 handlers IDE : open, read, write, terminal,
     navigate, list, diff, launch. Auto-reconnect 5s.</p>
-    <div class="doc-channel-tech"><code>ide_bridge.py</code> (356L) — WebSocket <code>/ws/ide</code></div>
+    <div class="doc-channel-tech"><code>src/tools/ide_bridge.py</code> (364L) — WebSocket <code>/ws/ide</code></div>
   </div>
 
 </div>
@@ -1142,7 +1229,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <thead><tr><th>Page</th><th>Description</th></tr></thead>
 <tbody>
 <tr><td><strong>Fine-tuning</strong></td><td>Détection GPU nvidia-smi, catalogue 30 modèles filtrés par VRAM, install dépendances auto, pipeline LoRA, export GGUF, import Ollama, SSE streaming progression</td></tr>
-<tr><td><strong>Setup / Wizard</strong></td><td>One-Click Install wizard (<code>setup.py</code> 1 203L + <code>setup.js</code> 2 046L) — config providers, clés API, Telegram, workspace, sandbox Docker</td></tr>
+<tr><td><strong>Setup / Wizard</strong></td><td>One-Click Install wizard (<code>setup.py</code> 1 239L + <code>setup.js</code> 2 091L) — config providers, clés API, Telegram, workspace, sandbox Docker</td></tr>
 <tr><td><strong>Projets / Workspaces</strong></td><td>Panel redesigné : groupes par date, arbre de fichiers lazy-load, badges tech stack (Node.js, Python, HTML, TypeScript, Rust, Go, Docker), recherche + tri, 4 endpoints REST</td></tr>
 <tr><td><strong>Stripe</strong></td><td>Dashboard Stripe intégré : produits, clients, paiements, abonnements, création de liens</td></tr>
 <tr><td><strong>Documentation</strong></td><td>Product Docs interactive (cette page)</td></tr>
@@ -1152,7 +1239,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 
 <h3>Stack frontend</h3>
 <ul>
-<li>SPA vanilla JS (<strong>aucun framework</strong>) — 14 fichiers JS (6 128 LOC), 8 fichiers CSS</li>
+<li>SPA vanilla JS (<strong>aucun framework</strong>) — 15 fichiers JS (6 824 LOC), 9 fichiers CSS</li>
 <li>Build avec <strong>Vite</strong> (optimisation production)</li>
 <li>Icônes : <strong>Lucide</strong></li>
 <li>Branding : <code>web/static/branding/</code> — logo SVG horizontal + mark, boot splash</li>
@@ -1173,7 +1260,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tr><td><code>/api/tools</code></td><td>GET</td><td>Liste des outils enregistrés</td></tr>
 </tbody>
 </table>
-<p>Voir la section <strong>Référence API</strong> pour les 77 endpoints complets.</p>
+<p>Voir la section <strong>Référence API</strong> pour les 93 endpoints complets.</p>
 """,
     },
     {
@@ -1222,9 +1309,9 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <thead><tr><th>Protection</th><th>Fichier</th><th>Détail</th></tr></thead>
 <tbody>
 <tr><td>SSRF guard</td><td><code>playwright_browser.py</code></td><td>Bloque localhost, IP privées, DNS rebinding, schemes <code>file://</code> et <code>data://</code></td></tr>
-<tr><td>Injection shell</td><td><code>command_sanitizer.py</code> (371L)</td><td>Validation et sanitization de toutes les commandes système</td></tr>
-<tr><td>Path traversal</td><td><code>file_guardrails.py</code> (555L)</td><td>Restriction des chemins, size limits, liste blanche</td></tr>
-<tr><td>Sandbox Docker</td><td><code>docker_sandbox.py</code> (302L)</td><td>Exécution code tiers dans container isolé, kill on timeout</td></tr>
+<tr><td>Injection shell</td><td><code>command_sanitizer.py</code> (431L)</td><td>Validation et sanitization de toutes les commandes système</td></tr>
+<tr><td>Path traversal</td><td><code>file_guardrails.py</code> (639L)</td><td>Restriction des chemins, size limits, liste blanche</td></tr>
+<tr><td>Sandbox Docker</td><td><code>docker_sandbox.py</code> (365L)</td><td>Exécution code tiers dans container isolé, kill on timeout</td></tr>
 <tr><td>Écritures atomiques</td><td><code>persistence.py</code> (205L)</td><td><code>tmp + mv</code> — aucun JSON corrompu possible en cas de crash</td></tr>
 <tr><td>File locking</td><td><code>file_lock.py</code> (154L)</td><td>Verrous fichier exclusifs pour accès concurrent</td></tr>
 </tbody>
@@ -1299,6 +1386,18 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <li>Endpoint <code>GET /api/preflight</code> — vérification complète pré-démarrage</li>
 </ul>
 
+<h3>Guards anti-hallucination ReAct</h3>
+<table class="doc-table">
+<thead><tr><th>Guard</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>Ledger FINAL guard</td><td>Lumena ne peut conclure qu'après une mutation réelle (outil réussi dans le ledger)</td></tr>
+<tr><td>Vérification write_file</td><td>Après écriture, contrôle existence + taille &gt; 0 du fichier produit (chemins absolus)</td></tr>
+<tr><td>Verbalization redirect</td><td>Monologue interne sans action (<code>**THOUGHT:**</code>, "je délègue") → nudge forcé vers action concrète</td></tr>
+<tr><td>established_facts zéro-lock</td><td>Chemin projet lu directement dans <code>StructuredState</code>, fallback IdentityService si absent</td></tr>
+<tr><td>Cache invalidation post-edit</td><td>Cache lecture LRU invalidé après chaque modification de fichier (pas de contenu périmé)</td></tr>
+</tbody>
+</table>
+
 <h3>Modules de robustesse</h3>
 <table class="doc-table">
 <thead><tr><th>Module</th><th>LOC</th><th>Rôle</th></tr></thead>
@@ -1324,6 +1423,13 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
         "icon": "server",
         "title": "Déploiement",
         "content": """
+<div class="doc-callout doc-callout-warn" style="border-left:4px solid #f59e0b;margin-bottom:18px">
+  <strong>⚠️ Version Beta — Lumena Beta-v1.0</strong><br>
+  Lumena est actuellement en bêta active. Le déploiement est fonctionnel et stable pour un usage personnel,
+  mais des comportements inattendus peuvent survenir sur certaines configurations ou fonctionnalités en cours d'intégration.
+  Nous recommandons de consulter les <strong>logs daemon</strong> en cas d'anomalie.
+</div>
+
 <h3>🐳 Déploiement Docker (recommandé)</h3>
 <p>La méthode la plus simple et isolée. Lumena se lance en une commande.</p>
 <div class="doc-code-block">
@@ -1400,6 +1506,14 @@ python -m src
 
 <h3>One-Click Install — Wizard Web</h3>
 <p>Accéder à <code>http://localhost:8080/setup</code> pour un assistant d'installation guidé :</p>
+
+<div class="doc-callout doc-callout-warn" style="border-left:4px solid #f59e0b">
+  <strong>⚠️ Bêta — wizard en développement actif</strong><br>
+  L'assistant de configuration est fonctionnel pour les cas standards. Sur certaines configurations système ou
+  combinaisons de providers, des étapes peuvent nécessiter une vérification manuelle dans <code>.env</code>.
+  En cas de blocage, consulter la section <strong>Déploiement local</strong> ci-dessus.
+</div>
+
 <ul>
 <li>Configuration des providers LLM et clés API</li>
 <li>Configuration Telegram / Discord / Twitter</li>
@@ -1407,7 +1521,7 @@ python -m src
 <li>Configuration sandbox Docker</li>
 <li>Test de connexion automatique</li>
 </ul>
-<p><code>setup.py</code> (1 203L) + <code>setup.js</code> (2 046L)</p>
+<p><code>setup.py</code> (1 239L) + <code>setup.js</code> (2 091L)</p>
 
 <h3>Scripts BAT Windows</h3>
 <table class="doc-table">
@@ -1420,7 +1534,7 @@ python -m src
 </tbody>
 </table>
 
-<h3>Orchestrateur — <code>lumena_ultime.py</code> (1 067L)</h3>
+<h3>Orchestrateur — <code>lumena_ultime.py</code> (1 128L)</h3>
 <p>Lance Web + Telegram + Voice + Daemon simultanément. Point d'entrée recommandé pour production.</p>
 
 <h3>Entry points</h3>
@@ -1436,8 +1550,8 @@ python -m src
 </tbody>
 </table>
 
-<h3>Preflight — <code>check_ready.py</code> (181L)</h3>
-<p>Vérification pré-démarrage : .env, dépendances, ports, Docker, Ollama.</p>
+<h3>Preflight — <code>lumena_ultime.py</code></h3>
+<p>Vérification pré-démarrage intégrée au démarrage principal : .env, dépendances, ports, Docker, Ollama. Accessible via <code>GET /api/preflight</code>.</p>
 
 <h3>Variables d'environnement — 93 entrées (19 groupes)</h3>
 <p>Lumena est 100% API — <strong>aucun GPU requis</strong>. Un VPS économique suffit.</p>
@@ -1474,10 +1588,10 @@ python -m src
         "icon": "code",
         "title": "Référence API",
         "content": """
-<p class="doc-lead">77 endpoints REST répartis dans 14 fichiers route actifs. Toutes les routes sensibles
+<p class="doc-lead">93 endpoints REST répartis dans 18 fichiers route actifs. Toutes les routes sensibles
 protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code>.</p>
 
-<h3>Vue d'ensemble — 77 endpoints</h3>
+<h3>Vue d'ensemble — 93 endpoints</h3>
 <table class="doc-table">
 <thead><tr><th>Fichier route</th><th>GET</th><th>POST</th><th>PUT</th><th>DEL</th><th>Total</th><th>Auth</th></tr></thead>
 <tbody>
@@ -1488,14 +1602,18 @@ protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code>.</
 <tr><td><code>setup.py</code></td><td>3</td><td>4</td><td>0</td><td>0</td><td>7</td><td>Mixte</td></tr>
 <tr><td><code>tasks.py</code></td><td>4</td><td>3</td><td>0</td><td>0</td><td>7</td><td>Token</td></tr>
 <tr><td><code>stripe_dashboard.py</code></td><td>4</td><td>1</td><td>0</td><td>0</td><td>5</td><td>Token</td></tr>
+<tr><td><code>ionos.py</code></td><td>2</td><td>2</td><td>0</td><td>1</td><td>5</td><td>Token</td></tr>
 <tr><td><code>config.py</code></td><td>3</td><td>0</td><td>1</td><td>0</td><td>4</td><td>Token</td></tr>
 <tr><td><code>models.py</code></td><td>3</td><td>1</td><td>0</td><td>0</td><td>4</td><td>Token</td></tr>
 <tr><td><code>workspaces.py</code></td><td>3</td><td>0</td><td>0</td><td>1</td><td>4</td><td>Token</td></tr>
 <tr><td><code>docs.py</code></td><td>2</td><td>0</td><td>1</td><td>0</td><td>3</td><td>Token</td></tr>
+<tr><td><code>emotion.py</code></td><td>2</td><td>1</td><td>0</td><td>0</td><td>3</td><td>Token</td></tr>
+<tr><td><code>image_gen.py</code></td><td>2</td><td>1</td><td>0</td><td>0</td><td>3</td><td>Token</td></tr>
+<tr><td><code>whatsapp.py</code></td><td>2</td><td>1</td><td>0</td><td>0</td><td>3</td><td>Token</td></tr>
 <tr><td><code>chat.py</code></td><td>0</td><td>2</td><td>0</td><td>0</td><td>2</td><td>Token</td></tr>
 <tr><td><code>product_docs.py</code></td><td>1</td><td>0</td><td>0</td><td>0</td><td>1</td><td>Public</td></tr>
 <tr><td><code>stripe_webhook.py</code></td><td>0</td><td>1</td><td>0</td><td>0</td><td>1</td><td>Signature</td></tr>
-<tr style="font-weight:bold"><td>TOTAL</td><td>48</td><td>22</td><td>3</td><td>4</td><td>77</td><td></td></tr>
+<tr style="font-weight:bold"><td>TOTAL</td><td>57</td><td>27</td><td>3</td><td>4</td><td>93</td><td></td></tr>
 </tbody>
 </table>
 
@@ -1678,6 +1796,10 @@ protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code>.</
     <code>/api/stripe/webhook</code>
     <span class="doc-api-desc">Webhook Stripe (signature HMAC vérifiée)</span>
   </div>
+</div>
+
+<div class="doc-callout" style="text-align:right;color:var(--muted);font-size:11px;border:none;padding-top:0">
+  Lumena — Beta-v1.0
 </div>
 """,
     },
@@ -2104,8 +2226,12 @@ coordonnées, labels, pour permettre des clics ciblés sans dépendre uniquement
 <ul>
 <li>Process tree kill on timeout : <code>taskkill /F /T</code> (Windows) / <code>start_new_session</code> (Linux)</li>
 <li><code>re.escape()</code> sur tous les <code>window_title</code> dans les regex (anti-injection)</li>
-<li>28 handlers V2 dans <code>handlers/computer_use.py</code></li>
+<li>30 handlers V2 dans <code>handlers/computer_use.py</code></li>
 </ul>
+
+<div class="doc-callout" style="text-align:right;color:var(--muted);font-size:11px;border:none;padding-top:0">
+  Lumena — Beta-v1.0
+</div>
 """,
     },
 ]
@@ -2271,7 +2397,7 @@ async def get_product_docs():
     return {
         "success": True,
         "product": "Lumena",
-        "version": "2.1 BESTIAL",
+        "version": "Beta-v1.0",
         "sections": sections,
         "stats": {k: v for k, v in stats.items() if k not in ("skill_names", "tools_categories", "provider_names")},
     }

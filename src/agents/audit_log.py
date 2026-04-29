@@ -43,27 +43,38 @@ class SubAgentAuditLog:
         """Fichier du jour (rotation journalière)."""
         return self.audit_dir / f"audit_{datetime.now().strftime('%Y-%m-%d')}.jsonl"
 
+    # Outcomes structurés reconnus par le pipeline
+    OUTCOMES: frozenset = frozenset({
+        "success", "tool_not_found", "policy_denied", "timeout",
+        "exception", "failed", "partial", "blocked", "cancelled",
+    })
+
     def log_action(
         self,
         agent_name: str,
         tool_name: str,
         arguments: Dict[str, Any],
         task_id: Optional[str] = None,
-        success: Optional[bool] = None,
+        outcome: str = "",
         result_summary: Optional[str] = None,
     ) -> None:
-        """Enregistre une action dans le journal."""
+        """Enregistre une action dans le journal.
+
+        ``outcome`` est la source de vérité : success / tool_not_found /
+        policy_denied / timeout / exception / failed / partial / blocked /
+        cancelled.  ``success`` est dérivé automatiquement (outcome == "success").
+        """
         entry = {
             "ts": datetime.now().isoformat(),
             "agent": agent_name,
             "tool": tool_name,
             "args": self._sanitize_args(arguments),
             "task_id": task_id,
+            "outcome": outcome,
+            "success": outcome == "success",
         }
-        if success is not None:
-            entry["success"] = success
         if result_summary:
-            entry["result"] = result_summary[:200]  # Tronquer pour garder le log compact
+            entry["result"] = result_summary[:200]
 
         try:
             with self._log_file().open("a", encoding="utf-8") as fh:

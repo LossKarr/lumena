@@ -184,18 +184,23 @@ async def test_bg_status_not_found(ctx):
 
 @pytest.mark.asyncio
 async def test_bg_list_empty(ctx):
+    mock_orch = MagicMock()
+    mock_orch.pending_tasks = {}
     mock_manager = MagicMock()
     mock_manager.get_all_tasks = AsyncMock(return_value=[])
     mock_mod = MagicMock()
     mock_mod.get_task_manager = MagicMock(return_value=mock_manager)
     with patch.dict(sys.modules, {"src.background.manager": mock_mod}):
-        r = await bg_list_handler(ctx)
+        with patch("src.agents.sub_agent.get_orchestrator", return_value=mock_orch):
+            r = await bg_list_handler(ctx)
     assert r.success
     assert "Aucune" in r.output
 
 
 @pytest.mark.asyncio
 async def test_bg_list_with_tasks(ctx):
+    mock_orch = MagicMock()
+    mock_orch.pending_tasks = {}
     mock_manager = MagicMock()
     mock_manager.get_all_tasks = AsyncMock(return_value=[
         {"id": "t1", "name": "scan", "status": "running"},
@@ -203,7 +208,8 @@ async def test_bg_list_with_tasks(ctx):
     mock_mod = MagicMock()
     mock_mod.get_task_manager = MagicMock(return_value=mock_manager)
     with patch.dict(sys.modules, {"src.background.manager": mock_mod}):
-        r = await bg_list_handler(ctx)
+        with patch("src.agents.sub_agent.get_orchestrator", return_value=mock_orch):
+            r = await bg_list_handler(ctx)
     assert r.success
     assert "scan" in r.output
 

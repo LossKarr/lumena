@@ -1062,6 +1062,25 @@ def _preview_message(message: str, max_len: int = 100) -> str:
 
 _chat_stream_lock = asyncio.Lock()
 _chat_active_hashes: set[str] = set()
+_CANCEL_TOKENS: Dict[str, threading.Event] = {}
+
+
+# =====================================================================
+# POST /api/chat/cancel
+# =====================================================================
+
+@router.post("/api/chat/cancel")
+async def cancel_chat_stream(body: Dict[str, Any], _auth=Depends(deps.verify_admin_token)):
+    """Annule un stream SSE en cours via son stream_id."""
+    stream_id = str(body.get("stream_id") or "").strip()
+    if not stream_id:
+        return JSONResponse({"cancelled": False, "detail": "stream_id manquant"})
+    ev = _CANCEL_TOKENS.pop(stream_id, None)
+    if ev:
+        ev.set()
+        logger.info("[cancel] Stream {} annulé par l'utilisateur", stream_id)
+        return JSONResponse({"cancelled": True})
+    return JSONResponse({"cancelled": False, "detail": "stream introuvable"})
 
 
 # =====================================================================
@@ -1393,6 +1412,10 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
     _notify_autonomy_user_interaction(request.message)
 
     async def generate():
+        stream_id = str(uuid.uuid4())
+        cancel_event = threading.Event()
+        _CANCEL_TOKENS[stream_id] = cancel_event
+
         channel = _normalize_channel(request.channel)
         envelope = _build_channel_envelope(request, channel)
         client_name = (envelope.get("client") or "unknown").strip() or "unknown"
@@ -1499,6 +1522,7 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
         # Envoyer le debut
         effective_message = _build_effective_message(request.message, request.attachments)
         yield _emit({"type": "start", "content": "Debut de la reflexion..."})
+        yield _emit({"type": "stream_id", "stream_id": stream_id})
 
         try:
             if request.use_agent:
@@ -1588,6 +1612,15 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                         local_tool_tokens: Dict[str, Any] = {}
                         local_runtime_token = None
                         loop = None
+                        # Enregistrer le cancel_event dans le registre react.py
+                        # pour que la boucle ReAct le vérifie entre chaque itération.
+                        _run_tid = threading.current_thread().ident
+                        try:
+                            from src.reasoning.react import _REACT_CANCEL_EVENTS as _rce
+                            if _run_tid:
+                                _rce[_run_tid] = cancel_event
+                        except Exception:
+                            pass
                         try:
                             local_runtime_token = _push_request_runtime_context(runtime_context)
                             local_tool_tokens = _push_tool_runtime_context(ide_context)
@@ -1604,6 +1637,7 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                                     force=True,
                                 )
                             loop = asyncio.new_event_loop()
+                            result_container["loop"] = loop
                             asyncio.set_event_loop(loop)
                             response, _call_meta = loop.run_until_complete(
                                 _call_lumena_with_auto_resume_on_timeout(
@@ -1621,6 +1655,13 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                         except Exception as e:
                             result_container["error"] = str(e)
                         finally:
+                            # Désenregistrer le cancel_event du registre react.py
+                            try:
+                                from src.reasoning.react import _REACT_CANCEL_EVENTS as _rce
+                                if _run_tid:
+                                    _rce.pop(_run_tid, None)
+                            except Exception:
+                                pass
                             _pop_tool_runtime_context(local_tool_tokens)
                             _pop_request_runtime_context(local_runtime_token)
                             if loop is not None:
@@ -1660,6 +1701,19 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                         # sinon 300ms pour ne pas gaspiller de CPU pendant le raisonnement.
                         _poll_ms = 0.05 if _streaming_final_tokens else 0.3
                         await asyncio.sleep(_poll_ms)
+                        if cancel_event.is_set():
+                            # Annulation coopérative : cancel les tâches asyncio de la boucle
+                            # du thread agent. La boucle ReAct vérifie cancel_event entre
+                            # chaque itération via _REACT_CANCEL_EVENTS et s'arrête proprement.
+                            # Pas d'arrêt forcé (ctypes) : on laisse le thread terminer son
+                            # opération courante sans risque de laisser un état incohérent.
+                            _th_loop = result_container.get("loop")
+                            if _th_loop and not _th_loop.is_closed():
+                                _th_loop.call_soon_threadsafe(
+                                    lambda l=_th_loop: [t.cancel() for t in asyncio.all_tasks(l)]
+                                )
+                            result_container["error"] = "user_cancelled"
+                            break
                         if _task_orchestrator_enabled() and task_id and deps._TASK_ORCHESTRATOR.is_cancel_requested(task_id):  # type: ignore[union-attr]
                             result_container["error"] = "task_cancelled"
                             break
@@ -1876,7 +1930,8 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                             workspace_error=workspace_resolution_error,
                             undo_success=None,
                         )
-                        yield _emit({"type": "error", "content": result_container["error"]})
+                        if result_container["error"] != "user_cancelled":
+                            yield _emit({"type": "error", "content": result_container["error"]})
                         return
                     else:
                         response = result_container["response"] or ""
@@ -2135,6 +2190,10 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
             )
             yield _emit({"type": "error", "content": str(e)})
         finally:
+            # Toujours signaler l'annulation au thread agent pour éviter les runs orphelins.
+            # Couvre : déconnexion client avant stream_id, erreur réseau, GeneratorExit, etc.
+            cancel_event.set()
+            _CANCEL_TOKENS.pop(stream_id, None)
             _chat_active_hashes.discard(msg_hash)
             if _task_orchestrator_enabled() and task_id and task_finished_ok:
                 deps._TASK_ORCHESTRATOR.mark_done(task_id, result_summary="chat_stream_done")  # type: ignore[union-attr]

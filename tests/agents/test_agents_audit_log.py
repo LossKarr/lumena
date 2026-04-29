@@ -72,7 +72,7 @@ class TestLogAction:
             tool_name="write_file",
             arguments={"file_path": "foo.py", "content": "hello"},
             task_id="task-1",
-            success=True,
+            outcome="success",
             result_summary="File written"
         )
         log_files = list((tmp_path / "ops" / "subagent_audit").glob("audit_*.jsonl"))

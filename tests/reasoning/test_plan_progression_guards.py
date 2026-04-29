@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.reasoning.react import ReActLoop, ToolRegistry
-from src.reasoning.react import _EXPLORATION_TOOLS_STRICT, _BUSINESS_ACTION_STARTERS
+from src.reasoning.plan_evidence import _EXPLORATION_TOOLS_STRICT, _BUSINESS_ACTION_STARTERS
 from src.core_services.identity_service import IdentityService
 
 

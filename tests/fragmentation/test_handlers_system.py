@@ -84,6 +84,68 @@ class TestRunCommand:
 
 # ─── get_time ──────────────────────────────────────────────────────────────
 
+class TestRunCommandBackground:
+    @pytest.mark.asyncio
+    async def test_background_mode_uses_process_manager(self, ctx, tmp_path):
+        project_dir = tmp_path / "project-bg"
+        project_dir.mkdir()
+
+        class FakeManager:
+            def __init__(self):
+                self.calls = []
+
+            async def run_background(self, command, wait_ms_before_async, timeout_s):
+                self.calls.append((command, wait_ms_before_async, timeout_s))
+                return "background ok", "proc-123"
+
+        fake_manager = FakeManager()
+
+        with patch("src.tools.process_manager.get_process_manager", return_value=fake_manager):
+            r = await run_command_handler(
+                ctx,
+                command="node server.js",
+                cwd=str(project_dir),
+                background=True,
+                timeout=90,
+            )
+
+        assert r.success
+        assert "background ok" in r.output
+        assert fake_manager.calls == [("node server.js", 800, 90)]
+
+    @pytest.mark.asyncio
+    async def test_server_command_auto_background_extracts_cwd(self, ctx, tmp_path):
+        project_dir = tmp_path / "SynthVault"
+        project_dir.mkdir()
+
+        captured = {}
+
+        class FakeManager:
+            async def run_background(self, command, wait_ms_before_async, timeout_s):
+                captured["command"] = command
+                captured["wait_ms"] = wait_ms_before_async
+                captured["timeout_s"] = timeout_s
+                return "server launched", "proc-456"
+
+        def fake_get_process_manager(work_dir=None):
+            captured["work_dir"] = work_dir
+            return FakeManager()
+
+        with patch("src.tools.process_manager.get_process_manager", side_effect=fake_get_process_manager):
+            r = await run_command_handler(
+                ctx,
+                command=f'cd "{project_dir}" && node server.js',
+                timeout=120,
+            )
+
+        assert r.success
+        assert "server launched" in r.output
+        assert captured["command"] == "node server.js"
+        assert captured["wait_ms"] == 800
+        assert captured["timeout_s"] == 120
+        assert str(captured["work_dir"]) == str(project_dir)
+
+
 class TestGetTime:
     @pytest.mark.asyncio
     async def test_returns_timestamp(self, ctx):

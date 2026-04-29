@@ -18,6 +18,11 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..react import ToolRegistry
 
+try:
+    from ...tools.file_guardrails import OutsideAccessGrant
+except ImportError:
+    OutsideAccessGrant = None  # type: ignore[assignment,misc]
+
 
 @dataclass
 class HandlerContext:
@@ -41,9 +46,18 @@ class HandlerContext:
     runtime_root: Path = field(default_factory=lambda: Path.cwd())
     ide_context: Dict[str, Any] = field(default_factory=dict)
     file_guardrails: Any = None  # WorkspaceFileGuardrails
+    # Grant borné pour l'accès hors workspace ce tour uniquement.
+    # None = aucun accès hors workspace (défaut sûr).
+    # Construit par _detect_outside_access_grant(query) dans agent_service.py.
+    outside_access_grant: Any = None  # OutsideAccessGrant | None
 
     # --- Budget temps hérité du ReAct loop ---
     budget_seconds: float = 600.0
+
+    # --- Cancel coopératif : task_id du parent SSE (TaskOrchestrator) ---
+    # Mis à jour par react.py avant chaque appel outil.
+    # Permet aux handlers (ex: delegate_task) de surveiller le cancel parent.
+    runtime_task_id: Optional[str] = None
 
     # --- Hub instances (lazy, optionnels) ---
     _mail_hub: Any = field(default=None, repr=False)
@@ -137,7 +151,9 @@ class HandlerContext:
             runtime_candidate = p.resolve()
 
         if self.file_guardrails is not None:
-            return self.file_guardrails.resolve_user_path(path, want_dir=want_dir)
+            return self.file_guardrails.resolve_user_path(
+                path, want_dir=want_dir, outside_grant=self.outside_access_grant
+            )
 
         # Fallback sans guardrails (tests légers)
         return runtime_candidate
@@ -221,6 +237,7 @@ class HandlerContext:
             runtime_root=registry.runtime_root,
             ide_context=registry.ide_context,
             file_guardrails=registry.file_guardrails,
+            outside_access_grant=getattr(registry, '_outside_access_grant', None),
             _mail_hub=registry._mail_hub_instance,
             _critical_alert_hub=registry._critical_alert_hub_instance,
             _web_crawler=registry._web_crawler_instance,

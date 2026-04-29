@@ -93,6 +93,7 @@ class Observation:
     content: str
     success: bool = True
     timestamp: datetime = field(default_factory=datetime.now)
+    sub_results: tuple = ()  # tuple[SubToolResult] — peuplé par parallel_tools via ToolRegistry
 
 
 @dataclass
@@ -110,6 +111,7 @@ class TaskItem:
     completed: bool = False
     completed_at_iteration: Optional[int] = None
     completed_by_tool: Optional[str] = None
+    completion_status: str = ""  # TaskCompletionStatus — créé/vérifié/envoyé/déployé…
 
 
 # ── LLM Output Sanitization (corrige bugs courants des LLM) ────────
@@ -183,6 +185,7 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     # Exécution
     "execute_code": ["exécut", "execut", "run", "lanc", "test"],
     "run_command": ["exécut", "execut", "run", "lanc", "test", "install"],
+    "process_status": ["arriere-plan", "running", "tourne", "serveur", "processus", "statut"],
     # Recherche (stems: "recherch" matche "recherche" ET "rechercher")
     "web_search": ["cherch", "search", "recherch", "trouv"],
     "web_search_brave": ["cherch", "search", "recherch", "trouv"],
@@ -391,6 +394,14 @@ ACTION_INPUT: {"path": "..."}
 - N'utilise PAS de balises <think>...</think> dans ta sortie.
 - Format strict : THOUGHT: → ACTION: → ACTION_INPUT: sur des lignes séparées.
 - Pas de texte avant THOUGHT: ni après ACTION_INPUT:.
+"""
+    if "deepseek" in m and "v4" in m:
+        return """
+## ⚠️ RÈGLES STRICTES (DEEPSEEK V4):
+- JAMAIS de balises <think>...</think> dans ta sortie. Format strict : THOUGHT: → ACTION: → ACTION_INPUT:.
+- ANTI-HALLUCINATION D'ACTION (règle absolue) : Si la requête demande une modification, correction, mise à jour ou écriture de fichier, ACTION: FINAL est INTERDIT tant qu'aucun outil d'édition (edit_file, str_replace, write_file, apply_patch, edit_lines) n'a produit une OBSERVATION dans l'historique. Tu agis D'ABORD, tu confirmes ENSUITE.
+- THOUGHT ≠ RÉPONSE FINALE : Si ton ACTION_INPUT commence par "Je lance", "Je vais lire", "Je vais vérifier", "Je vais chercher", "Je dois" → c'est ton raisonnement interne qui a fuité. Appelle l'outil correspondant au lieu de l'annoncer.
+- Tu as 384K tokens d'output et 1M de contexte. Utilise-les pour livrer un résultat complet, pas pour décrire ce que tu vas faire.
 """
     return ""
 # ──────────────────────────────────────────────────────────────────────────────

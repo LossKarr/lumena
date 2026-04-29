@@ -191,6 +191,10 @@ class AgentExecutionState:
     # Accumule TOUS les outils appelés dans la session (survit aux compactions)
     all_session_tools: Set[str] = field(default_factory=set)
 
+    # Accumule uniquement les outils dont l'observation.success est True
+    # Utilisé par le guard anti-hallucination comme preuve réelle d'exécution
+    successful_session_tools: Set[str] = field(default_factory=set)
+
     # Dernière meta LLM
     last_llm_meta: Dict[str, Any] = field(default_factory=dict)
 
@@ -205,8 +209,8 @@ class AgentExecutionState:
         self.budget = CategoryBudget()
         self.run_meta = RunMeta()
         self.last_llm_meta = {}
-        # NOTE: all_session_tools n'est PAS reset ici
-        # car il survit aux compactions (comportement existant).
+        # NOTE: all_session_tools et successful_session_tools ne sont PAS reset ici
+        # car ils survivent aux compactions (comportement existant).
 
     def snapshot(self) -> Dict[str, Any]:
         """Vue sérialisable complète pour debug / télémétrie / tests."""
@@ -216,6 +220,7 @@ class AgentExecutionState:
             "budget": asdict(self.budget),
             "run_meta": self.run_meta.to_dict(),
             "all_session_tools": sorted(self.all_session_tools),
+            "successful_session_tools": sorted(self.successful_session_tools),
             "last_llm_meta": dict(self.last_llm_meta),
         }
 

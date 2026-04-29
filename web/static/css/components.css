@@ -28,6 +28,14 @@
 }
 .btn-send:hover{box-shadow:0 0 16px var(--accent-glow);transform:scale(1.05)}
 .btn-send:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-stop{
+  width:32px;height:32px;border-radius:50%;border:none;
+  background:var(--danger,#e74c3c);color:#fff;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:16px;transition:box-shadow .15s,transform .15s;
+}
+.btn-stop:hover{box-shadow:0 0 16px rgba(231,76,60,.5);transform:scale(1.05)}
+.btn-stop svg.lucide{width:14px;height:14px}
 
 /* ============================================================
    CARDS
@@ -431,6 +439,7 @@ svg.lucide{display:inline-block;vertical-align:middle;pointer-events:none}
   .btn{padding:8px 12px;font-size:14px}
   .btn-icon{width:36px;height:36px}
   .btn-send{width:36px;height:36px}
+  .btn-stop{width:36px;height:36px}
   .diff-file-path{max-width:180px}
   .nav-mood{padding:8px 12px}
 }
