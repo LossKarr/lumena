@@ -340,19 +340,19 @@ async def setup_schema():
                 "icon": "eye",
                 "desc": "Analyse d'images, photos, captures d'écran, PDF visuels",
                 "top": ["gpt-5.4", "gemini-3.1-pro", "claude-opus-4.7", "claude-opus-4.6", "grok-4.20-0309-reasoning"],
-                "top_free": ["nvidia-kimi-k2-thinking", "nvidia-deepseek-v3.2"],
+                "top_free": ["nvidia-glm-4.7", "nvidia-minimax-m2.7"],
             },
             "LUMENA_BRAIN_CODE": {
                 "icon": "code-2",
                 "desc": "Génération de code, debug, analyse de projets, refactoring",
                 "top": ["gpt-5.4", "grok-code-fast-1", "claude-sonnet-4.6", "nvidia-glm-4.7"],
-                "top_free": ["nvidia-glm-4.7", "nvidia-deepseek-v3.2"],
+                "top_free": ["nvidia-glm-4.7", "nvidia-minimax-m2.7"],
             },
             "LUMENA_BRAIN_WEB": {
                 "icon": "globe",
                 "desc": "Recherche web, analyse de pages, veille d'actualités",
                 "top": ["gpt-5.4", "gemini-3.1-pro", "grok-4.20-0309-reasoning", "kimi-k2.5"],
-                "top_free": ["nvidia-kimi-k2-instruct", "nvidia-deepseek-v3.2"],
+                "top_free": ["nvidia-glm-4.7", "nvidia-minimax-m2.7"],
             },
             "LUMENA_BRAIN_IMAGE_GEN": {
                 "icon": "image",

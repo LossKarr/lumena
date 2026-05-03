@@ -223,6 +223,10 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "browser_navigate":      frozenset({ProofCapability.BROWSER_PROBE, ProofCapability.HTTP_PROBE}),
     "browser_dom_state":     frozenset({ProofCapability.BROWSER_PROBE}),
     "browser_get_content":   frozenset({ProofCapability.BROWSER_PROBE, ProofCapability.HTTP_PROBE}),
+    "browser_click_index":   frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
+    "browser_type_index":    frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
+    "browser_click":         frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
+    "browser_click_smart":   frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "process_status":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     # git deploy is a real exception from the generic git category
     "git_push_pull":         frozenset({ProofCapability.DEPLOY_MUTATION}),
@@ -269,7 +273,7 @@ _KIND_DETECT: tuple = (
     # API
     (VerificationKind.API,        ("api", "endpoint", "rest", "graphql", "swagger")),
     # Script
-    (VerificationKind.SCRIPT,     ("script", "commande exécutée", "programme", "exécution du script")),
+    (VerificationKind.SCRIPT,     (" script", "le script", "un script", "commande exécutée", "programme", "exécution du script")),
 )
 
 
@@ -289,7 +293,7 @@ _KIND_PROOF_CAPABILITIES: Dict[str, frozenset] = {
         ProofCapability.MESSAGE_SEND, ProofCapability.PAYMENT_MUTATION,
         ProofCapability.DEPLOY_MUTATION, ProofCapability.DOC_ARTIFACT,
         ProofCapability.FILE_WRITE, ProofCapability.PROJECT_CREATE,
-        ProofCapability.EXT_RESOURCE_CREATE,
+        ProofCapability.EXT_RESOURCE_CREATE, ProofCapability.GENERIC_MUTATION,
     }),
 }
 

@@ -18,6 +18,7 @@ Handlers (24):
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -40,9 +41,8 @@ def _ok_msg(data: Dict[str, Any], label: str) -> str:
 _auto_guild_id: str | None = None
 
 # Chemin du fichier de persistance (chargé au démarrage, mis à jour à chaque auto-detect)
-def _discord_state_path() -> "Path":
+def _discord_state_path() -> Path:
     import os
-    from pathlib import Path
     base = os.getenv("LUMENA_DATA_DIR", "") or str(Path(__file__).resolve().parents[3] / "data")
     return Path(base) / "memory" / "discord_state.json"
 

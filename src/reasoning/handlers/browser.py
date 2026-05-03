@@ -23,13 +23,419 @@ Chaque handler est une fonction async standalone:
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 
 from .context import HandlerContext
 from .contracts import HandlerResult
 from .registry_v2 import HandlerDef
+
+
+_BROWSER_SPA_SHELL_MARKERS: tuple[str, ...] = (
+    "document.documentelement",
+    "localstorage.getitem",
+    "colorscheme",
+    "prefers-color-scheme",
+    "function k(",
+    "theme\",\"system",
+    "webpack",
+    "__next",
+)
+
+
+def _format_form_state_summary(form_state: Optional[Dict[str, Any]]) -> str:
+    """Formate un résumé compact d'état de formulaire pour le raisonnement browser."""
+    if not form_state:
+        return ""
+    try:
+        filled = int(form_state.get("filled", 0))
+        checked = int(form_state.get("checked", 0))
+        disabled_buttons = int(form_state.get("disabled_buttons", 0))
+        enabled_submit_buttons = int(form_state.get("enabled_submit_buttons", 0))
+        controls = int(form_state.get("controls", 0))
+    except Exception:
+        return ""
+    return (
+        "Form state: "
+        f"filled={filled}, checked={checked}, "
+        f"disabled_buttons={disabled_buttons}, "
+        f"enabled_submit_buttons={enabled_submit_buttons}, "
+        f"controls={controls}"
+    )
+
+
+def _normalize_dom_identity_text(value: Any) -> str:
+    text = str(value or "").replace("\xa0", " ")
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _build_dom_snapshot_meta(snap: Any) -> Dict[str, Any]:
+    """Construit une meta compacte du dernier browser_dom_state pour valider les index."""
+    index_map: Dict[str, Dict[str, str]] = {}
+    for elem in getattr(snap, "elements", []) or []:
+        index_map[str(int(elem.index))] = {
+            "role": str(elem.role or "").strip().lower(),
+            "name": _normalize_dom_identity_text(elem.name or ""),
+        }
+    return {
+        "url": str(getattr(snap, "url", "") or "").strip(),
+        "title": str(getattr(snap, "title", "") or "").strip(),
+        "indexes": index_map,
+        "interactive_count": int(getattr(snap, "total_interactive", 0) or 0),
+    }
+
+
+def _validate_index_against_last_dom_snapshot(browser: Any, snap: Any, target: Any, index: int) -> Optional[str]:
+    """Empêche d'agir sur un index DOM devenu périmé depuis le dernier browser_dom_state."""
+    meta = getattr(browser, "_last_dom_snapshot_meta", None)
+    if not isinstance(meta, dict) or not meta:
+        return None
+
+    current_url = str(getattr(snap, "url", "") or "").strip()
+    current_title = str(getattr(snap, "title", "") or "").strip()
+    previous_url = str(meta.get("url", "") or "").strip()
+    previous_title = str(meta.get("title", "") or "").strip()
+
+    if previous_url and current_url and previous_url != current_url:
+        return (
+            f"Index DOM périmé: le dernier `browser_dom_state` visait `{previous_url}` "
+            f"mais la page courante est `{current_url}`. Relis le DOM avant d'agir."
+        )
+    if previous_title and current_title and previous_title != current_title and not previous_url:
+        return (
+            f"Index DOM périmé: le dernier `browser_dom_state` visait la page `{previous_title}` "
+            f"mais la page courante semble être `{current_title}`. Relis le DOM avant d'agir."
+        )
+
+    expected = (meta.get("indexes") or {}).get(str(int(index)))
+    if not expected:
+        return (
+            f"Index DOM périmé: l'élément [{index}] n'était pas présent dans le dernier "
+            "`browser_dom_state`. Relis le DOM avant d'agir."
+        )
+
+    current_role = str(getattr(target, "role", "") or "").strip().lower()
+    current_name = _normalize_dom_identity_text(getattr(target, "name", "") or "")
+    expected_role = str(expected.get("role", "") or "").strip().lower()
+    expected_name = _normalize_dom_identity_text(expected.get("name", "") or "")
+
+    if current_role != expected_role or current_name != expected_name:
+        return (
+            f"Index DOM périmé: [{index}] était `{expected_role} \"{expected_name}\"` "
+            f"lors du dernier `browser_dom_state`, mais vaut maintenant "
+            f"`{current_role} \"{current_name}\"`. Relis le DOM avant d'agir."
+        )
+    return None
+
+
+def _looks_like_spa_shell_noise(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    marker_hits = sum(1 for marker in _BROWSER_SPA_SHELL_MARKERS if marker in lower)
+    if marker_hits >= 2:
+        return True
+    if lower.count("=>") >= 2 and lower.count("{") >= 10 and lower.count("}") >= 10:
+        return True
+    return False
+
+
+async def _extract_visible_text_snapshot(page: Any, *, max_chars: int = 3000) -> str:
+    """Extrait le texte réellement visible et utile sur une SPA/chat."""
+    try:
+        result = await page.evaluate(
+            """
+            ({ maxChars }) => {
+                const selectors = [
+                    '.ProseMirror',
+                    '[data-testid*="message"]',
+                    '[class*="message"]',
+                    '[role="main"]',
+                    'main',
+                    'article',
+                    'section',
+                ];
+                const chunks = [];
+                const seen = new Set();
+
+                const pushText = (value) => {
+                    const text = String(value || '').replace(/\\s+/g, ' ').trim();
+                    if (!text || text.length < 8 || seen.has(text)) return;
+                    seen.add(text);
+                    chunks.push(text);
+                };
+
+                for (const sel of selectors) {
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (chunks.length >= 24) break;
+                        const style = window.getComputedStyle(el);
+                        if (style.display === 'none' || style.visibility === 'hidden') continue;
+                        pushText(el.innerText || el.textContent || '');
+                    }
+                }
+
+                if (!chunks.length) {
+                    pushText(document.body?.innerText || '');
+                }
+
+                return chunks.join('\\n---\\n').slice(0, maxChars);
+            }
+            """,
+            {"maxChars": max_chars},
+        )
+        return str(result or "").strip()
+    except Exception:
+        return ""
+
+
+async def _read_browser_form_state(page: Any) -> Optional[Dict[str, Any]]:
+    """Lit un état formulaire léger après une action clavier/saisie."""
+    try:
+        state = await page.evaluate(
+            """
+            () => {
+                const controls = Array.from(
+                    document.querySelectorAll(
+                        'input, textarea, select, button, [role="button"], [role="textbox"], [role="searchbox"], [role="combobox"], [contenteditable="true"], [contenteditable=""], .ProseMirror'
+                    )
+                );
+                const fields = controls.filter(el =>
+                    ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+                    || el.isContentEditable
+                    || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror, [role="textbox"], [role="searchbox"], [role="combobox"]')
+                );
+                const filled = fields.filter(el => {
+                    if ('value' in el) return String(el.value || '').trim().length > 0;
+                    return String(el.innerText || el.textContent || '').trim().length > 0;
+                }).length;
+                const checked = controls.filter(el => Boolean(el.checked)).length;
+                const buttons = controls.filter(el =>
+                    el.tagName === 'BUTTON'
+                    || (el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'submit')
+                    || String(el.getAttribute?.('role') || '').toLowerCase() === 'button'
+                );
+                const disabledButtons = buttons.filter(el =>
+                    Boolean(el.disabled) || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true'
+                ).length;
+                const enabledSubmitButtons = buttons.filter(el => {
+                    const disabled = Boolean(el.disabled) || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                    if (disabled) return false;
+                    const type = String(el.type || '').toLowerCase();
+                    const label = String(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').toLowerCase();
+                    return type === 'submit'
+                        || /envoyer|send|submit|continuer|continue|vérifier|verifier|réinitialiser|reinitialiser|connexion|login/.test(label);
+                }).length;
+                return {
+                    filled,
+                    checked,
+                    disabled_buttons: disabledButtons,
+                    enabled_submit_buttons: enabledSubmitButtons,
+                    controls: controls.length,
+                };
+            }
+            """
+        )
+        return state if isinstance(state, dict) else None
+    except Exception:
+        return None
+
+
+def _normalize_browser_text_value(value: Any) -> str:
+    """Normalise une valeur texte browser pour comparaison robuste."""
+    text = str(value or "").replace("\xa0", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _read_point_text_value(page: Any, x: int, y: int) -> str:
+    """Relit la valeur persistante du champ vise a l'ecran."""
+    try:
+        value = await page.evaluate(
+            """
+            ({x, y}) => {
+                const isTextLike = (el) => {
+                    if (!el) return false;
+                    const tag = String(el.tagName || '').toLowerCase();
+                    const role = String(el.getAttribute?.('role') || '').toLowerCase();
+                    const type = String(el.getAttribute?.('type') || el.type || '').toLowerCase();
+                    return tag === 'textarea'
+                        || el.isContentEditable
+                        || role === 'textbox'
+                        || role === 'searchbox'
+                        || role === 'combobox'
+                        || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')
+                        || (tag === 'input' && ![
+                            'checkbox', 'radio', 'submit', 'button', 'reset',
+                            'hidden', 'file', 'image', 'range', 'color'
+                        ].includes(type));
+                };
+                const active = document.activeElement;
+                const raw = document.elementFromPoint(x, y);
+                const target = isTextLike(active)
+                    ? active
+                    : raw && (
+                        raw.matches?.('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror')
+                            ? raw
+                            : raw.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror')
+                    );
+                if (!target) return '';
+                if ('value' in target) return String(target.value || '');
+                return String(target.innerText || target.textContent || '');
+            }
+            """,
+            {"x": x, "y": y},
+        )
+        return str(value or "")
+    except Exception:
+        return ""
+
+
+async def _probe_point_interaction_state(page: Any, x: int, y: int) -> Optional[Dict[str, Any]]:
+    """Décrit l'élément réellement visé à l'écran pour éviter les faux succès de clic."""
+    try:
+        state = await page.evaluate(
+            """
+            ({x, y}) => {
+                const raw = document.elementFromPoint(x, y);
+                const target = raw && (
+                    raw.closest?.('button, input, textarea, select, a, [role], [contenteditable="true"], [contenteditable=""], .ProseMirror')
+                    || raw
+                );
+                if (!target) return null;
+                const tag = String(target.tagName || '').toLowerCase();
+                const role = String(target.getAttribute?.('role') || '').toLowerCase();
+                const type = String(target.getAttribute?.('type') || target.type || '').toLowerCase();
+                const label = String(
+                    target.getAttribute?.('aria-label')
+                    || target.innerText
+                    || target.textContent
+                    || target.value
+                    || ''
+                ).trim();
+                const disabled = Boolean(target.disabled)
+                    || String(target.getAttribute?.('aria-disabled') || '').toLowerCase() === 'true';
+                const textLike =
+                    tag === 'textarea'
+                    || tag === 'select'
+                    || target.isContentEditable
+                    || role === 'textbox'
+                    || role === 'searchbox'
+                    || role === 'combobox'
+                    || (tag === 'input' && ![
+                        'checkbox', 'radio', 'submit', 'button', 'reset',
+                        'hidden', 'file', 'image', 'range', 'color'
+                    ].includes(type));
+                const buttonLike =
+                    tag === 'button'
+                    || tag === 'a'
+                    || role === 'button'
+                    || role === 'link'
+                    || (tag === 'input' && ['submit', 'button'].includes(type));
+                const submitLike =
+                    type === 'submit'
+                    || /envoyer|send|submit|continuer|continue|create account|next|suivant/i.test(label);
+                return { tag, role, type, label, disabled, text_like: textLike, button_like: buttonLike, submit_like: submitLike };
+            }
+            """,
+            {"x": x, "y": y},
+        )
+        return state if isinstance(state, dict) else None
+    except Exception:
+        return None
+
+
+async def _get_dom_snapshot_and_target(
+    browser: Any,
+    indexer: Any,
+    index: int,
+    *,
+    ensure_visible: bool = False,
+) -> Tuple[Any, Any]:
+    """Résout un élément DOM indexé et tente un scrollIntoView si nécessaire."""
+    page = browser._page
+
+    async def _snapshot() -> Any:
+        snap = await indexer.snapshot(page)
+        return await indexer.enrich_with_bboxes(page, snap)
+
+    def _find_target(current_snap: Any) -> Any:
+        for elem in current_snap.elements:
+            if elem.index == int(index):
+                return elem
+        return None
+
+    snap = await _snapshot()
+    target = _find_target(snap)
+    if target is None or not ensure_visible or target.center is not None:
+        return snap, target
+
+    try:
+        await page.evaluate(
+            """
+            ({ role, name, tag }) => {
+                const norm = (value) => String(value || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+                const inferRole = (el) => {
+                    const explicit = norm(el.getAttribute?.('role'));
+                    if (explicit) return explicit;
+                    const tagName = norm(el.tagName);
+                    if (tagName === 'button') return 'button';
+                    if (tagName === 'a') return 'link';
+                    if (tagName === 'textarea') return 'textbox';
+                    if (tagName === 'select') return 'combobox';
+                    if (tagName !== 'input') return '';
+                    const type = norm(el.type);
+                    if (type === 'checkbox') return 'checkbox';
+                    if (type === 'radio') return 'radio';
+                    if (type === 'submit' || type === 'button') return 'button';
+                    return 'textbox';
+                };
+                const inferName = (el) => norm(
+                    el.getAttribute?.('aria-label')
+                    || el.innerText
+                    || el.textContent
+                    || el.value
+                    || el.placeholder
+                );
+
+                const wantedRole = norm(role);
+                const wantedName = norm(name);
+                const wantedTag = norm(tag);
+                const candidates = Array.from(
+                    document.querySelectorAll('input, textarea, select, button, a, [role], [contenteditable="true"], [contenteditable=""]')
+                );
+                for (const el of candidates) {
+                    const elRole = inferRole(el);
+                    const elName = inferName(el);
+                    const elTag = norm(el.tagName);
+                    if (wantedRole && elRole !== wantedRole) continue;
+                    if (wantedTag && elTag !== wantedTag) continue;
+                    if (wantedName) {
+                        const sameName =
+                            elName === wantedName
+                            || elName.includes(wantedName)
+                            || wantedName.includes(elName);
+                        if (!sameName) continue;
+                    }
+                    el.scrollIntoView({ block: 'center', inline: 'center' });
+                    if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+                    return true;
+                }
+                return false;
+            }
+            """,
+            {"role": target.role, "name": target.name, "tag": target.tag},
+        )
+        try:
+            await page.wait_for_timeout(100)
+        except Exception:
+            pass
+        snap = await _snapshot()
+        target = _find_target(snap)
+    except Exception:
+        pass
+
+    return snap, target
 
 
 # ─── Auto-visual enrichment (post-action screenshot + description) ──────────
@@ -156,6 +562,86 @@ async def browser_search_google(ctx: HandlerContext, *, query: str) -> HandlerRe
         return HandlerResult.fail(f"Erreur: {e}")
 
 
+async def _extract_google_search_results(page: Any, max_results: int = 10) -> str:
+    """Fix H: Extrait les résultats textuels d'une page Google Search.
+
+    Google Search retourne du CSS minifié via browser_get_content.
+    Cette fonction extrait les snippets de résultats directement du DOM.
+    """
+    try:
+        results = await page.evaluate(
+            """
+            ({ maxResults }) => {
+                const out = [];
+                const seen = new Set();
+
+                // Méthode 1: cartes de résultats standards (div.g)
+                const divGs = document.querySelectorAll('div.g, div[data-hveid]');
+                for (const el of divGs) {
+                    if (out.length >= maxResults) break;
+                    const title = el.querySelector('h3')?.innerText?.trim();
+                    const link = el.querySelector('a[href]')?.href;
+                    const snippet = el.querySelector('[data-sncf], .VwiC3b, .IsZvec, .MUxGbd')?.innerText?.trim();
+                    if (title && title.length > 3) {
+                        const key = title.slice(0, 50);
+                        if (!seen.has(key)) {
+                            seen.add(key);
+                            out.push({
+                                title,
+                                url: link || '',
+                                snippet: snippet || '',
+                            });
+                        }
+                    }
+                }
+
+                // Méthode 2: résultats locaux (Google Maps intégrés)
+                if (out.length === 0) {
+                    const localResults = document.querySelectorAll('[data-cid], [data-ftid]');
+                    for (const el of localResults) {
+                        if (out.length >= maxResults) break;
+                        const name = el.querySelector('[class*="fontHeadline"]')?.innerText?.trim()
+                            || el.querySelector('h3, h2')?.innerText?.trim();
+                        if (name) {
+                            const rating = el.querySelector('[aria-label*="étoile"]')?.getAttribute('aria-label') || '';
+                            const addr = el.querySelector('[class*="fontBody"] span')?.innerText?.trim() || '';
+                            out.push({ title: name, url: '', snippet: [rating, addr].filter(Boolean).join(' — ') });
+                        }
+                    }
+                }
+
+                // Méthode 3: fallback texte visible
+                if (out.length === 0) {
+                    const main = document.querySelector('#main, #search, [role="main"]');
+                    if (main) {
+                        const text = main.innerText?.trim().slice(0, 3000);
+                        if (text) out.push({ title: 'Résultats Google', url: '', snippet: text });
+                    }
+                }
+
+                return out;
+            }
+            """,
+            {"maxResults": max_results},
+        )
+        if not results:
+            return ""
+        lines = []
+        for i, r in enumerate(results, 1):
+            title = str(r.get("title", "")).strip()
+            url = str(r.get("url", "")).strip()
+            snippet = str(r.get("snippet", "")).strip()
+            line = f"{i}. **{title}**"
+            if url:
+                line += f"\n   🔗 {url[:100]}"
+            if snippet:
+                line += f"\n   {snippet[:200]}"
+            lines.append(line)
+        return "\n\n".join(lines)
+    except Exception as e:
+        return ""
+
+
 async def browser_get_content(ctx: HandlerContext, *, url: str = None) -> HandlerResult:
     """Recupere le contenu de la page."""
     try:
@@ -163,7 +649,32 @@ async def browser_get_content(ctx: HandlerContext, *, url: str = None) -> Handle
         browser = get_playwright_browser()
         result = await browser.get_page_content(url)
         if result["success"]:
-            return HandlerResult.ok(f"📄 Page: {result['title']}\n\n{result['content'][:3000]}")
+            title = str(result.get("title", "") or "?")
+            content = str(result.get("content", "") or "")
+            page = getattr(browser, "_page", None)
+
+            # Fix H: Détection Google Search — retourner les snippets de résultats
+            # au lieu du CSS minifié que browser_get_content retournerait normalement
+            if page:
+                current_url = (page.url or "").lower()
+                if "google.com/search" in current_url or "recherche google" in title.lower():
+                    search_results = await _extract_google_search_results(page)
+                    if search_results:
+                        return HandlerResult.ok(
+                            f"📄 Page: {title}\n\n"
+                            "🔍 Résultats Google Search extraits:\n\n"
+                            f"{search_results}"
+                        )
+
+            if page and _looks_like_spa_shell_noise(content):
+                visible_text = await _extract_visible_text_snapshot(page)
+                if visible_text:
+                    return HandlerResult.ok(
+                        f"📄 Page: {title}\n\n"
+                        "⚠️ SPA shell détectée — texte visible extrait du DOM.\n\n"
+                        f"{visible_text[:3000]}"
+                    )
+            return HandlerResult.ok(f"📄 Page: {title}\n\n{content[:3000]}")
         return HandlerResult.fail(f"Erreur: {result['error']}")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
@@ -187,7 +698,8 @@ async def browser_click(ctx: HandlerContext, *, selector: str = "", by: str = "c
 
         result = await browser.click_element(resolved_selector, resolved_by)
         if result["success"]:
-            return HandlerResult.ok(f"✅ Clique sur: {resolved_selector}")
+            base = HandlerResult.ok(f"✅ Clique sur: {resolved_selector}")
+            return await _auto_visual_enrich(ctx, base, action_label="click")
         return HandlerResult.fail(f"Erreur: {result['error']}")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
@@ -313,10 +825,36 @@ async def browser_back(ctx: HandlerContext) -> HandlerResult:
 
 
 async def browser_refresh(ctx: HandlerContext) -> HandlerResult:
-    """Rafraichit la page."""
+    """Rafraichit la page.
+
+    Fix C: Sur les SPAs de chat (Mistral, Claude, ChatGPT, etc.), un refresh détruit
+    la conversation en cours. Ce guard bloque le refresh et suggère browser_get_content
+    à la place pour lire l'état actuel sans perdre la conversation.
+    """
     try:
         from ...tools.playwright_browser import get_playwright_browser
         browser = get_playwright_browser()
+
+        # Fix C: Guard anti-refresh sur les SPAs de chat
+        # Détecter si on est sur une SPA de chat connue
+        if browser.is_running and browser._page:
+            try:
+                current_url = (browser._page.url or "").lower()
+                _CHAT_SPA_DOMAINS = (
+                    "chat.mistral.ai", "claude.ai", "chatgpt.com", "chat.openai.com",
+                    "gemini.google.com", "duck.ai", "huggingface.co/chat",
+                    "perplexity.ai", "you.com", "poe.com",
+                )
+                if any(domain in current_url for domain in _CHAT_SPA_DOMAINS):
+                    return HandlerResult.fail(
+                        f"⚠️ Refresh bloqué sur SPA de chat ({current_url.split('/')[2]}) — "
+                        "un refresh détruirait la conversation en cours. "
+                        "Utilise browser_get_content pour lire l'état actuel de la conversation, "
+                        "ou browser_evaluate pour extraire les messages."
+                    )
+            except Exception:
+                pass  # En cas d'erreur, continuer le refresh normal
+
         result = await browser.refresh()
         if result["success"]:
             return HandlerResult.ok(f"🔄 Page rafraichie: {result['url']}")
@@ -451,7 +989,104 @@ async def browser_dom_state(ctx: HandlerContext, *, screenshot: bool = False) ->
         snap = await indexer.snapshot(browser._page)
         snap = await indexer.enrich_with_bboxes(browser._page, snap)
 
-        output = snap.to_text()
+        # Fix 6: Adapter l'output DOM au context_window du modèle actif
+        # Le modèle de l'utilisateur reste inchangé — on calibre seulement la taille de l'output
+        try:
+            from ...computer_use.dom_indexer import get_dom_profile_for_context
+            _runtime_ctx = getattr(ctx.lumena, "runtime_ctx", None) if ctx and ctx.lumena else None
+            _max_ctx = getattr(_runtime_ctx, "max_context_window", 0) if _runtime_ctx else 0
+            _profile = get_dom_profile_for_context(int(_max_ctx or 0))
+            output = snap.to_text(
+                max_elements=_profile["max_elements"],
+                max_label=_profile["max_label"],
+            )
+        except Exception:
+            output = snap.to_text()
+
+        try:
+            form_state = await browser._page.evaluate(
+                """
+                () => {
+                    const controls = Array.from(
+                        document.querySelectorAll('input, textarea, select, button, [role="button"], [role="switch"]')
+                    );
+                    let filled = 0;
+                    let checked = 0;
+                    let disabledButtons = 0;
+                    let enabledSubmitButtons = 0;
+
+                    for (const el of controls) {
+                        const tag = (el.tagName || '').toUpperCase();
+                        const type = ((el.getAttribute && el.getAttribute('type')) || el.type || '').toLowerCase();
+                        const role = (el.getAttribute && el.getAttribute('role')) || '';
+                        const isDisabled = !!(
+                            el.disabled ||
+                            (el.getAttribute && el.getAttribute('aria-disabled') === 'true')
+                        );
+
+                        const isTextLike =
+                            tag === 'TEXTAREA' ||
+                            tag === 'SELECT' ||
+                            (tag === 'INPUT' && ![
+                                'checkbox', 'radio', 'submit', 'button', 'reset',
+                                'hidden', 'file', 'image', 'range', 'color'
+                            ].includes(type));
+                        if (isTextLike) {
+                            const value = typeof el.value === 'string' ? el.value.trim() : '';
+                            if (value) {
+                                filled += 1;
+                            }
+                        }
+
+                        const isCheckable =
+                            (tag === 'INPUT' && (type === 'checkbox' || type === 'radio')) ||
+                            role === 'switch';
+                        if (isCheckable) {
+                            const isChecked = typeof el.checked === 'boolean'
+                                ? !!el.checked
+                                : (el.getAttribute && el.getAttribute('aria-checked') === 'true');
+                            if (isChecked) {
+                                checked += 1;
+                            }
+                        }
+
+                        const isButtonLike =
+                            tag === 'BUTTON' ||
+                            (tag === 'INPUT' && (type === 'submit' || type === 'button')) ||
+                            role === 'button';
+                        if (isButtonLike && isDisabled) {
+                            disabledButtons += 1;
+                        }
+                        if (
+                            (tag === 'BUTTON' && /generate|submit|create|send|soumettre|générer/i.test(el.innerText || el.textContent || '')) ||
+                            (tag === 'INPUT' && type === 'submit')
+                        ) {
+                            if (!isDisabled) {
+                                enabledSubmitButtons += 1;
+                            }
+                        }
+                    }
+
+                    return {
+                        filled,
+                        checked,
+                        disabled_buttons: disabledButtons,
+                        enabled_submit_buttons: enabledSubmitButtons,
+                        controls: controls.length,
+                    };
+                }
+                """
+            )
+        except Exception:
+            form_state = None
+
+        summary = _format_form_state_summary(form_state)
+        if summary:
+            output += f"\\n\\n{summary}"
+        try:
+            browser._last_dom_snapshot_meta = _build_dom_snapshot_meta(snap)
+        except Exception:
+            pass
 
         # Optional: screenshot avec Set-of-Mark overlay
         if screenshot and snap.elements:
@@ -481,45 +1116,165 @@ async def browser_dom_state(ctx: HandlerContext, *, screenshot: bool = False) ->
         return HandlerResult.fail(f"Erreur: {e}")
 
 
-async def browser_click_index(ctx: HandlerContext, *, index: int) -> HandlerResult:
-    """Clique sur l'element DOM indexe par son numero [N]."""
+async def browser_click_index(
+    ctx: HandlerContext,
+    *,
+    index: int,
+    expected_label: str = "",
+    expected_role: str = "",
+) -> HandlerResult:
+    """Clique sur l'element DOM indexe par son numero [N].
+
+    Retry intelligent (Fix 2/3/4):
+    - Tentative 1: clic direct
+    - Tentative 2: re-snapshot DOM + scroll vers l'élément
+    - Tentative 3: dismiss popups + re-snapshot + clic
+    """
     try:
+        if int(index) < 1:
+            return HandlerResult.fail(
+                f"Index DOM invalide: [{index}] — les elements browser sont indexes a partir de 1"
+            )
+
         from ...tools.playwright_browser import get_playwright_browser
         from ...computer_use.dom_indexer import get_dom_indexer
+        from ...tools.browser_retry import is_retryable_error
 
         browser = get_playwright_browser()
         if not browser.is_running or not browser._page:
             return HandlerResult.fail("Navigateur non demarre ou aucune page active")
 
         indexer = get_dom_indexer()
-        snap = await indexer.snapshot(browser._page)
-        snap = await indexer.enrich_with_bboxes(browser._page, snap)
 
-        # Trouver l'element par index
-        target = None
-        for elem in snap.elements:
-            if elem.index == int(index):
-                target = elem
-                break
+        # Fix 4: Scroll déterministe — garantir que l'élément est dans le viewport
+        snap, target = await _get_dom_snapshot_and_target(
+            browser, indexer, index, ensure_visible=True
+        )
 
         if target is None:
-            return HandlerResult.fail(
-                f"Element [{index}] introuvable. {len(snap.elements)} elements disponibles (1-{len(snap.elements)})"
-            )
+            # Fix 2: Retry avec re-snapshot si élément introuvable (DOM peut avoir changé)
+            _RETRY_DELAYS = (200, 500)
+            for delay_ms in _RETRY_DELAYS:
+                try:
+                    await browser._page.wait_for_load_state("domcontentloaded", timeout=3000)
+                except Exception:
+                    pass
+                import asyncio as _asyncio
+                await _asyncio.sleep(delay_ms / 1000.0)
+                snap, target = await _get_dom_snapshot_and_target(
+                    browser, indexer, index, ensure_visible=True
+                )
+                if target is not None:
+                    break
+            if target is None:
+                return HandlerResult.fail(
+                    f"Element [{index}] introuvable apres retry. {len(snap.elements)} elements disponibles (1-{len(snap.elements)})"
+                )
+
+        stale_reason = _validate_index_against_last_dom_snapshot(browser, snap, target, index)
+        if stale_reason:
+            return HandlerResult.fail(stale_reason)
 
         center = target.center
         if center is None:
+            # Fix 4: Scroll explicite si pas de bbox
+            try:
+                await browser._page.evaluate(
+                    """
+                    ({ role, name }) => {
+                        const norm = (v) => String(v || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+                        const candidates = Array.from(document.querySelectorAll(
+                            'input, textarea, select, button, a, [role], [contenteditable="true"]'
+                        ));
+                        for (const el of candidates) {
+                            const elRole = norm(el.getAttribute?.('role') || el.tagName);
+                            const elName = norm(
+                                el.getAttribute?.('aria-label') || el.innerText || el.textContent || el.value || ''
+                            );
+                            if (role && elRole !== norm(role)) continue;
+                            if (name && !elName.includes(norm(name))) continue;
+                            el.scrollIntoView({ block: 'center', inline: 'center' });
+                            return true;
+                        }
+                        return false;
+                    }
+                    """,
+                    {"role": target.role, "name": target.name},
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(0.15)
+                snap, target = await _get_dom_snapshot_and_target(browser, indexer, index)
+            except Exception:
+                pass
+            if target is None or target.center is None:
+                return HandlerResult.fail(
+                    f"Element [{index}] ({target.role if target else '?'} \"{target.name if target else '?'}\") n'a pas de position connue"
+                )
+
+        cx, cy = target.center
+        interaction_state = await _probe_point_interaction_state(browser._page, cx, cy)
+        expected_role_norm = str(expected_role or "").strip().lower()
+        expected_label_norm = str(expected_label or "").strip().lower()
+        if interaction_state:
+            actual_role = str(
+                interaction_state.get("role") or interaction_state.get("tag") or target.role or ""
+            ).strip().lower()
+            actual_label = str(
+                interaction_state.get("label") or target.name or ""
+            ).strip().lower()
+            if expected_role_norm and actual_role != expected_role_norm:
+                return HandlerResult.fail(
+                    f"Element [{index}] ne correspond pas au role attendu "
+                    f"({actual_role or '?'} != {expected_role_norm})"
+                )
+            if expected_label_norm and expected_label_norm not in actual_label:
+                return HandlerResult.fail(
+                    f"Element [{index}] ne correspond pas au libelle attendu "
+                    f"({actual_label or '?'} ne contient pas {expected_label_norm})"
+                )
+        if interaction_state and interaction_state.get("disabled"):
+            label = interaction_state.get("label") or target.name
+            role = interaction_state.get("role") or interaction_state.get("tag") or target.role
             return HandlerResult.fail(
-                f"Element [{index}] ({target.role} \"{target.name}\") n'a pas de position connue"
+                f"Element [{index}] ({role} \"{label}\") est desactive — clic utile impossible"
             )
 
-        cx, cy = center
+        # Fix 3: Post-vérification — capturer l'URL avant le clic pour détecter navigation
+        url_before = browser._page.url if browser._page else ""
+
         result = await browser.click_at(cx, cy)
         if result.get("success"):
+            # Fix 3: Post-vérification — vérifier si le DOM a changé (navigation ou mutation)
+            post_info = ""
+            try:
+                import asyncio as _asyncio
+                await _asyncio.sleep(0.1)
+                url_after = browser._page.url if browser._page else ""
+                if url_after and url_before and url_after != url_before:
+                    post_info = f" → navigation vers {url_after}"
+            except Exception:
+                pass
             base = HandlerResult.ok(
-                f"✅ Clic sur [{index}] {target.role} \"{target.name}\" a ({cx}, {cy})"
+                f"✅ Clic sur [{index}] {target.role} \"{target.name}\" a ({cx}, {cy}){post_info}"
             )
             return await _auto_visual_enrich(ctx, base, action_label="click_index")
+
+        # Fix 2: Retry si le clic échoue (erreur transitoire)
+        error_msg = result.get("error", "")
+        if is_retryable_error(Exception(error_msg)):
+            import asyncio as _asyncio
+            await _asyncio.sleep(0.3)
+            # Re-snapshot et réessayer
+            snap2, target2 = await _get_dom_snapshot_and_target(browser, indexer, index, ensure_visible=True)
+            if target2 and target2.center:
+                cx2, cy2 = target2.center
+                result2 = await browser.click_at(cx2, cy2)
+                if result2.get("success"):
+                    base = HandlerResult.ok(
+                        f"✅ Clic sur [{index}] {target2.role} \"{target2.name}\" a ({cx2}, {cy2}) (retry)"
+                    )
+                    return await _auto_visual_enrich(ctx, base, action_label="click_index")
+
         return HandlerResult.fail(f"Erreur clic: {result.get('error')}")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
@@ -528,6 +1283,11 @@ async def browser_click_index(ctx: HandlerContext, *, index: int) -> HandlerResu
 async def browser_type_index(ctx: HandlerContext, *, index: int, text: str) -> HandlerResult:
     """Tape du texte dans l'element DOM indexe par son numero [N]."""
     try:
+        if int(index) < 1:
+            return HandlerResult.fail(
+                f"Index DOM invalide: [{index}] — les elements browser sont indexes a partir de 1"
+            )
+
         from ...tools.playwright_browser import get_playwright_browser
         from ...computer_use.dom_indexer import get_dom_indexer
 
@@ -536,20 +1296,18 @@ async def browser_type_index(ctx: HandlerContext, *, index: int, text: str) -> H
             return HandlerResult.fail("Navigateur non demarre ou aucune page active")
 
         indexer = get_dom_indexer()
-        snap = await indexer.snapshot(browser._page)
-        snap = await indexer.enrich_with_bboxes(browser._page, snap)
-
-        # Trouver l'element par index
-        target = None
-        for elem in snap.elements:
-            if elem.index == int(index):
-                target = elem
-                break
+        snap, target = await _get_dom_snapshot_and_target(
+            browser, indexer, index, ensure_visible=True
+        )
 
         if target is None:
             return HandlerResult.fail(
                 f"Element [{index}] introuvable. {len(snap.elements)} elements disponibles (1-{len(snap.elements)})"
             )
+
+        stale_reason = _validate_index_against_last_dom_snapshot(browser, snap, target, index)
+        if stale_reason:
+            return HandlerResult.fail(stale_reason)
 
         # Verifier que c'est un champ de texte
         text_roles = {"textbox", "searchbox", "combobox", "spinbutton"}
@@ -568,13 +1326,223 @@ async def browser_type_index(ctx: HandlerContext, *, index: int, text: str) -> H
         # Cliquer d'abord pour focus, puis taper
         cx, cy = center
         await browser.click_at(cx, cy)
+        page = browser._page
 
-        # Utiliser page.keyboard.type pour taper le texte
-        await browser._page.keyboard.type(text, delay=30)
+        # Écriture robuste Playwright: indépendante du Caps Lock/layout clavier.
+        current_value = ""
+        try:
+            filled = await page.evaluate(
+                """
+                ({x, y, text}) => {
+                    const isTextLike = (el) => {
+                        if (!el) return false;
+                        const tag = String(el.tagName || '').toLowerCase();
+                        const role = String(el.getAttribute?.('role') || '').toLowerCase();
+                        const type = String(el.getAttribute?.('type') || el.type || '').toLowerCase();
+                        return tag === 'textarea'
+                            || el.isContentEditable
+                            || role === 'textbox'
+                            || role === 'searchbox'
+                            || role === 'combobox'
+                            || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')
+                            || (tag === 'input' && ![
+                                'checkbox', 'radio', 'submit', 'button', 'reset',
+                                'hidden', 'file', 'image', 'range', 'color'
+                            ].includes(type));
+                    };
+                    const active = document.activeElement;
+                    const raw = document.elementFromPoint(x, y);
+                    const target = isTextLike(active)
+                        ? active
+                        : raw && (
+                            raw.matches?.('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror')
+                                ? raw
+                                : raw.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror')
+                        );
+                    if (!target) return { ok: false, reason: 'target_not_found' };
+                    target.focus();
+                    if ('value' in target) {
+                        target.value = '';
+                        target.value = text;
+                    } else {
+                        target.textContent = text;
+                    }
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+                    return {
+                        ok: true,
+                        value: 'value' in target ? String(target.value || '') : String(target.innerText || target.textContent || ''),
+                    };
+                }
+                """,
+                {"x": cx, "y": cy, "text": text},
+            )
+            if isinstance(filled, dict):
+                current_value = str(filled.get("value", "") or "")
+        except Exception:
+            current_value = ""
 
-        return HandlerResult.ok(
-            f"✅ Tape \"{text}\" dans [{index}] {target.role} \"{target.name}\""
+        if _normalize_browser_text_value(current_value) != _normalize_browser_text_value(text):
+            try:
+                await page.keyboard.press("Control+A")
+                await page.keyboard.press("Backspace")
+            except Exception:
+                pass
+            try:
+                await page.keyboard.insert_text(text)
+            except Exception:
+                await page.keyboard.type(text, delay=20)
+            try:
+                current_value = await page.evaluate(
+                    """
+                    () => {
+                        const el = document.activeElement;
+                        if (!el) return '';
+                        if ('value' in el) return String(el.value || '');
+                        return String(el.innerText || el.textContent || '');
+                    }
+                    """
+                )
+            except Exception:
+                current_value = text
+        if _normalize_browser_text_value(current_value) != _normalize_browser_text_value(text):
+            return HandlerResult.fail(
+                f"Echec de saisie dans [{index}] {target.role} \"{target.name}\" "
+                f"(valeur actuelle: {current_value!r})"
+            )
+
+        async def _read_form_state() -> dict:
+            try:
+                state = await page.evaluate(
+                    """
+                    () => {
+                        const controls = Array.from(
+                            document.querySelectorAll('input, textarea, select, button, [role="button"]')
+                        );
+                        const fields = controls.filter(el =>
+                            ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+                        );
+                        const filled = fields.filter(el => {
+                            if ('value' in el) return String(el.value || '').trim().length > 0;
+                            return String(el.textContent || '').trim().length > 0;
+                        }).length;
+                        const checked = controls.filter(el => Boolean(el.checked)).length;
+                        const buttons = controls.filter(el =>
+                            el.tagName === 'BUTTON'
+                            || (el.tagName === 'INPUT' && String(el.type || '').toLowerCase() === 'submit')
+                            || String(el.getAttribute?.('role') || '').toLowerCase() === 'button'
+                        );
+                        const disabledButtons = buttons.filter(el =>
+                            Boolean(el.disabled) || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true'
+                        ).length;
+                        const enabledSubmitButtons = buttons.filter(el => {
+                            const disabled = Boolean(el.disabled) || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                            if (disabled) return false;
+                            const type = String(el.type || '').toLowerCase();
+                            const label = String(el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').toLowerCase();
+                            return type === 'submit'
+                                || /envoyer|send|submit|continuer|continue|vérifier|verifier|réinitialiser|reinitialiser|connexion|login/.test(label);
+                        }).length;
+                        return {
+                            filled,
+                            checked,
+                            disabled_buttons: disabledButtons,
+                            enabled_submit_buttons: enabledSubmitButtons,
+                            controls: controls.length,
+                        };
+                    }
+                    """
+                )
+                return state if isinstance(state, dict) else {}
+            except Exception:
+                return {}
+
+        try:
+            await page.evaluate(
+                """
+                ({x, y}) => {
+                    const isTextLike = (el) => {
+                        if (!el) return false;
+                        const tag = String(el.tagName || '').toLowerCase();
+                        const role = String(el.getAttribute?.('role') || '').toLowerCase();
+                        const type = String(el.getAttribute?.('type') || el.type || '').toLowerCase();
+                        return tag === 'textarea'
+                            || el.isContentEditable
+                            || role === 'textbox'
+                            || role === 'searchbox'
+                            || role === 'combobox'
+                            || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')
+                            || (tag === 'input' && ![
+                                'checkbox', 'radio', 'submit', 'button', 'reset',
+                                'hidden', 'file', 'image', 'range', 'color'
+                            ].includes(type));
+                    };
+                    const active = document.activeElement;
+                    const raw = document.elementFromPoint(x, y);
+                    const target = isTextLike(active)
+                        ? active
+                        : raw && (
+                            raw.matches?.('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror')
+                                ? raw
+                                : raw.closest?.('input, textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror')
+                        );
+                    if (!target) return false;
+                    target.dispatchEvent(new Event('input', { bubbles: true }));
+                    target.dispatchEvent(new Event('change', { bubbles: true }));
+                    target.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+                    target.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+                    if (typeof target.blur === 'function') target.blur();
+                    return true;
+                }
+                """,
+                {"x": cx, "y": cy},
+            )
+        except Exception:
+            pass
+
+        try:
+            await page.wait_for_timeout(80)
+        except Exception:
+            pass
+
+        persisted_value = await _read_point_text_value(page, cx, cy)
+        if _normalize_browser_text_value(persisted_value) != _normalize_browser_text_value(text):
+            return HandlerResult.fail(
+                f"Echec de saisie dans [{index}] {target.role} \"{target.name}\" "
+                f"(valeur persistante: {persisted_value!r})"
+            )
+
+        form_state = await _read_browser_form_state(page) or {}
+        if form_state.get("enabled_submit_buttons", 0) == 0:
+            try:
+                await page.keyboard.press("Tab")
+                await page.wait_for_timeout(80)
+            except Exception:
+                pass
+            updated_state = await _read_browser_form_state(page)
+            if updated_state:
+                form_state = updated_state
+
+        summary = ""
+        note = ""
+        if form_state:
+            summary = (
+                "\n\nForm state: "
+                f"filled={int(form_state.get('filled', 0))}, "
+                f"checked={int(form_state.get('checked', 0))}, "
+                f"disabled_buttons={int(form_state.get('disabled_buttons', 0))}, "
+                f"enabled_submit_buttons={int(form_state.get('enabled_submit_buttons', 0))}, "
+                f"controls={int(form_state.get('controls', 0))}"
+            )
+            if int(form_state.get("enabled_submit_buttons", 0)) > 0:
+                note = "\nSoumission prete: un bouton d'envoi/validation est actif."
+            else:
+                note = "\nSoumission non prete: aucun bouton d'envoi/validation actif apres saisie."
+
+        base = HandlerResult.ok(
+            f"✅ Tape \"{text}\" dans [{index}] {target.role} \"{target.name}\"{summary}{note}"
         )
+        return await _auto_visual_enrich(ctx, base, action_label="type_index")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
 
@@ -675,6 +1643,218 @@ async def browser_dismiss_popups(ctx: HandlerContext) -> HandlerResult:
 
         summary = ", ".join(actions) if actions else "aucune action (pas de popup détecté)"
         return HandlerResult.ok(f"🚫 Popups: {summary}")
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_search_maps(
+    ctx: HandlerContext,
+    *,
+    query: str,
+    location: str = "",
+    max_results: int = 8,
+) -> HandlerResult:
+    """Fix G: Recherche des lieux sur Google Maps et retourne une liste structurée.
+
+    Contrairement à browser_navigate + browser_dom_state qui ne font pas apparaître
+    le panneau latéral de Google Maps, ce handler construit une URL optimisée et
+    extrait les résultats directement via JavaScript.
+
+    Args:
+        query: Ce qu'on cherche (ex: "boulangerie", "karting", "pharmacie")
+        location: Ville ou adresse (ex: "Bois-Colombes 92270", "Paris 75001")
+        max_results: Nombre max de résultats (défaut: 8)
+
+    Returns:
+        Liste structurée des lieux avec nom, adresse, note.
+    """
+    try:
+        from urllib.parse import quote
+        from ...tools.playwright_browser import get_playwright_browser
+
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            if not await browser.start():
+                return HandlerResult.fail("Navigateur non démarré")
+
+        # Construire l'URL Google Maps Search
+        search_term = f"{query} {location}".strip()
+        url = f"https://www.google.com/maps/search/{quote(search_term)}"
+
+        # Naviguer vers la page
+        nav = await browser.navigate(url)
+        if not nav.get("success"):
+            return HandlerResult.fail(f"Navigation échouée: {nav.get('error')}")
+
+        page = browser._page
+        if not page:
+            return HandlerResult.fail("Page non disponible")
+
+        # Attendre que les résultats se chargent (panneau latéral [role="feed"])
+        try:
+            await page.wait_for_selector('[role="feed"]', timeout=8000)
+        except Exception:
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except Exception:
+                pass
+
+        # Extraire les résultats via JavaScript
+        results = await page.evaluate(
+            """
+            ({ maxResults }) => {
+                const feed = document.querySelector('[role="feed"]');
+                if (!feed) {
+                    // Fallback: chercher les liens vers des lieux
+                    const cards = Array.from(document.querySelectorAll('a[href*="/maps/place/"]')).slice(0, maxResults);
+                    return cards.map(a => {
+                        const parent = a.closest('[jsaction]') || a.parentElement;
+                        return {
+                            name: a.getAttribute('aria-label')?.trim()
+                                || a.querySelector('[class*="fontHeadline"]')?.textContent?.trim()
+                                || a.textContent?.trim().slice(0, 60),
+                            address: parent?.querySelector('[class*="fontBody"] span')?.textContent?.trim() || '',
+                            rating: parent?.querySelector('span[aria-label*="étoile"]')?.getAttribute('aria-label') || '',
+                        };
+                    }).filter(r => r.name);
+                }
+
+                const items = Array.from(feed.querySelectorAll('[jsaction*="mouseover"]')).slice(0, maxResults);
+                return items.map(item => {
+                    const nameEl = item.querySelector('[class*="fontHeadlineSmall"], [class*="qBF1Pd"]');
+                    const addrEl = item.querySelector('[class*="fontBodyMedium"] > span:first-child, [class*="W4Efsd"] > span');
+                    const ratingEl = item.querySelector('span[aria-label*="étoile"], span[aria-label*="star"]');
+                    return {
+                        name: nameEl?.textContent?.trim() || '',
+                        address: addrEl?.textContent?.trim() || '',
+                        rating: ratingEl?.getAttribute('aria-label')?.trim() || '',
+                    };
+                }).filter(r => r.name);
+            }
+            """,
+            {"maxResults": max_results},
+        )
+
+        if not results:
+            return HandlerResult.fail(
+                f"Aucun résultat Maps trouvé pour '{search_term}'. "
+                "Essaie browser_navigate + browser_dom_state pour explorer manuellement."
+            )
+
+        count = len(results)
+        lines = [f"📍 {count} lieu(x) trouvé(s) pour '{search_term}':\n"]
+        for i, r in enumerate(results, 1):
+            name = str(r.get("name", "?"))
+            address = str(r.get("address", ""))
+            rating = str(r.get("rating", ""))
+            line = f"[{i}] **{name}**"
+            if address:
+                line += f" — {address}"
+            if rating:
+                line += f" ({rating})"
+            lines.append(line)
+
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_get_chat_messages(ctx: HandlerContext, *, max_messages: int = 20) -> HandlerResult:
+    """Fix D: Extrait tous les messages d'une conversation SPA de chat.
+
+    Contrairement à browser_get_content qui tronque le contenu, ce handler
+    extrait spécifiquement les messages de la conversation (questions + réponses)
+    en utilisant les sélecteurs sémantiques des SPAs de chat connues.
+
+    Fonctionne avec: Mistral Chat, Claude.ai, ChatGPT, Gemini, Duck.ai, HuggingChat.
+    Retourne les messages dans l'ordre chronologique avec leur rôle (user/assistant).
+    """
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running or not browser._page:
+            return HandlerResult.fail("Navigateur non demarre ou aucune page active")
+
+        messages = await browser._page.evaluate(
+            """
+            ({ maxMessages }) => {
+                const results = [];
+                const seen = new Set();
+
+                const pushMsg = (role, text) => {
+                    const t = String(text || '').replace(/\\s+/g, ' ').trim();
+                    if (!t || t.length < 5) return;
+                    const key = role + ':' + t.slice(0, 80);
+                    if (seen.has(key)) return;
+                    seen.add(key);
+                    results.push({ role, text: t });
+                };
+
+                // Mistral Chat / Le Chat
+                const mistralMsgs = document.querySelectorAll('[class*="message"], [class*="Message"]');
+                if (mistralMsgs.length > 0) {
+                    for (const el of mistralMsgs) {
+                        const isUser = el.className.toLowerCase().includes('user') ||
+                                       el.getAttribute('data-role') === 'user';
+                        const isAssistant = el.className.toLowerCase().includes('assistant') ||
+                                            el.className.toLowerCase().includes('bot') ||
+                                            el.getAttribute('data-role') === 'assistant';
+                        if (isUser || isAssistant) {
+                            pushMsg(isUser ? 'user' : 'assistant', el.innerText || el.textContent);
+                        }
+                    }
+                }
+
+                // Fallback générique: chercher les éléments avec data-role ou aria-label
+                if (results.length === 0) {
+                    const roleEls = document.querySelectorAll('[data-role], [data-message-author-role]');
+                    for (const el of roleEls) {
+                        const role = el.getAttribute('data-role') ||
+                                     el.getAttribute('data-message-author-role') || 'unknown';
+                        pushMsg(role, el.innerText || el.textContent);
+                    }
+                }
+
+                // Fallback 2: extraire tout le texte visible structuré
+                if (results.length === 0) {
+                    const mainContent = document.querySelector(
+                        '[role="main"], main, .conversation, .chat-messages, .messages'
+                    );
+                    if (mainContent) {
+                        const paragraphs = mainContent.querySelectorAll('p, [class*="text"], [class*="content"]');
+                        for (const p of paragraphs) {
+                            const text = (p.innerText || p.textContent || '').trim();
+                            if (text.length > 20) {
+                                pushMsg('unknown', text);
+                            }
+                        }
+                    }
+                }
+
+                return results.slice(-maxMessages);
+            }
+            """,
+            {"maxMessages": max_messages},
+        )
+
+        if not messages:
+            # Fallback: utiliser browser_get_content
+            return HandlerResult.fail(
+                "Aucun message de conversation détecté. "
+                "Utilise browser_get_content pour lire le contenu brut de la page."
+            )
+
+        count = len(messages)
+        lines = [f"💬 {count} message(s) dans la conversation:\n"]
+        for i, msg in enumerate(messages, 1):
+            role_icon = "👤" if msg.get("role") == "user" else "🤖"
+            role_label = "Vous" if msg.get("role") == "user" else "IA"
+            text = str(msg.get("text", ""))[:500]
+            lines.append(f"{role_icon} [{i}] {role_label}: {text}")
+            if len(text) == 500:
+                lines.append("  [... tronqué à 500 chars]")
+
+        return HandlerResult.ok("\n".join(lines))
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
 
@@ -784,9 +1964,46 @@ async def browser_keyboard_press(ctx: HandlerContext, *, key: str) -> HandlerRes
     try:
         from ...tools.playwright_browser import get_playwright_browser
         browser = get_playwright_browser()
+        page = getattr(browser, "_page", None)
+        before_form_state = None
+        if page and str(key).lower() in {"enter", "tab"}:
+            before_form_state = await _read_browser_form_state(page)
         result = await browser.keyboard_press(key)
         if result["success"]:
-            return HandlerResult.ok(f"⌨️ Touche pressée: {key}")
+            base = HandlerResult.ok(f"⌨️ Touche pressée: {key}")
+            submit_strategy = str(result.get("submit_strategy", "") or "").strip()
+            submit_button_label = str(result.get("submit_button_label", "") or "").strip()
+            if submit_strategy:
+                extra = f"\nSoumission assistée Playwright: {submit_strategy}"
+                if submit_button_label:
+                    extra += f" ({submit_button_label})"
+                base = HandlerResult.ok(f"{base.output}{extra}")
+            if page and str(key).lower() in {"enter", "tab"}:
+                form_state = await _read_browser_form_state(page)
+                summary = _format_form_state_summary(form_state)
+                note = ""
+                try:
+                    prev_filled = int((before_form_state or {}).get("filled", 0))
+                    prev_submit = int((before_form_state or {}).get("enabled_submit_buttons", 0))
+                    cur_filled = int((form_state or {}).get("filled", 0))
+                    cur_submit = int((form_state or {}).get("enabled_submit_buttons", 0))
+                    if str(key).lower() == "enter" and cur_submit > 0:
+                        if prev_filled > 0 and cur_filled == 0:
+                            note = (
+                                "\nObservation browser: Enter a vide le champ, "
+                                "mais un bouton d'envoi reste actif — la soumission n'est probablement pas partie."
+                            )
+                        elif cur_submit >= prev_submit:
+                            note = (
+                                "\nObservation browser: Enter n'a pas finalise l'envoi — "
+                                "un bouton d'envoi reste disponible."
+                            )
+                except Exception:
+                    note = ""
+                if summary:
+                    base = HandlerResult.ok(f"{base.output}\n\n{summary}{note}")
+                return await _auto_visual_enrich(ctx, base, action_label="keyboard_press")
+            return base
         return HandlerResult.fail(f"Erreur: {result['error']}")
     except Exception as e:
         return HandlerResult.fail(f"Erreur: {e}")
@@ -1082,32 +2299,57 @@ async def browser_batch(
         return HandlerResult.fail(f"Erreur: {e}")
 
 
-async def browser_screenshot_labels(
-    ctx: HandlerContext, *, max_labels: int = 80
-) -> HandlerResult:
-    """Prend un screenshot avec labels [1], [2]... sur les éléments interactifs."""
-    try:
-        from ...tools.playwright_browser import get_playwright_browser
-        browser = get_playwright_browser()
-        result = await browser.screenshot_with_labels(max_labels=max_labels)
-        if result["success"]:
-            lines = [
-                f"📸 Screenshot avec {result['labels_count']} labels: {result['path']}",
-                "",
-            ]
-            for lbl in result["labels"][:30]:
-                lines.append(f"  [{lbl['label']}] <{lbl['tag']}> {lbl['text']}")
-            if result["labels_count"] > 30:
-                lines.append(f"  ... et {result['labels_count'] - 30} de plus")
-            return HandlerResult.ok("\n".join(lines))
-        return HandlerResult.fail(f"Erreur: {result['error']}")
-    except Exception as e:
-        return HandlerResult.fail(f"Erreur: {e}")
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # ─── Phase 4 : Dialogs, Drag&Drop, Downloads, Frames, Metrics, Smart Click ───
 # ═══════════════════════════════════════════════════════════════════════════════
+
+async def browser_screenshot_labels(
+    ctx: HandlerContext, *, max_labels: int = 80
+) -> HandlerResult:
+    """Prend un screenshot avec labels alignés sur le même snapshot que browser_dom_state."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        from ...computer_use.dom_indexer import get_dom_indexer, render_set_of_mark
+        from ...utils.paths import SCREENSHOTS_DIR
+        from PIL import Image
+        from datetime import datetime
+        import io
+
+        browser = get_playwright_browser()
+        if not browser.is_running or not browser._page:
+            return HandlerResult.fail("Navigateur non demarre ou aucune page active")
+
+        indexer = get_dom_indexer()
+        snap = await indexer.snapshot(browser._page)
+        snap = await indexer.enrich_with_bboxes(browser._page, snap)
+        elements = list((snap.elements or [])[: max(1, int(max_labels or 80))])
+        try:
+            browser._last_dom_snapshot_meta = _build_dom_snapshot_meta(snap)
+        except Exception:
+            pass
+
+        raw = await browser._page.screenshot(type="png")
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        som = render_set_of_mark(img, elements)
+
+        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = SCREENSHOTS_DIR / f"screenshot_labels_{ts}.png"
+        som.save(str(path))
+
+        lines = [
+            f"📸 Screenshot avec {len(elements)} labels: {path}",
+            "",
+        ]
+        for elem in elements[:30]:
+            label_text = elem.name or elem.description or elem.value or ""
+            lines.append(f"  [{elem.index}] <{elem.tag or elem.role}> {label_text}")
+        if len(elements) > 30:
+            lines.append(f"  ... et {len(elements) - 30} de plus")
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
 
 async def browser_handle_dialog(ctx: HandlerContext, *, policy: str = "auto_accept",
                                   prompt_text: str = "") -> HandlerResult:
@@ -2226,6 +3468,61 @@ def get_browser_handler_defs() -> List[HandlerDef]:
                 "required": ["hint"],
             },
             handler=browser_click_smart,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_get_chat_messages",
+            description=(
+                "Fix D: Extrait tous les messages d'une conversation SPA de chat (Mistral, Claude, ChatGPT, etc.). "
+                "Contrairement à browser_get_content qui tronque, ce handler retourne TOUS les messages "
+                "de la conversation dans l'ordre chronologique avec leur rôle (user/assistant). "
+                "À utiliser après avoir envoyé un message pour lire la réponse complète de l'IA. "
+                "Fonctionne avec: chat.mistral.ai, claude.ai, chatgpt.com, gemini.google.com, duck.ai, huggingface.co/chat."
+            ),
+            parameters={
+                "properties": {
+                    "max_messages": {
+                        "type": "integer",
+                        "description": "Nombre max de messages à retourner (défaut: 20)",
+                        "default": 20,
+                    },
+                },
+                "required": [],
+            },
+            handler=browser_get_chat_messages,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_search_maps",
+            description=(
+                "Fix G: Recherche des lieux sur Google Maps et retourne une liste structurée. "
+                "Utilise directement l'URL Google Maps + extraction JS du panneau latéral. "
+                "Beaucoup plus fiable que browser_navigate + browser_dom_state pour trouver des commerces. "
+                "Exemples: query='boulangerie', location='Bois-Colombes 92270' → liste des boulangeries proches. "
+                "Fonctionne avec: pharmacie, restaurant, karting, hôtel, etc."
+            ),
+            parameters={
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Ce qu'on cherche (ex: 'boulangerie', 'karting', 'pharmacie de garde')",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Ville ou adresse (ex: 'Bois-Colombes 92270', 'Paris 75001'). Optionnel si la ville est déjà connue.",
+                        "default": "",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Nombre max de résultats (défaut: 8)",
+                        "default": 8,
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=browser_search_maps,
             category="browser",
             source_module="handlers.browser",
         ),

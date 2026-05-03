@@ -301,7 +301,7 @@ class TestUpdatePlanProgress:
         loop = self._make_loop([
             "Soumettre le formulaire d'inscription",
         ])
-        loop._update_plan_progress("browser_click_index", {"index": 3}, "✅ Clic sur [3] button", 1)
+        loop._update_plan_progress("browser_click_index", {"index": 3}, "✅ Clic sur [3] button — formulaire envoyé avec succès", 1)
         assert loop._task_plan[0].completed is True
 
     def test_browser_dom_state_matches_verifier(self):
@@ -373,7 +373,7 @@ class TestUpdatePlanProgress:
             ("browser_dom_state", {}, "Page: 37 elements"),
             ("browser_click_index", {"index": 2}, "✅ Clic sur [2] Inscription"),
             ("browser_type_index", {"index": 7, "text": "Lumena"}, "✅ Tape Lumena"),
-            ("browser_click_index", {"index": 3}, "✅ Clic sur [3] Créer un compte"),
+            ("browser_click_index", {"index": 3}, "✅ Clic sur [3] Créer un compte — inscription réussie, confirmation affichée"),
             ("browser_dom_state", {}, "Page: Tableau de bord - Bienvenue"),
             ("screenshot", {}, "✅ Screenshot capturé"),
         ]

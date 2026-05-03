@@ -11,7 +11,7 @@ def registry():
 @pytest.fixture(autouse=True)
 def _enforce_mode(monkeypatch):
     monkeypatch.setenv("LUMENA_STRICT_CODE_DELEGATION", "enforce")
-    monkeypatch.delenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", raising=False)
+    monkeypatch.setenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "1")  # défaut recommandé
 
 
 @pytest.fixture
@@ -103,7 +103,9 @@ def test_react_mutation_svg_in_project_allowed(registry, fake_project):
     assert obs is None
 
 
-def test_run_command_in_project_blocked(registry, fake_project):
+def test_run_command_in_project_blocked_when_shell_disabled(registry, fake_project, monkeypatch):
+    """Quand le flag shell est explicitement désactivé, run_command dans un projet est bloqué."""
+    monkeypatch.setenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "0")
     from src.reasoning.caller_context import REACT
     obs = registry._policy_check(
         "run_command",
@@ -111,6 +113,17 @@ def test_run_command_in_project_blocked(registry, fake_project):
         REACT,
     )
     assert obs is not None
+
+
+def test_run_command_in_project_allowed_by_default(registry, fake_project):
+    """Par défaut (flag=1), run_command dans un projet suivi est autorisé."""
+    from src.reasoning.caller_context import REACT
+    obs = registry._policy_check(
+        "run_command",
+        {"command": "node server.js", "cwd": "/fake/demo-project"},
+        REACT,
+    )
+    assert obs is None
 
 
 def test_run_command_in_project_allowed_when_shell_flag_enabled(registry, fake_project, monkeypatch):

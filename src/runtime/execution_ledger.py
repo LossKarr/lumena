@@ -36,7 +36,7 @@ class LedgerEntry:
 # ── Outils considérés comme des mutations (actions vérifiables) ──────────────
 MUTATION_TOOLS: frozenset[str] = frozenset({
     # ── Fichiers & code ──────────────────────────────────────────────────────
-    "write_file", "edit_file", "apply_patch", "create_file",
+    "write_file", "edit_file", "apply_patch", "apply_patches", "create_file",
     "delete_file", "create_directory", "delete_directory",
     "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
     # ── Shell / exécution ────────────────────────────────────────────────────
@@ -111,6 +111,18 @@ def _extract_target(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
         if isinstance(val, str) and val.strip():
             return val.strip()
 
+    # apply_patches : premier fichier du batch comme cible représentative.
+    # Suffisant pour has_any_mutation() et has_mutation_for_target_hint().
+    # Pour un batch multi-fichiers, seule la première entrée est indexée ici.
+    if tool_name == "apply_patches":
+        patches = args.get("patches")
+        if isinstance(patches, list) and patches:
+            first = patches[0]
+            if isinstance(first, dict):
+                f = first.get("file")
+                if isinstance(f, str) and f.strip():
+                    return f.strip()
+
     # Canal Discord/Telegram
     for key in ("channel_name", "channel_id", "chat_id"):
         val = args.get(key)
@@ -153,7 +165,7 @@ INTENT_TO_MUTATION_FAMILY: Dict[str, frozenset] = {
         "discord_kick", "discord_ban", "discord_unban",
     }),
     "code_edit": frozenset({
-        "write_file", "edit_file", "apply_patch", "create_file",
+        "write_file", "edit_file", "apply_patch", "apply_patches", "create_file",
         "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
     }),
     "create_project": frozenset({
@@ -178,7 +190,7 @@ def _extract_proof(tool_name: str, observation_text: str, success: bool) -> Opti
     text = observation_text.strip()
 
     # Fichier écrit/modifié : première ligne significative de l'observation
-    if tool_name in ("write_file", "edit_file", "create_file", "apply_patch",
+    if tool_name in ("write_file", "edit_file", "create_file", "apply_patch", "apply_patches",
                       "insert_at_anchor", "edit_by_lines", "str_replace",
                       "multi_edit_file"):
         # Les observations de write contiennent souvent "✅ Fichier écrit: <path> (N lignes)"

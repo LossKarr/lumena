@@ -174,6 +174,43 @@ class DOMElement:
         return " ".join(parts)
 
 
+# ─── Fix 6: Profils DOM par taille de contexte modèle ─────────────────────────
+
+# Profils calibrés sur le catalogue Lumena (qwen3-8b → Grok 4.20 2M)
+_DOM_PROFILES: Dict[str, Dict[str, Any]] = {
+    "tiny":   {"max_elements": 25, "max_label": 30},   # Ollama <16K
+    "small":  {"max_elements": 40, "max_label": 50},   # 16K-64K
+    "medium": {"max_elements": 60, "max_label": 80},   # 64K-150K (DeepSeek, GPT-4o)
+    "large":  {"max_elements": 80, "max_label": 120},  # 150K-500K (Claude, o3, Kimi)
+    "xlarge": {"max_elements": 100, "max_label": 200}, # 500K-1M (GPT-5.4, Gemini)
+    "ultra":  {"max_elements": 150, "max_label": 300}, # >1M (Grok 4.20 2M)
+}
+
+
+def get_dom_profile_for_context(max_context_window: int) -> Dict[str, Any]:
+    """Retourne le profil DOM adapté à la fenêtre de contexte du modèle actif.
+
+    Args:
+        max_context_window: Fenêtre de contexte en tokens (0 = fallback medium).
+
+    Returns:
+        Dict avec max_elements et max_label.
+    """
+    if max_context_window <= 0:
+        return _DOM_PROFILES["medium"]
+    if max_context_window < 16_000:
+        return _DOM_PROFILES["tiny"]
+    if max_context_window < 64_000:
+        return _DOM_PROFILES["small"]
+    if max_context_window < 150_000:
+        return _DOM_PROFILES["medium"]
+    if max_context_window < 500_000:
+        return _DOM_PROFILES["large"]
+    if max_context_window < 1_500_000:
+        return _DOM_PROFILES["xlarge"]
+    return _DOM_PROFILES["ultra"]
+
+
 @dataclass
 class DOMSnapshot:
     """Snapshot complet de l'etat DOM d'une page."""
@@ -184,17 +221,40 @@ class DOMSnapshot:
     total_interactive: int  # nb total avant troncature
     truncated: bool = False
 
-    def to_text(self) -> str:
-        """Formatte le snapshot complet comme texte pour le LLM."""
+    def to_text(self, max_elements: Optional[int] = None, max_label: Optional[int] = None) -> str:
+        """Formatte le snapshot complet comme texte pour le LLM.
+
+        Args:
+            max_elements: Nombre max d'éléments à afficher (None = tous).
+            max_label: Longueur max des labels (None = illimité).
+        """
+        elements = self.elements
+        if max_elements is not None and len(elements) > max_elements:
+            elements = elements[:max_elements]
+            truncated_note = f" (showing top {len(elements)} of {self.total_interactive})"
+        elif self.truncated:
+            truncated_note = f" (showing top {len(elements)})"
+        else:
+            truncated_note = ""
+
         lines = [
             f"Page: {self.title}",
             f"URL: {self.url}",
-            f"Interactive elements: {self.total_interactive}"
-            + (f" (showing top {len(self.elements)})" if self.truncated else ""),
+            f"Interactive elements: {self.total_interactive}{truncated_note}",
             "",
         ]
-        for elem in self.elements:
-            lines.append(elem.to_text())
+        for elem in elements:
+            elem_text = elem.to_text()
+            # Tronquer les labels longs si max_label spécifié
+            if max_label is not None and len(elem_text) > max_label + 20:
+                # Garder l'index et le role, tronquer le nom
+                parts = elem_text.split('"')
+                if len(parts) >= 3:
+                    name = parts[1]
+                    if len(name) > max_label:
+                        parts[1] = name[:max_label] + "…"
+                    elem_text = '"'.join(parts)
+            lines.append(elem_text)
         return "\n".join(lines)
 
 
@@ -243,6 +303,7 @@ class DOMIndexer:
 
         # 2. Parcourir l'arbre et collecter les elements interactifs
         raw_elements = self._collect_interactive(tree)
+        raw_elements = await self._merge_dom_augmented_inputs(page, raw_elements)
         total = len(raw_elements)
 
         # 3. Tronquer si necessaire et indexer
@@ -289,6 +350,9 @@ class DOMIndexer:
                         'input',
                         'textarea',
                         'select',
+                        '[contenteditable="true"]',
+                        '[contenteditable=""]',
+                        '.ProseMirror',
                         '[role="button"]',
                         '[role="link"]',
                         '[role="textbox"]',
@@ -313,6 +377,7 @@ class DOMIndexer:
                         if (tag === 'button') return 'button';
                         if (tag === 'textarea') return 'textbox';
                         if (tag === 'select') return 'combobox';
+                        if (el.isContentEditable || el.matches('[contenteditable="true"], [contenteditable=""], .ProseMirror')) return 'textbox';
                         if (tag === 'input') {
                             if (type === 'checkbox') return 'checkbox';
                             if (type === 'radio') return 'radio';
@@ -328,6 +393,8 @@ class DOMIndexer:
                             (el.getAttribute('aria-label') || '').trim() ||
                             (el.getAttribute('title') || '').trim() ||
                             (el.getAttribute('placeholder') || '').trim() ||
+                            (el.getAttribute('data-placeholder') || '').trim() ||
+                            (el.getAttribute('aria-placeholder') || '').trim() ||
                             (el.textContent || '').trim()
                         );
                     };
@@ -427,7 +494,7 @@ class DOMIndexer:
             const roleMap = {
                 'button': 'button, [role="button"], input[type="submit"], input[type="button"]',
                 'link': 'a[href], [role="link"]',
-                'textbox': 'input[type="text"], input[type="email"], input[type="password"], input[type="url"], input[type="tel"], input[type="number"], input:not([type]), textarea, [role="textbox"]',
+                'textbox': 'input[type="text"], input[type="email"], input[type="password"], input[type="url"], input[type="tel"], input[type="number"], input:not([type]), textarea, [role="textbox"], [contenteditable="true"], [contenteditable=""], .ProseMirror',
                 'searchbox': 'input[type="search"], [role="searchbox"]',
                 'combobox': 'select, [role="combobox"]',
                 'checkbox': 'input[type="checkbox"], [role="checkbox"]',
@@ -472,6 +539,7 @@ class DOMIndexer:
                         else if (tag === 'button' || type === 'submit' || type === 'button') effectiveRole = 'button';
                         else if (tag === 'select') effectiveRole = 'combobox';
                         else if (tag === 'textarea') effectiveRole = 'textbox';
+                        else if (el.isContentEditable || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')) effectiveRole = 'textbox';
                         else if (tag === 'option') effectiveRole = 'option';
                         else if (type === 'checkbox') effectiveRole = 'checkbox';
                         else if (type === 'radio') effectiveRole = 'radio';
@@ -485,7 +553,12 @@ class DOMIndexer:
                              || el.getAttribute('alt')
                              || el.getAttribute('title')
                              || el.getAttribute('placeholder')
+                             || el.getAttribute('data-placeholder')
+                             || el.getAttribute('aria-placeholder')
                              || '';
+                    if (!name && (el.isContentEditable || el.matches?.('.ProseMirror'))) {
+                        name = 'Message input';
+                    }
                     if (!name) {
                         name = el.innerText || el.textContent || '';
                         name = name.trim().substring(0, 80);
@@ -567,6 +640,80 @@ class DOMIndexer:
             f"DOM indexer: {matched}/{len(snapshot.elements)} elements enrichis avec bbox"
         )
         return snapshot
+
+    async def _merge_dom_augmented_inputs(self, page: Any, raw_elements: List[Dict]) -> List[Dict]:
+        """Ajoute les contenteditables visibles qui échappent à l'arbre accessibility."""
+        try:
+            extras = await page.evaluate(
+                """
+                () => {
+                    const out = [];
+                    const seen = new Set();
+                    const selectors = ['[contenteditable="true"]', '[contenteditable=""]', '.ProseMirror'];
+
+                    const nameFromEl = (el) => {
+                        const label =
+                            (el.getAttribute('aria-label') || '').trim() ||
+                            (el.getAttribute('placeholder') || '').trim() ||
+                            (el.getAttribute('data-placeholder') || '').trim() ||
+                            (el.getAttribute('aria-placeholder') || '').trim() ||
+                            (el.getAttribute('title') || '').trim();
+                        if (label) return label;
+                        const text = (el.innerText || el.textContent || '').trim();
+                        return text.slice(0, 80) || 'Message input';
+                    };
+
+                    for (const sel of selectors) {
+                        for (const el of document.querySelectorAll(sel)) {
+                            if (!el || seen.has(el)) continue;
+                            seen.add(el);
+                            const rect = el.getBoundingClientRect();
+                            const style = window.getComputedStyle(el);
+                            const visible =
+                                style.display !== 'none' &&
+                                style.visibility !== 'hidden' &&
+                                rect.width > 0 &&
+                                rect.height > 0;
+                            if (!visible) continue;
+                            out.push({
+                                role: 'textbox',
+                                name: nameFromEl(el),
+                                description: '',
+                                checked: null,
+                                disabled: !!(el.getAttribute('aria-disabled') === 'true'),
+                                options: [],
+                            });
+                        }
+                    }
+                    return out;
+                }
+                """
+            )
+        except Exception as e:
+            logger.debug(f"DOM indexer: augmentation contenteditable echouee: {e}")
+            return raw_elements
+
+        if not isinstance(extras, list) or not extras:
+            return raw_elements
+
+        merged = list(raw_elements)
+        existing = {
+            (
+                str(item.get("role", "")).strip().lower(),
+                str(item.get("name", "")).strip().lower(),
+            )
+            for item in raw_elements
+        }
+        for extra in extras:
+            key = (
+                str(extra.get("role", "")).strip().lower(),
+                str(extra.get("name", "")).strip().lower(),
+            )
+            if key in existing:
+                continue
+            existing.add(key)
+            merged.append(extra)
+        return merged
 
     def _collect_interactive(self, node: Dict, depth: int = 0) -> List[Dict]:
         """Parcours recursif de l'arbre accessibility pour collecter les interactifs."""

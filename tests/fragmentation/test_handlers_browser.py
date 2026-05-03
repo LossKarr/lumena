@@ -193,6 +193,24 @@ class TestBrowserGetContent:
         assert r.success
         browser.get_page_content.assert_awaited_once_with("https://x.com")
 
+    def test_spa_shell_prefers_visible_text(self):
+        mod, browser = _make_browser_module()
+        browser.get_page_content = AsyncMock(return_value={
+            "success": True,
+            "title": "Le Chat",
+            "content": '((a,b)=>{let i=document.documentElement;localStorage.getItem("theme");function k(){} })()',
+        })
+        browser._page = MagicMock()
+        browser._page.evaluate = AsyncMock(return_value=(
+            "Salut ! Je suis Lumena.\n---\n"
+            "Salut Lumena ! Je vais très bien, merci."
+        ))
+        with patch.dict(sys.modules, {"src.tools.playwright_browser": mod}):
+            r = _run(browser_get_content(_make_ctx()))
+        assert r.success
+        assert "SPA shell détectée" in r.output
+        assert "Salut Lumena" in r.output
+
 
 # ─── browser_click ─────────────────────────────────────────────────────────
 
@@ -218,6 +236,18 @@ class TestBrowserClick:
         with patch.dict(sys.modules, {"src.tools.playwright_browser": mod}):
             r = _run(browser_click(_make_ctx(), selector="", by="css"))
         assert not r.success
+
+    def test_success_uses_auto_visual_enrich(self):
+        mod, browser = _make_browser_module()
+        browser.click_element = AsyncMock(return_value={"success": True})
+        with patch.dict(sys.modules, {"src.tools.playwright_browser": mod}):
+            with patch(
+                "src.reasoning.handlers.browser._auto_visual_enrich",
+                new=AsyncMock(side_effect=lambda ctx, result, action_label="": result),
+            ) as enrich:
+                r = _run(browser_click(_make_ctx(), selector="#btn", by="css"))
+        assert r.success
+        enrich.assert_awaited_once()
 
 
 # ─── browser_accept_cookies ────────────────────────────────────────────────
@@ -525,6 +555,8 @@ class TestBrowserDomState:
         assert r.success
         assert '[1] button "OK"' in r.output
         assert '[2] textbox "Email"' in r.output
+        assert browser._last_dom_snapshot_meta["url"] == "https://test.com"
+        assert browser._last_dom_snapshot_meta["indexes"]["2"]["role"] == "textbox"
 
     def test_not_running(self):
         pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
@@ -553,6 +585,28 @@ class TestBrowserClickIndex:
         # Center of bbox (100, 100, 80, 30) = (140, 115)
         browser.click_at.assert_awaited_once_with(140, 115)
 
+    def test_disabled_target_fails_before_click(self):
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser._page.evaluate = AsyncMock(return_value={
+            "tag": "button",
+            "role": "button",
+            "type": "",
+            "label": "Next",
+            "disabled": True,
+            "text_like": False,
+            "button_like": True,
+            "submit_like": True,
+        })
+        browser.click_at = AsyncMock(return_value={"success": True})
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_click_index(_make_ctx(), index=1))
+        assert not r.success
+        assert "desactive" in r.output.lower()
+        browser.click_at.assert_not_awaited()
+
     def test_invalid_index(self):
         pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
         with patch.dict(sys.modules, {
@@ -562,6 +616,102 @@ class TestBrowserClickIndex:
             r = _run(browser_click_index(_make_ctx(), index=99))
         assert not r.success
         assert "introuvable" in r.output
+
+    def test_stale_snapshot_blocks_click(self):
+        from src.computer_use.dom_indexer import DOMElement, DOMSnapshot
+
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser._last_dom_snapshot_meta = {
+            "url": "https://chat.mistral.ai/chat",
+            "title": "Le Chat",
+            "indexes": {"1": {"role": "textbox", "name": "ask anything"}},
+            "interactive_count": 10,
+        }
+        stale = DOMSnapshot(
+            url="https://www.google.com/search?q=test",
+            title="Google",
+            elements=[DOMElement(index=1, role="link", name="Livres", bbox=(100, 100, 80, 30))],
+            total_interactive=1,
+        )
+        indexer.snapshot = AsyncMock(return_value=stale)
+        indexer.enrich_with_bboxes = AsyncMock(return_value=stale)
+        browser.click_at = AsyncMock(return_value={"success": True})
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_click_index(_make_ctx(), index=1))
+        assert not r.success
+        assert "index dom périmé" in r.output.lower()
+        browser.click_at.assert_not_awaited()
+
+    def test_zero_index_fails_fast(self):
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_click_index(_make_ctx(), index=0))
+        assert not r.success
+        assert "index dom invalide" in r.output.lower()
+
+    def test_expected_label_mismatch_blocks_click(self):
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser._page.evaluate = AsyncMock(return_value={
+            "tag": "button",
+            "role": "button",
+            "type": "",
+            "label": "Copy to clipboard",
+            "disabled": False,
+            "text_like": False,
+            "button_like": True,
+            "submit_like": False,
+        })
+        browser.click_at = AsyncMock(return_value={"success": True})
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_click_index(_make_ctx(), index=1, expected_label="Think"))
+        assert not r.success
+        assert "libelle attendu" in r.output.lower()
+        browser.click_at.assert_not_awaited()
+
+    def test_scrolls_into_view_when_bbox_missing(self):
+        from src.computer_use.dom_indexer import DOMElement, DOMSnapshot
+
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        hidden = DOMSnapshot(
+            url="https://test.com",
+            title="Test",
+            elements=[
+                DOMElement(index=1, role="button", name="OK", bbox=None),
+                DOMElement(index=2, role="textbox", name="Email", bbox=(200, 200, 150, 30)),
+            ],
+            total_interactive=2,
+        )
+        visible = DOMSnapshot(
+            url="https://test.com",
+            title="Test",
+            elements=[
+                DOMElement(index=1, role="button", name="OK", bbox=(100, 100, 80, 30)),
+                DOMElement(index=2, role="textbox", name="Email", bbox=(200, 200, 150, 30)),
+            ],
+            total_interactive=2,
+        )
+        indexer.snapshot = AsyncMock(side_effect=[hidden, visible])
+        indexer.enrich_with_bboxes = AsyncMock(side_effect=[hidden, visible])
+        browser._page.evaluate = AsyncMock(return_value=True)
+        browser._page.wait_for_timeout = AsyncMock()
+        browser.click_at = AsyncMock(return_value={"success": True})
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_click_index(_make_ctx(), index=1))
+        assert r.success
+        browser._page.evaluate.assert_awaited()
+        browser.click_at.assert_awaited_once_with(140, 115)
 
     def test_not_running(self):
         pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
@@ -582,7 +732,23 @@ class TestBrowserTypeIndex:
         browser.click_at = AsyncMock(return_value={"success": True})
         browser._page = MagicMock()
         browser._page.keyboard = MagicMock()
+        browser._page.keyboard.press = AsyncMock()
+        browser._page.keyboard.insert_text = AsyncMock()
         browser._page.keyboard.type = AsyncMock()
+        browser._page.wait_for_timeout = AsyncMock()
+
+        async def eval_side_effect(script, *args):
+            if "target.value = ''" in script:
+                return {"ok": True, "value": "hello@test.com"}
+            if "FocusEvent('blur'" in script:
+                return True
+            if "document.querySelectorAll(" in script:
+                return {"filled": 1, "checked": 0, "disabled_buttons": 0, "enabled_submit_buttons": 1, "controls": 4}
+            if "document.elementFromPoint(x, y)" in script:
+                return "hello@test.com"
+            return ""
+
+        browser._page.evaluate = AsyncMock(side_effect=eval_side_effect)
         with patch.dict(sys.modules, {
             "src.tools.playwright_browser": pw_mod,
             "src.computer_use.dom_indexer": dom_mod,
@@ -590,15 +756,29 @@ class TestBrowserTypeIndex:
             r = _run(browser_type_index(_make_ctx(), index=2, text="hello@test.com"))
         assert r.success
         assert "hello@test.com" in r.output
-        browser._page.keyboard.type.assert_awaited_once_with("hello@test.com", delay=30)
+        browser.click_at.assert_awaited_once_with(275, 215)
 
-    def test_wrong_role_fails(self):
+    def test_button_role_fails_instead_of_clicking(self):
         pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser.click_at = AsyncMock(return_value={"success": True})
         with patch.dict(sys.modules, {
             "src.tools.playwright_browser": pw_mod,
             "src.computer_use.dom_indexer": dom_mod,
         }):
-            # index=1 is a button, not a textbox
+            r = _run(browser_type_index(_make_ctx(), index=1, text="hello"))
+        assert not r.success
+        assert "champ de texte" in r.output.lower()
+        browser.click_at.assert_not_awaited()
+
+    def test_wrong_role_still_fails_for_non_clickable(self):
+        from src.computer_use.dom_indexer import DOMElement
+
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        snap.elements[0] = DOMElement(index=1, role="link", name="Home", bbox=(100, 100, 80, 30))
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
             r = _run(browser_type_index(_make_ctx(), index=1, text="hello"))
         assert not r.success
         assert "champ de texte" in r.output
@@ -613,11 +793,238 @@ class TestBrowserTypeIndex:
         assert not r.success
         assert "introuvable" in r.output
 
+    def test_zero_index_fails_fast(self):
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_type_index(_make_ctx(), index=0, text="hello"))
+        assert not r.success
+        assert "index dom invalide" in r.output.lower()
+
+    def test_stale_snapshot_blocks_type(self):
+        from src.computer_use.dom_indexer import DOMElement, DOMSnapshot
+
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser._last_dom_snapshot_meta = {
+            "url": "https://chat.mistral.ai/chat",
+            "title": "Le Chat",
+            "indexes": {"2": {"role": "textbox", "name": "email"}},
+            "interactive_count": 3,
+        }
+        stale = DOMSnapshot(
+            url="https://www.google.com/search?q=test",
+            title="Google",
+            elements=[DOMElement(index=2, role="link", name="Livres", bbox=(200, 200, 150, 30))],
+            total_interactive=1,
+        )
+        indexer.snapshot = AsyncMock(return_value=stale)
+        indexer.enrich_with_bboxes = AsyncMock(return_value=stale)
+        browser.click_at = AsyncMock(return_value={"success": True})
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_type_index(_make_ctx(), index=2, text="hello"))
+        assert not r.success
+        assert "index dom périmé" in r.output.lower()
+        browser.click_at.assert_not_awaited()
+
+    def test_fails_when_persisted_value_is_lost(self):
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser.click_at = AsyncMock(return_value={"success": True})
+        browser._page = MagicMock()
+        browser._page.keyboard = MagicMock()
+        browser._page.keyboard.press = AsyncMock()
+        browser._page.keyboard.insert_text = AsyncMock()
+        browser._page.keyboard.type = AsyncMock()
+        browser._page.wait_for_timeout = AsyncMock()
+
+        async def eval_side_effect(script, *args):
+            if "target.value = ''" in script:
+                return {"ok": True, "value": "hello@test.com"}
+            if "FocusEvent('blur'" in script:
+                return True
+            if "document.querySelectorAll(" in script:
+                return {"filled": 0, "checked": 0, "disabled_buttons": 3, "enabled_submit_buttons": 0, "controls": 19}
+            if "document.elementFromPoint(x, y)" in script:
+                return ""
+            return ""
+
+        browser._page.evaluate = AsyncMock(side_effect=eval_side_effect)
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }):
+            r = _run(browser_type_index(_make_ctx(), index=2, text="hello@test.com"))
+        assert not r.success
+        assert "valeur persistante" in r.output.lower()
+
+
+class TestPlaywrightBrowserScreenshot:
+    def test_missing_extension_defaults_to_png(self, tmp_path):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.screenshot = AsyncMock()
+        browser._screenshots_dir = tmp_path
+
+        result = _run(browser.screenshot("mistral_final"))
+        assert result["success"] is True
+        assert result["path"].endswith("mistral_final.png")
+        browser._page.screenshot.assert_awaited_once()
+
+
+class TestPlaywrightBrowserTypingAndSubmit:
+    def test_type_in_field_supports_contenteditable(self):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.wait_for_timeout = AsyncMock()
+        browser._page.keyboard = MagicMock()
+        browser._page.keyboard.press = AsyncMock()
+        browser._page.keyboard.insert_text = AsyncMock()
+
+        locator = MagicMock()
+        locator.wait_for = AsyncMock()
+        locator.click = AsyncMock()
+        locator.fill = AsyncMock()
+        locator.type = AsyncMock()
+
+        async def locator_eval_side_effect(script, *args):
+            if "const tag =" in script:
+                return {
+                    "tag": "div",
+                    "role": "textbox",
+                    "type": "",
+                    "text_like": True,
+                    "contenteditable": True,
+                }
+            if "const text = String(payload?.text" in script:
+                return True
+            if "if ('value' in el) return String(el.value || '')" in script:
+                return "Salut Lumena"
+            if "FocusEvent('blur'" in script:
+                return True
+            return True
+
+        locator.evaluate = AsyncMock(side_effect=locator_eval_side_effect)
+        browser._page.locator = MagicMock(return_value=MagicMock(first=locator))
+
+        result = _run(browser.type_in_field(".ProseMirror", "Salut Lumena"))
+        assert result["success"] is True
+        assert result["typed_in"] == ".ProseMirror"
+        locator.click.assert_awaited()
+
+    def test_keyboard_press_enter_can_submit_active_composer(self):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.url = "https://chat.mistral.ai/chat"
+        browser._page.title = AsyncMock(return_value="Le Chat")
+        browser._page.keyboard = MagicMock()
+        browser._page.keyboard.press = AsyncMock()
+        browser._page.wait_for_timeout = AsyncMock()
+        browser._page.evaluate = AsyncMock(
+            return_value={
+                "submitted": True,
+                "strategy": "dom_click_submit",
+                "button_label": "Send question",
+                "provider_id": "mistral",
+            }
+        )
+
+        result = _run(browser.keyboard_press("Enter"))
+        assert result["success"] is True
+        assert result["submit_strategy"] == "dom_click_submit"
+        assert result["submit_button_label"] == "Send question"
+        assert result["submit_provider"] == "mistral"
+
+    def test_keyboard_press_enter_ignores_ambiguous_think_button(self):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.keyboard = MagicMock()
+        browser._page.keyboard.press = AsyncMock()
+        browser._page.evaluate = AsyncMock(
+            return_value={
+                "submitted": False,
+                "reason": "no_submit_button",
+                "composerValue": "Bonjour",
+            }
+        )
+
+        result = _run(browser.keyboard_press("Enter"))
+        assert result["success"] is True
+        assert "submit_strategy" not in result
+
+    def test_detect_chat_provider_profile_mistral(self):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.url = "https://chat.mistral.ai/chat"
+        browser._page.title = AsyncMock(return_value="Le Chat")
+
+        profile = _run(browser._detect_chat_provider_profile())
+        assert profile["provider_id"] == "mistral"
+        assert profile["source"] == "url_title"
+        assert "think" in profile["ambiguous_submit_labels"]
+
+    def test_submit_active_composer_uses_duckai_policy(self):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.url = "https://duck.ai/"
+        browser._page.title = AsyncMock(return_value="Duck.ai par DuckDuckGo. Chat IA prive. Gratuit.")
+        browser._page.evaluate = AsyncMock(
+            return_value={
+                "submitted": False,
+                "reason": "no_submit_button",
+                "provider_id": "duckai",
+            }
+        )
+
+        result = _run(browser._submit_active_composer())
+        assert result["success"] is False
+        payload = browser._page.evaluate.await_args.args[1]
+        assert payload["provider_id"] == "duckai"
+        assert "envoyer" in payload["preferred_submit_labels"]
+        assert "mode raisonnement" in payload["ambiguous_submit_labels"]
+
+    def test_submit_active_composer_uses_huggingchat_policy(self):
+        from src.tools.playwright_browser import PlaywrightBrowser
+
+        browser = PlaywrightBrowser.__new__(PlaywrightBrowser)
+        browser._page = MagicMock()
+        browser._page.url = "https://huggingface.co/chat/"
+        browser._page.title = AsyncMock(return_value="HuggingChat")
+        browser._page.evaluate = AsyncMock(
+            return_value={
+                "submitted": False,
+                "reason": "no_submit_button",
+                "provider_id": "huggingchat",
+            }
+        )
+
+        result = _run(browser._submit_active_composer())
+        assert result["success"] is False
+        payload = browser._page.evaluate.await_args.args[1]
+        assert payload["provider_id"] == "huggingchat"
+        assert "send message" in payload["preferred_submit_labels"]
+        assert "start chatting" in payload["ambiguous_submit_labels"]
+
 
 class TestBrowserHandlerDefs:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 66
+        assert len(defs) == 68
 
     def test_names_unique(self):
         defs = get_browser_handler_defs()
@@ -778,10 +1185,29 @@ class TestBrowserKeyboardPress:
     def test_enter(self):
         mod, browser = _make_browser_module()
         browser.keyboard_press = AsyncMock(return_value={"success": True, "key_pressed": "Enter"})
+        browser._page = MagicMock()
+        browser._page.evaluate = AsyncMock(side_effect=[
+            {
+                "filled": 1,
+                "checked": 0,
+                "disabled_buttons": 0,
+                "enabled_submit_buttons": 0,
+                "controls": 3,
+            },
+            {
+                "filled": 0,
+                "checked": 0,
+                "disabled_buttons": 0,
+                "enabled_submit_buttons": 1,
+                "controls": 3,
+            },
+        ])
         with patch.dict(sys.modules, {"src.tools.playwright_browser": mod}):
             r = _run(browser_keyboard_press(_make_ctx(), key="Enter"))
         assert r.success
         assert "Enter" in r.output
+        assert "enabled_submit_buttons=1" in r.output
+        assert "n'est probablement pas partie" in r.output
 
     def test_failure(self):
         mod, browser = _make_browser_module()
@@ -789,6 +1215,35 @@ class TestBrowserKeyboardPress:
         with patch.dict(sys.modules, {"src.tools.playwright_browser": mod}):
             r = _run(browser_keyboard_press(_make_ctx(), key="Enter"))
         assert not r.success
+
+
+class TestBrowserScreenshotLabels:
+    def test_uses_dom_indexer_snapshot_labels(self):
+        from src.reasoning.handlers.browser import browser_screenshot_labels
+
+        pw_mod, dom_mod, browser, indexer, snap = _make_dom_modules()
+        browser.is_running = True
+        browser._page = MagicMock()
+        browser._page.screenshot = AsyncMock(return_value=b"fake-png")
+
+        fake_img = MagicMock()
+        fake_img.convert.return_value = fake_img
+        fake_overlay = MagicMock()
+        fake_overlay.save = MagicMock()
+
+        with patch.dict(sys.modules, {
+            "src.tools.playwright_browser": pw_mod,
+            "src.computer_use.dom_indexer": dom_mod,
+        }), patch("PIL.Image.open", return_value=fake_img), patch(
+            "io.BytesIO", return_value=MagicMock()
+        ):
+            dom_mod.render_set_of_mark.return_value = fake_overlay
+            r = _run(browser_screenshot_labels(_make_ctx(), max_labels=5))
+
+        assert r.success
+        assert "[1] <button>" in r.output
+        assert "[2] <textbox>" in r.output
+        assert browser._last_dom_snapshot_meta is not None
 
 
 class TestBrowserSavePdf:

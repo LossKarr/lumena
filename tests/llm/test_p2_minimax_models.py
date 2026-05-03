@@ -74,7 +74,7 @@ class TestMiniMaxModels:
             assert "cheap_text" in cfg.capabilities
 
     def test_nvidia_minimax_description_updated(self):
-        cfg = get_model_config("nvidia-minimax-m2.5")
+        cfg = get_model_config("nvidia-minimax-m2.7")
         assert "préférer MiniMax natif" in cfg.description
 
 

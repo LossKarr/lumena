@@ -123,9 +123,6 @@ class TestBgAgentRegistry:
 
 def _make_orchestrator():
     """Stub minimal de SubAgentOrchestrator pour tester run_task_bg."""
-    from unittest.mock import MagicMock
-    from src.agents.sub_agent import AgentResult
-
     orch = MagicMock()
     orch.task_counter = 0
     orch.pending_tasks = {}

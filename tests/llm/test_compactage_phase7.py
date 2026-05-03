@@ -63,6 +63,7 @@ class TestHistoryObsLimitDynamic:
         limit = loop._history_observation_limit()
         assert 300 <= limit <= 20000, f"fallback hors plage: {limit}"
 
+    @patch.dict(os.environ, {"LUMENA_REACT_OBS_LIMIT": ""})
     def test_dynamic_deepseek_chat(self):
         """deepseek-chat: output=8192, ctx=64000 -> palier 64k<150k -> 24000"""
         ctx = _make_runtime_ctx(max_output_tokens=8192, max_context_window=64000)
@@ -70,6 +71,7 @@ class TestHistoryObsLimitDynamic:
         limit = loop._history_observation_limit()
         assert limit == 24000  # palier 64k < 150k
 
+    @patch.dict(os.environ, {"LUMENA_REACT_OBS_LIMIT": ""})
     def test_dynamic_gemini_flash(self):
         """gemini-2.5-flash: output=65536, ctx=1048576 -> palier 500k<1.5M -> 40000"""
         ctx = _make_runtime_ctx(max_output_tokens=65536, max_context_window=1048576)
@@ -77,6 +79,7 @@ class TestHistoryObsLimitDynamic:
         limit = loop._history_observation_limit()
         assert limit == 40000  # palier 500k < 1.5M
 
+    @patch.dict(os.environ, {"LUMENA_REACT_OBS_LIMIT": ""})
     def test_dynamic_small_model(self):
         """Modele tres petit: output=512, ctx=4096 -> palier <16k -> 2000"""
         ctx = _make_runtime_ctx(max_output_tokens=512, max_context_window=4096)

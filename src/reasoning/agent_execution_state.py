@@ -33,6 +33,11 @@ class LoopGuards:
     # Anti-aveuglement browser
     last_browser_visual_iter: int = -1
     browser_blind_streak: int = 0
+    last_browser_surface: Optional[str] = None
+    last_browser_surface_reason: str = ""
+    browser_surface_streak: int = 0
+    last_browser_progress_sig: Optional[tuple] = None
+    browser_no_progress_streak: int = 0
 
     # Stagnation par thoughts répétés
     stagnation_streak: int = 0

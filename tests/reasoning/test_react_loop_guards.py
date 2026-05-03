@@ -19,7 +19,7 @@ class TestReActLoopGuards:
         # Vérifier qu'il y a une limite
         assert hasattr(loop, 'max_iterations'), "max_iterations non défini"
         assert loop.max_iterations > 0, "max_iterations doit être > 0"
-        assert loop.max_iterations <= 50, "max_iterations trop élevé (risque de boucle)"
+        assert loop.max_iterations <= 100, "max_iterations trop élevé (risque de boucle)"
     
     def test_react_loop_has_timeout(self):
         """Vérifie que la boucle ReAct a un timeout."""

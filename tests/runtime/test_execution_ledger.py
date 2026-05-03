@@ -220,10 +220,63 @@ class TestMutationTools:
         assert "discord_send" in MUTATION_TOOLS
         assert "delegate_task" in MUTATION_TOOLS
 
+    def test_apply_patches_present(self):
+        """apply_patches (batch) doit être reconnu comme mutation — sinon ledger guard faux positif."""
+        assert "apply_patches" in MUTATION_TOOLS
+        assert "apply_patch" in MUTATION_TOOLS  # le singulier également
+
     def test_read_tools_absent(self):
         assert "read_file" not in MUTATION_TOOLS
         assert "list_directory" not in MUTATION_TOOLS
         assert "web_search" not in MUTATION_TOOLS
+
+
+# ── apply_patches — couverture complète ─────────────────────────────────────
+
+class TestApplyPatchesMutationRecognition:
+    """apply_patches est un outil batch distinct de apply_patch (singulier).
+    Il doit être reconnu comme mutation à tous les niveaux du ledger."""
+
+    def test_has_any_mutation_after_apply_patches(self):
+        led = ExecutionLedger()
+        led.append(iteration=0, action="read_file", success=True)
+        assert not led.has_any_mutation()
+        led.append(iteration=1, action="apply_patches", success=True)
+        assert led.has_any_mutation()
+
+    def test_apply_patches_failure_not_counted(self):
+        led = ExecutionLedger()
+        led.append(iteration=0, action="apply_patches", success=False)
+        assert not led.has_any_mutation()
+
+    def test_extract_target_from_patches_list(self):
+        args = {"patches": [{"file": "/project/app.py", "old": "x = 1", "new": "x = 2"}]}
+        target = _extract_target("apply_patches", args)
+        assert target == "/project/app.py"
+
+    def test_extract_target_apply_patches_empty_list(self):
+        assert _extract_target("apply_patches", {"patches": []}) is None
+
+    def test_extract_target_apply_patches_no_patches_key(self):
+        assert _extract_target("apply_patches", {}) is None
+
+    def test_extract_proof_apply_patches_success(self):
+        obs = "✅ apply_patches: 3 patch(es) appliqué(s) sur 2 fichier(s)"
+        proof = _extract_proof("apply_patches", obs, True)
+        assert proof is not None
+        assert "apply_patches" in proof.lower() or "✅" in proof
+
+    def test_extract_proof_apply_patches_failure(self):
+        assert _extract_proof("apply_patches", "❌ Rollback effectué", False) is None
+
+    def test_successful_mutations_includes_apply_patches(self):
+        led = ExecutionLedger()
+        led.append(iteration=0, action="apply_patches", success=True,
+                   target="/project/style.css",
+                   proof="✅ apply_patches: 2 patch(es)")
+        muts = led.successful_mutations()
+        assert len(muts) == 1
+        assert muts[0].action == "apply_patches"
 
 
 # ── Intégration ReActLoop ────────────────────────────────────────────────────

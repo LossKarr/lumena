@@ -87,6 +87,10 @@ EXPECTED_BROWSER_NAMES = [
     "browser_frame_evaluate",
     "browser_metrics",
     "browser_click_smart",
+    # Fix D — Extraction complète des messages chat
+    "browser_get_chat_messages",
+    # Fix G — Recherche Google Maps structurée
+    "browser_search_maps",
 ]
 
 EXPECTED_COMPUTER_USE_NAMES = [
@@ -126,7 +130,7 @@ EXPECTED_COMPUTER_USE_NAMES = [
 class TestBrowserParity:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 66
+        assert len(defs) == 68
 
     def test_names_match(self):
         defs = get_browser_handler_defs()
@@ -192,4 +196,4 @@ class TestCrossModuleParity:
     def test_total_count(self):
         """browser(66) + computer_use(28) = 94 handlers."""
         total = len(get_browser_handler_defs()) + len(get_computer_use_handler_defs())
-        assert total == 94
+        assert total == 96

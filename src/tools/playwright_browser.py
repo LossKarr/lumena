@@ -114,6 +114,15 @@ class PlaywrightBrowser:
         self._download_listening: bool = False
         self._download_waiters: List[asyncio.Future] = []
 
+        # Dernier snapshot DOM explicite lu via browser_dom_state.
+        self._last_dom_snapshot_meta: Optional[Dict[str, Any]] = None
+
+        # Fix 7: Rate limiting adaptatif par domaine (délai en secondes)
+        self._domain_backoff: Dict[str, float] = {}
+
+        # Fix 5: Popup auto-dismiss — flag pour éviter double-installation
+        self._popup_observer_installed: bool = False
+
     def _tabs(self) -> List[Page]:
         if not self._context:
             return []
@@ -128,6 +137,400 @@ class PlaywrightBrowser:
         if self._active_tab_index < 0 or self._active_tab_index >= len(tabs):
             self._active_tab_index = max(0, min(self._active_tab_index, len(tabs) - 1))
         self._page = tabs[self._active_tab_index]
+
+    @staticmethod
+    def _normalize_text_value(value: Any) -> str:
+        """Normalise une valeur texte relue dans le DOM."""
+        return " ".join(str(value or "").replace("\xa0", " ").split())
+
+    async def _locator_meta(self, locator: Any) -> Dict[str, Any]:
+        """Décrit légèrement une cible de saisie/clic sans dépendre du type exact."""
+        try:
+            meta = await locator.evaluate(
+                """
+                (el) => {
+                    const tag = String(el.tagName || '').toLowerCase();
+                    const role = String(el.getAttribute?.('role') || '').toLowerCase();
+                    const type = String(el.getAttribute?.('type') || el.type || '').toLowerCase();
+                    const textLike =
+                        tag === 'textarea'
+                        || tag === 'select'
+                        || role === 'textbox'
+                        || role === 'searchbox'
+                        || role === 'combobox'
+                        || el.isContentEditable
+                        || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')
+                        || (tag === 'input' && ![
+                            'checkbox', 'radio', 'submit', 'button', 'reset',
+                            'hidden', 'file', 'image', 'range', 'color'
+                        ].includes(type));
+                    return {
+                        tag,
+                        role,
+                        type,
+                        text_like: textLike,
+                        contenteditable: !!el.isContentEditable || !!el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror'),
+                    };
+                }
+                """
+            )
+            return meta if isinstance(meta, dict) else {}
+        except Exception:
+            return {}
+
+    async def _locator_text_value(self, locator: Any) -> str:
+        """Relit la valeur texte réelle d'un locator."""
+        try:
+            value = await locator.evaluate(
+                """
+                (el) => {
+                    if ('value' in el) return String(el.value || '');
+                    return String(el.innerText || el.textContent || '');
+                }
+                """
+            )
+            return self._normalize_text_value(value)
+        except Exception:
+            return ""
+
+    async def _set_text_like_locator(self, locator: Any, text: str, *, clear: bool = True) -> str:
+        """Renseigne un champ texte standard ou non standard, puis relit sa valeur."""
+        meta = await self._locator_meta(locator)
+        text_norm = self._normalize_text_value(text)
+        contenteditable = bool(meta.get("contenteditable"))
+        role = str(meta.get("role") or "").lower()
+        tag = str(meta.get("tag") or "").lower()
+
+        await locator.click(timeout=3000)
+        await asyncio.sleep(0.05)
+
+        used_dom_write = False
+        if contenteditable or role in {"textbox", "searchbox", "combobox"} or tag not in {"input", "textarea", "select"}:
+            try:
+                await locator.evaluate(
+                    """
+                    (el, payload) => {
+                        const text = String(payload?.text || '');
+                        const shouldClear = !!payload?.clear;
+                        el.focus();
+                        if ('value' in el) {
+                            if (shouldClear) el.value = '';
+                            el.value = text;
+                        } else {
+                            if (shouldClear) el.textContent = '';
+                            el.textContent = text;
+                        }
+                        try {
+                            el.dispatchEvent(new InputEvent('beforeinput', {
+                                bubbles: true,
+                                inputType: shouldClear ? 'insertReplacementText' : 'insertText',
+                                data: text,
+                            }));
+                        } catch (_) {}
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        return true;
+                    }
+                    """,
+                    {"text": text, "clear": clear},
+                )
+                used_dom_write = True
+            except Exception:
+                used_dom_write = False
+
+        if not used_dom_write:
+            if clear:
+                try:
+                    await locator.fill("", timeout=8000)
+                except Exception:
+                    pass
+            try:
+                await locator.fill(text, timeout=8000)
+            except Exception:
+                try:
+                    if self._page:
+                        await self._page.keyboard.press("Control+A")
+                        await self._page.keyboard.press("Backspace")
+                        await self._page.keyboard.insert_text(text)
+                except Exception:
+                    try:
+                        await locator.type(text, delay=20)
+                    except Exception:
+                        pass
+
+        try:
+            await locator.evaluate(
+                """
+                (el) => {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+                    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+                    if (typeof el.blur === 'function') el.blur();
+                    return true;
+                }
+                """
+            )
+        except Exception:
+            pass
+
+        if self._page:
+            try:
+                await self._page.wait_for_timeout(80)
+            except Exception:
+                pass
+
+        current_value = await self._locator_text_value(locator)
+        if current_value != text_norm and self._page:
+            try:
+                await locator.click(timeout=3000)
+                await self._page.keyboard.press("Control+A")
+                await self._page.keyboard.press("Backspace")
+                await self._page.keyboard.insert_text(text)
+                await self._page.wait_for_timeout(80)
+            except Exception:
+                pass
+            current_value = await self._locator_text_value(locator)
+        return current_value
+
+    def _chat_provider_submit_policy(self, provider_id: str) -> Dict[str, Any]:
+        pid = str(provider_id or "generic").strip().lower()
+        base = {
+            "provider_id": pid or "generic",
+            "preferred_submit_labels": ["send", "envoyer", "submit", "reply", "send message"],
+            "ambiguous_submit_labels": [
+                "think",
+                "rewrite",
+                "edit question",
+                "mode raisonnement",
+                "reasoning mode",
+                "voice mode",
+                "tools",
+                "tool",
+                "toggle theme",
+                "settings",
+                "setting",
+                "start chatting",
+                "new chat",
+                "nouvelle discussion",
+                "nouveau chat",
+                "mode vocal",
+                "sign in",
+                "sign up",
+                "login",
+                "learn more",
+                "copy to clipboard",
+                "like",
+                "dislike",
+                "delete question",
+                "select agent",
+                "add files",
+            ],
+            "allow_unlabeled_nearby_submit": True,
+        }
+        if pid == "mistral":
+            base["ambiguous_submit_labels"].extend(["turn off"])
+            return base
+        if pid == "duckai":
+            base["preferred_submit_labels"] = ["envoyer", "send", "submit", "send message"]
+            base["ambiguous_submit_labels"].extend(
+                [
+                    "personnaliser les reponses",
+                    "personnaliser les réponses",
+                    "privees",
+                    "privées",
+                    "gpt-5",
+                    "nouveau chat vocal",
+                    "nouvelle image",
+                    "parametres et plus",
+                    "paramètres et plus",
+                    "ajoutez des photos ou des fichiers pdf",
+                ]
+            )
+            return base
+        if pid == "huggingchat":
+            base["preferred_submit_labels"] = ["send message", "send", "envoyer", "submit"]
+            base["ambiguous_submit_labels"].extend(
+                [
+                    "manage mcp servers",
+                    "disable all mcp servers",
+                    "generate an image",
+                    "latest world news",
+                    "trending models",
+                    "plan a trip",
+                    "compare technologies",
+                    "find a dataset",
+                    "gift ideas",
+                    "learn something new",
+                    "add attachment",
+                ]
+            )
+            return base
+        return base
+
+    async def _detect_chat_provider_profile(self) -> Dict[str, Any]:
+        url = ""
+        title = ""
+        if self._page:
+            try:
+                url = str(self._page.url or "")
+            except Exception:
+                url = ""
+            try:
+                title = str(await self._page.title() or "")
+            except Exception:
+                title = ""
+
+        url_l = url.lower()
+        title_l = title.lower()
+
+        def profile(provider_id: str, source: str) -> Dict[str, Any]:
+            out = self._chat_provider_submit_policy(provider_id)
+            out["provider_id"] = provider_id
+            out["source"] = source
+            out["url"] = url
+            out["title"] = title
+            return out
+
+        if "chat.mistral.ai" in url_l or title_l == "le chat":
+            return profile("mistral", "url_title")
+        if "duck.ai" in url_l or "duckduckgo" in title_l or "duck.ai" in title_l:
+            return profile("duckai", "url_title")
+        if "huggingface.co/chat" in url_l or "huggingchat" in title_l:
+            return profile("huggingchat", "url_title")
+
+        if not self._page:
+            return profile("generic", "fallback")
+
+        try:
+            dom_hints = await self._page.evaluate(
+                """
+                () => {
+                    const sample = Array.from(
+                        document.querySelectorAll('button, textarea, input, [role="textbox"], [contenteditable="true"], .ProseMirror')
+                    ).slice(0, 40);
+                    const text = sample
+                        .map((el) => String(
+                            el.getAttribute?.('aria-label')
+                            || el.innerText
+                            || el.textContent
+                            || el.value
+                            || ''
+                        ).toLowerCase())
+                        .join(' | ');
+                    return { text };
+                }
+                """
+            )
+        except Exception:
+            dom_hints = {}
+
+        hint_text = str((dom_hints or {}).get("text") or "")
+        if "ask anything" in hint_text and "think" in hint_text:
+            return profile("mistral", "dom_hint")
+        if "posez toutes vos questions en prive" in hint_text or "posez toutes vos questions en privé" in hint_text:
+            return profile("duckai", "dom_hint")
+        if "start chatting" in hint_text and "send message" in hint_text:
+            return profile("huggingchat", "dom_hint")
+        return profile("generic", "fallback")
+
+    async def _submit_active_composer(self) -> Dict[str, Any]:
+        """Essaie de soumettre un composeur de chat actif si Enter seul n'a pas suffi."""
+        if not self._page:
+            return {"success": False, "error": "Page non chargée"}
+        try:
+            result = await self._page.evaluate(
+                """
+                () => {
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && style.opacity !== '0'
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const textLike = (el) => {
+                        if (!el) return false;
+                        const tag = String(el.tagName || '').toLowerCase();
+                        const role = String(el.getAttribute?.('role') || '').toLowerCase();
+                        const type = String(el.getAttribute?.('type') || el.type || '').toLowerCase();
+                        return tag === 'textarea'
+                            || el.isContentEditable
+                            || role === 'textbox'
+                            || role === 'searchbox'
+                            || role === 'combobox'
+                            || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')
+                            || (tag === 'input' && ![
+                                'checkbox', 'radio', 'submit', 'button', 'reset',
+                                'hidden', 'file', 'image', 'range', 'color'
+                            ].includes(type));
+                    };
+                    const textOf = (el) => String(
+                        ('value' in el ? el.value : (el.innerText || el.textContent || '')) || ''
+                    ).replace(/\\s+/g, ' ').trim();
+                    const controls = Array.from(document.querySelectorAll(
+                        'textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror'
+                    )).filter(visible);
+                    let composer = document.activeElement;
+                    if (composer && !textLike(composer)) {
+                        composer = composer.closest?.(
+                            'textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror'
+                        ) || null;
+                    }
+                    if (!(composer && controls.includes(composer))) {
+                        composer = controls.find((el) => textOf(el).length > 0) || null;
+                    }
+                    if (!composer) return { submitted: false, reason: 'no_composer' };
+                    const composerValue = textOf(composer);
+                    if (!composerValue) return { submitted: false, reason: 'empty_composer' };
+                    const composerRect = composer.getBoundingClientRect();
+
+                    const buttons = Array.from(document.querySelectorAll(
+                        'button, [role="button"], input[type="submit"], input[type="button"]'
+                    )).filter((el) => {
+                        if (!visible(el)) return false;
+                        const disabled = !!el.disabled || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                        return !disabled;
+                    });
+                    const labelOf = (el) => String(
+                        el.getAttribute('aria-label') || el.innerText || el.textContent || el.value || ''
+                    ).replace(/\\s+/g, ' ').trim();
+                    const ambiguousLabels = /(think|rewrite|edit question|mode raisonnement|reasoning mode|voice mode|tools?|toggle theme|settings?|start chatting|new chat|nouvelle discussion|nouveau chat|mode vocal)/i;
+                    const strongSubmitLabels = /(^|\\b)(send|envoyer|submit|reply|répondre|repondre)(\\b|$)/i;
+                    const nearbyButtons = buttons.filter((el) => {
+                        const label = labelOf(el);
+                        if (ambiguousLabels.test(label)) return false;
+                        const rect = el.getBoundingClientRect();
+                        return Math.abs(rect.top - composerRect.bottom) <= 260
+                            || Math.abs(rect.bottom - composerRect.top) <= 260
+                            || (
+                                rect.left <= composerRect.right + 260
+                                && rect.right >= composerRect.left - 260
+                            );
+                    });
+                    const button = nearbyButtons.find((el) => strongSubmitLabels.test(labelOf(el)))
+                        || nearbyButtons.find((el) => String(el.getAttribute('type') || el.type || '').toLowerCase() === 'submit');
+                    if (!button) {
+                        return { submitted: false, reason: 'no_submit_button', composerValue };
+                    }
+                    const label = labelOf(button);
+                    button.click();
+                    return { submitted: true, strategy: 'dom_click_submit', button_label: label, composerValue };
+                }
+                """
+            )
+            if isinstance(result, dict) and result.get("submitted"):
+                try:
+                    await self._page.wait_for_timeout(120)
+                except Exception:
+                    pass
+                return {"success": True, **result}
+            return {"success": False, **(result if isinstance(result, dict) else {"reason": "unknown"})}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     # ─── Phase 2.3 — Smart Tab Manager ─────────────────────────────────────────
 
@@ -352,15 +755,95 @@ class PlaywrightBrowser:
                 self._session_start = datetime.now()
                 # Stocker les extra headers pour les nouvelles pages
                 self._extra_headers = extra_headers
+                self._last_dom_snapshot_meta = None
+                self._domain_backoff = {}
+                self._popup_observer_installed = False
                 # Installer les listeners dialog + download (Phase 4)
                 self._install_dialog_listener()
                 self._install_download_listener()
+                # Fix 5: Installer le popup auto-dismiss permanent
+                await self._install_popup_observer()
                 return True
                 
             except Exception as e:
                 logger.error(f"Erreur démarrage Playwright: {e}")
                 return False
     
+    async def _install_popup_observer(self) -> None:
+        """Fix 5: Installe un MutationObserver permanent qui dismiss les popups/overlays.
+
+        Injecté via add_init_script pour s'exécuter sur chaque nouvelle page.
+        Ne bloque jamais — best-effort uniquement.
+        Contrôlé par LUMENA_BROWSER_AUTO_DISMISS (défaut: 1).
+        """
+        if self._popup_observer_installed:
+            return
+        if not self._context:
+            return
+        if os.getenv("LUMENA_BROWSER_AUTO_DISMISS", "1") not in ("1", "true", "True"):
+            return
+        try:
+            popup_script = """
+            (() => {
+                if (window.__lumena_popup_observer__) return;
+                window.__lumena_popup_observer__ = true;
+
+                const CLOSE_SELECTORS = [
+                    '[aria-label*="close" i]',
+                    '[aria-label*="fermer" i]',
+                    '[aria-label*="dismiss" i]',
+                    '[data-testid*="close" i]',
+                    'button.close',
+                    'button[class*="close" i]',
+                    '[class*="modal"] button[class*="close" i]',
+                    '[class*="popup"] button[class*="close" i]',
+                    '[class*="overlay"] button[class*="close" i]',
+                ];
+
+                const tryDismiss = () => {
+                    for (const sel of CLOSE_SELECTORS) {
+                        try {
+                            const els = document.querySelectorAll(sel);
+                            for (const el of els) {
+                                const r = el.getBoundingClientRect();
+                                if (r.width > 0 && r.height > 0 && el.offsetParent !== null) {
+                                    // Ne pas fermer si c'est un élément de navigation principal
+                                    const label = String(el.getAttribute('aria-label') || el.textContent || '').toLowerCase();
+                                    if (label.includes('menu') || label.includes('nav')) continue;
+                                    el.click();
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                };
+
+                // Observer les mutations DOM pour détecter l'apparition de popups
+                const observer = new MutationObserver((mutations) => {
+                    let hasNewNodes = false;
+                    for (const m of mutations) {
+                        if (m.addedNodes.length > 0) { hasNewNodes = true; break; }
+                    }
+                    if (hasNewNodes) {
+                        // Délai court pour laisser le popup se rendre complètement
+                        setTimeout(tryDismiss, 300);
+                    }
+                });
+
+                if (document.body) {
+                    observer.observe(document.body, { childList: true, subtree: true });
+                } else {
+                    document.addEventListener('DOMContentLoaded', () => {
+                        observer.observe(document.body, { childList: true, subtree: true });
+                    });
+                }
+            })();
+            """
+            await self._context.add_init_script(popup_script)
+            self._popup_observer_installed = True
+            logger.debug("🚫 Popup auto-dismiss observer installé")
+        except Exception as e:
+            logger.debug(f"[popup_observer] Installation échouée (non-critique): {e}")
+
     async def stop(self):
         """Arrête le navigateur."""
         async with self._lock:
@@ -376,6 +859,7 @@ class PlaywrightBrowser:
                 self._context = None
                 self._browser = None
                 self._playwright = None
+                self._last_dom_snapshot_meta = None
                 
                 logger.info("🌐 Playwright arrêté")
             except Exception as e:
@@ -404,6 +888,35 @@ class PlaywrightBrowser:
             logger.warning(f"🛡️ SSRF bloqué: {e}")
             return {"success": False, "error": f"Navigation bloquée: {e}"}
 
+        # Fix 8: Navigation idempotente — si déjà sur cette URL, ne pas re-naviguer
+        try:
+            current_url = self._page.url if self._page and not self._page.is_closed() else ""
+            # Normaliser les URLs pour comparaison (ignorer trailing slash)
+            def _norm_url(u: str) -> str:
+                return u.rstrip("/").split("?")[0].split("#")[0].lower()
+            if current_url and _norm_url(current_url) == _norm_url(url):
+                logger.debug(f"🔄 Navigation idempotente: déjà sur {url}")
+                return {
+                    "success": True,
+                    "url": current_url,
+                    "title": await self._page.title(),
+                    "status": 200,
+                    "cached": True,
+                }
+        except Exception:
+            pass  # En cas d'erreur, continuer la navigation normale
+
+        # Fix 7: Rate limiting adaptatif par domaine
+        try:
+            domain = urlparse(url).netloc
+            if domain and domain in self._domain_backoff:
+                delay = self._domain_backoff[domain]
+                if delay > 0:
+                    logger.debug(f"⏳ Rate limit backoff {domain}: {delay:.1f}s")
+                    await asyncio.sleep(delay)
+        except Exception:
+            pass
+
         try:
             self._ensure_active_tab_index()
             # Récupération : context ok mais page None/fermée → créer une nouvelle page
@@ -419,6 +932,22 @@ class PlaywrightBrowser:
                     return {"success": False, "error": "Aucun onglet actif — relancez le navigateur"}
             response = await self._page.goto(url, wait_until=wait_until, timeout=30000)
             self._pages_visited += 1
+
+            # Fix 7: Réinitialiser le backoff si succès, augmenter si rate limited
+            try:
+                domain = urlparse(url).netloc
+                if domain:
+                    status = response.status if response else 200
+                    if status in (429, 503):
+                        # Doubler le délai (max 30s)
+                        current_delay = self._domain_backoff.get(domain, 0.5)
+                        self._domain_backoff[domain] = min(current_delay * 2, 30.0)
+                        logger.warning(f"⚠️ Rate limit {domain} (HTTP {status}): backoff={self._domain_backoff[domain]:.1f}s")
+                    elif status < 400:
+                        # Succès → réinitialiser le backoff
+                        self._domain_backoff.pop(domain, None)
+            except Exception:
+                pass
             
             return {
                 "success": True,
@@ -665,8 +1194,15 @@ class PlaywrightBrowser:
         try:
             if not filename:
                 filename = f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            
-            filepath = self._screenshots_dir / filename
+
+            target = Path(filename)
+            suffix = (target.suffix or "").lower()
+            if not suffix:
+                target = target.with_suffix(".png")
+            elif suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                target = target.with_suffix(".png")
+
+            filepath = self._screenshots_dir / target.name
             await self._page.screenshot(path=str(filepath), full_page=full_page)
             
             return {
@@ -1043,8 +1579,10 @@ class PlaywrightBrowser:
         pw_selector = self._build_selector(selector, by)
         try:
             from .browser_stealth import human_delay
+            locator = self._page.locator(pw_selector).first
+            await locator.wait_for(state="visible", timeout=5000)
             await asyncio.sleep(human_delay(60, 200) / 1000)
-            await self._page.click(pw_selector, timeout=5000)
+            await locator.click(timeout=5000)
             await asyncio.sleep(human_delay(30, 100) / 1000)
             return {"success": True, "clicked": selector, "method": by}
         except Exception as e:
@@ -1066,9 +1604,14 @@ class PlaywrightBrowser:
 
         pw_selector = self._build_selector(selector, by)
         try:
-            if clear:
-                await self._page.fill(pw_selector, "")
-            await self._page.type(pw_selector, text, delay=50)
+            locator = self._page.locator(pw_selector).first
+            await locator.wait_for(state="visible", timeout=8000)
+            typed_value = await self._set_text_like_locator(locator, text, clear=clear)
+            if typed_value != self._normalize_text_value(text):
+                return {
+                    "success": False,
+                    "error": f"Saisie incomplete dans {selector!r} (valeur persistante: {typed_value!r})",
+                }
             return {"success": True, "typed_in": selector, "text_length": len(text)}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1109,6 +1652,205 @@ class PlaywrightBrowser:
             return {"success": False, "error": "Page non chargée"}
         try:
             await self._page.keyboard.press(key)
+            if str(key or "").lower() == "enter":
+                submit_result = await self._submit_active_composer()
+                if submit_result.get("success"):
+                    return {
+                        "success": True,
+                        "key_pressed": key,
+                        "submit_strategy": submit_result.get("strategy", ""),
+                        "submit_button_label": submit_result.get("button_label", ""),
+                    }
+            return {"success": True, "key_pressed": key}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def _submit_active_composer(self) -> Dict[str, Any]:
+        """Soumission adaptative du composeur selon le provider courant."""
+        if not self._page:
+            return {"success": False, "error": "Page non chargee"}
+        try:
+            profile = await self._detect_chat_provider_profile()
+            result = await self._page.evaluate(
+                """
+                (payload) => {
+                    const providerId = String(payload?.provider_id || 'generic');
+                    const preferredLabels = Array.isArray(payload?.preferred_submit_labels)
+                        ? payload.preferred_submit_labels.map((v) => String(v || '').toLowerCase())
+                        : [];
+                    const ambiguousList = Array.isArray(payload?.ambiguous_submit_labels)
+                        ? payload.ambiguous_submit_labels.map((v) => String(v || '').toLowerCase())
+                        : [];
+                    const allowUnlabeledNearbySubmit = Boolean(
+                        payload?.allow_unlabeled_nearby_submit !== false
+                    );
+                    const visible = (el) => {
+                        if (!el) return false;
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.display !== 'none'
+                            && style.visibility !== 'hidden'
+                            && style.opacity !== '0'
+                            && rect.width > 0
+                            && rect.height > 0;
+                    };
+                    const textLike = (el) => {
+                        if (!el) return false;
+                        const tag = String(el.tagName || '').toLowerCase();
+                        const role = String(el.getAttribute?.('role') || '').toLowerCase();
+                        const type = String(el.getAttribute?.('type') || el.type || '').toLowerCase();
+                        return tag === 'textarea'
+                            || el.isContentEditable
+                            || role === 'textbox'
+                            || role === 'searchbox'
+                            || role === 'combobox'
+                            || el.matches?.('[contenteditable="true"], [contenteditable=""], .ProseMirror')
+                            || (tag === 'input' && ![
+                                'checkbox', 'radio', 'submit', 'button', 'reset',
+                                'hidden', 'file', 'image', 'range', 'color'
+                            ].includes(type));
+                    };
+                    const textOf = (el) => String(
+                        ('value' in el ? el.value : (el.innerText || el.textContent || '')) || ''
+                    ).replace(/\\s+/g, ' ').trim();
+                    const controls = Array.from(document.querySelectorAll(
+                        'textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror'
+                    )).filter(visible);
+                    let composer = document.activeElement;
+                    if (composer && !textLike(composer)) {
+                        composer = composer.closest?.(
+                            'textarea, input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="searchbox"], [role="combobox"], .ProseMirror'
+                        ) || null;
+                    }
+                    if (!(composer && controls.includes(composer))) {
+                        composer = controls.find((el) => textOf(el).length > 0) || null;
+                    }
+                    if (!composer) {
+                        return { submitted: false, reason: 'no_composer', provider_id: providerId };
+                    }
+                    const composerValue = textOf(composer);
+                    if (!composerValue) {
+                        return { submitted: false, reason: 'empty_composer', provider_id: providerId };
+                    }
+                    const composerRect = composer.getBoundingClientRect();
+
+                    const buttons = Array.from(document.querySelectorAll(
+                        'button, [role="button"], input[type="submit"], input[type="button"]'
+                    )).filter((el) => {
+                        if (!visible(el)) return false;
+                        const disabled = !!el.disabled || String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true';
+                        return !disabled;
+                    });
+                    const labelOf = (el) => String(
+                        el.getAttribute('aria-label') || el.innerText || el.textContent || el.value || ''
+                    ).replace(/\\s+/g, ' ').trim();
+                    const attrsOf = (el) => String([
+                        el.getAttribute('aria-label') || '',
+                        el.getAttribute('title') || '',
+                        el.getAttribute('data-testid') || '',
+                        el.getAttribute('name') || '',
+                        el.id || '',
+                        el.className || '',
+                    ].join(' ')).replace(/\\s+/g, ' ').trim();
+                    const normalize = (value) => String(value || '').toLowerCase().replace(/\\s+/g, ' ').trim();
+                    const genericAmbiguous = /(think|rewrite|edit question|mode raisonnement|reasoning mode|voice mode|tools?|toggle theme|settings?|start chatting|new chat|nouvelle discussion|nouveau chat|mode vocal|sign in|sign up|login|learn more|copy to clipboard|like|dislike|delete question|select agent|add files)/i;
+                    const strongSubmitLabels = /(^|\\b)(send|envoyer|submit|reply|repondre)(\\b|$)/i;
+                    const weakSubmitHints = /(send|envoyer|submit|reply|message|paper.?plane|arrow.?up)/i;
+                    const nearbyButtons = buttons.map((el) => {
+                        const label = labelOf(el);
+                        const normLabel = normalize(label);
+                        const attrs = normalize(attrsOf(el));
+                        const joined = `${normLabel} ${attrs}`.trim();
+                        const rect = el.getBoundingClientRect();
+                        const nearComposer = Math.abs(rect.top - composerRect.bottom) <= 260
+                            || Math.abs(rect.bottom - composerRect.top) <= 260
+                            || (
+                                rect.left <= composerRect.right + 260
+                                && rect.right >= composerRect.left - 260
+                            );
+                        if (!nearComposer) return null;
+
+                        let score = 0;
+                        if (genericAmbiguous.test(label)) score -= 250;
+                        if (ambiguousList.some((entry) => entry && joined.includes(entry))) score -= 250;
+                        if (preferredLabels.some((entry) => entry && joined.includes(entry))) score += 160;
+                        if (strongSubmitLabels.test(label)) score += 120;
+                        if (weakSubmitHints.test(joined)) score += 70;
+                        if (String(el.getAttribute('type') || el.type || '').toLowerCase() === 'submit') score += 120;
+
+                        const area = Math.max(1, rect.width * rect.height);
+                        const smallIcon = rect.width <= 84 && rect.height <= 84;
+                        const rightAligned = rect.left >= (composerRect.right - 140);
+                        const verticallyAligned = Math.abs((rect.top + rect.bottom) / 2 - (composerRect.top + composerRect.bottom) / 2) <= 110;
+                        const belowComposer = rect.top >= composerRect.top - 20;
+
+                        if (!normLabel && allowUnlabeledNearbySubmit && smallIcon && rightAligned && verticallyAligned && belowComposer) {
+                            score += 95;
+                        }
+                        if (smallIcon) score += 15;
+                        if (rect.left >= composerRect.left) score += 10;
+                        if (rect.top >= composerRect.top - 20) score += 10;
+                        score -= Math.round(Math.abs(rect.left - composerRect.right) / 25);
+                        score -= Math.round(Math.abs(rect.top - composerRect.bottom) / 35);
+
+                        if (/login|sign in|sign up|rewrite|think|tool|voice|settings?/.test(joined)) score -= 160;
+                        return { el, label, score, area };
+                    }).filter(Boolean).sort((a, b) => {
+                        if (b.score !== a.score) return b.score - a.score;
+                        return a.area - b.area;
+                    });
+                    const button = nearbyButtons.find((entry) => entry.score >= 60);
+                    if (!button) {
+                        return {
+                            submitted: false,
+                            reason: 'no_submit_button',
+                            composerValue,
+                            provider_id: providerId,
+                            candidate_labels: nearbyButtons.slice(0, 5).map((entry) => ({
+                                label: entry.label,
+                                score: entry.score,
+                            })),
+                        };
+                    }
+                    button.el.click();
+                    return {
+                        submitted: true,
+                        strategy: 'dom_click_submit',
+                        button_label: button.label,
+                        button_score: button.score,
+                        composerValue,
+                        provider_id: providerId,
+                    };
+                }
+                """,
+                profile,
+            )
+            if isinstance(result, dict) and result.get("submitted"):
+                try:
+                    await self._page.wait_for_timeout(120)
+                except Exception:
+                    pass
+                return {"success": True, **result}
+            return {"success": False, **(result if isinstance(result, dict) else {"reason": "unknown"})}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def keyboard_press(self, key: str) -> Dict[str, Any]:
+        """Presse une touche clavier (ex: Enter, Tab, Escape, ArrowDown, Control+a)."""
+        if not self._page:
+            return {"success": False, "error": "Page non chargee"}
+        try:
+            await self._page.keyboard.press(key)
+            if str(key or "").lower() == "enter":
+                submit_result = await self._submit_active_composer()
+                if submit_result.get("success"):
+                    return {
+                        "success": True,
+                        "key_pressed": key,
+                        "submit_strategy": submit_result.get("strategy", ""),
+                        "submit_button_label": submit_result.get("button_label", ""),
+                        "submit_provider": submit_result.get("provider_id", ""),
+                    }
             return {"success": True, "key_pressed": key}
         except Exception as e:
             return {"success": False, "error": str(e)}

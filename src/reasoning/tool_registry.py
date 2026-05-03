@@ -23,7 +23,7 @@ from .react_config import (
     compute_workspace_relative, get_current_runtime_context,
 )
 from .caller_context import CallerContext, UNKNOWN as _CALLER_UNKNOWN
-from .file_categories import requires_codeagent as _requires_codeagent
+from .file_categories import requires_codeagent as _requires_codeagent, CONFIG_FILENAMES as _CONFIG_FILENAMES
 from .tool_categories import get_category_contract, get_semantic_category
 
 
@@ -34,7 +34,7 @@ from .tool_categories import get_category_contract, get_semantic_category
 # Outils qui MUTENT l'état (écriture fichier, exécution shell, suppression).
 # Leur appel par ReAct sur un fichier code/config de projet doit être refusé.
 _MUTATE_TOOLS_CODE: frozenset[str] = frozenset({
-    "write_file", "edit_file", "multi_edit_file", "apply_patch",
+    "write_file", "edit_file", "multi_edit_file", "apply_patch", "apply_patches",
     "insert_at_anchor", "edit_by_lines", "str_replace",
     "delete_file", "delete_directory", "create_directory",
     "run_command", "run_shell", "exec_command",
@@ -51,9 +51,66 @@ def _strict_mode() -> str:
 
 
 def _react_allow_project_shell() -> bool:
-    """Flag de test: autorise les shell tools REACT dans un projet suivi."""
-    raw = (os.getenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "0") or "0").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    """Autorise ReAct à exécuter des commandes shell dans un projet suivi. Défaut : activé."""
+    raw = (os.getenv("LUMENA_REACT_ALLOW_PROJECT_SHELL", "1") or "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+# ── Exception micro-fix : éditions locales et bornées autorisées pour ReAct ──
+# Outils d'édition ciblés uniquement — write_file et delete_file exclus.
+_MICRO_FIX_TOOLS: frozenset[str] = frozenset({
+    "edit_file", "str_replace", "edit_by_lines", "apply_patch",
+})
+_MICRO_FIX_MAX_LINES: int = 30  # budget maximum de lignes modifiées
+
+
+def _estimate_change_lines(name: str, args: Dict[str, Any]) -> Optional[int]:
+    """Estime le nombre de lignes modifiées par un appel outil. None = non estimable."""
+    if not isinstance(args, dict):
+        return None
+    if name == "str_replace":
+        old = str(args.get("old_str", "") or "")
+        new = str(args.get("new_str", "") or "")
+        return max(len(old.splitlines()), len(new.splitlines()), 1)
+    if name == "edit_by_lines":
+        changes = args.get("changes", [])
+        if not isinstance(changes, list):
+            return None
+        total = sum(
+            len(str(c.get("content", "")).splitlines()) or 1
+            for c in changes
+            if isinstance(c, dict)
+        )
+        return total or len(changes)
+    if name == "apply_patch":
+        patch = str(args.get("patch", "") or "")
+        added = sum(1 for ln in patch.splitlines() if ln.startswith("+") and not ln.startswith("+++"))
+        removed = sum(1 for ln in patch.splitlines() if ln.startswith("-") and not ln.startswith("---"))
+        return max(added, removed, 1)
+    if name == "edit_file":
+        content = str(args.get("content", "") or "")
+        return len(content.splitlines()) or 1
+    return None
+
+
+def _is_react_micro_fix(name: str, args: Dict[str, Any], path_str: str) -> bool:
+    """True si l'opération est un micro-fix local borné autorisé pour ReAct.
+
+    Critères stricts :
+    - Outil d'édition ciblé (edit_file / str_replace / edit_by_lines / apply_patch)
+    - Contenu modifié ≤ _MICRO_FIX_MAX_LINES lignes
+    - Pas un fichier build/config critique (Dockerfile, package.json, pyproject.toml, …)
+
+    Si l'un des critères n'est pas satisfait → False → délégation CodeAgent inchangée.
+    """
+    if name not in _MICRO_FIX_TOOLS:
+        return False
+    if Path(path_str).name in _CONFIG_FILENAMES:
+        return False
+    size = _estimate_change_lines(name, args)
+    if size is None or size > _MICRO_FIX_MAX_LINES:
+        return False
+    return True
 
 
 def _extract_path_from_args(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
@@ -1123,6 +1180,14 @@ class ToolRegistry:
         if not _is_shell and not _requires_codeagent(path_str):
             return None  # .md / .pdf / .svg dans projet → ReAct autorisé
 
+        # Exception micro-fix : édition bornée sur fichier code/config léger
+        if not _is_shell and _is_react_micro_fix(name, args, path_str):
+            logger.info(
+                "[policy] REACT micro-fix autorisé: {} sur {} (~{} lignes)",
+                name, path_str[:60], _estimate_change_lines(name, args) or "?",
+            )
+            return None
+
         # Mutation refusée
         slug = proj.get("slug", "?") if isinstance(proj, dict) else "?"
         msg = (
@@ -1543,7 +1608,7 @@ class ToolRegistry:
 
             # ── Invalidation du cache après opération d'écriture ──
             _WRITE_TOOLS = {
-                "write_file", "edit_file", "edit_by_lines", "apply_patch",
+                "write_file", "edit_file", "edit_by_lines", "apply_patch", "apply_patches",
                 "run_command", "create_file", "delete_file",
             }
             if name in _WRITE_TOOLS and self._observation_cache:

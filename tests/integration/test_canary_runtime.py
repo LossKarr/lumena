@@ -244,7 +244,6 @@ class TestCanaryDeepSeekV4NoSwap:
     def test_v4_flash_not_code_heavy(self):
         """_is_code_heavy_request retourne False pour deepseek-v4-flash."""
         from src.llm.multi_provider import MultiProviderLLM
-        from unittest.mock import MagicMock, patch
         with patch("src.llm.multi_provider.get_model_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(
                 model_id="deepseek-v4-flash",
@@ -259,7 +258,6 @@ class TestCanaryDeepSeekV4NoSwap:
     def test_v4_pro_not_code_heavy(self):
         """_is_code_heavy_request retourne False pour deepseek-v4-pro."""
         from src.llm.multi_provider import MultiProviderLLM
-        from unittest.mock import MagicMock, patch
         with patch("src.llm.multi_provider.get_model_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(
                 model_id="deepseek-v4-pro",
@@ -274,7 +272,6 @@ class TestCanaryDeepSeekV4NoSwap:
     def test_deepseek_chat_still_triggers_swap(self):
         """_is_code_heavy_request retourne True pour deepseek-chat (V3.2) sur code."""
         from src.llm.multi_provider import MultiProviderLLM
-        from unittest.mock import MagicMock, patch
         import os
         with patch("src.llm.multi_provider.get_model_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(

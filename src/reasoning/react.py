@@ -226,6 +226,100 @@ def _extract_anchor_facts(text: str) -> str:
 
 # ── Politique de preuve et complétion du plan ─────────────────────────────────
 # Extraite dans plan_evidence.py pour isolation et testabilité.
+_BROWSER_SPA_NOISE_MARKERS: tuple[str, ...] = (
+    "document.documentelement",
+    "localstorage.getitem",
+    "colorscheme",
+    "prefers-color-scheme",
+    "function k(",
+    "theme\",\"system",
+    "webpack",
+    "__next",
+)
+
+
+def _looks_like_browser_spa_noise(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    marker_hits = sum(1 for marker in _BROWSER_SPA_NOISE_MARKERS if marker in lower)
+    if marker_hits >= 2:
+        return True
+    return lower.count("=>") >= 2 and lower.count("{") >= 10 and lower.count("}") >= 10
+
+
+def _extract_human_browser_lines(text: str, *, max_lines: int = 12) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if lower.startswith(("📄 page:", "url:", "interactive elements:", "form state:")):
+            continue
+        if any(marker in lower for marker in _BROWSER_SPA_NOISE_MARKERS):
+            continue
+        if len(line) < 8:
+            continue
+        alpha_count = sum(ch.isalpha() for ch in line)
+        if alpha_count < 4:
+            continue
+        if line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return lines
+
+
+def _looks_like_chat_transcript(text: str) -> bool:
+    if not text or "---" not in text:
+        return False
+    lower = text.lower()
+    if "js exécuté" not in lower and "js execute" not in lower and "conversation" not in lower:
+        return False
+    if not re.search(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", text, re.IGNORECASE):
+        return False
+    human_lines = _extract_human_browser_lines(text, max_lines=20)
+    return len(human_lines) >= 2
+
+
+def _compact_browser_observation_payload(
+    tool_name: str,
+    observation_text: str,
+    is_chat_surface: bool = False,
+) -> Optional[str]:
+    """Compacte intelligemment les observations browser bruitées ou transcriptées.
+
+    Fix B: Pour les surfaces chat (chat_composer, chat_transcript), la limite est augmentée
+    à 3500 chars pour ne pas tronquer les conversations longues.
+    """
+    if not observation_text:
+        return None
+    # Fix B: Limite adaptée à la surface — plus haute pour les chats
+    _compact_limit = 3500 if is_chat_surface else 1400
+    if tool_name == "browser_get_content" and _looks_like_browser_spa_noise(observation_text):
+        title_match = re.search(r"^📄 Page:\s*(.+)$", observation_text, re.MULTILINE)
+        title = title_match.group(1).strip() if title_match else "Page browser"
+        # Fix B: Plus de lignes extraites pour les surfaces chat
+        max_lines = 30 if is_chat_surface else 10
+        human_lines = _extract_human_browser_lines(observation_text, max_lines=max_lines)
+        if human_lines:
+            return (
+                f"📄 Page: {title}\n\n"
+                "⚠️ SPA shell détectée — observation browser compactée sur le texte humain visible.\n\n"
+                + "\n".join(human_lines)
+            )[:_compact_limit]
+    if tool_name == "browser_evaluate" and _looks_like_chat_transcript(observation_text):
+        max_lines = 30 if is_chat_surface else 12
+        human_lines = _extract_human_browser_lines(observation_text, max_lines=max_lines)
+        if human_lines:
+            return ("✅ JS exécuté\n→ " + "\n---\n".join(human_lines))[:_compact_limit]
+    return None
+
+
 from .plan_evidence import (
     _SEQ_FALLBACK_BLOCKLIST,
     _EXPLORATION_TOOLS_STRICT,
@@ -270,10 +364,1103 @@ def _compute_read_sig(tool_name: str, tool_args: dict) -> tuple:
         return (str(sorted(tool_args.keys())), None, tool_name)
 
 
+# ── Browser impasse detection ─────────────────────────────────────────────────
+# Signaux textuels indiquant qu'une page est bloquée / non exploitable.
+# Chaque entrée : (token, raison lisible, try_dismiss)
+#   try_dismiss=True  → overlay/popup potentiellement résolvable
+#   try_dismiss=False → blocage structurel (anti-bot, auth, erreur serveur)
+_BROWSER_IMPASSE_SIGNALS: list = [
+    # Cloudflare / anti-bot
+    ("cloudflare", "protection Cloudflare détectée", False),
+    ("checking your browser", "vérification anti-bot Cloudflare", False),
+    ("just a moment", "vérification Cloudflare (Just a moment)", False),
+    ("challenge_running", "challenge Cloudflare actif", False),
+    # Captcha
+    ("captcha", "CAPTCHA requis — vérification humaine", False),
+    ("recaptcha", "reCAPTCHA détecté", False),
+    ("i'm not a robot", "reCAPTCHA checkbox détecté", False),
+    # Erreurs serveur connues
+    ("dyno hours exhausted", "service Heroku suspendu (dyno hours épuisées)", False),
+    ("no web processes running", "service Heroku sans processus web", False),
+    ("application error", "erreur applicative — site en panne", False),
+    # Contrôle d'accès
+    ("access denied", "accès refusé par le serveur", False),
+    ("403 forbidden", "accès interdit (403)", False),
+    ("401 unauthorized", "authentification requise (401)", False),
+    ("rate limit exceeded", "rate limit atteint — trop de requêtes", False),
+    ("too many requests", "trop de requêtes (429)", False),
+    # Login wall / mur d'authentification
+    # Signaux qualifiés (login+qualificateur) pour éviter les faux positifs sur formulaires normaux
+    ("you must be logged in", "mur d'authentification — connexion requise", False),
+    ("you must sign in", "mur d'authentification — connexion requise", False),
+    ("please log in to continue", "mur d'authentification — connexion requise", False),
+    ("please sign in to continue", "mur d'authentification — connexion requise", False),
+    ("login required", "mur d'authentification — login requis", False),
+    ("sign in required", "mur d'authentification — sign in requis", False),
+    ("members only", "contenu réservé aux membres", False),
+    ("subscribers only", "contenu réservé aux abonnés", False),
+    ("authentication required", "authentification requise (page)", False),
+    ("your session has expired", "session expirée — reconnexion requise", False),
+    # Overlays bloquants (dismiss peut aider)
+    ("cookie consent", "bannière cookies bloquante", True),
+    ("accept cookies", "popup cookies bloquant", True),
+    # Page vide / non interactive
+    ("no interactive elements found", "aucun élément interactif sur la page", False),
+    ("0 elements found", "aucun élément exploitable (DOM vide)", False),
+    ("aucun élément interactif", "aucun élément interactif sur la page", False),
+]
+
+# Token → frozenset pour lookup rapide sans parcourir la liste à chaque appel
+_BROWSER_IMPASSE_TOKEN_SET: frozenset = frozenset(
+    token for token, _reason, _dismiss in _BROWSER_IMPASSE_SIGNALS
+)
+
+
+def _detect_browser_impasse(obs_text: str) -> "tuple[bool, str, bool]":
+    """Détecte si une observation browser indique une page bloquée / non exploitable.
+
+    Retourne (is_blocked, reason, try_dismiss):
+    - is_blocked  : True si un signal d'impasse est détecté
+    - reason      : description lisible du blocage
+    - try_dismiss : True si browser_dismiss_popups vaut la peine d'être tenté
+    """
+    if not obs_text:
+        return False, "", False
+    lower = obs_text.lower()
+    for token, reason, try_dismiss in _BROWSER_IMPASSE_SIGNALS:
+        if token in lower:
+            return True, reason, try_dismiss
+    return False, "", False
+
+
+BROWSER_SURFACE_TYPES: frozenset[str] = frozenset({
+    "search_results",
+    "listing_results",
+    "chat_composer",
+    "chat_transcript",
+    "public_form",
+    "auth_form",       # formulaire de connexion/login (mot de passe présent)
+    "contact_form",    # formulaire de contact/newsletter (pas de mot de passe)
+    "detail_page",     # fiche produit, événement, concert — contenu riche
+    "spa_shell",       # SPA sans contenu utile chargé (JS requis / loading)
+    "builder_editor",
+    "login_wall",
+    "anti_bot_or_challenge",
+    "error_page",
+    "popup_blocked",
+    "iframe_heavy",
+    "non_interactive",
+    "normal_content",
+    "unknown",
+})
+
+_BROWSER_SURFACE_FILL_FORM_HINTS: frozenset[str] = frozenset({
+    "formulaire", "remplir", "rempli", "submit", "soumettre",
+    "fill form", "fill out", "contact form", "demo form",
+})
+_BROWSER_SURFACE_AUTH_HINTS: frozenset[str] = frozenset({
+    "login", "log in", "sign in", "connexion", "connecter", "se connecter",
+    "authentif", "compte",
+})
+_BROWSER_SURFACE_SEARCH_HINTS: frozenset[str] = frozenset({
+    "recherche google", "résultats google", "resultats google",
+    "google search", "search results", "recherche duckduckgo", "bing search",
+})
+_BROWSER_SURFACE_BUILDER_HINTS: frozenset[str] = frozenset({
+    "form builder", "revision history", "add collaborators",
+    "add element", "available fields", "customize thank you page",
+    "product selector, currently selected form builder",
+    "preview form", "jotform form builder", "dismiss suggestions",
+})
+_BROWSER_SURFACE_IFRAME_HINTS: frozenset[str] = frozenset({
+    "frame(s)", "iframe", "iframeresult", "__tcfapilocator",
+})
+_BROWSER_SURFACE_LISTING_HINTS: frozenset[str] = frozenset({
+    "voir l’annonce", "voir lannonce", "ajouter l’annonce aux favoris",
+    "ajouter lannonce aux favoris", "site de petites annonces gratuites",
+    "choisir une localisation", "mes recherches", "favoris",
+    "valider votre recherche", "déposer une annonce", "deposer une annonce",
+    "voitures d’occasion", "voitures d’occasion", "mileage_max",
+    "petites annonces", "voir le détail", "voir le detail",
+})
+
+# Domaines de sites d’annonces connus — détection par URL même sans hints dans le contenu
+_BROWSER_LISTING_URL_DOMAINS: frozenset[str] = frozenset({
+    "leboncoin.fr", "autoscout24.fr", "autoscout24.com",
+    "lacentrale.fr", "leparking.fr", "paruvendu.fr",
+    "argusdeloccasion.com", "occasion.caradisiac.com",
+    "facebook.com/marketplace",
+})
+# Segments de chemin indiquant une page de résultats / recherche sur ces sites
+_BROWSER_LISTING_URL_PATH_SEGMENTS: frozenset[str] = frozenset({
+    "/lst/", "/recherche", "/listing", "/search",
+    "/voitures/", "/ck/", "/marketplace",
+})
+_BROWSER_SURFACE_PUBLIC_FORM_HINTS: frozenset[str] = frozenset({
+    "textbox", "searchbox", "combobox", "spinbutton", "textarea",
+    "radio", "checkbox", "submit button", "name input", "email input",
+    "password input", "phone input",
+})
+_BROWSER_SURFACE_CHAT_HINTS: frozenset[str] = frozenset({
+    "prosemirror",
+    "message input",
+    "ask anything",
+    "send question",
+    "send message",
+    "start chatting",
+    "new discussion",
+    "new chat",
+    "chat vocal",
+    "select agent",
+    "voice mode",
+    "edit question",
+    "rewrite",
+    "copy to clipboard",
+    "contenteditable trouve",
+})
+_BROWSER_SURFACE_ERROR_HINTS: frozenset[str] = frozenset({
+    "404 not found", "application error", "dyno hours exhausted",
+    "access denied", "403 forbidden", "401 unauthorized",
+    "too many requests", "rate limit exceeded", "no web processes running",
+})
+
+# Signaux forts pour auth_form — champ mot de passe présent dans le DOM
+_BROWSER_SURFACE_AUTH_FORM_HINTS: frozenset[str] = frozenset({
+    "password input", "mot de passe", "password field", "confirm password",
+    "confirmation du mot de passe",
+    "forgot password", "mot de passe oublié",
+    "remember me", "rester connecté", "keep me signed in",
+    "envoyer le code", "send code", "reset code",
+    "retour à la connexion", "return to login",
+})
+# Segments d'URL d'authentification
+_BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS: frozenset[str] = frozenset({
+    "/login", "/signin", "/connexion", "/sign-in", "/log-in",
+    "/auth/", "/auth.", "/public/auth", "/compte/connexion", "/account/login",
+})
+# Signaux pour formulaire de contact (pas de mot de passe)
+_BROWSER_SURFACE_CONTACT_FORM_HINTS: frozenset[str] = frozenset({
+    "formulaire de contact", "contact form", "nous contacter", "contact us",
+    "votre message", "your message", "objet du message", "message subject",
+    "demande de contact", "contact request",
+    "newsletter", "s'abonner à", "subscribe to",
+})
+_BROWSER_SURFACE_CONTACT_ACTION_HINTS: frozenset[str] = frozenset({
+    'button "envoyer votre message"', 'button "nous contacter"',
+    'button "contact us"', 'button "subscribe"',
+})
+# Signaux pour page de détail produit/événement
+_BROWSER_SURFACE_DETAIL_PAGE_HINTS: frozenset[str] = frozenset({
+    "ajouter au panier", "add to cart", "add to bag",
+    "acheter maintenant", "buy now", "commander",
+    "billetterie", "réserver", "book now", "réservation en ligne",
+    "fiche produit", "product details",
+    "en stock", "in stock", "rupture de stock", "out of stock",
+    "quantité :", "quantity:", "taille :", "couleur :",
+    "prix :", "price:", "tarif :", "à partir de",
+    "date :", "lieu :", "horaires :", "programme :",
+    "durée :", "catégorie :", "mise en scène",
+})
+# Signaux pour SPA shell — contenu non chargé / JS requis
+_BROWSER_SURFACE_SPA_SHELL_HINTS: frozenset[str] = frozenset({
+    "javascript is required", "javascript requis", "please enable javascript",
+    "activez javascript pour", "javascript must be enabled",
+    "application loading", "app is loading",
+    "chargement de l'application",
+    "interactive elements: 0\n", "interactive elements: 1\n",
+})
+_BROWSER_PLAN_PASSIVE_TOOLS: frozenset[str] = frozenset({
+    "browser_navigate", "browser_dom_state", "browser_screenshot",
+    "browser_screenshot_labels", "browser_page_info", "browser_get_content",
+    "browser_get_text", "browser_frames", "browser_frame_content",
+    "browser_scroll", "browser_wait_for",
+})
+
+_READ_ONLY_DISCOVERY_PLAN_TOOLS: frozenset[str] = frozenset({
+    "web_fetch",
+    "web_search",
+    "web_search_brave",
+    "browser_search_google",
+    "get_time",
+    "health_check",
+    "process_status",
+})
+
+_BROWSER_AUXILIARY_ACTION_MARKERS: frozenset[str] = frozenset({
+    'copy to clipboard',
+    'button "copy to clipboard"',
+    'button "like"',
+    'button "dislike"',
+    'button "rewrite"',
+    'button "toggle theme"',
+    'button "settings"',
+})
+
+
+def _browser_observation_is_auxiliary_action(tool_name: str, observation_text: str) -> bool:
+    """Détecte un clic browser neutre qui ne doit pas compter comme progression métier."""
+    if not tool_name.startswith("browser_"):
+        return False
+    lower = (observation_text or "").lower()
+    if not lower:
+        return False
+    if "clic sur" not in lower and "clique sur" not in lower:
+        return False
+    return any(marker in lower for marker in _BROWSER_AUXILIARY_ACTION_MARKERS)
+
+
+def _browser_observation_looks_like_popup_or_modal(observation_text: str) -> bool:
+    lower = (observation_text or "").lower()
+    if not lower:
+        return False
+    popup_markers = (
+        "popup",
+        "pop-up",
+        "modal",
+        "dialog",
+        "annuler",
+        "ouvrir",
+        "fermer",
+        "close",
+        "google_vignette",
+        "vignette",
+        "publicité",
+        "advertisement",
+        "adsense",
+    )
+    return any(marker in lower for marker in popup_markers)
+
+
+def _classify_browser_surface(
+    obs_text: str,
+    *,
+    current_url: str = "",
+    page_title: str = "",
+    previous_surface: str = "",
+    allow_impasse: bool = True,
+) -> "tuple[str, str]":
+    """Classe la surface browser courante pour guider la stratégie ReAct."""
+    blob = "\n".join(x for x in (current_url, page_title, obs_text) if x).strip()
+    if not blob:
+        return "unknown", "aucun signal exploitable"
+
+    lower = blob.lower()
+    _looks_like_terse_action_confirmation = (
+        "✅" in obs_text
+        and any(tok in lower for tok in (
+            "clic sur", "clique sur", "tape ", "texte saisi", "textbox", "button",
+        ))
+    )
+
+    if allow_impasse:
+        blocked, reason, try_dismiss = _detect_browser_impasse(lower)
+        if blocked:
+            if try_dismiss:
+                return "popup_blocked", reason
+            if any(tok in lower for tok in (
+                "cloudflare", "checking your browser", "just a moment",
+                "challenge_running", "captcha", "recaptcha", "i'm not a robot",
+            )):
+                return "anti_bot_or_challenge", reason
+            if any(tok in lower for tok in (
+                "you must be logged in", "you must sign in", "please log in to continue",
+                "please sign in to continue", "login required", "sign in required",
+                "members only", "subscribers only", "authentication required",
+                "your session has expired",
+            )):
+                return "login_wall", reason
+            if any(tok in lower for tok in (
+                "no interactive elements found", "0 elements found", "aucun élément interactif",
+            )):
+                return "non_interactive", reason
+            return "error_page", reason
+
+    # Détection listing par URL — sites d'annonces connus + segment de chemin
+    _url_lower = current_url.lower()
+    if _url_lower and (
+        any(domain in _url_lower for domain in _BROWSER_LISTING_URL_DOMAINS)
+        and any(seg in _url_lower for seg in _BROWSER_LISTING_URL_PATH_SEGMENTS)
+    ):
+        return "listing_results", f"URL de site d'annonces reconnue ({current_url})"
+
+    if any(tok in lower for tok in _BROWSER_SURFACE_BUILDER_HINTS):
+        return "builder_editor", "surface éditeur/builder détectée"
+    if any(tok in lower for tok in _BROWSER_SURFACE_SEARCH_HINTS):
+        return "search_results", "surface de résultats de recherche détectée"
+    if any(tok in lower for tok in _BROWSER_SURFACE_LISTING_HINTS):
+        return "listing_results", "surface de petites annonces détectée"
+    if any(tok in lower for tok in _BROWSER_SURFACE_IFRAME_HINTS):
+        return "iframe_heavy", "surface pilotée par des iframes détectée"
+
+    # SPA shell : aucun contenu utile chargé (JS requis / application en cours de chargement)
+    if any(tok in lower for tok in _BROWSER_SURFACE_SPA_SHELL_HINTS):
+        return "spa_shell", "SPA shell sans contenu utile détecté"
+
+    # Détection de formulaire typé : auth_form > contact_form > detail_page > public_form.
+    # Sur les SPA, /connexion peut afficher encore le formulaire de contact; il faut
+    # le reconnaître explicitement au lieu de le laisser tomber dans public_form.
+    if _looks_like_chat_transcript(obs_text):
+        return "chat_transcript", "transcription de conversation dÃ©tectÃ©e"
+
+    _chat_signal_hits = sum(1 for tok in _BROWSER_SURFACE_CHAT_HINTS if tok in lower)
+    _has_chat_signal = _chat_signal_hits > 0
+    _has_chat_controls = any(tok in lower for tok in (
+        "think",
+        "tools",
+        "send question",
+        "send message",
+        "voice mode",
+        "start chatting",
+        "new discussion",
+        "new chat",
+        "nouvelle discussion",
+        "nouveau chat",
+        "chat vocal",
+        "ask anything",
+        "prosemirror",
+    ))
+
+    _has_password = any(tok in lower for tok in _BROWSER_SURFACE_AUTH_FORM_HINTS)
+    _has_auth_url = bool(_url_lower) and any(
+        seg in _url_lower for seg in _BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS
+    )
+    _has_form_ctrl = any(tok in lower for tok in _BROWSER_SURFACE_PUBLIC_FORM_HINTS)
+    _contact_hits = sum(1 for tok in _BROWSER_SURFACE_CONTACT_FORM_HINTS if tok in lower)
+    _has_contact_action = any(tok in lower for tok in _BROWSER_SURFACE_CONTACT_ACTION_HINTS)
+    _has_contact = (
+        _contact_hits >= 1
+        or "nous contacter" in lower
+        or "contact us" in lower
+        or _has_contact_action
+    )
+
+    if (
+        previous_surface in {"chat_composer", "chat_transcript"}
+        and _looks_like_terse_action_confirmation
+        and (_has_chat_signal or _has_chat_controls or ("chat" in lower and _has_form_ctrl))
+    ):
+        return previous_surface, "confirmation d'action sur une vue de chat deja etablie"
+
+    if (
+        (_has_chat_signal and _has_chat_controls)
+        or ("chat" in lower and _has_form_ctrl and _has_chat_controls)
+    ):
+        return "chat_composer", "surface de chat conversationnel detectee"
+
+    if (_has_password or _has_auth_url) and _has_form_ctrl:
+        if _has_password:
+            return "auth_form", "formulaire d'authentification détecté (champ mot de passe présent)"
+        if _has_contact:
+            return "contact_form", "URL d'auth détectée mais le formulaire visible est un contact/home form (SPA probablement sur la mauvaise vue)"
+
+    # Page de détail riche (produit, événement, concert)
+    if any(tok in lower for tok in _BROWSER_SURFACE_DETAIL_PAGE_HINTS):
+        return "detail_page", "page de détail produit/événement détectée"
+
+    if _has_contact and not _has_password:
+        return "contact_form", "formulaire de contact ou newsletter détecté"
+
+    if (
+        previous_surface == "auth_form"
+        and _has_form_ctrl
+        and _looks_like_terse_action_confirmation
+        and not _has_contact
+    ):
+        return "auth_form", "confirmation d'action sur une vue d'auth déjà établie"
+
+    if _has_form_ctrl:
+        return "public_form", "surface de formulaire remplissable détectée"
+
+    if any(tok in lower for tok in _BROWSER_SURFACE_ERROR_HINTS):
+        return "error_page", "surface d'erreur détectée"
+
+    if previous_surface and previous_surface in BROWSER_SURFACE_TYPES:
+        return previous_surface, f"surface héritée depuis l'état précédent ({previous_surface})"
+
+    return "normal_content", "contenu standard sans signal fort"
+
+
+def _browser_surface_mismatch(surface: str, query: str) -> "tuple[bool, str]":
+    """Détecte les mésalignements surface ↔ objectif utilisateur les plus utiles."""
+    q = (query or "").lower()
+    wants_form_fill = any(tok in q for tok in _BROWSER_SURFACE_FILL_FORM_HINTS)
+    wants_auth = any(tok in q for tok in _BROWSER_SURFACE_AUTH_HINTS)
+
+    if surface == "builder_editor" and wants_form_fill:
+        return True, "tu es dans un éditeur/builder, pas dans un formulaire public remplissable"
+    if surface == "login_wall" and not wants_auth:
+        return True, "la page exige une connexion alors que la tâche ne demande pas une authentification"
+    # Mismatch auth_form ↔ contact_form
+    if surface == "contact_form" and wants_auth:
+        return True, "tu es sur un formulaire de contact, pas un formulaire de connexion — cherche la page /login ou /connexion"
+    if surface == "auth_form" and wants_form_fill and not wants_auth:
+        return True, "tu es sur un formulaire de connexion, pas un formulaire de contact public remplissable"
+    # NOTE: le cas public_form+wants_auth est intentionnellement supprimé : trop de faux positifs
+    # (Perplexity, formulaires génériques) car wants_auth match sur "connexion"/"compte" très courants.
+    # Les vrais mismatches auth sont couverts par auth_form/contact_form/login_wall.
+    return False, ""
+
+
+def _browser_is_auth_intent(query: str) -> bool:
+    q = (query or "").lower()
+    return any(tok in q for tok in _BROWSER_SURFACE_AUTH_HINTS.union({
+        "mot de passe", "password", "oublié", "oublie", "forgot password",
+    }))
+
+
+def _extract_browser_auth_target(obs_text: str) -> Optional[tuple[str, str]]:
+    """Extrait un lien/bouton de connexion visible depuis browser_dom_state."""
+    if not obs_text:
+        return None
+    auth_tokens = (
+        "connexion", "connecter", "se connecter", "login",
+        "log in", "sign in", "authentification",
+    )
+    for line in obs_text.splitlines():
+        m = re.match(r'^\[(\d+)\]\s+(link|button)\s+"([^"]+)"', line.strip(), re.IGNORECASE)
+        if not m:
+            continue
+        label = m.group(3).strip()
+        lower = label.lower()
+        if any(tok in lower for tok in auth_tokens):
+            return m.group(1), label
+    return None
+
+
+def _extract_browser_textbox_target(
+    obs_text: str,
+    *,
+    index: Optional[str] = None,
+) -> Optional[tuple[str, str, str]]:
+    """Extrait un champ texte visible depuis browser_dom_state.
+
+    Retourne (index, role, label) si l'élément ciblé est un champ texte.
+    """
+    if not obs_text:
+        return None
+    wanted = str(index).strip() if index is not None else ""
+    text_roles = {"textbox", "searchbox", "combobox", "spinbutton", "textarea"}
+    fallback = None
+    for line in obs_text.splitlines():
+        m = re.match(r'^\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
+        if not m:
+            m = re.search(r'\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
+            if not m:
+                continue
+        idx, role, label = m.group(1), m.group(2).lower(), m.group(3).strip()
+        if role not in text_roles:
+            continue
+        if wanted and idx == wanted:
+            return idx, role, label
+        if fallback is None:
+            fallback = (idx, role, label)
+    return fallback
+
+
+def _extract_browser_textbox_targets(obs_text: str) -> list[tuple[str, str, str]]:
+    """Retourne tous les champs texte visibles depuis browser_dom_state."""
+    if not obs_text:
+        return []
+    text_roles = {"textbox", "searchbox", "combobox", "spinbutton", "textarea"}
+    matches: list[tuple[str, str, str]] = []
+    for line in obs_text.splitlines():
+        m = re.match(r'^\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
+        if not m:
+            m = re.search(r'\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
+            if not m:
+                continue
+        idx, role, label = m.group(1), m.group(2).lower(), m.group(3).strip()
+        if role in text_roles:
+            matches.append((idx, role, label))
+    return matches
+
+
+def _browser_passive_tool_can_complete_task(tool_name: str, task_desc: str) -> bool:
+    """Autorise seulement certaines tâches de plan pour les outils browser passifs."""
+    desc = (task_desc or "").lower()
+    if tool_name == "browser_navigate":
+        return any(tok in desc for tok in (
+            "naviguer", "aller", "ouvrir", "accéder", "acceder", "visiter",
+            "vérifier", "verifier", "accessible", "opérationnel", "operationnel",
+        ))
+    if tool_name in {
+        "browser_dom_state", "browser_screenshot", "browser_screenshot_labels",
+        "browser_page_info", "browser_get_content", "browser_get_text",
+        "browser_frames", "browser_frame_content",
+    }:
+        # Exclure les tâches qui mentionnent des contextes non-browser
+        if any(excl in desc for excl in ("email", "mail", "spam", "sms", "téléphone", "telephone", "appel")):
+            return False
+        return any(tok in desc for tok in (
+            "trouver", "identifier", "repérer", "reperer", "inspecter",
+            "voir", "lire", "analyser", "localiser", "détecter", "detecter",
+            "vérifier", "verifier", "confirmer",
+        ))
+    if tool_name == "browser_scroll":
+        return any(tok in desc for tok in ("scroller", "scroll", "charger plus"))
+    return False
+
+
+def _read_only_discovery_tool_can_complete_task(tool_name: str, task_desc: str) -> bool:
+    desc = (task_desc or "").lower()
+    if tool_name == "get_time":
+        return any(tok in desc for tok in ("heure", "date", "horaire", "time"))
+    if tool_name in {"health_check", "process_status"}:
+        return any(tok in desc for tok in (
+            "statut", "status", "santé", "sante", "health",
+            "vérifier", "verifier", "accessible", "opérationnel", "operationnel",
+            "disponible", "fonctionne", "running", "alive", "check",
+            "lancer", "démarrer", "demarrer", "serveur", "server", "port",
+        ))
+    if tool_name in {"web_fetch", "web_search", "web_search_brave", "browser_search_google"}:
+        if any(tok in desc for tok in ("échanger", "echanger", "discussion", "conversation", "discuter", "parler", "envoyer")):
+            return False
+        return any(tok in desc for tok in (
+            "vérifier", "verifier", "chercher", "rechercher", "trouver",
+            "identifier", "inspecter", "lire", "consulter", "analyser",
+            "comparer", "regarder",
+        ))
+    return True
+
+
+def _browser_rewrite_human_navigation_action(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    *,
+    query: str,
+    last_surface: str,
+    last_observation: str,
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Préférence au clic réel sur le web avant une renavigation auth redondante."""
+    if tool_name != "browser_navigate":
+        return None
+    if last_surface != "contact_form":
+        return None
+    if not _browser_is_auth_intent(query):
+        return None
+    target_url = str((tool_args or {}).get("url", "")).lower()
+    if not any(seg in target_url for seg in _BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS):
+        return None
+    auth_target = _extract_browser_auth_target(last_observation)
+    if not auth_target:
+        return None
+    idx, label = auth_target
+    return (
+        "browser_click_index",
+        {"index": idx},
+        f"préférence au clic réel sur [{idx}] {label!r} avant une renavigation auth redondante",
+    )
+
+
+def _browser_rewrite_text_entry_action(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    *,
+    last_observation: str,
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Réécrit les faux clics de saisie en vrai type_index.
+
+    Cas réel vu dans les logs:
+    - le modèle appelle browser_click_index sur un textbox
+    - avec `text` ou `value` en argument parasite
+    - le registry supprime l'arg, donc rien n'est écrit
+    """
+    if tool_name != "browser_click_index":
+        return None
+    if not tool_args:
+        return None
+    idx = str(tool_args.get("index", "")).strip()
+    if not idx:
+        return None
+    text_value = tool_args.get("text")
+    if text_value is None:
+        text_value = tool_args.get("value")
+    if text_value is None:
+        return None
+    text_value = str(text_value).strip()
+    if not text_value:
+        return None
+    textbox = _extract_browser_textbox_target(last_observation, index=idx)
+    if textbox is None:
+        return None
+    _tb_idx, role, label = textbox
+    return (
+        "browser_type_index",
+        {"index": _tb_idx, "text": text_value},
+        f"saisie détectée sur [{_tb_idx}] {role} {label!r} — conversion du faux clic en browser_type_index",
+    )
+
+
+_BROWSER_CLICK_ONLY_ROLES: frozenset[str] = frozenset({
+    "radio", "checkbox", "button", "submit button",
+    "menuitem", "option", "tab", "switch",
+})
+
+
+def _browser_rewrite_type_to_click_for_ctrl(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    *,
+    last_observation: str,
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Réécrit browser_type_index en browser_click_index quand la cible est un contrôle non-texte.
+
+    Cas réel vu dans les logs :
+      browser_type_index(index=3, text="oui") sur un radio → playwright rejette la saisie
+      car les radios/checkboxes/boutons ne sont pas des champs texte.
+
+    Ne s'applique que si l'index ciblé est explicitement reconnu comme un contrôle
+    non-texte dans la dernière observation.
+    """
+    if tool_name != "browser_type_index":
+        return None
+    if not tool_args:
+        return None
+    idx = str(tool_args.get("index", "")).strip()
+    if not idx:
+        return None
+    if not last_observation:
+        return None
+    # Chercher l'élément ciblé dans l'observation
+    for line in last_observation.splitlines():
+        m = re.match(r'^\[(\d+)\]\s+([a-z_\s]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
+        if not m:
+            m = re.search(r'\[(\d+)\]\s+([a-z_\s]+?)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
+            if not m:
+                continue
+        line_idx, role, label = m.group(1), m.group(2).strip().lower(), m.group(3).strip()
+        if line_idx != idx:
+            continue
+        if role in _BROWSER_CLICK_ONLY_ROLES or any(
+            ctrl in role for ctrl in ("radio", "checkbox", "button", "submit")
+        ):
+            return (
+                "browser_click_index",
+                {"index": idx},
+                f"réécriture type→click sur [{idx}] {role} {label!r} — les contrôles {role} s'activent par clic, pas par saisie",
+            )
+        break  # index trouvé mais c'est un champ texte → pas de réécriture
+    return None
+
+
+def _browser_rewrite_index_like_selector_action(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Réécrit un faux sélecteur CSS `[12]` vers les outils DOM indexés.
+
+    Cas réel vu dans les logs :
+      browser_type(selector='[16]', text='LumenaAI')
+    alors que `[16]` représente l'index DOM exposé par browser_dom_state,
+    pas un sélecteur CSS valide.
+    """
+    if tool_name not in {"browser_type", "browser_click"}:
+        return None
+    selector = str((tool_args or {}).get("selector", "")).strip()
+    if not selector:
+        return None
+    match = re.fullmatch(r"\[(\d+)\]", selector)
+    if match is None:
+        return None
+    idx = match.group(1)
+    if tool_name == "browser_type":
+        if "text" not in (tool_args or {}):
+            return None
+        return (
+            "browser_type_index",
+            {"index": idx, "text": tool_args.get("text", "")},
+            f"sélecteur '{selector}' reconnu comme index DOM [{idx}] — conversion vers browser_type_index",
+        )
+    return (
+        "browser_click_index",
+        {"index": idx},
+        f"sélecteur '{selector}' reconnu comme index DOM [{idx}] — conversion vers browser_click_index",
+    )
+
+
+def _browser_rewrite_selector_guess_to_index_action(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    *,
+    last_surface: str,
+    last_observation: str,
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Convertit un browser_type à sélecteur deviné vers browser_type_index.
+
+    Cas réel vu dans les logs :
+      - browser_dom_state expose un unique textbox [10] "Ask anything"
+      - le modèle tente browser_type(selector='textarea[aria-label="Ask anything"]', ...)
+      - ou browser_type(selector='text=Ask anything', ...)
+      - alors que le chemin robuste attendu est browser_type_index(index=10, ...)
+    """
+    if tool_name != "browser_type":
+        return None
+    if last_surface not in {"chat_composer", "public_form", "auth_form", "contact_form"}:
+        return None
+    text_value = str((tool_args or {}).get("text", "") or "").strip()
+    if not text_value:
+        return None
+    selector = str((tool_args or {}).get("selector", "") or "").strip()
+    if not selector:
+        return None
+    if re.fullmatch(r"\[(\d+)\]", selector):
+        return None
+
+    selector_lower = selector.lower()
+    heuristic_tokens = (
+        "textarea",
+        "textbox",
+        "contenteditable",
+        "prosemirror",
+        "ask anything",
+        "text=",
+        '[role="textbox"]',
+        "[role='textbox']",
+    )
+    if not any(token in selector_lower for token in heuristic_tokens):
+        return None
+
+    textboxes = _extract_browser_textbox_targets(last_observation)
+    if len(textboxes) != 1:
+        return None
+    idx, role, label = textboxes[0]
+    return (
+        "browser_type_index",
+        {"index": idx, "text": text_value},
+        f"sélecteur browser guessed '{selector}' — conversion vers browser_type_index sur [{idx}] {role} {label!r}",
+    )
+
+
+def _extract_sendkeys_payload(command: str) -> Optional[str]:
+    """Extrait le texte envoyé par un script Windows SendKeys/SendWait."""
+    if not command:
+        return None
+    patterns = (
+        r"SendKeys\(\s*'([^']+)'\s*\)",
+        r'SendKeys\(\s*"([^"]+)"\s*\)',
+        r"SendWait\(\s*'([^']+)'\s*\)",
+        r'SendWait\(\s*"([^"]+)"\s*\)',
+    )
+    for pattern in patterns:
+        m = re.search(pattern, command, re.IGNORECASE)
+        if m:
+            payload = m.group(1).strip()
+            if payload:
+                return payload
+    return None
+
+
+def _browser_rewrite_system_typing_action(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    *,
+    last_observation: str,
+    last_textbox_index: str = "",
+) -> Optional[tuple[str, Dict[str, Any], str]]:
+    """Remplace les SendKeys système par une vraie saisie Playwright.
+
+    Les logs ont montré que cette voie dépend du clavier Windows
+    (Caps Lock/layout/focus) et contourne inutilement Playwright.
+    """
+    if tool_name != "run_command":
+        return None
+    command = str((tool_args or {}).get("command", "")).strip()
+    if not command:
+        return None
+    payload = _extract_sendkeys_payload(command)
+    if payload is None:
+        return None
+    textbox = None
+    if last_textbox_index:
+        textbox = _extract_browser_textbox_target(last_observation, index=last_textbox_index)
+        if textbox is None:
+            return (
+                "browser_type_index",
+                {"index": str(last_textbox_index), "text": payload},
+                f"commande système SendKeys détectée — conversion vers browser_type_index sur le dernier champ texte ciblé [{last_textbox_index}]",
+            )
+    if textbox is None:
+        textbox = _extract_browser_textbox_target(last_observation)
+    if textbox is None:
+        return None
+    idx, role, label = textbox
+    return (
+        "browser_type_index",
+        {"index": idx, "text": payload},
+        f"commande système SendKeys détectée — conversion vers browser_type_index sur [{idx}] {role} {label!r}",
+    )
+
+
+def _extract_browser_interactive_count(obs_text: str) -> Optional[int]:
+    """Extrait le nombre d'éléments interactifs depuis une observation browser."""
+    if not obs_text:
+        return None
+    m = re.search(r"Interactive elements:\s*(\d+)", obs_text, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _extract_browser_form_state(obs_text: str) -> Optional[tuple]:
+    """Extrait l'état de formulaire depuis une observation browser.
+
+    Format attendu : "Form state: filled=X, checked=Y, disabled_buttons=Z,
+                      enabled_submit_buttons=W, controls=V"
+
+    Retourne (filled, checked, disabled_buttons, enabled_submit_buttons, controls) ou None.
+    """
+    if not obs_text:
+        return None
+    m = re.search(
+        r"Form state:\s*filled=(\d+),\s*checked=(\d+),\s*disabled_buttons=(\d+)"
+        r",\s*enabled_submit_buttons=(\d+),\s*controls=(\d+)",
+        obs_text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                int(m.group(4)), int(m.group(5)))
+    except Exception:
+        return None
+
+
+def _make_browser_progress_signature(
+    surface: str,
+    obs_text: str,
+    *,
+    current_url: str = "",
+    page_title: str = "",
+    previous: Optional[tuple] = None,
+) -> tuple:
+    """Construit une signature stable pour mesurer la progression browser.
+
+    Structure 6-tuple :
+      (surface, url, title, interactive_bucket, form_state, extra_signal)
+
+    Les champs manquants réutilisent le précédent état pour éviter les faux
+    no-progress sur `browser_screenshot` pur.
+    Rétrocompatible avec les anciens 4-tuples en entrée (previous).
+    """
+    if previous is None:
+        prev_surface, prev_url, prev_title = "", "", ""
+        prev_bucket, prev_form, prev_extra = None, None, None
+    else:
+        prev_surface = previous[0] if len(previous) > 0 else ""
+        prev_url     = previous[1] if len(previous) > 1 else ""
+        prev_title   = previous[2] if len(previous) > 2 else ""
+        prev_bucket  = previous[3] if len(previous) > 3 else None
+        prev_form    = previous[4] if len(previous) > 4 else None
+        prev_extra   = previous[5] if len(previous) > 5 else None
+
+    _count = _extract_browser_interactive_count(obs_text)
+    _bucket = None if _count is None else _count // 10
+    _form = _extract_browser_form_state(obs_text)
+
+    return (
+        surface or prev_surface or "unknown",
+        current_url or prev_url or "",
+        page_title or prev_title or "",
+        _bucket if _bucket is not None else prev_bucket,
+        _form if _form is not None else prev_form,
+        prev_extra,
+    )
+
+
+def _browser_progress_delta(
+    previous_sig: Optional[tuple],
+    current_sig: tuple,
+    *,
+    action_tool: str = "",
+    observation_text: str = "",
+) -> "tuple[bool, str]":
+    """Détermine si le browser progresse réellement entre deux états.
+
+    Accepte des 4-tuples ou 6-tuples (rétrocompatible).
+    """
+    if previous_sig is None:
+        return True, "premier état browser"
+
+    prev_surface = previous_sig[0] if len(previous_sig) > 0 else ""
+    prev_url     = previous_sig[1] if len(previous_sig) > 1 else ""
+    prev_title   = previous_sig[2] if len(previous_sig) > 2 else ""
+    prev_bucket  = previous_sig[3] if len(previous_sig) > 3 else None
+    prev_form    = previous_sig[4] if len(previous_sig) > 4 else None
+    prev_extra   = previous_sig[5] if len(previous_sig) > 5 else None
+
+    cur_surface = current_sig[0] if len(current_sig) > 0 else ""
+    cur_url     = current_sig[1] if len(current_sig) > 1 else ""
+    cur_title   = current_sig[2] if len(current_sig) > 2 else ""
+    cur_bucket  = current_sig[3] if len(current_sig) > 3 else None
+    cur_form    = current_sig[4] if len(current_sig) > 4 else None
+    cur_extra   = current_sig[5] if len(current_sig) > 5 else None
+
+    if cur_surface != prev_surface:
+        return True, f"surface changée ({prev_surface} → {cur_surface})"
+    if cur_url and prev_url and cur_url != prev_url:
+        return True, "url changée"
+    if cur_title and prev_title and cur_title != prev_title:
+        return True, "titre changé"
+    if action_tool == "browser_navigate" and cur_surface == prev_surface and cur_url and prev_url and cur_url == prev_url:
+        return False, "renavigation vers la même URL sans changement visible (SPA probable)"
+    if (
+        cur_bucket is not None and prev_bucket is not None
+        and cur_bucket != prev_bucket
+        and action_tool in BROWSER_ACTION_TOOLS.union({"browser_frames", "browser_frame_content"})
+    ):
+        return True, "densité interactive changée"
+
+    if observation_text:
+        obs_lower = observation_text.lower()
+        if action_tool in ("browser_click", "browser_click_index", "browser_click_smart") and _browser_observation_is_auxiliary_action(
+            action_tool, observation_text
+        ):
+            return False, "clic auxiliaire sans progression métier"
+        if action_tool == "browser_keyboard_press" and (
+            "soumission n'est probablement pas partie" in obs_lower
+            or "enter n'a pas finalise l'envoi" in obs_lower
+        ):
+            return False, "enter n'a pas provoque de soumission utile"
+
+    # Progression d'état de formulaire
+    if cur_form is not None and prev_form is not None and len(cur_form) >= 4:
+        cur_filled, cur_checked, _cur_dis, cur_submit = cur_form[:4]
+        prev_filled, prev_checked, _prev_dis, prev_submit = prev_form[:4]
+        if cur_filled > prev_filled:
+            return True, "champs remplis en progression"
+        if cur_checked > prev_checked:
+            return True, "cases cochées en progression"
+        if cur_submit > prev_submit:
+            return True, "bouton de soumission activé"
+
+    # Progression détectée via le texte d'observation (typage / case à cocher / navigation)
+    if observation_text:
+        if action_tool in ("browser_type", "browser_type_index"):
+            if (
+                "echec de saisie" in obs_lower
+                or "valeur persistante:" in obs_lower
+                or "valeur actuelle:" in obs_lower
+            ):
+                return False, "saisie non persistante ou explicitement en echec"
+            if "soumission non prete" in obs_lower:
+                return False, "saisie non confirmee par l'interface"
+            if "✅" in observation_text or "typed" in obs_lower or "saisi" in obs_lower:
+                return True, "saisie dans un champ réussie"
+        if action_tool in ("browser_click", "browser_click_index", "browser_click_smart"):
+            if "checkbox" in obs_lower or "case" in obs_lower:
+                if "✅" in observation_text or "checked" in obs_lower or "coché" in obs_lower:
+                    return True, "case à cocher activée"
+            # Un clic sur un lien est une navigation — toujours progrès
+            if " link " in obs_lower and ("✅ clic" in obs_lower or "✅ clic" in observation_text):
+                return True, "clic sur un lien (navigation probable)"
+            if ("envoyer le code" in obs_lower or "send code" in obs_lower) and "✅" in observation_text:
+                return True, "soumission de code de vérification tentée"
+
+        # browser_evaluate : contenu réel = progrès, bruit JS = pas de progrès
+        if action_tool == "browser_evaluate":
+            _eval_real = {
+                "date", "lieu", "prix", "tarif", "billetterie", "concert",
+                "événement", "evenement", "spectacle", "artiste", "salle",
+                "disponible", "réservation", "reservation", "€", "$",
+                "titre", "description", "horaire", "programme",
+            }
+            _eval_noise = {
+                "undefined", "null", "typeerror", "syntaxerror", "referenceerror",
+                "cannot read", "is not a function", "is not defined",
+                "[object object]", "nan", "infinity",
+            }
+            _has_real = any(tok in obs_lower for tok in _eval_real)
+            _has_noise = any(tok in obs_lower for tok in _eval_noise)
+            if "✅" in observation_text and _has_real and not _has_noise:
+                return True, "browser_evaluate retourne du contenu réel (date/lieu/prix/…)"
+            if _has_noise and not _has_real:
+                return False, "browser_evaluate retourne du bruit JS (erreur ou undefined)"
+
+        # browser_dismiss_popups / browser_accept_cookies : dismiss réussi = progrès
+        if action_tool in ("browser_dismiss_popups", "browser_accept_cookies"):
+            if ("✅" in observation_text or "dismissed" in obs_lower
+                    or "fermé" in obs_lower or "accepté" in obs_lower
+                    or "closed" in obs_lower):
+                return True, "overlay/cookie éliminé — page devenue plus accessible"
+
+    # Progression listing : annonce cliquée ou nombre de labels changé
+    if cur_extra is not None and prev_extra is not None:
+        if len(cur_extra) >= 2 and len(prev_extra) >= 2 and cur_extra[1] != prev_extra[1]:
+            return True, "annonce cliquée (listing)"
+        if len(cur_extra) >= 3 and len(prev_extra) >= 3 and cur_extra[2] != prev_extra[2]:
+            return True, "nombre de labels changé (listing)"
+
+    return False, "même surface sans changement utile"
+
+
+def _browser_observation_has_failure(tool_name: str, observation_content: str) -> bool:
+    """Détecte les échecs browser usuels que classify_observation peut laisser passer."""
+    if not tool_name.startswith("browser_"):
+        return False
+    lower = (observation_content or "").lower()
+    if not lower.strip():
+        return False
+    failure_markers = (
+        "aucun élément trouvé",
+        "no element found",
+        "no element matched",
+        "paramètre(s) requis manquant",
+        "required parameter",
+        "invalid selector",
+        "element not found",
+        "élément introuvable",
+        "timed out",
+        "timeout",
+        "erreur:",
+        "failed to",
+    )
+    success_markers = ("✅", "succès", "success", "navigué vers", "clic sur", "texte tapé dans")
+    return any(tok in lower for tok in failure_markers) and not any(tok in lower for tok in success_markers)
+
+
+# ── Ensembles browser vision / action (module-level pour testabilité directe) ─
+# Outils qui redonnent un état visuel/structurel → reset du blind streak
+BROWSER_VISUAL_TOOLS: frozenset = frozenset({
+    "browser_screenshot",        # vue pixel complète
+    "browser_dom_state",         # liste indexée des éléments cliquables
+    "browser_get_content",       # HTML/texte brut de la page
+    "browser_frames",            # liste des iframes → état structurel
+    "browser_frame_content",     # contenu d'un frame → relecture visuelle
+    "browser_screenshot_labels", # screenshot + labels visuels enrichis
+    "browser_page_info",         # URL, titre, dimensions — état minimal
+    "browser_get_text",          # texte extrait — relecture structurelle
+})
+
+# Outils d'action (interactions) → incrémentent le blind streak
+BROWSER_SELF_VISUAL_ACTION_TOOLS: frozenset = frozenset({
+    "browser_navigate",
+    "browser_click",
+    "browser_click_index",
+    "browser_click_smart",
+    "browser_type_index",
+})
+
+BROWSER_ACTION_TOOLS: frozenset = frozenset({
+    "browser_click", "browser_click_index", "browser_click_smart",
+    "browser_click_at", "browser_type", "browser_type_index",
+    "browser_navigate", "browser_hover", "browser_select",
+    "browser_keyboard_press", "browser_drag", "browser_drag_at",
+})
+
+# Outils système vers lesquels le LLM peut dériver après un blocage browser
+_BROWSER_DRIFT_TOOLS: frozenset = frozenset({
+    "run_command", "run_shell", "exec_command", "web_fetch", "curl",
+})
+
+
 class ReActLoop:
     """
     Boucle de raisonnement ReAct pour LUMENA.
-    
+
     Pattern: Think → Act → Observe → (Repeat or Answer)
     """
     
@@ -399,6 +1586,51 @@ class ReActLoop:
     def _browser_blind_streak(self, v):
         self._ensure_exec_state()
         self.exec_state.guards.browser_blind_streak = v
+
+    @property
+    def _last_browser_surface(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.last_browser_surface
+    @_last_browser_surface.setter
+    def _last_browser_surface(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.last_browser_surface = v
+
+    @property
+    def _last_browser_surface_reason(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.last_browser_surface_reason
+    @_last_browser_surface_reason.setter
+    def _last_browser_surface_reason(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.last_browser_surface_reason = v
+
+    @property
+    def _browser_surface_streak(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.browser_surface_streak
+    @_browser_surface_streak.setter
+    def _browser_surface_streak(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.browser_surface_streak = v
+
+    @property
+    def _last_browser_progress_sig(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.last_browser_progress_sig
+    @_last_browser_progress_sig.setter
+    def _last_browser_progress_sig(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.last_browser_progress_sig = v
+
+    @property
+    def _browser_no_progress_streak(self):
+        self._ensure_exec_state()
+        return self.exec_state.guards.browser_no_progress_streak
+    @_browser_no_progress_streak.setter
+    def _browser_no_progress_streak(self, v):
+        self._ensure_exec_state()
+        self.exec_state.guards.browser_no_progress_streak = v
 
     # --- repairs ---
     @property
@@ -1235,6 +2467,7 @@ class ReActLoop:
                 "Cycle strict :\n"
                 "  1. VOIR  → `browser_screenshot` APRÈS chaque navigate ou changement d'état majeur\n"
                 "  2. LIRE  → `browser_dom_state` pour la liste indexée des éléments cliquables\n"
+                "  2b. CLASSER → identifie la surface réelle : résultats, formulaire public, builder, login wall, anti-bot, iframe, erreur\n"
                 "  3. AGIR  → UNE action (click/type) puis re-screenshot pour vérifier\n"
                 "  4. SCROLL → sur une page liste (Airbnb, Amazon, Google Results, Booking…) :\n"
                 "              `browser_scroll` 3-5 fois AVANT de conclure — lazy-load oblige\n"
@@ -1656,7 +2889,7 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 - Le CodeAgent ecrit le code, cree les fichiers, execute, teste, et corrige. Toi tu ne fais que deleguer.
 - `delegate_task` : SYNCHRONE — attend le resultat, tu enchaines (deploy, mail, etc.).
 - `delegate_task_bg` : ARRIERE-PLAN — retourne un task_id, la progression s'affiche automatiquement dans le chat.
-- Seule exception micro-fix (typo, 1 ligne CSS) → `edit_file` directement.
+- Exception micro-fix borné (typo, import manquant, 1-2 lignes cassées, petit fix CSS/HTML/JS/Python, max 30 lignes, 1 seul fichier) → `str_replace` ou `edit_by_lines` en priorité, `edit_file` si fichier court. Exclus : Dockerfile, package.json, pyproject.toml, requirements.txt, tout fichier de config/build. Incertitude ou chantier plus large → `delegate_task` obligatoire.
 - Apres modification de site → `deploy_to_ionos` pour deployer.
 {self._format_plan_section()}
 ## Historique:
@@ -1839,6 +3072,10 @@ Maintenant, reflechis et reponds:"""
         _fail, _overridden = classify_observation(observation_content)
         # ❌ seul n'est PAS un marqueur d'échec — voir plan_evidence._FAIL_MARKERS.
         observation_has_failure = _fail and not _overridden
+        observation_has_failure = observation_has_failure or _browser_observation_has_failure(
+            tool_name,
+            observation_content,
+        )
 
         hints = _TOOL_COMPLETION_HINTS.get(tool_name, [])
         tool_lower = tool_name.lower()
@@ -1857,10 +3094,102 @@ Maintenant, reflechis et reponds:"""
         _has_specific_match = False  # True si au moins un arg/tool/obs match (pas juste hint)
         _completed_this_call = 0  # Limite le nombre de complétion par appel
         _MAX_COMPLETIONS_PER_CALL = 2  # garde-fou: un outil complète au max 2 tâches
+        _SUBMIT_VERBS = ("soumett", "soumettre", "submit", "envoyer le formulaire",
+                         "envoyer le form", "valider le formulaire", "valider le form",
+                         "cliquer sur soumettre", "cliquer sur envoyer")
+        _FINAL_ONLY_STARTS = (
+            "confirmer à", "confirmer que", "confirmer le", "confirmer les",
+            "rapporter", "informer l'", "informer le", "signaler le", "signaler les",
+            "résumer les résultats", "résumer le résultat",
+            "afficher le résultat", "afficher les résultats",
+            "répondre à l'utilisateur",
+        )
+        _RESULT_CAPTURE_MARKERS = (
+            "screenshot du résultat", "screenshot du resultat",
+            "capture du résultat", "capture du resultat",
+            "screenshot final", "capture finale",
+            "screenshot du résultat final", "capture du résultat final",
+        )
+        _STRICT_SUBMIT_SUCCESS_MARKERS = (
+            "soumis", "soumise", "soumission", "submitted",
+            "envoyé", "envoyee", "envoyée", "envoye",
+            "confirmation", "confirmé", "confirmee", "confirmée", "confirmed",
+            "httpbin.org/post", "merci", "success", "réussi", "reussi",
+            "formulaire envoy", "form submitted", "inscription réussie",
+            "compte créé", "account created",
+        )
+        _STRICT_CAPTURE_SUCCESS_MARKERS = (
+            "screenshot", "capture", "📸", ".png", ".jpg", ".jpeg", ".webp",
+        )
+        _CHAT_INTERACTION_MARKERS = (
+            "interagir avec l'ia", "interagir avec une ia",
+            "échanger avec l'ia", "echanger avec l'ia",
+            "échanger avec une ia", "echanger avec une ia",
+            "parler avec l'ia", "parler avec une ia",
+            "discuter avec l'ia", "discuter avec une ia",
+            "envoyer un message", "obtenir une réponse", "obtenir une reponse",
+        )
+        _CHAT_CONFIRM_MARKERS = (
+            "confirmer l'échange", "confirmer l'echange",
+            "échange réussi", "echange réussi", "echange reussi",
+            "échange avec l'ia réussi", "echange avec l'ia reussi",
+            "confirmer la réponse", "confirmer la reponse",
+        )
+        _STRICT_CHAT_SUCCESS_MARKERS = (
+            "réponse", "reponse", "assistant", "a répondu", "a repondu",
+            "message envoyé", "message envoye", "envoyé", "envoye",
+            "reply", "responded", "conversation", "new message",
+        )
+
+        def _strip_plan_prefix(_desc_lower: str) -> str:
+            return re.sub(
+                r"^\s*(?:étape|etape|step)\s*\d+\s*[:\-]\s*",
+                "",
+                (_desc_lower or "").strip(),
+                flags=re.IGNORECASE,
+            ).strip()
+
+        def _is_chat_interaction_task(_desc_lower: str) -> bool:
+            _desc_guard = _strip_plan_prefix(_desc_lower)
+            return any(marker in _desc_guard for marker in _CHAT_INTERACTION_MARKERS)
+
+        def _is_final_only_task(_desc_lower: str) -> bool:
+            _desc_guard = _strip_plan_prefix(_desc_lower)
+            if any(_desc_guard.startswith(fos) for fos in _FINAL_ONLY_STARTS):
+                return True
+            return any(marker in _desc_guard for marker in _CHAT_CONFIRM_MARKERS)
+
+        def _requires_strict_proof(_desc_lower: str) -> bool:
+            _desc_guard = _strip_plan_prefix(_desc_lower)
+            if any(sv in _desc_guard for sv in _SUBMIT_VERBS):
+                return True
+            if _is_final_only_task(_desc_guard):
+                return True
+            if any(marker in _desc_guard for marker in _RESULT_CAPTURE_MARKERS):
+                return True
+            return _is_chat_interaction_task(_desc_guard)
+
+        def _has_strict_plan_proof(_desc_lower: str, _obs_lower: str) -> bool:
+            _desc_guard = _strip_plan_prefix(_desc_lower)
+            if _browser_observation_is_auxiliary_action(tool_name, observation_content or ""):
+                return False
+            if _is_final_only_task(_desc_guard):
+                return False
+            if any(sv in _desc_guard for sv in _SUBMIT_VERBS):
+                return any(marker in _obs_lower for marker in _STRICT_SUBMIT_SUCCESS_MARKERS)
+            if any(marker in _desc_guard for marker in _RESULT_CAPTURE_MARKERS):
+                return any(marker in _obs_lower for marker in _STRICT_CAPTURE_SUCCESS_MARKERS)
+            if _is_chat_interaction_task(_desc_guard):
+                if any(marker in _obs_lower for marker in _STRICT_CHAT_SUCCESS_MARKERS):
+                    return True
+                return _looks_like_chat_transcript(observation_content or "")
+            return True
+
         for task in self._task_plan:
             if task.completed:
                 continue
             desc_lower = task.description.lower()
+            desc_guard = _strip_plan_prefix(desc_lower)
 
             # Guard 5 : outil exploratoire ne peut jamais cocher une tâche métier
             if _is_exploration_for_guard5:
@@ -1890,6 +3219,27 @@ Maintenant, reflechis et reponds:"""
             if observation_has_failure:
                 continue
 
+            # Guard SUBMIT-ONLY : les tâches de soumission ne peuvent être marquées
+            # que par un clic (browser_click_index), pas par une saisie (browser_type_index).
+            # Cause réelle : "formulaire" dans les hints de browser_type_index faisait matcher
+            # "Soumettre le formulaire" alors qu'on était encore en train de remplir des champs.
+            if tool_name == "browser_type_index" and any(sv in desc_guard for sv in _SUBMIT_VERBS):
+                logger.debug(
+                    "[PLAN] Guard SUBMIT-ONLY: '{}' non marquable par browser_type_index (iter {})",
+                    task.description, iteration,
+                )
+                continue
+
+            # Guard FINAL-ONLY : les tâches de rapport/confirmation ne doivent être
+            # marquées qu'au moment du FINAL, pas par un outil browser.
+            # Elles commencent par confirmer/rapporter/informer/signaler.
+            if tool_name.startswith("browser_") and _is_final_only_task(desc_guard):
+                logger.debug(
+                    "[PLAN] Guard FINAL-ONLY: '{}' non marquable par {} — réservé à FINAL (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
             # Fallback: observation de succes + mot du nom d'outil dans la description
             obs_match = False
             if not (hint_match or tool_match or arg_match) and observation_content:
@@ -1913,6 +3263,33 @@ Maintenant, reflechis et reponds:"""
                 )
                 continue
             if hint_match or is_specific:
+                if (
+                    tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
+                    and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
+                ):
+                    logger.debug(
+                        "[PLAN] Outil découverte hors périmètre: '{}' non marquable par {} (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
+                if (
+                    tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
+                    and not _browser_passive_tool_can_complete_task(tool_name, task.description)
+                ):
+                    logger.debug(
+                        "[PLAN] Browser passif hors périmètre: '{}' non marquable par {} (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
+                if (
+                    tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
+                    and not _proof_for_task
+                ):
+                    logger.debug(
+                        "[PLAN] Browser passif sans preuve: '{}' non marquable par {} (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
                 # Hint-only (pas d'arg/tool/obs spécifique) → max 1 tâche par itération
                 if not is_specific and _any_matched and not _has_specific_match:
                     continue
@@ -1929,6 +3306,18 @@ Maintenant, reflechis et reponds:"""
                 if is_verify_task(desc_lower) and not _proof_for_task:
                     logger.debug(
                         "[PLAN] Verify-gate (sem): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
+                if _requires_strict_proof(desc_lower) and not _proof_for_task:
+                    logger.debug(
+                        "[PLAN] Strict-proof (sem): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
+                if _requires_strict_proof(desc_lower) and not _has_strict_plan_proof(desc_lower, obs_lower):
+                    logger.debug(
+                        "[PLAN] Strict-proof content (sem): '{}' non marquable par {} — observation insuffisante (iter {})",
                         task.description, tool_name, iteration,
                     )
                     continue
@@ -1953,12 +3342,53 @@ Maintenant, reflechis et reponds:"""
         # via le fallback séquentiel : "config" dans get_lumena_config matcherait
         # faussement "Configurer les rôles" sans que rien n'ait été fait.
         _seq_fallback_blocked = tool_name in _SEQ_FALLBACK_BLOCKLIST
-        if not _any_matched and not observation_has_failure and not _seq_fallback_blocked:
+        if (
+            not _any_matched
+            and not observation_has_failure
+            and not _seq_fallback_blocked
+            and not _browser_observation_is_auxiliary_action(tool_name, observation_content or "")
+        ):
             tool_words = {w for w in tool_lower.replace("_", " ").split() if len(w) > 2}
             for task in self._task_plan:
                 if not task.completed:
                     desc_lower = task.description.lower()
                     if tool_words and any(tw in desc_lower for tw in tool_words):
+                        if (
+                            tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
+                            and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
+                        ):
+                            logger.debug(
+                                "[PLAN] Outil découverte seq hors périmètre: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if tool_name.startswith("browser_") and _is_final_only_task(desc_lower):
+                            logger.debug(
+                                "[PLAN] Browser seq FINAL-ONLY: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if (
+                            tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
+                            and not _browser_passive_tool_can_complete_task(tool_name, task.description)
+                        ):
+                            logger.debug(
+                                "[PLAN] Browser seq hors périmètre: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if tool_name.startswith("browser_") and not has_sufficient_proof(
+                            tool_name,
+                            observation_content,
+                            task.description,
+                            tool_module_category,
+                            tool_semantic_category,
+                        ):
+                            logger.debug(
+                                "[PLAN] Browser seq sans preuve: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
                         # Verify-gate : le fallback séquentiel n'est pas une preuve réelle.
                         if is_verify_task(desc_lower) and not has_sufficient_proof(
                             tool_name,
@@ -1969,6 +3399,24 @@ Maintenant, reflechis et reponds:"""
                         ):
                             logger.debug(
                                 "[PLAN] Verify-gate (seq): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if _requires_strict_proof(desc_lower) and not has_sufficient_proof(
+                            tool_name,
+                            observation_content,
+                            task.description,
+                            tool_module_category,
+                            tool_semantic_category,
+                        ):
+                            logger.debug(
+                                "[PLAN] Strict-proof (seq): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if _requires_strict_proof(desc_lower) and not _has_strict_plan_proof(desc_lower, obs_lower):
+                            logger.debug(
+                                "[PLAN] Strict-proof content (seq): '{}' non marquable par {} — observation insuffisante (iter {})",
                                 task.description, tool_name, iteration,
                             )
                             break
@@ -2022,7 +3470,13 @@ Maintenant, reflechis et reponds:"""
                     return any(h in desc_lower for h in hints)
             return False
 
-        if not _any_matched and not _seq_matched and not observation_has_failure and not _is_read_only_mode:
+        if (
+            not _any_matched
+            and not _seq_matched
+            and not observation_has_failure
+            and not _is_read_only_mode
+            and not _browser_observation_is_auxiliary_action(tool_name, observation_content or "")
+        ):
             # Garde: max 1 auto-avancement par itération (parallel_tools peut appeler
             # _update_plan_progress N fois dans la même itération → sans garde, N tâches
             # sont marquées completed d'un coup sans rapport avec le contenu réel)
@@ -2061,6 +3515,36 @@ Maintenant, reflechis et reponds:"""
                 for task in self._task_plan:
                     if not task.completed:
                         desc_lower = task.description.lower()
+                        if (
+                            tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
+                            and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
+                        ):
+                            logger.debug(
+                                "[PLAN] Outil découverte auto hors périmètre: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if (
+                            tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
+                            and not _browser_passive_tool_can_complete_task(tool_name, task.description)
+                        ):
+                            logger.debug(
+                                "[PLAN] Browser auto hors périmètre: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if tool_name.startswith("browser_") and not has_sufficient_proof(
+                            tool_name,
+                            observation_content,
+                            task.description,
+                            tool_module_category,
+                            tool_semantic_category,
+                        ):
+                            logger.debug(
+                                "[PLAN] Browser auto sans preuve: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
 
                         # Guard 5 : un outil d'exploration ne peut pas auto-avancer
                         # une tâche métier (premier mot = verbe d'action).
@@ -2099,6 +3583,43 @@ Maintenant, reflechis et reponds:"""
                         ):
                             logger.debug(
                                 "[PLAN] Verify-gate (auto): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if _requires_strict_proof(desc_lower) and not has_sufficient_proof(
+                            tool_name,
+                            observation_content,
+                            task.description,
+                            tool_module_category,
+                            tool_semantic_category,
+                        ):
+                            logger.debug(
+                                "[PLAN] Strict-proof (auto): '{}' non marquable par {} — preuve insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if _requires_strict_proof(desc_lower) and not _has_strict_plan_proof(desc_lower, obs_lower):
+                            logger.debug(
+                                "[PLAN] Strict-proof content (auto): '{}' non marquable par {} — observation insuffisante (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        # Guard SUBMIT-ONLY (fallback) : même restriction que le
+                        # chemin principal — browser_type_index ne peut jamais marquer
+                        # une tâche de soumission.
+                        if tool_name == "browser_type_index" and any(
+                            sv in desc_lower for sv in _SUBMIT_VERBS
+                        ):
+                            logger.debug(
+                                "[PLAN] Guard SUBMIT-ONLY (auto): '{}' non marquable par browser_type_index (iter {})",
+                                task.description, iteration,
+                            )
+                            break
+                        # Guard FINAL-ONLY (fallback) : les tâches de rapport/confirmation
+                        # ne sont pas marquables par des outils browser.
+                        if tool_name.startswith("browser_") and _is_final_only_task(desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard FINAL-ONLY (auto): '{}' non marquable par {} — réservé à FINAL (iter {})",
                                 task.description, tool_name, iteration,
                             )
                             break
@@ -3399,20 +4920,13 @@ Maintenant, reflechis et reponds:"""
                         )
 
                     # ── Détecteur anti-aveuglement browser ──
-                    # Si 3+ actions browser_* consécutives SANS screenshot ni dom_state → forcer à "voir"
+                    # Si 3+ actions browser_* consécutives SANS revalidation visuelle → forcer à "voir"
                     _tool = action.tool_name or ""
                     _iter_now = len(self.history)
-                    _BROWSER_VISUAL = {"browser_screenshot", "browser_dom_state", "browser_get_content"}
-                    _BROWSER_ACTION = {
-                        "browser_click", "browser_click_index", "browser_click_smart",
-                        "browser_click_at", "browser_type", "browser_type_index",
-                        "browser_navigate", "browser_hover", "browser_select",
-                        "browser_keyboard_press", "browser_drag", "browser_drag_at",
-                    }
-                    if _tool in _BROWSER_VISUAL:
+                    if _tool in BROWSER_VISUAL_TOOLS or _tool in BROWSER_SELF_VISUAL_ACTION_TOOLS:
                         self._last_browser_visual_iter = _iter_now
                         self._browser_blind_streak = 0
-                    elif _tool in _BROWSER_ACTION:
+                    elif _tool in BROWSER_ACTION_TOOLS:
                         self._browser_blind_streak += 1
                         if self._browser_blind_streak >= 3:
                             logger.warning(
@@ -3427,6 +4941,24 @@ Maintenant, reflechis et reponds:"""
                                 "avant ta prochaine action. Le DOM a probablement changé."
                             )
                             self._browser_blind_streak = 0  # reset après injection
+
+                    # ── Guard anti-dérive post-blocage browser ─────────────────────────
+                    # Après une impasse browser avec suggestion de dismiss, empêche la
+                    # dérive vers run_command/curl/exec sans justification explicite.
+                    if getattr(self, "_browser_post_block_guard", False):
+                        if _tool in _BROWSER_DRIFT_TOOLS:
+                            self._browser_post_block_guard = False
+                            if not self._pending_loop_guidance:
+                                self._pending_loop_guidance = (
+                                    f"⚠️ GUIDANCE ANTI-DÉRIVE BROWSER: tu tentes d'utiliser `{_tool}` "
+                                    "alors qu'un blocage browser est actif. Avant de quitter le navigateur, "
+                                    "essaie d'abord : `browser_dismiss_popups`, `browser_scroll`, "
+                                    "ou `browser_evaluate`. N'utilise des outils système que si "
+                                    "le navigateur est définitivement infranchissable."
+                                )
+                        elif _tool.startswith("browser_"):
+                            # Une action browser légitime → annule le guard
+                            self._browser_post_block_guard = False
 
                     if self._consecutive_same_action >= 3:
                         logger.warning(f"⚠️ Boucle détectée: {action.tool_name} appelé 3x identiquement - forçage FINAL_ANSWER")
@@ -3659,6 +5191,15 @@ Maintenant, reflechis et reponds:"""
                     # Seuls les outils dont l'observation.success=True comptent comme preuve
                     _tools_used_this_session = self._successful_session_tools
                     _all_known_tools = _tools_used_this_session
+
+                    # Fix F: Exclusion browser — si des outils browser ont été utilisés dans la session,
+                    # les patterns "message/messages envoyé" et "j'ai envoyé" sont des résumés légitimes
+                    # d'actions browser réelles (ex: "j'ai eu une conversation de 10 messages avec Mistral").
+                    # Ces patterns ne doivent pas déclencher le guard anti-hallucination.
+                    _browser_tools_used_session = any(
+                        t.startswith("browser_") for t in _tools_used_this_session
+                    )
+
                     # Exclusion : références temporelles au passé ("j'ai créé plus tôt", "que j'avais envoyé hier")
                     # → le LLM parle d'une action passée, pas d'une action de cette session.
                     _TEMPORAL_BYPASS_RE = re.compile(
@@ -3674,6 +5215,17 @@ Maintenant, reflechis et reponds:"""
                         for _pattern, _expected_tools in _HALLUCINATION_PATTERNS:
                             if re.search(_pattern, _combined_text, re.IGNORECASE):
                                 if _expected_tools == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof:
+                                    continue
+                                # Fix F: Si des outils browser ont été utilisés dans la session,
+                                # les patterns "message/messages envoyé" et "j'ai envoyé" sont des
+                                # résumés légitimes d'actions browser (ex: conversation de 10 messages).
+                                # On exclut les patterns d'envoi de messages pour éviter les faux positifs.
+                                if _browser_tools_used_session and any(
+                                    kw in _pattern for kw in (
+                                        "message|messages", "envoyé|envoye|expedié|expedie",
+                                        r"\bj[''`]ai (envoyé|envoye",
+                                    )
+                                ):
                                     continue
                                 # Vérifie si AU MOINS l'un des outils attendus a été appelé
                                 if not any(t in _all_known_tools for t in _expected_tools):
@@ -4013,14 +5565,28 @@ Maintenant, reflechis et reponds:"""
 
                 # ── Chemin direct post-delegate_task ✅ : on saute tous les repairs ──
                 # L'instruction injectée était explicite → la réponse est fiable, on ne re-sonde pas.
+                # Guard : si des tâches de vérification restent non résolues dans le plan,
+                # ne pas bypasser — le chemin FINAL normal les reflétera comme ⏭️.
                 if self._after_delegate_success:
-                    self._after_delegate_success = False  # consommé
-                    _finish_iteration(status="ok", summary="delegate_task_final_direct")
-                    message = answer if answer.strip() else (
-                        "Le CodeAgent a terminé avec succès. Consulte le workspace pour les fichiers créés."
+                    self._after_delegate_success = False  # consommé dans tous les cas
+                    _pending_verify = [
+                        t for t in self._task_plan
+                        if not t.completed and is_verify_task(t.description.lower())
+                    ]
+                    if not _pending_verify:
+                        # Cas nominal : aucune verify-task pendante → bypass autorisé
+                        _finish_iteration(status="ok", summary="delegate_task_final_direct")
+                        message = answer if answer.strip() else (
+                            "Le CodeAgent a terminé avec succès. Consulte le workspace pour les fichiers créés."
+                        )
+                        self._mark_task_done("delegate_task_final_direct")
+                        return message
+                    # Verify-tasks non prouvées : traitement FINAL normal ci-dessous
+                    logger.info(
+                        "[delegate] Bypass annulé: {} verify-task(s) non résolue(s) "
+                        "→ traitement FINAL normal (plan reflétera l'état réel)",
+                        len(_pending_verify),
                     )
-                    self._mark_task_done("delegate_task_final_direct")
-                    return message
 
                 # ── Guard anti-thought-leak : le LLM a mis sa réflexion dans ACTION_INPUT au lieu de la réponse ──
                 # Cela arrive quand ACTION_INPUT est vide → fallback sur thought_content (ligne 1881)
@@ -4317,6 +5883,86 @@ Maintenant, reflechis et reponds:"""
             
             # 5. Sinon, exécuter l'outil
             if action.action_type == ActionType.TOOL_CALL and action.tool_name:
+                _last_obs_for_browser = ""
+                if self.history and self.history[-1].observation:
+                    _last_obs_for_browser = self.history[-1].observation.content or ""
+                _browser_rewrite = _browser_rewrite_human_navigation_action(
+                    action.tool_name,
+                    action.tool_args or {},
+                    query=query,
+                    last_surface=self._last_browser_surface or "",
+                    last_observation=_last_obs_for_browser,
+                )
+                if _browser_rewrite is not None:
+                    _new_tool, _new_args, _rewrite_reason = _browser_rewrite
+                    logger.info("[BROWSER HUMAN] {} → {}", action.tool_name, _new_tool)
+                    logger.debug("[BROWSER HUMAN] {}", _rewrite_reason)
+                    action.tool_name = _new_tool
+                    action.tool_args = _new_args
+
+                _text_entry_rewrite = _browser_rewrite_text_entry_action(
+                    action.tool_name,
+                    action.tool_args or {},
+                    last_observation=_last_obs_for_browser,
+                )
+                if _text_entry_rewrite is not None:
+                    _new_tool, _new_args, _rewrite_reason = _text_entry_rewrite
+                    logger.info("[BROWSER WRITE] {} → {}", action.tool_name, _new_tool)
+                    logger.debug("[BROWSER WRITE] {}", _rewrite_reason)
+                    action.tool_name = _new_tool
+                    action.tool_args = _new_args
+
+                _system_typing_rewrite = _browser_rewrite_system_typing_action(
+                    action.tool_name,
+                    action.tool_args or {},
+                    last_observation=_last_obs_for_browser,
+                    last_textbox_index=str(getattr(self, "_browser_last_textbox_index", "") or ""),
+                )
+                if _system_typing_rewrite is not None:
+                    _new_tool, _new_args, _rewrite_reason = _system_typing_rewrite
+                    logger.info("[BROWSER WRITE] {} → {}", action.tool_name, _new_tool)
+                    logger.debug("[BROWSER WRITE] {}", _rewrite_reason)
+                    action.tool_name = _new_tool
+                    action.tool_args = _new_args
+
+                _index_selector_rewrite = _browser_rewrite_index_like_selector_action(
+                    action.tool_name,
+                    action.tool_args or {},
+                )
+                if _index_selector_rewrite is not None:
+                    _new_tool, _new_args, _rewrite_reason = _index_selector_rewrite
+                    logger.info("[BROWSER INDEX] {} → {}", action.tool_name, _new_tool)
+                    logger.debug("[BROWSER INDEX] {}", _rewrite_reason)
+                    action.tool_name = _new_tool
+                    action.tool_args = _new_args
+
+                _selector_guess_rewrite = _browser_rewrite_selector_guess_to_index_action(
+                    action.tool_name,
+                    action.tool_args or {},
+                    last_surface=self._last_browser_surface or "",
+                    last_observation=_last_obs_for_browser,
+                )
+                if _selector_guess_rewrite is not None:
+                    _new_tool, _new_args, _rewrite_reason = _selector_guess_rewrite
+                    logger.info("[BROWSER INDEX] {} → {}", action.tool_name, _new_tool)
+                    logger.debug("[BROWSER INDEX] {}", _rewrite_reason)
+                    action.tool_name = _new_tool
+                    action.tool_args = _new_args
+
+                # P4 — Réécriture browser_type_index → browser_click_index
+                # pour les contrôles non-texte (radio, checkbox, button, switch…)
+                _ctrl_rewrite = _browser_rewrite_type_to_click_for_ctrl(
+                    action.tool_name,
+                    action.tool_args or {},
+                    last_observation=_last_obs_for_browser,
+                )
+                if _ctrl_rewrite is not None:
+                    _new_tool, _new_args, _rewrite_reason = _ctrl_rewrite
+                    logger.info("[BROWSER CTRL] {} → {}", action.tool_name, _new_tool)
+                    logger.debug("[BROWSER CTRL] {}", _rewrite_reason)
+                    action.tool_name = _new_tool
+                    action.tool_args = _new_args
+
                 # Notifier le step_callback (ex: voix) avant l'exécution de l'outil
                 if self.step_callback:
                     try:
@@ -4362,7 +6008,7 @@ Maintenant, reflechis et reponds:"""
                 _tool_cat = getattr(self.tools, "_tool_modules", {}).get(action.tool_name, "unknown")
                 self._category_iter_counts[_tool_cat] = self._category_iter_counts.get(_tool_cat, 0) + 1
                 _CAT_ITER_LIMITS = {
-                    "web": 8, "browser": 6, "memory": 5,
+                    "web": 8, "browser": 32, "memory": 5,
                     "security": 10, "network": 8,
                 }
                 _cat_limit = _CAT_ITER_LIMITS.get(_tool_cat, 0)
@@ -4588,13 +6234,290 @@ Maintenant, reflechis et reponds:"""
                     # parallel_tools: NE PAS propager aux sous-outils individuellement
                     # (causerait N completions en cascade en < 1ms pour chaque sous-outil)
 
-                # Guard web/browser: casser les boucles de navigation qui échouent en série.
-                browser_tools = {
-                    "browser_start", "browser_navigate", "browser_search_google",
-                    "browser_type", "browser_click", "browser_dom_state",
-                }
-                if action.tool_name in browser_tools:
+                # ── Guard browser : impasse, échecs en série, répétition de cible ──
+                # Couvre tous les outils browser_* (préfixe), pas seulement les 6 initiaux.
+                _is_browser_tool = (action.tool_name or "").startswith("browser_")
+                if _is_browser_tool:
                     obs_lower = (observation.content or "").lower()
+                    _page_title = ""
+                    _page_url = ""
+                    _obs_raw = observation.content or ""
+                    # Format dom_state / page_info : "Page: ...\nURL: ..."
+                    _m_title = re.search(r"^Page:\s*(.+)$", _obs_raw, re.MULTILINE)
+                    _m_url   = re.search(r"^URL:\s*(.+)$",  _obs_raw, re.MULTILINE)
+                    if _m_title:
+                        _page_title = _m_title.group(1).strip()
+                    if _m_url:
+                        _page_url = _m_url.group(1).strip()
+                    # Fallback — format browser_navigate : "✅ Navigué vers: Title (URL)"
+                    if not _page_url:
+                        _m_nav = re.search(
+                            r"(?:Navigu[eé] vers|Navigated to)[^\n]*\((https?://[^)\n]+)\)",
+                            _obs_raw,
+                        )
+                        if _m_nav:
+                            _page_url = _m_nav.group(1).strip()
+                    if not _page_title and _page_url:
+                        _m_nav_t = re.search(
+                            r"(?:Navigu[eé] vers|Navigated to):\s*(.+?)\s*\(https?://",
+                            _obs_raw,
+                        )
+                        if _m_nav_t:
+                            _page_title = _m_nav_t.group(1).strip()
+
+                    # Phase 1 browser: reconnaître la surface réelle avant d'insister.
+                    # previous_surface : héritage de surface sur les observations sans signal fort
+                    # (ex : browser_screenshot renvoie juste le chemin du fichier → pas de hints listing)
+                    _obs_text = observation.content or ""
+                    _surface, _surface_reason = _classify_browser_surface(
+                        _obs_text,
+                        current_url=_page_url,
+                        page_title=_page_title,
+                        previous_surface=self._last_browser_surface,
+                    )
+                    if _surface == self._last_browser_surface:
+                        self._browser_surface_streak += 1
+                    else:
+                        self._browser_surface_streak = 1
+                        self._last_browser_surface = _surface
+                    self._last_browser_surface_reason = _surface_reason
+                    logger.debug(
+                        "[BROWSER SURFACE] {} (streak={}) — {}",
+                        _surface,
+                        self._browser_surface_streak,
+                        _surface_reason,
+                    )
+
+                    _prev_progress_sig = self._last_browser_progress_sig
+                    _progress_sig = _make_browser_progress_signature(
+                        _surface,
+                        _obs_text,
+                        current_url=_page_url,
+                        page_title=_page_title,
+                        previous=_prev_progress_sig,
+                    )
+                    _progressed, _progress_reason = _browser_progress_delta(
+                        _prev_progress_sig,
+                        _progress_sig,
+                        action_tool=action.tool_name or "",
+                        observation_text=_obs_text,
+                    )
+                    self._last_browser_progress_sig = _progress_sig
+                    _is_real_action = (action.tool_name or "") in BROWSER_ACTION_TOOLS
+                    if _progressed:
+                        self._browser_no_progress_streak = 0
+                    elif _is_real_action:
+                        # Seules les vraies actions (clics, saisie, navigation) comptent.
+                        # Outils visuels ET utilitaires (scroll, dismiss_popups…) sont neutres.
+                        self._browser_no_progress_streak += 1
+                    logger.debug(
+                        "[BROWSER PROGRESS] progressed={} streak={} — {}",
+                        _progressed,
+                        self._browser_no_progress_streak,
+                        _progress_reason,
+                    )
+
+                    _intent_query = getattr(self, "_original_query", query) or query
+                    _surface_mismatch, _surface_mismatch_reason = _browser_surface_mismatch(
+                        _surface,
+                        _intent_query,
+                    )
+                    _auth_recovery_target = None
+                    if _surface == "contact_form" and _browser_is_auth_intent(_intent_query):
+                        _auth_recovery_target = _extract_browser_auth_target(_obs_text)
+                    if _surface == "iframe_heavy" and action.tool_name not in ("browser_frames", "browser_frame_content"):
+                        self._pending_loop_guidance = (
+                            "⚠️ GUIDANCE SURFACE: Cette page semble pilotée par des iframes. "
+                            "Appelle `browser_frames` puis `browser_frame_content` pour lire le bon frame "
+                            "avant de continuer à cliquer ou taper."
+                        )
+                    elif _surface_mismatch:
+                        _soft_auth_recovery = _surface == "contact_form" and _browser_is_auth_intent(_intent_query)
+                        if _soft_auth_recovery and _auth_recovery_target:
+                            _idx, _label = _auth_recovery_target
+                            self._pending_loop_guidance = (
+                                "⚠️ GUIDANCE AUTH SPA: l'URL ressemble à un login, mais la vue affichée reste un formulaire de contact. "
+                                f"Avant d'abandonner, clique explicitement sur le lien visible [{_idx}] \"{_label}\" "
+                                "avec `browser_click_index`, puis relis le DOM. N'insiste pas avec `browser_navigate` sur la même route."
+                            )
+                        elif _soft_auth_recovery:
+                            self._pending_loop_guidance = (
+                                "⚠️ GUIDANCE AUTH SPA: tu es sur un formulaire de contact alors que la tâche demande une connexion. "
+                                "Explore encore un peu comme un humain: lis le DOM, cherche un lien/bouton de connexion visible, "
+                                "essaie un clic réel avant de conclure."
+                            )
+
+                        if self._browser_surface_streak >= (4 if _soft_auth_recovery else 2):
+                            logger.warning(
+                                "⛔ Mismatch browser surface/objectif: {} — arrêt propre",
+                                _surface_mismatch_reason,
+                            )
+                            _finish_iteration(status="error", error="browser_surface_mismatch")
+                            message = (
+                                f"⛔ Navigation interrompue : **{_surface_mismatch_reason}**.\n\n"
+                                f"Surface détectée : `{_surface}` ({_surface_reason}).\n\n"
+                                "Je peux reprendre si tu me donnes une URL publique directe ou une surface plus adaptée."
+                            )
+                            self._mark_task_failed("browser_surface_mismatch")
+                            return message
+                        self._pending_loop_guidance = (
+                            f"⚠️ GUIDANCE SURFACE: {_surface_mismatch_reason}. "
+                            "Ne continue pas à agir comme si la page était directement exploitable. "
+                            "Cherche une preview/public link/share link, ou change de surface."
+                        )
+
+                    if not _progressed:
+                        _soft_auth_recovery = _surface == "contact_form" and _browser_is_auth_intent(_intent_query)
+                        _no_progress_stop = 8 if _soft_auth_recovery else 6
+                        _no_progress_warn = 4 if _soft_auth_recovery else 3
+                        if self._browser_no_progress_streak >= _no_progress_stop:
+                            logger.warning(
+                                "⛔ Browser sans progression utile (surface={}, streak={}) — arrêt propre",
+                                _surface,
+                                self._browser_no_progress_streak,
+                            )
+                            _finish_iteration(status="error", error="browser_no_progress")
+                            message = (
+                                f"⛔ Navigation interrompue : aucune progression utile détectée sur la surface "
+                                f"`{_surface}` après {self._browser_no_progress_streak} tours.\n\n"
+                                f"Raison: {_progress_reason}. Surface: {_surface_reason}.\n\n"
+                                "Je peux reprendre avec une URL plus directe, une stratégie différente, "
+                                "ou un objectif browser plus simple."
+                            )
+                            self._mark_task_failed("browser_no_progress")
+                            return message
+                        if self._browser_no_progress_streak >= _no_progress_warn:
+                            if _surface == "search_results":
+                                self._pending_loop_guidance = (
+                                    "⚠️ GUIDANCE PROGRESSION: tu restes sur une page de résultats sans progression utile. "
+                                    "Ouvre un résultat concret ou navigue directement vers une URL plus ciblée."
+                                )
+                            elif _surface == "listing_results":
+                                self._pending_loop_guidance = (
+                                    "⚠️ GUIDANCE PROGRESSION: tu es sur une page d'annonces sans avancement. "
+                                    "Clique sur une annonce spécifique ('Voir l'annonce'), utilise les filtres "
+                                    "pour affiner (kilométrage, prix, année), ou scrolle pour charger plus de résultats. "
+                                    "Évite de répéter browser_dom_state sans agir."
+                                )
+                            elif _surface == "public_form":
+                                self._pending_loop_guidance = (
+                                    "⚠️ GUIDANCE PROGRESSION: tu restes sur le même formulaire sans progrès visible. "
+                                    "Relis `browser_dom_state`, identifie un autre champ ou change de stratégie."
+                                )
+                            elif _surface == "auth_form":
+                                self._pending_loop_guidance = (
+                                    "⚠️ GUIDANCE PROGRESSION: tu es sur un formulaire de connexion sans avancement. "
+                                    "Vérifie que tu remplis les bons champs (email + mot de passe). "
+                                    "Utilise `browser_dom_state` pour lister les indices exact, "
+                                    "puis `browser_type_index` pour saisir chaque champ."
+                                )
+                            elif _surface == "contact_form":
+                                self._pending_loop_guidance = (
+                                    "⚠️ GUIDANCE PROGRESSION: tu es sur un formulaire de contact sans avancement. "
+                                    "Assure-toi de remplir tous les champs obligatoires (nom, email, message). "
+                                    "Utilise `browser_dom_state` pour voir les champs disponibles."
+                                )
+                            elif _surface == "spa_shell":
+                                self._pending_loop_guidance = (
+                                    "⚠️ GUIDANCE SPA: La page est un shell SPA sans contenu chargé. "
+                                    "Essaie : 1) `browser_wait_for` pour attendre le chargement, "
+                                    "2) `browser_evaluate` pour forcer l'état JavaScript, "
+                                    "3) `browser_dom_state` puis cliquer sur un lien/onglet pour charger la vue."
+                                )
+                            elif _surface in ("normal_content", "detail_page"):
+                                # SPA stagnation : si navigate sans changement d'URL → orienter vers DOM/JS
+                                if action.tool_name == "browser_navigate" and _page_url == (
+                                    _prev_progress_sig[1]
+                                    if _prev_progress_sig and len(_prev_progress_sig) > 1
+                                    else ""
+                                ):
+                                    self._pending_loop_guidance = (
+                                        "⚠️ GUIDANCE SPA: La navigation vers cette URL ne change pas le contenu visible. "
+                                        "La page semble être une SPA dont la vue ne se met pas à jour via browser_navigate. "
+                                        "Stratégie : 1) `browser_dom_state` pour lister les liens/onglets cliquables, "
+                                        "2) cliquer sur le lien/onglet cible pour changer la vue, "
+                                        "3) `browser_evaluate` pour forcer un changement d'état JavaScript."
+                                    )
+                                else:
+                                    self._pending_loop_guidance = (
+                                        "⚠️ GUIDANCE PROGRESSION: tu restes sur la même surface sans changement utile. "
+                                        "Revalide l'état réel puis choisis une action différente."
+                                    )
+
+                    # ── 2a. Détection d'impasse centralisée ──────────────────────────────
+                    _imp_blocked, _imp_reason, _imp_try_dismiss = _detect_browser_impasse(
+                        observation.content or ""
+                    )
+                    if _surface != "popup_blocked":
+                        self._browser_dismiss_attempted = False
+                    if _imp_blocked:
+                        _dismiss_tried = getattr(self, "_browser_dismiss_attempted", False)
+                        if _imp_try_dismiss and not _dismiss_tried and action.tool_name != "browser_dismiss_popups":
+                            # Tentative automatique : un seul essai de dismiss avant de conclure
+                            self._browser_dismiss_attempted = True
+                            self._browser_post_block_guard = True  # anti-dérive activé
+                            logger.info(
+                                "[BROWSER IMPASSE] {} — tentative browser_dismiss_popups",
+                                _imp_reason,
+                            )
+                            self._pending_loop_guidance = (
+                                f"⚠️ GUIDANCE BROWSER: {_imp_reason}.\n"
+                                "Appelle `browser_dismiss_popups` pour tenter de fermer l'overlay, "
+                                "puis reprends depuis `browser_screenshot`.\n"
+                                "⛔ Reste dans le navigateur — n'utilise pas run_command, curl "
+                                "ou d'outils système avant de confirmer que le blocage est infranchissable."
+                            )
+                        else:
+                            # ── P1 — Fallback CAPTCHA / anti-bot Google ───────────────────
+                            # Si le dernier outil était browser_search_google et que le
+                            # blocage est un CAPTCHA/anti-bot, tenter DuckDuckGo ou une URL
+                            # directe plutôt que de stopper immédiatement. Une seule tentative.
+                            _is_search_captcha = (
+                                action.tool_name == "browser_search_google"
+                                and any(tok in (_imp_reason or "").lower() for tok in (
+                                    "captcha", "recaptcha", "bot", "cloudflare",
+                                    "checking your browser", "challenge",
+                                ))
+                            )
+                            _captcha_fallback_tried = getattr(
+                                self, "_google_search_captcha_fallback_attempted", False
+                            )
+                            if _is_search_captcha and not _captcha_fallback_tried:
+                                self._google_search_captcha_fallback_attempted = True
+                                _search_query = str((action.tool_args or {}).get("query", ""))
+                                _ddg_url = (
+                                    "https://duckduckgo.com/?q="
+                                    + _search_query.replace(" ", "+")
+                                )
+                                self._pending_loop_guidance = (
+                                    f"⚠️ GUIDANCE CAPTCHA: Google a bloqué la recherche ({_imp_reason}).\n"
+                                    "Stratégie de repli (essaie dans l'ordre) :\n"
+                                    f"1. `browser_navigate` vers DuckDuckGo : `{_ddg_url}`\n"
+                                    "2. Si aussi bloqué : navigue directement vers une URL candidate pertinente.\n"
+                                    "3. Sinon : essaie Bing (`https://www.bing.com/search?q=...`).\n"
+                                    "⛔ Ne passe pas en FINAL — un seul fallback suffit pour continuer."
+                                )
+                                logger.info(
+                                    "[BROWSER CAPTCHA FALLBACK] {} → DuckDuckGo fallback, query={}",
+                                    _imp_reason,
+                                    _search_query,
+                                )
+                            else:
+                                logger.warning(
+                                    "⛔ Impasse browser détectée: {} — arrêt propre",
+                                    _imp_reason,
+                                )
+                                _finish_iteration(status="error", error="browser_impasse")
+                                message = (
+                                    f"⛔ Navigation interrompue : **{_imp_reason}**.\n\n"
+                                    f"Le site semble protégé ou non exploitable "
+                                    f"({_imp_reason.lower()}).\n\n"
+                                    f"Observation : {(observation.content or '')[:400]}"
+                                )
+                                self._mark_task_failed("browser_impasse")
+                                return message
+
+                    # ── 2b. Suivi des échecs techniques en série ─────────────────────────
                     browser_failed = (
                         not observation.success
                         or "erreur" in obs_lower
@@ -4612,12 +6535,119 @@ Maintenant, reflechis et reponds:"""
                         _finish_iteration(status="error", error="browser_fail_streak")
                         message = (
                             "⚠️ J'ai interrompu la tâche car le navigateur boucle en échec.\n\n"
-                            f"Dernière observation: {observation.content[:500]}\n\n"
+                            f"Dernière observation: {(observation.content or '')[:500]}\n\n"
                             "Conseil: relancer avec une instruction plus simple (ex: 'ouvre google.com puis cherche ...') "
                             "ou vérifier que Playwright est bien installé (playwright install chromium)."
                         )
                         self._mark_task_failed("browser_fail_streak")
                         return message
+
+                    # ── 2b-bis. Élément sans position connue → scrollIntoView + retry ────
+                    # Cas réel : "Element [13] n'a pas de position connue (bbox=None)"
+                    # L'élément existe mais est hors viewport ou masqué.
+                    _NO_POS_PATTERNS = (
+                        "n'a pas de position connue",
+                        "no position",
+                        "bbox=none",
+                        "bounding_box indisponible",
+                        "element is outside the viewport",
+                        "element not visible",
+                    )
+                    if (
+                        action.tool_name in ("browser_click_index", "browser_type_index")
+                        and any(p in obs_lower for p in _NO_POS_PATTERNS)
+                        and not self._pending_loop_guidance
+                    ):
+                        _no_pos_idx = str((action.tool_args or {}).get("index", "?"))
+                        logger.info(
+                            "[BROWSER NO-POS] index {} hors viewport — guidance scrollIntoView",
+                            _no_pos_idx,
+                        )
+                        self._pending_loop_guidance = (
+                            f"⚠️ GUIDANCE BROWSER: L'élément [{_no_pos_idx}] existe mais n'a pas de "
+                            "position connue (hors viewport ou masqué).\n"
+                            "Stratégie :\n"
+                            f"1. `browser_evaluate(\"document.querySelectorAll('[data-lumena-idx]')[{_no_pos_idx}]?.scrollIntoView({{block:'center'}})\")`\n"
+                            f"   OU `browser_scroll` pour amener l'élément en vue.\n"
+                            f"2. Puis réessaie `{action.tool_name}` sur l'index [{_no_pos_idx}].\n"
+                            "Si l'élément reste inaccessible, utilise `browser_dom_state` "
+                            "pour trouver un index alternatif."
+                        )
+
+                    # ── 2b-ter. Signaux de succès précoces → guidance FINAL ──────────────
+                    # Détecte les patterns prouvant que la tâche est déjà accomplie et guide
+                    # vers FINAL immédiatement, évitant les tours superflus.
+                    if observation.success and not self._pending_loop_guidance:
+                        _early_success_signal: Optional[str] = None
+
+                        # Signal 1 : connexion réussie (présence d'un lien de déconnexion)
+                        if any(tok in obs_lower for tok in (
+                            "déconnexion", "se déconnecter", "déconnectez-vous",
+                            "logout", "log out", "sign out", "signout",
+                        )) and _browser_is_auth_intent(query):
+                            _early_success_signal = "connexion réussie (lien de déconnexion visible)"
+
+                        # Signal 2 : formulaire soumis → httpbin.org/post (résultat de test)
+                        elif "httpbin.org/post" in (_page_url or "").lower() or (
+                            "httpbin" in obs_lower and "form" in obs_lower
+                        ):
+                            _early_success_signal = "formulaire soumis (réponse httpbin.org/post reçue)"
+
+                        # Signal 3 : formulaire disparu + message de confirmation/succès
+                        elif _surface in {"public_form", "contact_form", "auth_form"} and action.tool_name in (
+                            "browser_click_index", "browser_submit_form"
+                        ) and not _browser_observation_looks_like_popup_or_modal(observation.content or "") and any(tok in obs_lower for tok in (
+                            "merci", "thank you", "thanks", "confirmation", "confirmé",
+                            "bien reçu", "message envoyé", "votre message",
+                            "votre demande", "success", "successfully sent",
+                            "submitted", "soumis avec succès", "formulaire envoyé",
+                        )):
+                            _early_success_signal = "formulaire soumis avec succès (message de confirmation)"
+
+                        # Signal 4 : chat ou messagerie — réponse reçue
+                        elif action.tool_name in (
+                            "discord_send", "discord_send_message",
+                            "telegram_send_message", "send_whatsapp_message",
+                        ) and observation.success:
+                            _early_success_signal = "message envoyé avec succès"
+
+                        if _early_success_signal:
+                            logger.info(
+                                "[BROWSER EARLY SUCCESS] {} — guidage vers FINAL",
+                                _early_success_signal,
+                            )
+                            self._pending_loop_guidance = (
+                                f"✅ SIGNAL DE SUCCÈS DÉTECTÉ : {_early_success_signal}.\n"
+                                "La tâche principale est accomplie. "
+                                "PASSE DIRECTEMENT À `ACTION: FINAL` avec un résumé clair de ce qui a été fait.\n"
+                                "Ne relance pas d'autres outils browser inutiles."
+                            )
+
+                    # ── 2c. Détection répétition sur même cible browser ──────────────────
+                    # Si le LLM clique/type sur le même index 3× sans progression → guidance
+                    if action.tool_name in ("browser_click_index", "browser_type_index"):
+                        _bct_idx = str((action.tool_args or {}).get("index", "?"))
+                        _bct_key = f"{action.tool_name}:{_bct_idx}"
+                        if not hasattr(self, "_browser_target_counts"):
+                            self._browser_target_counts: dict = {}
+                        self._browser_target_counts[_bct_key] = (
+                            self._browser_target_counts.get(_bct_key, 0) + 1
+                        )
+                        if self._browser_target_counts[_bct_key] == 3:
+                            logger.warning(
+                                "[BROWSER REPEAT] {} sur index {} — 3e fois, guidance injectée",
+                                action.tool_name, _bct_idx,
+                            )
+                            self._pending_loop_guidance = (
+                                f"⚠️ GUIDANCE BROWSER: Tu viens d'appeler `{action.tool_name}` "
+                                f"sur l'index {_bct_idx} pour la 3e fois sans progression visible.\n"
+                                "L'index ne répond probablement pas comme attendu. "
+                                "APPELLE `browser_screenshot` puis `browser_dom_state` "
+                                "pour réévaluer l'état réel avant d'agir."
+                            )
+                        _obs_lower = (observation.content or "").lower()
+                        if "textbox" in _obs_lower or "searchbox" in _obs_lower or "combobox" in _obs_lower:
+                            self._browser_last_textbox_index = _bct_idx
                 else:
                     browser_fail_streak = 0
 
@@ -4811,11 +6841,25 @@ Maintenant, reflechis et reponds:"""
                 # Seuils adaptatifs par type d'outil
                 if _tool_name_compact in ("read_file", "search_in_code", "grep_search", "find_files"):
                     _OBS_COMPACT_LIMIT = 8000   # seuil élevé : ne pas tronquer le contenu fichier
+                elif _tool_name_compact in ("browser_get_content", "browser_evaluate"):
+                    # Fix A: Pour les surfaces chat, augmenter la limite pour ne pas tronquer la conversation
+                    _is_chat_surface = getattr(self, "_last_browser_surface", "") in ("chat_composer", "chat_transcript", "chat_response")
+                    _OBS_COMPACT_LIMIT = 4000 if _is_chat_surface else 1800
                 else:
                     _OBS_COMPACT_LIMIT = 3000   # seuil bas pour les outils qui retournent des rapports
                 if _raw_obs_len > _OBS_COMPACT_LIMIT:
                     _anchor = _extract_anchor_facts(step.observation.content)
-                    if _tool_name_compact in (
+                    _is_chat_surface_compact = getattr(self, "_last_browser_surface", "") in (
+                        "chat_composer", "chat_transcript", "chat_response"
+                    )
+                    _browser_compacted = _compact_browser_observation_payload(
+                        _tool_name_compact,
+                        step.observation.content,
+                        is_chat_surface=_is_chat_surface_compact,
+                    )
+                    if _browser_compacted is not None:
+                        _c_body = _browser_compacted
+                    elif _tool_name_compact in (
                         "delegate_task", "create_project", "generate_website",
                         "write_website_files", "website_build",
                     ):
@@ -4893,8 +6937,35 @@ Maintenant, reflechis et reponds:"""
                     for h in self.history
                 )
                 _needs_more_space = _has_browser or _has_debug
-                _guard_limit = 16 if _needs_more_space else 10
-                _warn_limit = 12 if _needs_more_space else 7
+                # Fix E: Augmenter le seuil browser à 20 pour laisser le temps de changer de stratégie
+                # (ex: Mistral bloque après 2 échanges → le LLM doit naviguer vers HuggingFace Chat)
+                _guard_limit = 20 if _has_browser else (16 if _needs_more_space else 10)
+                _warn_limit = 15 if _has_browser else (12 if _needs_more_space else 7)
+
+                # Fix E: Réinitialiser le compteur si une navigation réussie vers une nouvelle URL
+                # (changement de domaine = nouvelle stratégie = progression réelle)
+                if (
+                    _has_browser
+                    and step.action
+                    and step.action.tool_name == "browser_navigate"
+                    and step.observation
+                    and "✅" in (step.observation.content or "")
+                    and self._iterations_without_progress > 0
+                ):
+                    # Navigation réussie vers un nouveau site = reset du compteur de stagnation
+                    _nav_url = str((step.action.tool_args or {}).get("url", "")).lower()
+                    _prev_urls = [
+                        str((h.action.tool_args or {}).get("url", "")).lower()
+                        for h in self.history[-8:]
+                        if h.action and h.action.tool_name == "browser_navigate"
+                    ]
+                    # Si l'URL est différente des 8 dernières navigations → nouvelle stratégie
+                    if _nav_url and _nav_url not in _prev_urls[:-1]:
+                        logger.debug(
+                            "[PLAN GUARD] Navigation vers nouveau site '{}' — reset compteur stagnation",
+                            _nav_url[:60],
+                        )
+                        self._iterations_without_progress = 0
 
                 if self._iterations_without_progress >= _guard_limit:
                     logger.warning("[PLAN GUARD] Aucune progression en {} iterations, FINAL force", _guard_limit)
