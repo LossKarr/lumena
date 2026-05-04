@@ -286,7 +286,7 @@ def _fmt(n: int) -> str:
 _DOC_SECTIONS = [
     {
         "id": "overview",
-        "icon": "sparkles",
+        "icon": "lumena-logo",
         "title": "Vue d'ensemble",
         "content": """
 <div class="doc-callout doc-callout-warn" style="border-left:4px solid #f59e0b;margin-bottom:18px">

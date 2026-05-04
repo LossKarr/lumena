@@ -132,7 +132,7 @@ function _renderStep() {
 function _renderWelcome(cont) {
   cont.innerHTML = `
     <div class="setup-step active">
-      <div class="setup-welcome-logo"><i data-lucide="sparkles"></i></div>
+      <div class="setup-welcome-logo"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:64px;height:64px;object-fit:contain"></div>
       <h2>Bienvenue</h2>
       <p class="setup-subtitle">Je suis Lumena, ton assistant IA personnel.<br>Configurons-moi ensemble en quelques étapes simples.</p>
       <div class="setup-info-box">
@@ -1268,7 +1268,7 @@ function _renderMoodsStep(cont, step) {
   cont.innerHTML = `
     <div class="setup-step active" style="display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
       <div style="flex-shrink:0">
-        <div class="setup-step-icon"><i data-lucide="sparkles"></i></div>
+        <div class="setup-step-icon"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:32px;height:32px;object-fit:contain"></div>
         <h2>${_esc(step.title)} <span class="setup-optional">optionnel</span></h2>
         <p class="setup-subtitle">${_esc(step.subtitle || '')}</p>
         <div class="setup-help-text"><i data-lucide="lightbulb" style="width:16px;height:16px;flex-shrink:0;margin-top:2px"></i> ${_esc(step.help || '')}</div>

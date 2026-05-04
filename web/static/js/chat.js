@@ -358,7 +358,7 @@ export async function sendMessage(){
                 const chev=thinking.querySelector('.thinking-header-chevron');
                 if(chev)chev.classList.remove('open');
               }
-              thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant" id="streaming-msg"><div class="msg-avatar"><i data-lucide="sparkles" style="width:18px;height:18px;color:white"></i></div><div class="msg-bubble streaming"><span class="streaming-text"></span><span class="streaming-cursor"></span></div></div>`);
+              thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant" id="streaming-msg"><div class="msg-avatar"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:28px;height:28px;object-fit:contain"></div><div class="msg-bubble streaming"><span class="streaming-text"></span><span class="streaming-cursor"></span></div></div>`);
               if(window.lucide)window.lucide.createIcons({nodes:[thread.querySelector('#streaming-msg .msg-avatar')]});
               window._streamingMsgEl=thread.querySelector('#streaming-msg .streaming-text');
               window._streamingRaw='';
@@ -424,7 +424,7 @@ export async function sendMessage(){
       if(finalResponse.continuation_used){pushActivity('checkpoint','',`Continuation x${finalResponse.continuation_steps||0}`);logC(`Continuation x${finalResponse.continuation_steps||0}`,'tool')}
       if((finalResponse.agent_repair_attempts||0)>0)pushActivity('tool','',`Auto-repair x${finalResponse.agent_repair_attempts}`);
     }else{
-      thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant"><div class="msg-avatar"><i data-lucide="sparkles" style="width:18px;height:18px;color:white"></i></div><div class="msg-bubble" style="display:flex;align-items:center;gap:12px"><span>Pas de réponse reçue (timeout API).</span><button onclick="retryLastMessage()" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px">↺ Réessayer</button></div></div>`);
+      thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant"><div class="msg-avatar"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:28px;height:28px;object-fit:contain"></div><div class="msg-bubble" style="display:flex;align-items:center;gap:12px"><span>Pas de réponse reçue (timeout API).</span><button onclick="retryLastMessage()" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px">↺ Réessayer</button></div></div>`);
       if(window.lucide)window.lucide.createIcons({nodes:[thread.lastElementChild.querySelector('.msg-avatar')]});
       thread.scrollTop=thread.scrollHeight;
       pushActivity('error','','Aucune reponse recue — cliquez Reessayer');
@@ -523,7 +523,7 @@ async function sendFeedback(contentHash, flag, btnEl) {
 export function addMsg(role,content,meta=null,extraHtml=''){
   const thread=document.getElementById('chat-thread');
   const avatar=role==='assistant'
-    ?'<i data-lucide="sparkles" style="width:18px;height:18px;color:white"></i>'
+    ?'<img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:28px;height:28px;object-fit:contain">'
     :'<i data-lucide="user" style="width:18px;height:18px;color:var(--accent)"></i>';
   const metaHtml=role==='assistant'?buildMetaHtml(meta):'';
   const fileEditsHtml=role==='assistant'?buildDiffViewerHtml(meta&&Array.isArray(meta.file_edits)?meta.file_edits:[],meta?meta.edit_session_id:null,meta?!!meta.undo_available:false):'';

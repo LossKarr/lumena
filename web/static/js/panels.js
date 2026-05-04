@@ -1211,12 +1211,15 @@ export async function loadProductDocs() {
     _renderDocNav(nav);
 
     // Build sections HTML
-    main.innerHTML = d.sections.map(s =>
-      `<div class="doc-section" id="doc-sec-${s.id}">
-        <h2><i data-lucide="${s.icon}"></i> ${s.title}</h2>
+    main.innerHTML = d.sections.map(s => {
+      const iconHtml = s.icon === 'lumena-logo'
+        ? `<img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:24px;height:24px;object-fit:contain;vertical-align:middle">`
+        : `<i data-lucide="${s.icon}"></i>`;
+      return `<div class="doc-section" id="doc-sec-${s.id}">
+        <h2>${iconHtml} ${s.title}</h2>
         ${s.content}
-      </div>`
-    ).join('');
+      </div>`;
+    }).join('');
 
     // Init icons
     if (typeof lucide !== 'undefined') lucide.createIcons();
@@ -1230,13 +1233,16 @@ export async function loadProductDocs() {
 
 function _renderDocNav(nav) {
   if (!_productDocSections) return;
-  nav.innerHTML = _productDocSections.map(s =>
-    `<div class="doc-nav-item${_currentDocSection === s.id ? ' active' : ''}"
+  nav.innerHTML = _productDocSections.map(s => {
+    const iconHtml = s.icon === 'lumena-logo'
+      ? `<img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:16px;height:16px;object-fit:contain">`
+      : `<i data-lucide="${s.icon}"></i>`;
+    return `<div class="doc-nav-item${_currentDocSection === s.id ? ' active' : ''}"
           data-doc="${s.id}" onclick="switchDocSection('${s.id}')">
-      <i data-lucide="${s.icon}"></i>
+      ${iconHtml}
       <span>${s.title}</span>
-    </div>`
-  ).join('');
+    </div>`;
+  }).join('');
   if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
