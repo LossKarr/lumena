@@ -52,7 +52,7 @@ def load_lumena_pool(
 
                     meta = entry.get("metadata", {})
 
-                    # Filter: negative feedback
+                    # FT-4: Filter: negative feedback
                     if meta.get("quality_flag") == "negative_feedback":
                         continue
 
@@ -60,12 +60,34 @@ def load_lumena_pool(
                     if not convs:
                         continue
 
-                    # Filter: short messages
+                    # FT-4: Filter: short messages
                     user_msgs = [m for m in convs if m.get("role") == "user"]
                     asst_msgs = [m for m in convs if m.get("role") == "assistant"]
                     if user_msgs and len(user_msgs[-1].get("content", "")) < min_user_chars:
                         continue
                     if asst_msgs and len(asst_msgs[-1].get("content", "")) < min_assistant_chars:
+                        continue
+
+                    # FT-4: Filter: plan 0% accompli (tâche échouée — ne pas apprendre)
+                    _react_meta = meta.get("react_meta", {})
+                    if isinstance(_react_meta, dict):
+                        _plan_info = _react_meta.get("plan", {})
+                        if isinstance(_plan_info, dict):
+                            _pt = _plan_info.get("total_tasks", 0)
+                            _pd = _plan_info.get("completed_tasks", 0)
+                            # Exclure si plan défini mais 0% accompli
+                            if _pt > 0 and _pd == 0:
+                                continue
+
+                    # FT-4: Filter: réponse qui s'identifie comme une autre IA
+                    _last_asst = asst_msgs[-1].get("content", "").lower() if asst_msgs else ""
+                    _false_identity = any(phrase in _last_asst for phrase in [
+                        "je suis claude", "je suis chatgpt", "je suis gpt",
+                        "je suis gemini", "je suis mistral", "je suis bard",
+                        "en tant qu'ia, je ne peux pas",
+                        "as an ai, i cannot", "i am chatgpt", "i am claude",
+                    ])
+                    if _false_identity:
                         continue
 
                     # Dedup by content_hash

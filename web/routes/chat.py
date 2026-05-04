@@ -2092,6 +2092,15 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                 pass
 
             # Envoyer la reponse finale
+            # FT-6: Ajouter content_hash pour le feedback 👍/👎
+            _feedback_hash = ""
+            try:
+                import hashlib as _hlib
+                _ch_combined = f"{request.message.strip()}\n---\n{(response or '').strip()}"
+                _feedback_hash = _hlib.sha256(_ch_combined.encode("utf-8")).hexdigest()[:16]
+            except Exception:
+                pass
+
             done_payload = {
                 "type": "done",
                 "response": response,
@@ -2104,6 +2113,7 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                 "conversation_id": envelope.get("conversation_id"),
                 "task_id": task_id,
                 "trace_id": trace_id,
+                "content_hash": _feedback_hash,
                 **llm_meta,
                 **agent_meta,
             }
@@ -2211,6 +2221,34 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
             "X-Accel-Buffering": "no"
         }
     )
+# =====================================================================
+# POST /api/chat/feedback  — FT-6
+# =====================================================================
+
+@router.post("/api/chat/feedback")
+async def chat_feedback(body: dict, _auth=Depends(deps.verify_admin_token)):
+    """FT-6: Enregistre un feedback 👍/👎 sur une réponse de Lumena.
+
+    Met à jour le quality_flag dans le training pool pour le fine-tuning.
+    positive_explicit (👍) → +2 pts dans le judge pipeline
+    negative_explicit (👎) → exclu du dataset d'entraînement
+    """
+    content_hash = body.get("content_hash", "")
+    flag = body.get("flag", "")
+    _VALID = {"positive_explicit", "negative_explicit"}
+    if flag not in _VALID:
+        raise HTTPException(422, f"flag invalide (valides: {_VALID})")
+    if not content_hash or len(content_hash) != 16:
+        raise HTTPException(422, "content_hash invalide")
+
+    try:
+        from src.learning.conversation_logger import update_quality_flag
+        updated = update_quality_flag(content_hash, flag)
+        return {"success": True, "updated": updated, "hash": content_hash, "flag": flag}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under the Apache License, Version 2.0

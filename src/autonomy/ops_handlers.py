@@ -38,7 +38,7 @@ _STATE_FILE = _OPS_DIR / "ops_state.json"
 _EVAL_FILE = _OPS_DIR / "micro_eval_log.jsonl"
 _REPORTS_DIR = _DATA / "reports"
 _QUALITY_FLAGS_FILE = _POOL_DIR / "quality_flags.jsonl"
-_MODELS_DIR = _ROOT / "models" / "lumena-v1.0.0"
+from src.utils.paths import LUMENA_MODELS_DIR as _MODELS_DIR
 _RETRAIN_LOCK_PATH = _DATA / ".retrain_lock"
 _MODEL_VERSIONS_FILE = _DATA / "model_versions.json"
 

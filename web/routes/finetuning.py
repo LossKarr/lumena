@@ -322,6 +322,63 @@ async def finetuning_install_deps(_auth=Depends(deps.verify_admin_token)):
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
+@router.post("/api/finetuning/activate/{model_name}")
+async def finetuning_activate(model_name: str, _auth=Depends(deps.verify_admin_token)):
+    """FT-5: Active un modèle fine-tuné comme modèle par défaut de Lumena.
+
+    Écrit LUMENA_DEFAULT_MODEL dans le .env et dans l'environnement courant.
+    Lumena doit être redémarrée pour utiliser le nouveau modèle.
+    """
+    if not _MODEL_NAME_RE.match(model_name):
+        raise HTTPException(422, "Nom de modèle invalide (format: a-z0-9._:- max 64)")
+
+    from src.training.ollama_import import list_finetuned_models
+    from src.utils.paths import ROOT_DIR
+
+    # Vérifier que le modèle est connu (fine-tuné ou existant dans Ollama)
+    known_names = {m["name"] for m in list_finetuned_models()}
+    if model_name not in known_names:
+        # Fallback: vérifier si dans Ollama directement
+        try:
+            from src.training.gpu_detect import detect_ollama_installed_models
+            ollama_models = detect_ollama_installed_models()
+            if model_name not in ollama_models and not any(m.split(":")[0] == model_name for m in ollama_models):
+                raise HTTPException(404, f"Modèle '{model_name}' non trouvé dans les modèles fine-tunés ni dans Ollama")
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(404, f"Modèle '{model_name}' non trouvé")
+
+    # Mettre à jour le .env
+    env_path = ROOT_DIR / ".env"
+    try:
+        if env_path.exists():
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            new_lines = []
+            found = False
+            for line in lines:
+                if line.startswith("LUMENA_DEFAULT_MODEL="):
+                    new_lines.append(f"LUMENA_DEFAULT_MODEL={model_name}")
+                    found = True
+                else:
+                    new_lines.append(line)
+            if not found:
+                new_lines.append(f"LUMENA_DEFAULT_MODEL={model_name}")
+            env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(500, f"Erreur écriture .env : {e}")
+
+    # Mettre à jour l'environnement courant
+    os.environ["LUMENA_DEFAULT_MODEL"] = model_name
+
+    return {
+        "success": True,
+        "model": model_name,
+        "message": f"✅ Modèle '{model_name}' activé comme défaut. Redémarrez Lumena pour l'utiliser.",
+        "restart_required": True,
+    }
+
+
 # ── Background job runner ─────────────────────────────────────────────────
 
 def _run_job(req: StartRequest) -> None:
@@ -348,20 +405,94 @@ def _run_job(req: StartRequest) -> None:
             })
             return
 
+        import subprocess as _subproc
         from src.training.pipeline import FinetuneConfig, ProgressCallback, run_finetuning, merge_and_save
         from src.training.data_prep import load_lumena_pool, convert_to_trl_format, split_dataset
         from src.training.export_gguf import convert_to_gguf, quantize_gguf, get_gguf_size_gb, cleanup_intermediate
         from src.training.ollama_import import write_modelfile, ollama_create, register_in_lumena
-        from src.utils.paths import TRAINING_POOL_DIR, TRAINING_VALIDATED_DIR, FINETUNED_MODELS_DIR
+        from src.utils.paths import TRAINING_POOL_DIR, TRAINING_VALIDATED_DIR, FINETUNED_MODELS_DIR, LUMENA_MODELS_DIR
 
         cb = ProgressCallback(on_progress=_push_progress)
 
-        # Phase: preparing data
-        _push_progress({"phase": "preparing", "message": "Chargement et préparation des données..."})
+        # Lire les flags de contrôle depuis l'env (configurables via le panel web)
+        _auto_prepare = os.environ.get("LUMENA_FINETUNING_AUTO_PREPARE", "1").strip() not in ("0", "false", "False")
+        _auto_judge = os.environ.get("LUMENA_FINETUNING_AUTO_JUDGE", "1").strip() not in ("0", "false", "False")
+        _auto_sampling = os.environ.get("LUMENA_FINETUNING_AUTO_SAMPLING", "1").strip() not in ("0", "false", "False")
+        _judge_threshold = os.environ.get("LUMENA_JUDGE_THRESHOLD", "6.5").strip()
+
+        # FT-3 Phase 0: Générer les données d'identité/personnalité Lumena
+        _prepare_script = LUMENA_MODELS_DIR / "1_prepare_data.py"
+        if _prepare_script.exists() and _auto_prepare:
+            _push_progress({"phase": "generating", "message": "Génération dataset personnalité Lumena...", "pct_done": 2})
+            try:
+                _proc0 = _subproc.run(
+                    [sys.executable, str(_prepare_script),
+                     "--output", str(TRAINING_VALIDATED_DIR)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=300, cwd=str(LUMENA_MODELS_DIR),
+                )
+                if _proc0.returncode == 0:
+                    _push_progress({"phase": "generating", "message": "✅ Dataset personnalité généré", "pct_done": 5})
+                else:
+                    _log.warning(f"1_prepare_data.py exited {_proc0.returncode}: {_proc0.stderr[-300:]}")
+                    _push_progress({"phase": "generating", "message": "⚠️ Génération personnalité partielle (non bloquant)", "pct_done": 5})
+            except Exception as _e0:
+                _log.warning(f"1_prepare_data.py skipped: {_e0}")
+                _push_progress({"phase": "generating", "message": "⚠️ Skip génération personnalité", "pct_done": 5})
+        else:
+            _push_progress({"phase": "generating", "message": "ℹ️ Script 1_prepare_data.py non trouvé — skip", "pct_done": 5})
+
+        # FT-3 Phase 1: Scorer les conversations avec le judge LLM
+        _judge_script = LUMENA_MODELS_DIR / "5_judge.py"
+        # Vérifier qu'une API key DeepSeek est disponible avant de lancer le judge
+        _has_deepseek_key = bool(os.environ.get("DEEPSEEK_API_KEY", "").strip())
+        if _judge_script.exists() and _has_deepseek_key and _auto_judge:
+            _push_progress({"phase": "judging", "message": f"Scoring qualité des conversations (seuil: {_judge_threshold}/10)...", "pct_done": 6})
+            try:
+                _proc1 = _subproc.run(
+                    [sys.executable, str(_judge_script), "--threshold", _judge_threshold],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=7200, cwd=str(LUMENA_MODELS_DIR),
+                )
+                if _proc1.returncode == 0:
+                    _push_progress({"phase": "judging", "message": "✅ Scoring qualité terminé", "pct_done": 10})
+                else:
+                    _log.warning(f"5_judge.py exited {_proc1.returncode}: {_proc1.stderr[-300:]}")
+                    _push_progress({"phase": "judging", "message": "⚠️ Judge partiel (non bloquant)", "pct_done": 10})
+            except Exception as _e1:
+                _log.warning(f"5_judge.py skipped: {_e1}")
+                _push_progress({"phase": "judging", "message": "⚠️ Skip scoring (non bloquant)", "pct_done": 10})
+        else:
+            _reason = "DEEPSEEK_API_KEY manquante" if not _has_deepseek_key else "script non trouvé"
+            _push_progress({"phase": "judging", "message": f"ℹ️ Skip judge ({_reason})", "pct_done": 10})
+
+        # FT-3 Phase 2: Rejection sampling pour paires DPO
+        _rejection_script = LUMENA_MODELS_DIR / "6_rejection_sampling.py"
+        if _rejection_script.exists() and _auto_sampling:
+            _push_progress({"phase": "sampling", "message": "Rejection sampling (paires DPO)...", "pct_done": 11})
+            try:
+                _proc2 = _subproc.run(
+                    [sys.executable, str(_rejection_script), "--quota", "30"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=3600, cwd=str(LUMENA_MODELS_DIR),
+                )
+                if _proc2.returncode == 0:
+                    _push_progress({"phase": "sampling", "message": "✅ Rejection sampling terminé", "pct_done": 15})
+                else:
+                    _log.warning(f"6_rejection_sampling.py exited {_proc2.returncode}: {_proc2.stderr[-300:]}")
+                    _push_progress({"phase": "sampling", "message": "⚠️ Rejection sampling partiel (non bloquant)", "pct_done": 15})
+            except Exception as _e2:
+                _log.warning(f"6_rejection_sampling.py skipped: {_e2}")
+                _push_progress({"phase": "sampling", "message": "⚠️ Skip rejection sampling", "pct_done": 15})
+        else:
+            _push_progress({"phase": "sampling", "message": "ℹ️ Script 6_rejection_sampling.py non trouvé — skip", "pct_done": 15})
+
+        # Phase: preparing data (chargement pool enrichi)
+        _push_progress({"phase": "preparing", "message": "Chargement et préparation des données...", "pct_done": 16})
         raw = load_lumena_pool(TRAINING_POOL_DIR, TRAINING_VALIDATED_DIR)
         trl_data = convert_to_trl_format(raw, system_prompt=req.system_prompt)
         ds_train, ds_eval = split_dataset(trl_data)
-        _push_progress({"phase": "preparing", "message": f"{len(trl_data)} conversations prêtes"})
+        _push_progress({"phase": "preparing", "message": f"{len(trl_data)} conversations prêtes", "pct_done": 18})
 
         # Phase: training
         config = FinetuneConfig(

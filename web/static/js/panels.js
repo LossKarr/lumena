@@ -319,7 +319,12 @@ export async function loadTraining(){
 /* ============================================================
    FINE-TUNING
    ============================================================ */
-const _FT_PHASES=['downloading','preparing','training','merging','converting','quantizing','importing','done'];
+const _FT_PHASES=['generating','judging','sampling','preparing','training','merging','converting','quantizing','importing','done'];
+const _FT_PHASE_LABELS={
+  generating:'Personnalité',judging:'Scoring',sampling:'DPO',
+  preparing:'Données',training:'Entraînement',merging:'Fusion',
+  converting:'GGUF',quantizing:'Quantization',importing:'Ollama',done:'Terminé',
+};
 let _ftEventSource=null;
 
 export async function loadFinetuning(){
@@ -504,6 +509,7 @@ function _renderFtJobs(models){
     </div>
     <div style="display:flex;gap:6px">
       <button class="btn accent" style="font-size:11px;padding:3px 8px" onclick="_selectFinetuned('${esc(m.model_name)}')">Utiliser</button>
+      <button class="btn success" style="font-size:11px;padding:3px 8px;background:var(--success,#4caf50);color:#fff" onclick="_activateFinetuned('${esc(m.model_name)}')">Activer par défaut</button>
       <button class="btn" style="font-size:11px;padding:3px 8px;background:var(--danger);color:#fff" onclick="_deleteFinetuned('${esc(m.model_name)}')">Supprimer</button>
     </div>
   </div>`).join('');
@@ -576,7 +582,7 @@ function _connectProgressSSE(){
               if(timeline){
                 timeline.innerHTML=_FT_PHASES.map(p=>{
                   const cls=p===d.phase?'phase-active':seenPhases.has(p)?'phase-done':'phase-pending';
-                  return`<span class="ft-phase ${cls}">${p}</span>`;
+                  return`<span class="ft-phase ${cls}">${_FT_PHASE_LABELS[p]||p}</span>`;
                 }).join(' → ');
               }
               if(d.phase==='done'){_ftAbort.abort();_ftAbort=null;document.getElementById('ft-start-btn').disabled=false;loadFinetuning();}
@@ -611,6 +617,19 @@ window._deleteFinetuned=async function(name){
     const r=await fetch(`${API_BASE}/api/finetuning/jobs/${encodeURIComponent(name)}`,{method:'DELETE',headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
     if(r.ok)loadFinetuning();
     else{const e=await r.json().catch(()=>({}));alert(e.detail||'Erreur');}
+  }catch(e){alert(e.message);}
+};
+
+window._activateFinetuned=async function(name){
+  if(!confirm(`Activer "${name}" comme modèle par défaut de Lumena ?\n\nUn redémarrage sera nécessaire pour prendre effet.`))return;
+  try{
+    const r=await fetch(`${API_BASE}/api/finetuning/activate/${encodeURIComponent(name)}`,{method:'POST',headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d=await r.json().catch(()=>({}));
+    if(r.ok&&d.success){
+      alert(`✅ ${d.message||`Modèle "${name}" activé !`}\n\nRedémarrez Lumena pour utiliser votre modèle fine-tuné.`);
+    }else{
+      alert(`Erreur : ${d.detail||d.message||`HTTP ${r.status}`}`);
+    }
   }catch(e){alert(e.message);}
 };
 

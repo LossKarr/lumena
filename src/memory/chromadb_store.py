@@ -923,17 +923,58 @@ class LumenaMemory:
         memories = [m for m in memories if m.score >= _min_score or m.importance >= 0.9]
         
         if memories:
+            # M-1: Formater les souvenirs avec contexte temporel relatif
+            def _relative_time(content: str) -> str:
+                """Extrait et reformate la date ISO en temps relatif lisible."""
+                try:
+                    import re as _re
+                    from datetime import datetime as _dt
+                    # Chercher [YYYY-MM-DD HH:MM] au début du contenu
+                    m = _re.match(r"^\[(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}[:\d]*)\]", content)
+                    if not m:
+                        return content
+                    date_str = m.group(1).replace("T", " ")[:16]
+                    then = _dt.strptime(date_str, "%Y-%m-%d %H:%M")
+                    delta = _dt.now() - then
+                    days = delta.days
+                    if days == 0:
+                        hours = delta.seconds // 3600
+                        if hours == 0:
+                            label = "il y a moins d'une heure"
+                        elif hours == 1:
+                            label = "il y a 1 heure"
+                        else:
+                            label = f"il y a {hours}h"
+                    elif days == 1:
+                        label = "hier"
+                    elif days < 7:
+                        label = f"il y a {days} jours"
+                    elif days < 14:
+                        label = "la semaine dernière"
+                    elif days < 30:
+                        label = f"il y a {days // 7} semaines"
+                    elif days < 60:
+                        label = "le mois dernier"
+                    elif days < 365:
+                        label = f"il y a {days // 30} mois"
+                    else:
+                        label = then.strftime("le %d/%m/%Y")
+                    # Remplacer la date brute par le label relatif
+                    return content.replace(m.group(0), f"[{label}]", 1)
+                except Exception:
+                    return content  # Fallback silencieux
+
             # Pour les questions personnelles, inclure plus de détails
             if is_personal_question:
                 memories_parts = []
                 for m in memories[:max_memories]:
-                    # Inclure le contenu complet (jusqu'à 500 chars) pour les souvenirs importants
-                    content = m.content[:800] if m.importance >= 0.8 else m.content[:300]
+                    content_raw = m.content[:800] if m.importance >= 0.8 else m.content[:300]
+                    content = _relative_time(content_raw)
                     memories_parts.append(f"- {content}")
                 memories_text = "\n".join(memories_parts)
                 parts.append(f"## 🧠 Souvenirs pertinents (À UTILISER POUR RÉPONDRE):\n{memories_text}")
             else:
-                memories_text = "\n".join([f"- {m.content[:200]}" for m in memories])
+                memories_text = "\n".join([f"- {_relative_time(m.content[:200])}" for m in memories])
                 parts.append(f"## Souvenirs pertinents:\n{memories_text}")
         
         return "\n\n".join(parts) if parts else ""

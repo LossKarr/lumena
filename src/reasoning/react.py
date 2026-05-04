@@ -2595,6 +2595,9 @@ REGLES STRICTES:
         ide_active_file = str((getattr(self.tools, "ide_context", {}) or {}).get("active_file_path") or "").strip()
         ide_open_files = (getattr(self.tools, "ide_context", {}) or {}).get("open_files") or []
         ide_runtime_context = ""
+        _rt_channel = ""
+        if self.runtime_ctx is not None:
+            _rt_channel = getattr(self.runtime_ctx, 'channel', '') or ''
         if ide_workspace:
             open_preview = ", ".join([str(p) for p in ide_open_files[:12]]) if ide_open_files else "aucun"
             active_preview = ide_active_file or "aucun"
@@ -2604,6 +2607,16 @@ REGLES STRICTES:
 - Fichier actif IDE: {active_preview}
 - Fichiers ouverts IDE: {open_preview}
 - Pour les operations fichiers, travaille d'abord dans ce workspace IDE.
+"""
+        if _rt_channel == "ide":
+            ide_runtime_context += """
+## CANAL IDE — MODE DEVELOPPEMENT:
+- Tu es connectee a l'IDE Lumena. L'utilisateur code activement.
+- Concentre-toi UNIQUEMENT sur le developpement, le code, le debug, l'architecture.
+- Reponds de maniere technique et directe. Pas de bavardage.
+- Utilise les outils IDE en priorite: ide_open_file, ide_write_file, ide_terminal, ide_diff.
+- Si un fichier est ouvert dans l'IDE (fichier actif/fichiers ouverts), travaille dessus directement.
+- Pour les modifications de code, prefere edit_file/str_replace pour les petits changements, delegate_task pour les gros.
 """
 
         # --- Projet actif récent (continuité multi-tour) ---

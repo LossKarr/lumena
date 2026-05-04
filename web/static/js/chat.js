@@ -492,6 +492,34 @@ function _setSendBtnStop(isStop){
 /* ============================================================
    MESSAGE RENDERING
    ============================================================ */
+/* FT-6: Feedback thumbs — envoie le quality_flag au backend */
+async function sendFeedback(contentHash, flag, btnEl) {
+  if (!contentHash) return;
+  // Feedback visuel immédiat avant même la réponse réseau
+  if (btnEl) {
+    const container = btnEl.closest('.msg-feedback');
+    if (container) {
+      container.querySelectorAll('button').forEach(b => {
+        b.style.opacity = '0.3';
+        b.style.color = 'var(--text-muted,#888)';
+      });
+      btnEl.style.opacity = '1';
+      btnEl.style.color = flag === 'positive_explicit' ? 'var(--success,#4caf50)' : 'var(--error,#f44336)';
+      btnEl.style.transform = 'scale(1.4)';
+      setTimeout(() => { btnEl.style.transform = 'scale(1)'; }, 250);
+    }
+  }
+  try {
+    const h = {'Content-Type': 'application/json'};
+    if (ADMIN_TOKEN) h['Authorization'] = `Bearer ${ADMIN_TOKEN}`;
+    await fetch(`${API_BASE}/api/chat/feedback`, {
+      method: 'POST',
+      headers: h,
+      body: JSON.stringify({ content_hash: contentHash, flag }),
+    });
+  } catch (e) { /* silencieux */ }
+}
+
 export function addMsg(role,content,meta=null,extraHtml=''){
   const thread=document.getElementById('chat-thread');
   const avatar=role==='assistant'
@@ -500,6 +528,19 @@ export function addMsg(role,content,meta=null,extraHtml=''){
   const metaHtml=role==='assistant'?buildMetaHtml(meta):'';
   const fileEditsHtml=role==='assistant'?buildDiffViewerHtml(meta&&Array.isArray(meta.file_edits)?meta.file_edits:[],meta?meta.edit_session_id:null,meta?!!meta.undo_available:false):'';
   const documentsHtml=role==='assistant'?buildDocumentsHtml(meta):'';
+
+  // FT-6: Boutons 👍/👎 pour les messages assistant avec content_hash
+  let feedbackHtml = '';
+  if (role === 'assistant' && meta && meta.content_hash) {
+    const h = meta.content_hash;
+    const _btnStyle = 'background:none;border:none;cursor:pointer;padding:3px;border-radius:4px;color:var(--text-muted,#888);display:inline-flex;align-items:center;transition:all 0.2s';
+    feedbackHtml = `<div class="msg-feedback" style="display:flex;gap:4px;margin-top:5px;opacity:0.65">` +
+      `<button data-feedback-hash="${h}" data-flag="positive_explicit" onclick="window._sendFeedback('${h}','positive_explicit',this)" ` +
+      `style="${_btnStyle}" title="Bonne réponse"><i data-lucide="thumbs-up" style="width:14px;height:14px"></i></button>` +
+      `<button data-feedback-hash="${h}" data-flag="negative_explicit" onclick="window._sendFeedback('${h}','negative_explicit',this)" ` +
+      `style="${_btnStyle}" title="Mauvaise réponse"><i data-lucide="thumbs-down" style="width:14px;height:14px"></i></button>` +
+      `</div>`;
+  }
 
   content=esc(content);
   if(role==='assistant'){
@@ -512,18 +553,28 @@ export function addMsg(role,content,meta=null,extraHtml=''){
     thread.insertAdjacentHTML('beforeend',`
       <div class="msg-group ${role}">
         <div class="msg-avatar">${avatar}</div>
-        <div class="msg-content-col">${fileEditsHtml}${documentsHtml}<div class="msg-bubble">${extraHtml}${content}${metaHtml}</div></div>
+        <div class="msg-content-col">${fileEditsHtml}${documentsHtml}<div class="msg-bubble">${extraHtml}${content}${metaHtml}${feedbackHtml}</div></div>
       </div>`);
   }else{
     thread.insertAdjacentHTML('beforeend',`
       <div class="msg-group ${role}">
         <div class="msg-avatar">${avatar}</div>
-        <div class="msg-bubble">${extraHtml}${content}${metaHtml}</div>
+        <div class="msg-bubble">${extraHtml}${content}${metaHtml}${feedbackHtml}</div>
       </div>`);
   }
-  if(window.lucide)window.lucide.createIcons({nodes:[thread.lastElementChild.querySelector('.msg-avatar')]});
+  const _lastEl=thread.lastElementChild;
+  if(window.lucide){
+    const _iconNodes=[
+      _lastEl.querySelector('.msg-avatar'),
+      ..._lastEl.querySelectorAll('.msg-feedback i[data-lucide]'),
+    ].filter(Boolean);
+    if(_iconNodes.length)window.lucide.createIcons({nodes:_iconNodes});
+  }
   thread.scrollTop=thread.scrollHeight;
 }
+
+// FT-6: Exposer sendFeedback globalement (utilisé dans les onclick inline)
+window._sendFeedback = sendFeedback;
 
 /* Markdown renderer for assistant messages */
 function _renderMarkdown(text){
@@ -903,7 +954,8 @@ const _CHAT_KEY='lumena_chat_history';
 let _chatMessages=[];
 
 export function _pushChat(role,text,meta){
-  _chatMessages.push({role,text,meta:meta?{provider_used:meta.provider_used,model_used:meta.model_used}:null});
+  // FT-3 (fix): conserver content_hash pour que les boutons feedback survivent au rechargement
+  _chatMessages.push({role,text,meta:meta?{provider_used:meta.provider_used,model_used:meta.model_used,content_hash:meta.content_hash||undefined}:null});
   try{localStorage.setItem(_CHAT_KEY,JSON.stringify(_chatMessages.slice(-100)))}catch(e){}
 }
 

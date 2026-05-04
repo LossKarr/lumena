@@ -449,6 +449,27 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "LUMENA_IONOS_MAX_UPLOAD_MB", "label": "Taille max upload (Mo)",
      "group": "IONOS (Hébergement)", "type": "number", "default": "100", "min": 1, "max": 5000,
      "hint": "Taille maximale totale d'un déploiement en Mo. Protège contre les uploads accidentels."},
+    # ── Fine-tuning ──────────────────────────────────────────────────────────
+    {"key": "LUMENA_JUDGE_MODEL", "label": "Modèle LLM du judge",
+     "group": "Fine-tuning", "type": "select",
+     "options": [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "default": "deepseek-chat",
+     "hint": "Modèle LLM utilisé pour scorer la qualité des conversations avant fine-tuning. deepseek-chat est le plus rapide et économique."},
+    {"key": "LUMENA_JUDGE_THRESHOLD", "label": "Seuil de validation judge",
+     "group": "Fine-tuning", "type": "number", "default": "6.5", "min": 0, "max": 10,
+     "hint": "Score minimum (0-10) pour qu'une conversation entre dans le dataset d'entraînement. 6.5 par défaut. Augmenter pour plus de sélectivité."},
+    {"key": "LUMENA_FINETUNING_AUTO_JUDGE", "label": "Scoring automatique activé",
+     "group": "Fine-tuning", "type": "bool", "default": "1",
+     "hint": "Active le scoring LLM (5_judge.py) automatiquement avant chaque fine-tuning. Désactiver si pas de clé DeepSeek."},
+    {"key": "LUMENA_FINETUNING_AUTO_PREPARE", "label": "Données personnalité activées",
+     "group": "Fine-tuning", "type": "bool", "default": "1",
+     "hint": "Génère automatiquement les données d'identité/personnalité Lumena (1_prepare_data.py) avant chaque fine-tuning."},
+    {"key": "LUMENA_FINETUNING_AUTO_SAMPLING", "label": "Rejection sampling activé",
+     "group": "Fine-tuning", "type": "bool", "default": "1",
+     "hint": "Lance le rejection sampling DPO (6_rejection_sampling.py) avant chaque fine-tuning. Génère des paires préférences."},
+    {"key": "LUMENA_RETRAIN_MIN_EXAMPLES", "label": "Min exemples pour fine-tuning",
+     "group": "Fine-tuning", "type": "number", "default": "20", "min": 5, "max": 10000,
+     "hint": "Nombre minimum de conversations validées requises pour lancer un fine-tuning. Évite l'entraînement sur trop peu de données."},
 ]
 
 # ── P3.3 restart flags manquants ─────────────────────────────────────────────

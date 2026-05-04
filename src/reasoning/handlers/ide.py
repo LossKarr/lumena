@@ -237,17 +237,17 @@ async def _handle_ide_launch(ctx: HandlerContext, **kwargs) -> HandlerResult:
     """Lance l'IDE Lumena (Electron) en arriere-plan."""
     workspace = kwargs.get("workspace", "").strip()
 
-    ide_dir = Path(__file__).parent.parent.parent.parent / ".." / "cursor-ide-local"
+    lumena_root = Path(__file__).parent.parent.parent.parent
+    ide_dir = lumena_root / "ide"
     if not ide_dir.exists():
-        # Chercher dans le dossier parent du workspace Lumena
-        lumena_root = Path(__file__).parent.parent.parent.parent
+        # Fallback: chercher cursor-ide-local a cote
         candidates = list(lumena_root.parent.glob("cursor-ide-local"))
         if candidates:
             ide_dir = candidates[0]
         else:
             return HandlerResult(
                 success=False, output="",
-                error="Dossier cursor-ide-local introuvable. L'IDE n'est pas installe cote a cote.",
+                error="Dossier ide/ introuvable dans le projet Lumena.",
                 handler_name="ide_launch",
             )
 

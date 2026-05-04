@@ -267,6 +267,56 @@ def get_pool_stats() -> dict:
         return {"error": str(e)}
 
 
+def update_quality_flag(content_hash: str, flag: str) -> bool:
+    """FT-6: Met à jour le quality_flag d'une entrée par son content_hash.
+
+    Cherche dans les 30 derniers jours de pool. Flags valides :
+    'positive_explicit', 'negative_explicit', 'ok', 'negative_feedback'.
+    Retourne True si une entrée a été mise à jour.
+    """
+    _VALID_FLAGS = {"positive_explicit", "negative_explicit", "ok", "negative_feedback"}
+    if flag not in _VALID_FLAGS:
+        return False
+
+    try:
+        updated = False
+        for days_back in range(30):
+            date_str = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+            pool_file = _POOL_DIR / f"{date_str}.jsonl"
+            if not pool_file.exists():
+                continue
+            with _lock:
+                try:
+                    lines = pool_file.read_text(encoding="utf-8").splitlines()
+                    new_lines = []
+                    changed = False
+                    for line in lines:
+                        stripped = line.strip()
+                        if not stripped:
+                            new_lines.append(stripped)
+                            continue
+                        try:
+                            entry = json.loads(stripped)
+                            if entry.get("metadata", {}).get("content_hash", "") == content_hash:
+                                entry["metadata"]["quality_flag"] = flag
+                                entry["metadata"]["flag_updated_at"] = datetime.now().isoformat()
+                                changed = True
+                                updated = True
+                            new_lines.append(json.dumps(entry, ensure_ascii=False))
+                        except Exception:
+                            new_lines.append(stripped)
+                    if changed:
+                        pool_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                        logger.debug(f"📚 Quality flag mis à jour [{content_hash}] → {flag}")
+                        return True
+                except Exception as e:
+                    logger.debug(f"update_quality_flag erreur {pool_file.name}: {e}")
+        return updated
+    except Exception as e:
+        logger.debug(f"update_quality_flag silencieux: {e}")
+        return False
+
+
 def export_pool_as_jsonl(output_path: Optional[Path] = None) -> Path:
     """
     Exporte tout le pool en un seul fichier JSONL pour le training.

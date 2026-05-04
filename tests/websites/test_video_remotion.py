@@ -369,7 +369,7 @@ class TestGenerateVideoHandler:
             "font_family": "Inter",
             "total_frames": 900,
         })
-        scene_code = "export default function Scene() { return <div>Test</div>; }"
+        scene_code = "import { useCurrentFrame } from 'remotion';\nexport default function Scene() { const frame = useCurrentFrame(); return <div>{frame}</div>; }"
         video_tsx = "import IntroScene from './scenes/IntroScene';\nexport default function Video() { return <IntroScene />; }"
         ctx.lumena.llm.chat = AsyncMock(side_effect=[plan_json, scene_code, scene_code, video_tsx])
         fake_video = tmp_path / "output.mp4"

@@ -827,10 +827,24 @@ class AgentService:
             memory_type = "semantic"
             importance = 0.8
 
+        # M-4: Modulation émotionnelle — si la conversation est intense, elle mérite plus d'importance
+        try:
+            _em = getattr(self.core, "emotion_manager", None)
+            if _em:
+                _arousal = getattr(getattr(_em, "state", None), "arousal", 0.0) or 0.0
+                if _arousal > 0.8:
+                    importance = max(importance, 0.85)
+                elif _arousal > 0.5:
+                    importance = max(importance, 0.7)
+        except Exception:
+            pass  # Fallback silencieux — le comportement reste identique
+
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         response_summary = response[:500] + "..." if len(response) > 500 else response
-        if self.core.llm and (importance >= 0.8 or len(response) > 300):
+        # M-3: Résumé LLM pour toutes les conversations (abaissement seuil 0.8→0.5)
+        # Toujours mieux qu'un texte brut tronqué, même pour les échanges ordinaires
+        if self.core.llm and (importance >= 0.5 or len(response) > 100):
             try:
                 summary_prompt = (
                     f"Résume en 1-3 phrases concises ce qui est important à retenir de cet échange:\n"
@@ -1852,7 +1866,23 @@ Conversations et apprentissages de la journée.
         try:
             result = await react.run(query)
             if hasattr(react, "get_run_meta"):
-                c._last_agent_meta = react.get_run_meta()
+                # FT-1: Enrichir avec les champs utiles pour le fine-tuning
+                # get_run_meta() contient plan + run_meta de base
+                _run_meta = react.get_run_meta()
+                _plan = _run_meta.get("plan", {})
+                _plan_total = _plan.get("total_tasks", 0) if isinstance(_plan, dict) else 0
+                _plan_done = _plan.get("completed_tasks", 0) if isinstance(_plan, dict) else 0
+                c._last_agent_meta = {
+                    # Champs de base (incomplete, warning, repair_attempts, finish_reason)
+                    **self._default_agent_meta(),
+                    # Meta complet du run ReAct (override les champs de base)
+                    **_run_meta,
+                    # Champs enrichis pour le judge/scoring fine-tuning
+                    "tools_used": sorted(getattr(react, "_successful_session_tools", set()))[:30],
+                    "iterations": getattr(react, "_current_iteration", 0),
+                    "success": _plan_total > 0 and _plan_done == _plan_total,
+                    "plan_completion_pct": round(100 * _plan_done / _plan_total) if _plan_total > 0 else 0,
+                }
 
             if TELEMETRY_AVAILABLE:
                 publish_trace(stage="final_assembly_start", status="start", mode="agent")
@@ -1924,6 +1954,32 @@ Conversations et apprentissages de la journée.
                 )
             except Exception as e:
                 logger.debug(f"Queue conversation agent: {e}")
+
+            # M-2: Mémoire procédurale — capturer les stratégies qui ont marché
+            # Si le plan était complet à 100%, créer un souvenir "procédural" pour la prochaine fois
+            try:
+                _meta = dict(c._last_agent_meta) if c._last_agent_meta else {}
+                _plan_info = _meta.get("plan", {})
+                _plan_total = _plan_info.get("total_tasks", 0) if isinstance(_plan_info, dict) else 0
+                _plan_done = _plan_info.get("completed_tasks", 0) if isinstance(_plan_info, dict) else 0
+                _success = _meta.get("success", False)
+                _tools = _meta.get("tools_used", [])
+                if _success and _plan_total > 0 and _plan_done == _plan_total and c.memory and _tools:
+                    # Construire une description concise de la stratégie
+                    _tools_short = ", ".join(list(_tools)[:5])
+                    _task_summary = query[:80].strip().rstrip("?!.")
+                    _procedural_content = (
+                        f"Stratégie réussie pour '{_task_summary}': "
+                        f"{_plan_done}/{_plan_total} tâches accomplies via {_tools_short}."
+                    )
+                    c.memory.remember(
+                        _procedural_content,
+                        memory_type="procedural",
+                        importance=0.85,
+                    )
+                    logger.debug(f"📚 Mémoire procédurale créée: {_procedural_content[:80]}")
+            except Exception as _me:
+                logger.debug(f"M-2 mémoire procédurale: {_me}")
 
             if c.auto_speak and c.tts:
                 try:
