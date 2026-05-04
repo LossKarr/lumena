@@ -185,7 +185,7 @@ def _collect_live_stats() -> Dict[str, Any]:
         providers_count = len(ProviderType)
         provider_names = [p.value for p in ProviderType]
     except Exception:
-        provider_names = ["deepseek", "openai", "anthropic", "google", "moonshot", "xai", "nvidia", "minimax", "zai", "ollama"]
+        provider_names = ["deepseek", "openai", "anthropic", "google", "mistral", "moonshot", "xai", "nvidia", "minimax", "zai", "ollama"]
 
     # ── LLM Models ──────────────────────────────────────────────────────────
     models_count = 0

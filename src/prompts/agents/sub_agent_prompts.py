@@ -372,6 +372,8 @@ def _load_provider_prompt(model_name: str) -> str:
         candidate = "gpt.txt"
     elif "gemini" in name:
         candidate = "gemini.txt"
+    elif any(tok in name for tok in ("mistral", "codestral", "devstral", "ministral", "magistral", "pixtral")):
+        candidate = "mistral.txt"
     else:
         candidate = "default.txt"
 

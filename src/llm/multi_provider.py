@@ -83,6 +83,7 @@ class MultiProviderLLM:
             "nvidia": {"healthy": True, "failures": 0, "cooldown_until": None},
             "minimax": {"healthy": True, "failures": 0, "cooldown_until": None},
             "zai":     {"healthy": True, "failures": 0, "cooldown_until": None},
+            "mistral": {"healthy": True, "failures": 0, "cooldown_until": None},
         }
         self._health_lock = threading.Lock()  # P0: protège provider_health
         self._meta_lock = threading.Lock()  # protège _last_response_meta
@@ -90,7 +91,7 @@ class MultiProviderLLM:
         self.cooldown_minutes = int(os.getenv("LUMENA_PROVIDER_COOLDOWN_MIN", "5"))
         
         # Ordre de fallback : cloud providers d'abord, ollama en dernier recours
-        _default_fallback = "deepseek,zai,anthropic,openai,google,moonshot,xai,nvidia,minimax,ollama"
+        _default_fallback = "deepseek,mistral,zai,anthropic,openai,google,moonshot,xai,nvidia,minimax,ollama"
         self.fallback_order = os.getenv("LUMENA_FALLBACK_ORDER", _default_fallback).split(",")
         self.max_continuation_steps = int(os.getenv("LUMENA_MAX_CONTINUATION_STEPS", "3"))
         self._last_response_meta: Dict[str, Any] = self._default_response_meta()
@@ -782,6 +783,8 @@ class MultiProviderLLM:
             return await self._chat_minimax_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
         if provider == ProviderType.ZAI:
             return await self._chat_zai_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
+        if provider == ProviderType.MISTRAL:
+            return await self._chat_mistral_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
         raise ValueError(f"Provider non supporté: {provider}")
 
     async def _continue_if_needed(
@@ -1750,6 +1753,72 @@ class MultiProviderLLM:
             except Exception:
                 pass  # response body non lisible
             logger.error(f"❌ Erreur xAI HTTP {e.response.status_code}: {error_detail[:1000]}")
+            raise
+
+    async def _chat_mistral(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 16384,
+        model: Optional[str] = None,
+    ) -> str:
+        """Chat via Mistral API."""
+        result = await self._chat_mistral_result(messages, temperature=temperature, max_tokens=max_tokens, model=model)
+        return result.get("text", "")
+
+    async def _chat_mistral_result(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 16384,
+        model: Optional[str] = None,
+        stop: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Chat via Mistral API (compatible OpenAI).
+
+        URL : https://api.mistral.ai/v1/chat/completions
+        """
+        api_key = get_api_key(ProviderType.MISTRAL)
+        if not api_key:
+            raise ValueError("MISTRAL_API_KEY non configurée")
+
+        target_model = model or self.model
+        url = "https://api.mistral.ai/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload: Dict[str, Any] = {
+            "model": target_model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if stop:
+            payload["stop"] = stop
+
+        try:
+            response = await self._http.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice.get("message", {}).get("content", "") or ""
+            _usage = data.get("usage") or {}
+            return {
+                "text": content,
+                "finish_reason": choice.get("finish_reason"),
+                "provider_used": ProviderType.MISTRAL.value,
+                "model_used": target_model,
+                "prompt_tokens": _usage.get("prompt_tokens"),
+                "completion_tokens": _usage.get("completion_tokens"),
+            }
+        except httpx.HTTPStatusError as e:
+            error_detail = ""
+            try:
+                error_detail = e.response.text
+            except Exception:
+                pass
+            logger.error(f"❌ Erreur Mistral HTTP {e.response.status_code}: {error_detail[:1000]}")
             raise
 
     async def _chat_nvidia(

@@ -2895,6 +2895,7 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file/create_project pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
+9. Serveur de preview/test (http.server, serve, vite, etc.) -> JAMAIS sur le port 8080 (reserve a Lumena). Utilise 8081 ou superieur (ex: `python -m http.server 8081`).
 
 ## Delegation CodeAgent — OBLIGATOIRE pour le code :
 ⚠️ REGLE ABSOLUE : Tu ne codes JAMAIS toi-meme. Tu DELEGUES au CodeAgent.

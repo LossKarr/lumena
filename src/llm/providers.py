@@ -42,6 +42,7 @@ class ProviderType(Enum):
     NVIDIA = "nvidia"
     MINIMAX = "minimax"
     ZAI = "zai"
+    MISTRAL = "mistral"
     # Image generation providers
     STABILITY = "stability"
     FLUX = "flux"
@@ -778,6 +779,90 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         capabilities=frozenset({"image_generation"}),
     ),
 
+    # === MISTRAL ===
+    "mistral-large": ModelConfig(
+        name="mistral-large",
+        display_name="Mistral Large (Mistral)",
+        provider=ProviderType.MISTRAL,
+        model_id="mistral-large-latest",
+        context_window=256000,
+        max_output_tokens=16384,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=2.0,  # $2/M input, $6/M output
+        description="Mistral Large — flagship Mistral, 256K contexte, vision, tools, excellent en raisonnement et code",
+        badge="Recommandé",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "codestral": ModelConfig(
+        name="codestral",
+        display_name="Codestral (Mistral)",
+        provider=ProviderType.MISTRAL,
+        model_id="codestral-latest",
+        context_window=256000,
+        max_output_tokens=16384,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.3,  # $0.30/M input, $0.90/M output
+        description="Codestral — spécialiste code Mistral, 256K contexte, FIM (fill-in-middle), $0.30/M input",
+        badge="Code Agent",
+        capabilities=frozenset({"tool_calling", "cheap_text", "code_generation"}),
+    ),
+    "devstral": ModelConfig(
+        name="devstral",
+        display_name="Devstral (Mistral)",
+        provider=ProviderType.MISTRAL,
+        model_id="devstral-latest",
+        context_window=128000,
+        max_output_tokens=16384,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.1,  # $0.10/M input, $0.30/M output
+        description="Devstral — agent SWE Mistral, conçu pour les tâches de code multi-fichiers et repositories",
+        badge="SWE Agent",
+        capabilities=frozenset({"tool_calling", "cheap_text", "code_generation"}),
+    ),
+    "mistral-small": ModelConfig(
+        name="mistral-small",
+        display_name="Mistral Small (Mistral)",
+        provider=ProviderType.MISTRAL,
+        model_id="mistral-small-latest",
+        context_window=256000,
+        max_output_tokens=16384,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.15,  # $0.15/M input, $0.60/M output
+        description="Mistral Small — rapide et économique, 256K contexte, vision, hybrid reasoning, $0.15/M input",
+        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text"}),
+    ),
+    "magistral-medium": ModelConfig(
+        name="magistral-medium",
+        display_name="Magistral Medium (Mistral)",
+        provider=ProviderType.MISTRAL,
+        model_id="magistral-medium-latest",
+        context_window=256000,
+        max_output_tokens=40960,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=2.0,  # $2/M input, $5/M output
+        description="Magistral Medium — modèle de raisonnement Mistral, thinking long, 256K contexte, 40K output",
+        badge="Reasoning",
+        capabilities=frozenset({"tool_calling", "reasoning"}),
+    ),
+    "ministral-8b": ModelConfig(
+        name="ministral-8b",
+        display_name="Ministral 8B (Mistral)",
+        provider=ProviderType.MISTRAL,
+        model_id="ministral-8b-latest",
+        context_window=131072,
+        max_output_tokens=16384,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.1,  # $0.10/M input, $0.10/M output
+        description="Ministral 8B — ultra-rapide et ultra-cheap, 128K contexte, $0.10/M input+output",
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+
     # === DEEPSEEK V4 (disponible depuis le 24 avril 2026) ===
     "deepseek-v4-flash": ModelConfig(
         name="deepseek-v4-flash",
@@ -894,6 +979,8 @@ _PROVIDER_DISPLAY_NAMES: Dict[ProviderType, str] = {
     ProviderType.XAI:       "xAI",
     ProviderType.NVIDIA:    "NVIDIA NIM",
     ProviderType.MINIMAX:   "MiniMax",
+    ProviderType.ZAI:       "Z.AI",
+    ProviderType.MISTRAL:   "Mistral",
 }
 
 
@@ -1628,6 +1715,7 @@ def check_api_key(provider: ProviderType) -> bool:
         ProviderType.NVIDIA: "NVIDIA_API_KEY",
         ProviderType.MINIMAX: "MINIMAX_API_KEY",
         ProviderType.ZAI: "ZAI_API_KEY",
+        ProviderType.MISTRAL: "MISTRAL_API_KEY",
         # Image generation providers
         ProviderType.STABILITY: "STABILITY_API_KEY",
         ProviderType.FLUX: "BFL_API_KEY",
@@ -1636,7 +1724,7 @@ def check_api_key(provider: ProviderType) -> bool:
         ProviderType.REPLICATE: "REPLICATE_API_TOKEN",
         ProviderType.HUGGINGFACE: "HUGGINGFACE_TOKEN",
     }
-    
+
     if provider == ProviderType.OLLAMA:
         return True  # Pas de clé nécessaire
     
@@ -1658,6 +1746,7 @@ def get_api_key(provider: ProviderType) -> Optional[str]:
         ProviderType.NVIDIA: "NVIDIA_API_KEY",
         ProviderType.MINIMAX: "MINIMAX_API_KEY",
         ProviderType.ZAI: "ZAI_API_KEY",
+        ProviderType.MISTRAL: "MISTRAL_API_KEY",
         # Image generation providers
         ProviderType.STABILITY: "STABILITY_API_KEY",
         ProviderType.FLUX: "BFL_API_KEY",
@@ -1666,7 +1755,7 @@ def get_api_key(provider: ProviderType) -> Optional[str]:
         ProviderType.REPLICATE: "REPLICATE_API_TOKEN",
         ProviderType.HUGGINGFACE: "HUGGINGFACE_TOKEN",
     }
-    
+
     env_var = env_vars.get(provider)
     if env_var:
         return os.getenv(env_var)

@@ -274,6 +274,20 @@ async def setup_schema():
                 ],
             },
             {
+                "key": "MISTRAL_API_KEY",
+                "name": "Mistral AI",
+                "cost": "Payant (très abordable)",
+                "prefix": "",
+                "url": "https://console.mistral.ai/api-keys/",
+                "steps": [
+                    "Va sur console.mistral.ai",
+                    "Crée un compte gratuit (email suffit)",
+                    "Va dans 'API Keys' dans le menu gauche",
+                    "Clique sur 'Create new key'",
+                    "Copie la clé et colle-la ici",
+                ],
+            },
+            {
                 "key": "MOONSHOT_API_KEY",
                 "name": "Moonshot (Kimi)",
                 "cost": "Payant",

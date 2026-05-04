@@ -53,6 +53,7 @@ discord.py>=2.7.1
 # Perception
 Pillow>=10.0.0
 mss>=9.0.0
+pytesseract>=0.3.10         # OCR fallback (requiert Tesseract-OCR installé sur le système)
 
 # Utils
 rich>=13.0.0

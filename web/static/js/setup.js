@@ -203,7 +203,7 @@ function _renderModelStep(cont, step) {
   }
 
   // Sub-brand order for "Payants (Cloud)" — ensures brands stay consecutive
-  const _brandOrder = ['DeepSeek', 'OpenAI', 'Anthropic', 'Google', 'Moonshot', 'xAI'];
+  const _brandOrder = ['DeepSeek', 'OpenAI', 'Anthropic', 'Google', 'Mistral', 'Moonshot', 'xAI'];
   const _brandOf = (m) => (_modelsInfo[m] || {}).provider || 'Autre';
   groups['Payants (Cloud)'].sort((a, b) => {
     const ia = _brandOrder.indexOf(_brandOf(a));
@@ -221,6 +221,7 @@ function _renderModelStep(cont, step) {
     if (p.includes('openai')) return '#10a37f';
     if (p.includes('anthropic')) return '#d4a574';
     if (p.includes('google')) return '#4285f4';
+    if (p.includes('mistral')) return '#f7501e';
     if (p.includes('moonshot')) return '#ff6b9d';
     if (p.includes('xai')) return '#fff';
     if (p.includes('ollama') || p.includes('local')) return '#f59e0b';

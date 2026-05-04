@@ -138,6 +138,30 @@ async def run_command_handler(
                         handler_name="run_command",
                     )
 
+        # Guard: bloquer les serveurs de preview qui tentent de bind sur le port Lumena.
+        # Stratégie : bloquer seulement si (a) port explicite = Lumena_port,
+        # OU (b) commande defaultant à 8080 sans port spécifié (python -m http.server).
+        import re as _re_port
+        _lumena_port = int(os.getenv("LUMENA_PORT", "8080"))
+        _explicit_port_m = _re_port.search(
+            r'(?:--port|-p|:)\s*(\d{4,5})\b|(?:http\.server|npx\s+serve|npx\s+http-server)\s+(\d{4,5})\b',
+            command, _re_port.IGNORECASE,
+        )
+        _http_server_default_m = _re_port.search(
+            r'python(?:3)?\s+-m\s+http\.server\s*$|python(?:3)?\s+-m\s+http\.server\s+(?!\d)',
+            command.strip(), _re_port.IGNORECASE,
+        )
+        _explicit_port = None
+        if _explicit_port_m:
+            _explicit_port = int(next(g for g in _explicit_port_m.groups() if g))
+        if (_explicit_port == _lumena_port) or (_http_server_default_m and _explicit_port is None):
+            _suggested = command.replace(str(_lumena_port), str(_lumena_port + 1), 1)
+            return HandlerResult.ok(
+                f"⛔ Port {_lumena_port} réservé à Lumena — utilise un port différent "
+                f"(ex: `{_suggested}`).",
+                handler_name="run_command",
+            )
+
         # Timeout: paramètre explicite > défaut IDE/Telegram/WhatsApp
         if timeout and timeout > 0:
             timeout_sec = min(int(timeout), 1800)  # max 30min sécurité

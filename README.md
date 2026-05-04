@@ -4,11 +4,11 @@
 Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-8177%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-8515%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Version](https://img.shields.io/badge/version-v1.0.27-orange)
+![Version](https://img.shields.io/badge/version-v1.0.30-orange)
 
-> **⚠️ Version Bêta — v1.0.27**
+> **⚠️ Version Bêta — v1.0.30**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 ---
@@ -25,7 +25,7 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** ré
 
 | Domaine | Détail |
 |---|---|
-| **LLM** | 10 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — fallback chaîné automatique |
+| **LLM** | 11 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Mistral, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — fallback chaîné automatique |
 | **Raisonnement** | Boucle ReAct 30 iter, CodeAgent pleinement opérationnel — agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) en intégration active |
 | **Outils** | 511 handlers V2 dans 18 packs : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use |
 | **Documents** | 36 handlers, 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
@@ -38,7 +38,7 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** ré
 | **Web** | FastAPI + interface admin complète, chat temps réel (SSE), WebSocket IDE bridge, panel workspaces CodeAgent |
 | **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard, rate limiter, path traversal guard |
 | **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, parallel_tools avec résultats structurés par sous-appel |
-| **Tests** | 8 177 tests, 0 failed, ~173s suite complète |
+| **Tests** | 8 515 tests, 0 failed, ~163s suite complète |
 
 ---
 
@@ -193,7 +193,7 @@ src/
 │       ├── osint.py        # 16 handlers OSINT
 │       └── ...             # + autres modules
 ├── llm/
-│   └── multi_provider.py   # 10 providers LLM, fallback chaîné, retry intra-provider
+│   └── multi_provider.py   # 11 providers LLM, fallback chaîné, retry intra-provider
 ├── memory/
 │   ├── chromadb_store.py   # Mémoire vectorielle persistante (966L)
 │   ├── knowledge_graph.py  # Relations entre entités (286L)
@@ -250,6 +250,7 @@ Copier `.env.example` vers `.env`. Variables principales :
 | `ANTHROPIC_API_KEY` | Clé API Anthropic | — |
 | `GOOGLE_API_KEY` | Clé API Google (Gemini) | — |
 | `DEEPSEEK_API_KEY` | Clé API DeepSeek | — |
+| `MISTRAL_API_KEY` | Clé API Mistral (Large, Codestral, Devstral…) | — |
 | `ZAI_API_KEY` | Clé API Z.AI | — |
 | `TELEGRAM_TOKEN` | Token bot Telegram | — |
 | `LUMENA_SANDBOX_MODE` | Mode sandbox : `auto` / `always` / `never` | `auto` |

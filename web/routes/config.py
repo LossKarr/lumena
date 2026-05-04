@@ -296,6 +296,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Clé API Z.AI pour GLM-5.1, GLM-4.7-Flash, CogView-4... Obtenir sur z.ai"},
     {"key": "ZAI_BASE_URL", "label": "Z.AI Base URL", "group": "Clés API", "type": "text", "default": "https://api.z.ai/api/paas/v4",
      "hint": "URL de base API Z.AI. Modifier uniquement si proxy custom."},
+    {"key": "MISTRAL_API_KEY", "label": "Mistral AI API Key", "group": "Clés API", "type": "secret", "default": "",
+     "hint": "Clé API Mistral pour Mistral Large, Codestral, Devstral, Magistral, Ministral. Obtenir sur console.mistral.ai"},
     # ── Clés API Génération d'images ──
     {"key": "STABILITY_API_KEY", "label": "Stability AI API Key", "group": "Clés API", "type": "secret", "default": "",
      "hint": "Clé API Stability AI. Utilisée pour Stable Diffusion 3.5, Stable Image Ultra/Core. Obtenir sur platform.stability.ai"},
@@ -489,7 +491,7 @@ _SIMPLE_KEYS: frozenset = frozenset({
     "LUMENA_IDENTITY_LEARNING",
     "LUMENA_USE_EMOJIS", "LUMENA_DEFAULT_MOOD",
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "DEEPSEEK_API_KEY",
-    "MOONSHOT_API_KEY", "XAI_API_KEY", "NVIDIA_API_KEY", "MINIMAX_API_KEY",
+    "MOONSHOT_API_KEY", "XAI_API_KEY", "NVIDIA_API_KEY", "MINIMAX_API_KEY", "MISTRAL_API_KEY",
     "TELEGRAM_TOKEN", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_APP_SECRET", "DISCORD_TOKEN", "GITHUB_TOKEN",
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN",
     "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",

@@ -163,7 +163,23 @@ if errorlevel 1 (
     echo [OK] Navigateur installe
 )
 
-REM === 5b. Stripe CLI ===
+REM === 5b. Tesseract OCR (moteur OCR pour vision + lecture documents) ===
+where tesseract >nul 2>&1
+if errorlevel 1 (
+    echo [..] Installation de Tesseract OCR...
+    powershell -Command "winget install --id UB-Mannheim.TesseractOCR --accept-source-agreements --accept-package-agreements --silent" >nul 2>&1
+    where tesseract >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] Tesseract OCR non installe - OCR desactive ^(vision et lecture de documents limitees^)
+        echo        Installez manuellement : https://github.com/UB-Mannheim/tesseract/wiki
+    ) else (
+        echo [OK] Tesseract OCR installe
+    )
+) else (
+    echo [OK] Tesseract OCR detecte
+)
+
+REM === 5c. Stripe CLI ===
 where stripe >nul 2>&1
 if errorlevel 1 (
     echo [..] Installation de Stripe CLI...
@@ -179,7 +195,7 @@ if errorlevel 1 (
     echo [OK] Stripe CLI detectee
 )
 
-REM === 5c. Docker Sandbox (optionnel) ===
+REM === 5d. Docker Sandbox (optionnel) ===
 where docker >nul 2>&1
 if errorlevel 1 goto :docker_absent
 docker info >nul 2>&1

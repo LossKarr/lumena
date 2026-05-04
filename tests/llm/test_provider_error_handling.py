@@ -155,7 +155,7 @@ class TestProviderFallback:
             llm._mark_failure("deepseek")
         
         next_provider = llm._get_next_provider("deepseek")
-        assert next_provider == "zai"
+        assert next_provider == "mistral"
     
     def test_no_healthy_provider_returns_none(self, llm):
         """Doit retourner None si aucun provider healthy."""

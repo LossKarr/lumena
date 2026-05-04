@@ -27,7 +27,7 @@ async def get_providers():
     # Providers connus — toujours affiches meme sans trafic
     _ALL_PROVIDERS = [
         "ollama", "openai", "anthropic", "google",
-        "deepseek", "moonshot", "xai", "nvidia", "minimax",
+        "deepseek", "mistral", "moonshot", "xai", "nvidia", "minimax",
     ]
 
     stats: dict = {}
@@ -56,9 +56,9 @@ async def get_providers():
         _provider_by_name = {
             "ollama": ProviderType.OLLAMA, "openai": ProviderType.OPENAI,
             "anthropic": ProviderType.ANTHROPIC, "google": ProviderType.GOOGLE,
-            "deepseek": ProviderType.DEEPSEEK, "moonshot": ProviderType.MOONSHOT,
-            "xai": ProviderType.XAI, "nvidia": ProviderType.NVIDIA,
-            "minimax": ProviderType.MINIMAX,
+            "deepseek": ProviderType.DEEPSEEK, "mistral": ProviderType.MISTRAL,
+            "moonshot": ProviderType.MOONSHOT, "xai": ProviderType.XAI,
+            "nvidia": ProviderType.NVIDIA, "minimax": ProviderType.MINIMAX,
         }
         for pname, ptype in _provider_by_name.items():
             if pname == "ollama":
