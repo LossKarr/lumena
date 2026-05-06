@@ -111,7 +111,7 @@ function _renderStep() {
     // P0.1: Pre-fill defaults for any field the user hasn't touched yet
     _prefillDefaults(step);
     if (step.id === 'model') _renderModelStep(cont, step);
-    else if (step.id === 'keys') _renderKeysStep(cont, step);
+    else if (step.id === 'keys' || step.id === 'image_gen_keys') _renderKeysStep(cont, step);
     else if (step.id === 'security') _renderSecurityStep(cont, step);
     else if (step.id === 'telegram') _renderTelegramStep(cont, step);
     else if (step.id === 'twitter') _renderTwitterStep(cont, step);

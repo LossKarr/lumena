@@ -63,9 +63,9 @@ models/
 
 # Fichiers internes / artefacts racine
 _test_out.txt
-HEARTBEAT.md
+#HEARTBEAT.md
 QUI_SUIS_JE.md
-"Plan- meilleur code agent au monde.md"
+
 *.lock.tmp
 data/env_backups/
 
@@ -88,3 +88,6 @@ screenshot_*.jpg
 nul
 /plans
 /ide
+
+# Installeur - workflow de build privé
+installer/

@@ -327,6 +327,117 @@ async def setup_schema():
                     "Copie ta clé et colle-la ici",
                 ],
             },
+            {
+                "key": "ZAI_API_KEY",
+                "name": "Z.AI (GLM)",
+                "cost": "Payant (très abordable)",
+                "prefix": "",
+                "url": "https://bigmodel.cn/usercenter/apikeys",
+                "steps": [
+                    "Va sur bigmodel.cn",
+                    "Crée un compte ou connecte-toi",
+                    "Va dans 'API Keys' dans ton profil",
+                    "Clique sur 'Créer une clé API'",
+                    "Copie la clé et colle-la ici",
+                ],
+            },
+        ],
+    })
+
+    # Step 2b: Génération d'images
+    steps.append({
+        "id": "image_gen_keys",
+        "title": "Génération d'images",
+        "subtitle": "Clés pour générer des images à partir de texte",
+        "icon": "image",
+        "help": "Ces clés me permettent de créer des images depuis tes descriptions. "
+                "FLUX et Stable Diffusion sont les plus populaires. "
+                "Une seule clé suffit — je choisis automatiquement selon ce qui est disponible.",
+        "fields": [],
+        "optional": True,
+        "providers": [
+            {
+                "key": "BFL_API_KEY",
+                "name": "FLUX (Black Forest Labs)",
+                "badge": "Recommandé",
+                "cost": "Payant (à partir de 0.003$/image)",
+                "prefix": "",
+                "url": "https://api.us1.bfl.ai/auth/profile",
+                "steps": [
+                    "Va sur api.us1.bfl.ai",
+                    "Crée un compte ou connecte-toi",
+                    "Va dans ton profil > 'API Keys'",
+                    "Génère une clé et colle-la ici",
+                ],
+            },
+            {
+                "key": "STABILITY_API_KEY",
+                "name": "Stable Diffusion (Stability AI)",
+                "cost": "Payant (à partir de 0.065$/image)",
+                "prefix": "sk-",
+                "url": "https://platform.stability.ai/account/keys",
+                "steps": [
+                    "Va sur platform.stability.ai",
+                    "Crée un compte ou connecte-toi",
+                    "Va dans 'Account' > 'API Keys'",
+                    "Clique sur 'Create API Key'",
+                    "Copie la clé et colle-la ici",
+                ],
+            },
+            {
+                "key": "IDEOGRAM_API_KEY",
+                "name": "Ideogram",
+                "cost": "Payant",
+                "prefix": "",
+                "url": "https://ideogram.ai/manage-api",
+                "steps": [
+                    "Va sur ideogram.ai",
+                    "Crée un compte ou connecte-toi",
+                    "Va dans Settings > API",
+                    "Génère une clé et colle-la ici",
+                ],
+            },
+            {
+                "key": "RECRAFT_API_KEY",
+                "name": "Recraft",
+                "cost": "Payant",
+                "prefix": "",
+                "url": "https://www.recraft.ai/",
+                "steps": [
+                    "Va sur recraft.ai",
+                    "Crée un compte ou connecte-toi",
+                    "Va dans Settings > API Keys",
+                    "Génère une clé et colle-la ici",
+                ],
+            },
+            {
+                "key": "REPLICATE_API_TOKEN",
+                "name": "Replicate",
+                "cost": "Payant (pay-as-you-go)",
+                "prefix": "r8_",
+                "url": "https://replicate.com/account/api-tokens",
+                "steps": [
+                    "Va sur replicate.com",
+                    "Crée un compte ou connecte-toi",
+                    "Va dans 'Account' > 'API tokens'",
+                    "Crée un token et colle-le ici",
+                ],
+            },
+            {
+                "key": "HUGGINGFACE_TOKEN",
+                "name": "HuggingFace",
+                "cost": "Gratuit (modèles publics)",
+                "badge": "Gratuit",
+                "prefix": "hf_",
+                "url": "https://huggingface.co/settings/tokens",
+                "steps": [
+                    "Va sur huggingface.co",
+                    "Crée un compte gratuit",
+                    "Va dans Settings > Access Tokens",
+                    "Clique sur 'New token' (Read suffit)",
+                    "Copie le token et colle-le ici",
+                ],
+            },
         ],
     })
 

@@ -9,6 +9,7 @@ if "%~1"=="" (
 chcp 65001 >nul 2>&1
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+set "APPDIR=%CD%"
 
 REM === Desactive QuickEdit (empeche le freeze console au clic) ===
 reg add HKCU\Console /v QuickEdit /t REG_DWORD /d 0 /f >nul 2>&1
@@ -94,29 +95,42 @@ if "!NEED_PYTHON!"=="1" (
 )
 
 REM === 2. Cree venv ===
-if not exist "venv\" (
-    echo [..] Creation de l'environnement virtuel...
-    !PY_CMD! -m venv venv
+set "VENV_PY=%APPDIR%\venv\Scripts\python.exe"
+set "VENV_PIP=%APPDIR%\venv\Scripts\pip.exe"
+
+if not exist "%APPDIR%\venv\Scripts\python.exe" (
+    if exist "%APPDIR%\venv\" (
+        echo [..] venv incomplet detecte - suppression et recreation...
+        rmdir /s /q "%APPDIR%\venv"
+    ) else (
+        echo [..] Creation de l'environnement virtuel...
+    )
+    !PY_CMD! -m venv "%APPDIR%\venv"
     if errorlevel 1 (
         echo [ERREUR] Echec creation venv.
+        pause & exit /b 1
+    )
+    if not exist "%APPDIR%\venv\Scripts\python.exe" (
+        echo [ERREUR] venv cree mais python.exe introuvable.
         pause & exit /b 1
     )
 )
 echo [OK] Environnement virtuel
 
-REM === 3. Active venv ===
-call venv\Scripts\activate.bat
-
 REM === 4. Upgrade pip + install deps ===
 echo [..] Mise a jour de pip...
-python -m pip install --upgrade pip --quiet
+"!VENV_PY!" -m pip install --upgrade pip --quiet
 
-echo [..] Installation des dependances (241 packages, 5-10 min)...
-REM requirements-lock.txt = versions pinnees (pas de derive sur install existante)
-if exist "requirements-lock.txt" (
-    pip install -r requirements-lock.txt
+echo [..] Installation des dependances...
+if exist "%APPDIR%\wheelhouse\" (
+    echo      Mode offline - installation depuis le cache local...
+    "!VENV_PIP!" install --no-index --find-links "%APPDIR%\wheelhouse" wheel setuptools pip
+    "!VENV_PIP!" install --no-index --find-links "%APPDIR%\wheelhouse" -r "%APPDIR%\requirements-lock.txt"
+) else if exist "%APPDIR%\requirements-lock.txt" (
+    echo      Mode online - telechargement depuis internet...
+    "!VENV_PIP!" install -r "%APPDIR%\requirements-lock.txt"
 ) else (
-    pip install -r requirements.txt
+    "!VENV_PIP!" install -r "%APPDIR%\requirements.txt"
 )
 if errorlevel 1 (
     echo [ERREUR] Echec installation des dependances.
@@ -126,15 +140,15 @@ echo [OK] Dependances installees
 
 REM === 4.5. Fine-tuning (GPU NVIDIA auto-detect) ===
 set "HAS_GPU=0"
-nvidia-smi >nul 2>&1
+wmic path win32_VideoController get name 2>nul | findstr /i "NVIDIA" >nul 2>&1
 if not errorlevel 1 set "HAS_GPU=1"
 
 if "!HAS_GPU!"=="1" (
     echo [..] GPU NVIDIA detecte - installation des dependances fine-tuning...
-    if exist "requirements-finetuning-lock.txt" (
-        pip install -r requirements-finetuning-lock.txt
+    if exist "%APPDIR%\requirements-finetuning-lock.txt" (
+        "!VENV_PIP!" install -r "%APPDIR%\requirements-finetuning-lock.txt"
     ) else (
-        pip install -r requirements-finetuning.txt
+        "!VENV_PIP!" install -r "%APPDIR%\requirements-finetuning.txt"
     )
     if errorlevel 1 (
         echo [WARN] Echec partiel des dependances fine-tuning - le fine-tuning sera limite.
@@ -143,7 +157,7 @@ if "!HAS_GPU!"=="1" (
         echo [OK] Dependances fine-tuning installees
     )
     REM === 4.5b. llama-cpp-python (optionnel, necessite C++ compiler) ===
-    pip install "llama-cpp-python>=0.3.0" >nul 2>&1
+    "!VENV_PIP!" install "llama-cpp-python>=0.3.0" >nul 2>&1
     if errorlevel 1 (
         echo [INFO] llama-cpp-python non installe (necessite Visual Studio Build Tools^) - quantization GGUF via CLI uniquement.
     ) else (
@@ -156,7 +170,7 @@ if "!HAS_GPU!"=="1" (
 
 REM === 5. Playwright ===
 echo [..] Installation du navigateur automatise (Chromium)...
-python -m playwright install chromium >nul 2>&1
+"!VENV_PY!" -m playwright install chromium >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Playwright Chromium n'a pas pu etre installe - navigation web limitee
 ) else (
@@ -164,19 +178,15 @@ if errorlevel 1 (
 )
 
 REM === 5b. Tesseract OCR (moteur OCR pour vision + lecture documents) ===
+set "TESS_OK=0"
 where tesseract >nul 2>&1
-if errorlevel 1 (
-    echo [..] Installation de Tesseract OCR...
-    powershell -Command "winget install --id UB-Mannheim.TesseractOCR --accept-source-agreements --accept-package-agreements --silent" >nul 2>&1
-    where tesseract >nul 2>&1
-    if errorlevel 1 (
-        echo [WARN] Tesseract OCR non installe - OCR desactive ^(vision et lecture de documents limitees^)
-        echo        Installez manuellement : https://github.com/UB-Mannheim/tesseract/wiki
-    ) else (
-        echo [OK] Tesseract OCR installe
-    )
-) else (
+if not errorlevel 1 set "TESS_OK=1"
+if "!TESS_OK!"=="0" if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" set "TESS_OK=1"
+if "!TESS_OK!"=="0" if exist "C:\Program Files (x86)\Tesseract-OCR\tesseract.exe" set "TESS_OK=1"
+if "!TESS_OK!"=="1" (
     echo [OK] Tesseract OCR detecte
+) else (
+    echo [WARN] Tesseract OCR non installe - OCR desactive ^(vision et lecture de documents limitees^)
 )
 
 REM === 5c. Stripe CLI ===
@@ -234,11 +244,11 @@ if not exist ".env" (
 )
 
 REM === 7. Dossiers data/ ===
-python -c "from src.utils.paths import validate_instance_dirs; validate_instance_dirs(create=True)" 2>nul
+"!VENV_PY!" -c "from src.utils.paths import validate_instance_dirs; validate_instance_dirs(create=True)" 2>nul
 echo [OK] Dossiers initialises
 
 REM === 8. Ollama (optionnel) ===
-python -c "import httpx; r=httpx.get('http://localhost:11434/api/tags',timeout=2); exit(0 if r.status_code==200 else 1)" >nul 2>&1
+"!VENV_PY!" -c "import httpx; r=httpx.get('http://localhost:11434/api/tags',timeout=2); exit(0 if r.status_code==200 else 1)" >nul 2>&1
 if errorlevel 1 (
     where ollama >nul 2>&1
     if not errorlevel 1 (
@@ -267,37 +277,10 @@ if exist ".env" (
     )
 )
 
-REM === 9. Lance le serveur, attend qu'il soit pret, puis ouvre le navigateur ===
+REM === 9. Lance START_DESKTOP ===
 echo [OK] Installation terminee !
 echo.
-echo  Le serveur demarre en arriere-plan. Le navigateur s'ouvrira quand il sera pret.
+echo  Lancement de Lumena Desktop...
+echo  Pour relancer plus tard : double-cliquez START_DESKTOP.bat
 echo.
-echo  Cette fenetre affiche les logs du serveur - ne la fermez pas.
-echo  Pour relancer plus tard : double-cliquez START.bat
-echo.
-start /min "Lumena Backend" venv\Scripts\python.exe web/server.py
-
-REM === Attente serveur pret (max 30s) ===
-echo [..] Demarrage du serveur web...
-set SRV_OK=0
-for /L %%i in (1,1,30) do (
-    if "!SRV_OK!"=="0" (
-        venv\Scripts\python.exe -c "import httpx; httpx.get('http://127.0.0.1:!LUMENA_PORT!/api/health',timeout=1)" >nul 2>&1
-        if not errorlevel 1 set SRV_OK=1
-        if "!SRV_OK!"=="0" timeout /t 1 /nobreak >nul
-    )
-)
-if "!SRV_OK!"=="1" (
-    echo [OK] Lumena operationnel sur http://localhost:!LUMENA_PORT!
-) else (
-    echo [WARN] Timeout d'attente - ouverture navigateur quand meme
-)
-start http://localhost:!LUMENA_PORT!
-echo.
-echo  Appuyez sur une touche pour fermer Lumena...
-pause >nul
-taskkill /fi "WINDOWTITLE eq Lumena Backend" /f >nul 2>&1
-
-echo.
-echo  --- Serveur arrete. ---
-pause
+start "" "%APPDIR%\START_DESKTOP.bat"

@@ -6,9 +6,9 @@ Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore se
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Tests](https://img.shields.io/badge/tests-8515%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Version](https://img.shields.io/badge/version-v1.0.30-orange)
+![Version](https://img.shields.io/badge/version-v1.0.31-orange)
 
-> **⚠️ Version Bêta — v1.0.30**
+> **⚠️ Version Bêta — v1.0.31**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 ---
