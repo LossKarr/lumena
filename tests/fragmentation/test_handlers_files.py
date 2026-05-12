@@ -56,7 +56,7 @@ def sample_py(ctx):
 
 @pytest.fixture
 def sample_js(ctx):
-    """CrÃ©e un fichier JavaScript de test."""
+    """Crée un fichier JavaScript de test."""
     f = ctx.runtime_root / "sample.js"
     f.write_text(
         "class Widget {\n"

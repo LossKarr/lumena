@@ -81,11 +81,15 @@ class IdentityService(BaseService):
 
     @staticmethod
     def resolve_channel_key(runtime_context: Any, sender: Optional[Dict[str, Any]] = None) -> Optional[str]:
-        """Construit une clé unifiée (channel:identifier) depuis le RuntimeContext."""
+        """Construit une clé unifiée (channel:identifier) depuis le RuntimeContext.
+
+        Priorité pour le web/ide : user_id + conversation_id > user_id + client > user_id.
+        session_id n'existe plus dans RuntimeContext (supprimé Phase 0).
+        """
         if runtime_context is None and not sender:
             return None
         channel = getattr(runtime_context, "channel", None) or "unknown"
-        # Priorités par canal
+        # Priorités par canal externe (sender fourni par bot)
         if sender:
             if channel == "telegram" and sender.get("id"):
                 return f"telegram:{sender['id']}"
@@ -93,9 +97,16 @@ class IdentityService(BaseService):
                 return f"whatsapp:{sender['phone']}"
             if channel == "discord" and sender.get("id"):
                 return f"discord:{sender['id']}"
-        sid = getattr(runtime_context, "session_id", None) if runtime_context else None
-        if sid:
-            return f"{channel}:{sid}"
+        # Pour web/ide : utiliser user_id + conversation_id ou client
+        if runtime_context is not None:
+            uid = getattr(runtime_context, "user_id", None) or "local:owner"
+            conv = getattr(runtime_context, "conversation_id", None) or ""
+            client = getattr(runtime_context, "client", None) or ""
+            if conv:
+                return f"{channel}:{uid}:{conv}"
+            if client and client != "unknown":
+                return f"{channel}:{uid}:{client}"
+            return f"{channel}:{uid}"
         return f"{channel}:default"
 
     def _resolve_sender_identity(
@@ -537,26 +548,95 @@ Tu parles avec : {name}
             logger.warning(f"Erreur suppression contexte WhatsApp {phone}: {e}")
         logger.info(f"📱 Contexte WhatsApp effacé: {phone}")
 
-    # ── Contexte Web (persistance disque, canal web/default) ─────────────────
+    # ── Contexte Web (persistance disque, clé par utilisateur) ───────────────
+    # Phase 0 : _WEB_CONTEXT_KEY = "default" remplacé par une clé dérivée du
+    # RuntimeContext courant. Le fichier legacy web_contexts/default.json reste
+    # lisible uniquement pour local:owner (migration Phase -1).
 
-    _WEB_CONTEXT_KEY = "default"
+    _WEB_CONTEXT_LEGACY_KEY = "default"
 
-    def _load_web_context(self):
+    @staticmethod
+    def _resolve_web_context_key(
+        user_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        client: Optional[str] = None,
+    ) -> str:
+        """Construit une clé de contexte web par utilisateur.
+
+        Priorité :
+          1. web:<user_id>:<conversation_id>
+          2. web:<user_id>:<client>
+          3. fallback legacy : "default"   (local:owner uniquement)
+        """
+        from src.runtime.context import FALLBACK_USER_ID
+        uid = (user_id or "").strip() or FALLBACK_USER_ID
+        conv = (conversation_id or "").strip()
+        cli = (client or "").strip()
+
+        if conv:
+            raw = f"web:{uid}:{conv}"
+        elif cli:
+            raw = f"web:{uid}:{cli}"
+        else:
+            raw = f"web:{uid}:default"
+
+        # Sanitize : pas de slash ni de caractère dangereux dans le nom de fichier
+        safe = raw.replace("/", "_").replace("\\", "_").replace(":", "__")
+        return safe
+
+    def _get_web_context_key(self) -> str:
+        """Retourne la clé active en lisant le RuntimeContext courant si disponible."""
+        try:
+            from src.runtime.context import get_current_runtime_context
+            ctx = get_current_runtime_context()
+            if ctx is not None:
+                return self._resolve_web_context_key(
+                    user_id=ctx.user_id,
+                    conversation_id=ctx.conversation_id,
+                    client=ctx.client,
+                )
+        except Exception:
+            pass
+        return self._WEB_CONTEXT_LEGACY_KEY
+
+    def _load_web_context(self, context_key: Optional[str] = None):
         """Charge (ou crée) le contexte de conversation web depuis le disque."""
         from src.core import ConversationContext
+        _explicit_key = context_key is not None
+        key = context_key or self._get_web_context_key()
         ctx = ConversationContext(max_messages=10)
-        ctx_file = self.data_dir / "web_contexts" / f"{self._WEB_CONTEXT_KEY}.json"
+        ctx_dir = self.data_dir / "web_contexts"
+
+        # Tentative sur la clé courante
+        ctx_file = ctx_dir / f"{key}.json"
+        # Fallback legacy UNIQUEMENT pour local:owner et seulement quand la clé
+        # est dérivée du RuntimeContext courant (pas fournie explicitement).
+        # Si context_key est fourni explicitement, on ne fait jamais de fallback
+        # vers le fichier d'un autre utilisateur.
+        if not ctx_file.exists() and key != self._WEB_CONTEXT_LEGACY_KEY and not _explicit_key:
+            try:
+                from src.runtime.context import get_current_runtime_context, FALLBACK_USER_ID
+                ctx_rt = get_current_runtime_context()
+                _uid = (ctx_rt.user_id if ctx_rt else None) or FALLBACK_USER_ID
+            except Exception:
+                _uid = "local:owner"
+            if _uid == "local:owner":
+                legacy_file = ctx_dir / f"{self._WEB_CONTEXT_LEGACY_KEY}.json"
+                if legacy_file.exists():
+                    ctx_file = legacy_file
+                    logger.debug(f"🌐 Contexte Web : fallback legacy pour local:owner")
+
         if ctx_file.exists():
             try:
                 data = json.loads(ctx_file.read_text(encoding="utf-8"))
                 for msg in data:
                     if msg.get("role") and msg.get("content"):
                         ctx.add_message(msg["role"], msg["content"])
-                logger.debug(f"🌐 Contexte Web chargé ({len(ctx.messages)} msgs)")
+                logger.debug(f"🌐 Contexte Web chargé (key={key}, {len(ctx.messages)} msgs)")
             except Exception as e:
                 logger.warning(f"Erreur chargement contexte Web: {e}")
         # ── structured_state parallèle (V1) ──
-        state_file = self.data_dir / "web_contexts" / f"{self._WEB_CONTEXT_KEY}.state.json"
+        state_file = ctx_dir / f"{key}.state.json"
         if state_file.exists():
             try:
                 state_data = json.loads(state_file.read_text(encoding="utf-8"))
@@ -565,32 +645,36 @@ Tu parles avec : {name}
                 logger.debug(f"structured_state Web non chargé: {e}")
         return ctx
 
-    def _save_web_context(self, context):
+    def _save_web_context(self, context, context_key: Optional[str] = None):
         """Sauvegarde le contexte web sur disque (écriture atomique)."""
+        key = context_key or self._get_web_context_key()
         with self._identity_lock:
             try:
                 ctx_dir = self.data_dir / "web_contexts"
                 ctx_dir.mkdir(parents=True, exist_ok=True)
                 data = [{"role": m.role, "content": m.content} for m in context.messages]
-                atomic_write_json(ctx_dir / f"{self._WEB_CONTEXT_KEY}.json", data)
+                atomic_write_json(ctx_dir / f"{key}.json", data)
                 # ── structured_state parallèle (V1) ──
                 if hasattr(context, 'structured_state') and not context.structured_state.is_empty():
                     atomic_write_json(
-                        ctx_dir / f"{self._WEB_CONTEXT_KEY}.state.json",
+                        ctx_dir / f"{key}.state.json",
                         context.structured_state.to_dict(),
                     )
             except Exception as e:
                 logger.warning(f"Erreur sauvegarde contexte Web: {e}")
 
-    def clear_web_context(self):
+    def clear_web_context(self, context_key: Optional[str] = None):
         """Efface le contexte de conversation web (disque)."""
-        ctx_file = self.data_dir / "web_contexts" / f"{self._WEB_CONTEXT_KEY}.json"
-        try:
-            if ctx_file.exists():
-                ctx_file.unlink()
-        except Exception as e:
-            logger.warning(f"Erreur suppression contexte Web: {e}")
-        logger.info("🌐 Contexte Web effacé")
+        key = context_key or self._get_web_context_key()
+        ctx_dir = self.data_dir / "web_contexts"
+        for suffix in (".json", ".state.json"):
+            ctx_file = ctx_dir / f"{key}{suffix}"
+            try:
+                if ctx_file.exists():
+                    ctx_file.unlink()
+            except Exception as e:
+                logger.warning(f"Erreur suppression contexte Web {key}: {e}")
+        logger.info(f"🌐 Contexte Web effacé (key={key})")
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)

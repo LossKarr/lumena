@@ -700,7 +700,7 @@ def _classify_browser_surface(
     # Sur les SPA, /connexion peut afficher encore le formulaire de contact; il faut
     # le reconnaître explicitement au lieu de le laisser tomber dans public_form.
     if _looks_like_chat_transcript(obs_text):
-        return "chat_transcript", "transcription de conversation dÃ©tectÃ©e"
+        return "chat_transcript", "transcription de conversation détectée"
 
     _chat_signal_hits = sum(1 for tok in _BROWSER_SURFACE_CHAT_HINTS if tok in lower)
     _has_chat_signal = _chat_signal_hits > 0
@@ -2590,6 +2590,15 @@ REGLES STRICTES:
             except Exception as e:
                 logger.debug(f"Mail config injection: {e}")
 
+        # --- Peer Awareness (Lot A Phase 10) ---
+        peer_awareness_section = ""
+        try:
+            from src.runtime.peer_awareness import build_peer_awareness_context
+            _user_id = getattr(self.runtime_ctx, "user_id", None) if self.runtime_ctx else None
+            peer_awareness_section = build_peer_awareness_context(user_id=_user_id)
+        except Exception as _pa_exc:
+            logger.debug(f"Peer awareness injection: {_pa_exc}")
+
         # --- Contexte IDE (source de verite pour workspace) ---
         ide_workspace = str((getattr(self.tools, "ide_context", {}) or {}).get("workspace_path") or "").strip()
         ide_active_file = str((getattr(self.tools, "ide_context", {}) or {}).get("active_file_path") or "").strip()
@@ -2862,6 +2871,7 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
 {self_awareness_context}
 {active_skills_section}
 {mail_accounts_context}
+{peer_awareness_section}
 {ide_runtime_context}
 {recent_project_context}
 {sandbox_context}

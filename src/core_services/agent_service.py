@@ -579,6 +579,13 @@ class AgentService:
         # Désactivable via config
         if os.environ.get("LUMENA_IDENTITY_LEARNING", "1") == "0":
             return
+        try:
+            from src.runtime.context import get_current_runtime_context as _get_rtx_p
+            _rtx_p = _get_rtx_p()
+            _uid_p = (getattr(_rtx_p, "user_id", None) or "local:owner") if _rtx_p else "local:owner"
+        except Exception:
+            _uid_p = "local:owner"
+        _pref_memory = self.core.get_user_memory(_uid_p) or self.core.memory
 
         for pattern, fact_key in self._FACT_EXTRACT_PATTERNS:
             match = re.search(pattern, message, re.IGNORECASE)
@@ -588,7 +595,7 @@ class AgentService:
             # Fait avec valeur fixe (formality:tutoiement)
             if ":" in fact_key:
                 key, value = fact_key.split(":", 1)
-                self.core.memory.learn_fact(key, value)
+                _pref_memory.learn_fact(key, value)
                 logger.info(f"💾 Fait appris: {key} = {value}")
                 continue
 
@@ -602,20 +609,20 @@ class AgentService:
             # Pour le prénom, aussi mettre à jour user_name et creator si vides
             if fact_key == "prénom_utilisateur":
                 value = value.capitalize()
-                self.core.memory.learn_fact("prénom_utilisateur", value)
-                if not self.core.memory.get_fact("creator"):
-                    self.core.memory.learn_fact("creator", value)
+                _pref_memory.learn_fact("prénom_utilisateur", value)
+                if not _pref_memory.get_fact("creator"):
+                    _pref_memory.learn_fact("creator", value)
                 logger.info(f"💾 Prénom appris: {value}")
             elif fact_key == "centre_interet":
                 # Accumuler au lieu d'écraser
-                existing = self.core.memory.get_fact("centres_interet") or ""
+                existing = _pref_memory.get_fact("centres_interet") or ""
                 interests = [i.strip() for i in existing.split(",") if i.strip()]
                 if value.lower() not in [i.lower() for i in interests]:
                     interests.append(value)
-                    self.core.memory.learn_fact("centres_interet", ", ".join(interests))
+                    _pref_memory.learn_fact("centres_interet", ", ".join(interests))
                     logger.info(f"💾 Centre d'intérêt appris: {value}")
             else:
-                self.core.memory.learn_fact(fact_key, value)
+                _pref_memory.learn_fact(fact_key, value)
                 logger.info(f"💾 Fait appris: {fact_key} = {value}")
 
     # ── Extraction LLM sémantique post-conversation ──────────────────────
@@ -1055,12 +1062,21 @@ Conversations et apprentissages de la journée.
             emotional_context = c.emotion_manager.get_emotional_context()
             system_prompt = system_prompt + "\n\n" + emotional_context
 
+        _active_memory = None
         if c.memory:
+            try:
+                from src.runtime.context import get_current_runtime_context as _get_rtx
+                _rtx = _get_rtx()
+                _uid = (getattr(_rtx, "user_id", None) or "local:owner") if _rtx else "local:owner"
+            except Exception:
+                _uid = "local:owner"
+            _active_memory = c.get_user_memory(_uid) or c.memory
+
             memory_started = perf_counter()
             if TELEMETRY_AVAILABLE:
                 publish_trace(stage="memory_query_start", status="start", mode="chat")
 
-            memory_context = c.memory.get_context_for_prompt(user_message, max_memories=20)
+            memory_context = _active_memory.get_context_for_prompt(user_message, max_memories=20)
             if TELEMETRY_AVAILABLE:
                 publish_trace(
                     stage="memory_query_done", status="ok", mode="chat",
@@ -1074,9 +1090,10 @@ Conversations et apprentissages de la journée.
         if permanent_context:
             system_prompt = system_prompt + permanent_context
 
-            if c.memory:
-                formality = c.memory.get_fact("formality")
-                user_name = c.memory.get_fact("user_name")
+            _mem_for_facts = _active_memory or c.memory
+            if _mem_for_facts:
+                formality = _mem_for_facts.get_fact("formality")
+                user_name = _mem_for_facts.get_fact("user_name")
 
                 critical_rules = []
                 if formality == "vouvoiement":
@@ -1548,7 +1565,14 @@ Conversations et apprentissages de la journée.
             if c.emotion_manager:
                 system_prompt += "\n\n" + c.emotion_manager.get_emotional_context()
             if c.memory:
-                memory_context = c.memory.get_context_for_prompt(user_message, max_memories=15)
+                try:
+                    from src.runtime.context import get_current_runtime_context as _get_rtx2
+                    _rtx2 = _get_rtx2()
+                    _uid2 = (getattr(_rtx2, "user_id", None) or "local:owner") if _rtx2 else "local:owner"
+                except Exception:
+                    _uid2 = "local:owner"
+                _mem2 = c.get_user_memory(_uid2) or c.memory
+                memory_context = _mem2.get_context_for_prompt(user_message, max_memories=15)
                 if memory_context:
                     system_prompt += "\n\n" + memory_context
             permanent = c.get_permanent_memory_context()

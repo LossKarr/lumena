@@ -74,13 +74,27 @@ class PlaywrightBrowser:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
-        from src.utils.paths import SCREENSHOTS_DIR, BROWSER_PROFILES_DIR, BROWSER_TRACES_DIR
+        from src.utils.paths import (
+            SCREENSHOTS_DIR, BROWSER_PROFILES_DIR, BROWSER_TRACES_DIR,
+            MULTI_INSTANCE_ENABLED, INSTANCE_ID, get_instance_browser_profile_dir,
+        )
         self._screenshots_dir = SCREENSHOTS_DIR
         self._screenshots_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Profils persistants
         self._profiles_dir = BROWSER_PROFILES_DIR
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
+
+        # Chemin de profil isolé par instance quand LUMENA_MULTI_INSTANCE=1.
+        # Deux instances ne doivent jamais partager data/browser_profiles/lumena.
+        # INSTANCE_ID est importé au moment du __init__ (pas au module level) pour
+        # être patchable en test sans réimporter le module.
+        if profile_name and MULTI_INSTANCE_ENABLED and profile_name == "lumena":
+            self._profile_path = get_instance_browser_profile_dir(INSTANCE_ID)
+        elif profile_name:
+            self._profile_path = self._profiles_dir / profile_name
+        else:
+            self._profile_path = None
         
         # Concurrency guard
         self._lock = asyncio.Lock()
@@ -669,8 +683,8 @@ class PlaywrightBrowser:
                 extra_headers = stealth.get("extra_http_headers", {})
                 
                 # Phase 18: Utiliser profil persistant si spécifié
-                if self.profile_name:
-                    profile_path = self._profiles_dir / self.profile_name
+                if self.profile_name and self._profile_path is not None:
+                    profile_path = self._profile_path
                     profile_path.mkdir(parents=True, exist_ok=True)
                     
                     context_kwargs = dict(

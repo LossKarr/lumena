@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import json
+import subprocess
+import sys
 import threading
-from multiprocessing import Process
 from pathlib import Path
 from unittest.mock import patch
 
@@ -79,29 +81,42 @@ def test_env_write_lock(tmp_path):
     assert "LUMENA_WEB_PORT=3333" in text
 
 
-def _process_write(project_root: str, data_dir: str):
-    from unittest.mock import patch
-    from web.routes import config as local_config_mod
+_PROCESS_WRITE_SCRIPT = r"""
+import json
+import sys
+from pathlib import Path
+from unittest.mock import patch
 
-    with patch.object(local_config_mod, "_PROJECT_ROOT", Path(project_root)), \
-         patch.object(local_config_mod, "DATA_DIR", Path(data_dir)), \
-         patch.object(local_config_mod, "_ENV_FILE_LOCK", Path(data_dir) / ".env.lock"), \
-         patch.object(local_config_mod, "_ENV_BACKUP_DIR", Path(data_dir) / "env_backups"), \
-         patch.object(local_config_mod, "_CONFIG_SCHEMA", _mini_schema()):
-        local_config_mod._write_env_values({"LUMENA_PORT": "9191", "LUMENA_WEB_PORT": "3131"})
+from web.routes import config as local_config_mod
+
+project_root = Path(sys.argv[1])
+data_dir = Path(sys.argv[2])
+schema = json.loads(sys.argv[3])
+
+with patch.object(local_config_mod, "_PROJECT_ROOT", project_root), \
+     patch.object(local_config_mod, "DATA_DIR", data_dir), \
+     patch.object(local_config_mod, "_ENV_FILE_LOCK", data_dir / ".env.lock"), \
+     patch.object(local_config_mod, "_ENV_BACKUP_DIR", data_dir / "env_backups"), \
+     patch.object(local_config_mod, "_CONFIG_SCHEMA", schema):
+    local_config_mod._write_env_values({"LUMENA_PORT": "9191", "LUMENA_WEB_PORT": "3131"})
+"""
 
 
 @pytest.mark.timeout(30)
 def test_env_cross_process_lock(tmp_path):
     project_root, data_dir, env_path = _configure_env_paths(tmp_path)
-    process_a = Process(target=_process_write, args=(str(project_root), str(data_dir)))
-    process_b = Process(target=_process_write, args=(str(project_root), str(data_dir)))
-    process_a.start()
-    process_b.start()
-    process_a.join(20)
-    process_b.join(20)
-    assert process_a.exitcode == 0
-    assert process_b.exitcode == 0
+    env = os.environ.copy()
+    # Windows spawn can import user-site packages before the project module tree.
+    # Keep the lock test focused on Lumena instead of external cv2/numpy installs.
+    env["PYTHONNOUSERSITE"] = "1"
+    schema = json.dumps(_mini_schema(), ensure_ascii=False)
+    args = [sys.executable, "-c", _PROCESS_WRITE_SCRIPT, str(project_root), str(data_dir), schema]
+    process_a = subprocess.Popen(args, cwd=Path.cwd(), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process_b = subprocess.Popen(args, cwd=Path.cwd(), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out_a, err_a = process_a.communicate(timeout=20)
+    out_b, err_b = process_b.communicate(timeout=20)
+    assert process_a.returncode == 0, err_a or out_a
+    assert process_b.returncode == 0, err_b or out_b
     text = env_path.read_text(encoding="utf-8")
     assert "LUMENA_PORT=9191" in text
     assert "LUMENA_WEB_PORT=3131" in text

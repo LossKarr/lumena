@@ -156,6 +156,41 @@ def resolve_workspace_for_request(
         resolution_reason="default_fallback_default_workspace",
         used_fallback=True,
     )
+def resolve_workspace_for_user(
+    user_id: Optional[str] = None,
+    *,
+    workspace_policy: Optional[str] = None,
+    requested_workspace: Optional[str] = None,
+    data_dir: Optional[Path] = None,
+    active_file_path: Optional[str] = None,
+    open_files: Optional[List[str]] = None,
+) -> WorkspaceResolution:
+    """Résout le workspace pour un utilisateur donné.
+
+    En mode LUMENA_MULTI_USER=1 : workspace par défaut = data/users/<safe_id>/workspaces/YYYY-MM-DD/
+    En mode single-user : délègue à resolve_workspace_for_request() avec WORKSPACE_DIR.
+    """
+    from src.runtime.user_profile import MULTI_USER_ENABLED, _safe_user_id
+    from src.utils.paths import DATA_DIR, WORKSPACE_DIR
+
+    if MULTI_USER_ENABLED:
+        base = data_dir or DATA_DIR
+        safe = _safe_user_id(user_id)
+        user_workspaces_base = base / "users" / safe / "workspaces"
+        user_workspaces_base.mkdir(parents=True, exist_ok=True)
+        default_workspace = str(user_workspaces_base)
+    else:
+        default_workspace = str(WORKSPACE_DIR)
+
+    return resolve_workspace_for_request(
+        workspace_policy=workspace_policy,
+        requested_workspace=requested_workspace,
+        default_workspace=default_workspace,
+        active_file_path=active_file_path,
+        open_files=open_files,
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)

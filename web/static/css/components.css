@@ -131,6 +131,41 @@ svg.lucide{display:inline-block;vertical-align:middle;pointer-events:none}
 .list-item-title{font-weight:500;font-size:14px}
 .list-item-sub{font-size:12px;color:var(--muted);margin-top:2px}
 
+/* Sessions */
+.sessions-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) minmax(140px,190px) minmax(140px,190px);gap:10px;align-items:center}
+.sessions-search{height:38px;display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:0 12px}
+.sessions-search svg{width:14px;height:14px;color:var(--muted);flex-shrink:0}
+.sessions-search input{border:0;outline:0;background:transparent;color:var(--text);font-size:13px;width:100%;min-width:0}
+.sessions-layout{display:grid;grid-template-columns:minmax(300px,420px) minmax(0,1fr);gap:16px;align-items:start}
+.sessions-list-pane,.sessions-detail-pane{min-width:0}
+.sessions-list-pane .list{display:flex;flex-direction:column;gap:8px}
+.session-row{cursor:pointer;align-items:flex-start}
+.session-row.active{border-color:var(--accent);background:rgba(245,159,74,0.08)}
+.session-row-main{min-width:0;flex:1}
+.session-row-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;min-width:0}
+.session-row-title span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.session-row-preview{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.session-row-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.session-detail-pane{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);min-height:360px;padding:14px}
+.sessions-empty-detail{min-height:330px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:var(--muted);font-size:13px;text-align:center}
+.sessions-empty-detail svg{width:28px;height:28px;color:var(--accent)}
+.session-detail-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:12px}
+.session-detail-title{font-size:18px;font-weight:700;line-height:1.3}
+.session-detail-sub{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.session-detail-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.session-section{margin-top:16px}
+.session-section-title{font-size:13px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+.session-message{border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;margin-bottom:8px;background:rgba(0,0,0,.16)}
+.session-message.user{border-color:rgba(245,159,74,.28)}
+.session-message.assistant{border-color:rgba(34,197,94,.22)}
+.session-message-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px;font-size:11px;color:var(--muted)}
+.session-message-body{white-space:pre-wrap;line-height:1.5;font-size:13px;color:var(--text);max-height:260px;overflow:auto}
+.session-timeline-item{display:grid;grid-template-columns:120px minmax(0,1fr);gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
+.session-timeline-item:last-child{border-bottom:0}
+.session-timeline-time{font-size:11px;color:var(--muted)}
+.session-timeline-body{font-size:12px;color:var(--text);min-width:0}
+.session-timeline-body div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
 /* ============================================================
    TOOL GRID
    ============================================================ */
@@ -420,6 +455,11 @@ svg.lucide{display:inline-block;vertical-align:middle;pointer-events:none}
   .shell-nav.mobile-open{left:0}
   .topbar .mobile-toggle{display:flex}
   .grid-2,.grid-3,.grid-4{grid-template-columns:1fr}
+  .sessions-toolbar{grid-template-columns:1fr}
+  .sessions-layout{grid-template-columns:1fr}
+  .session-detail-head{flex-direction:column}
+  .session-detail-actions{justify-content:flex-start}
+  .session-timeline-item{grid-template-columns:1fr}
   .chat-sidebar.open{width:100%;position:fixed;inset:0;z-index:90}
   /* Enhanced mobile styles */
   .topbar{padding:0 12px;min-height:48px}

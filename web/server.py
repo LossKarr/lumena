@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from web.routes.lifespan import lifespan  # noqa: E402
 
 # ── Route modules ──
-from web.routes import system, chat, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen  # noqa: E402
+from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers  # noqa: E402
 
 # ── App creation ──
 _SETUP_DONE = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
@@ -213,6 +213,7 @@ app.add_middleware(_RateLimitMiddleware)
 # ── Include route modules ──
 app.include_router(system.router)
 app.include_router(chat.router)
+app.include_router(sessions.router)
 app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(models.router)
@@ -229,6 +230,7 @@ app.include_router(whatsapp.router)
 app.include_router(emotion.router)
 app.include_router(ionos.router)
 app.include_router(image_gen.router)
+app.include_router(peers.router)
 
 # ── Static files and root page ──
 _WEB_DIR = Path(__file__).parent

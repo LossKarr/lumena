@@ -10,10 +10,10 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/tokens.css?v=3">
 <link rel="stylesheet" href="/static/css/layout.css?v=3">
-<link rel="stylesheet" href="/static/css/chat.css?v=3">
-<link rel="stylesheet" href="/static/css/components.css?v=3">
+<link rel="stylesheet" href="/static/css/chat.css?v=6">
+<link rel="stylesheet" href="/static/css/components.css?v=4">
 <link rel="stylesheet" href="/static/css/thinking.css?v=3">
-<link rel="stylesheet" href="/static/css/setup.css?v=7">
+<link rel="stylesheet" href="/static/css/setup.css?v=9">
 <link rel="stylesheet" href="/static/css/product-docs.css?v=1">
 <link rel="stylesheet" href="/static/css/config-panel.css?v=1">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
@@ -159,11 +159,6 @@
             <span class="nav-item-icon"><i data-lucide="layers"></i></span>
             <span class="nav-item-label">Sessions</span>
           </div>
-          <div class="nav-item" data-panel="todos">
-            <span class="nav-item-icon"><i data-lucide="list-checks"></i></span>
-            <span class="nav-item-label">Todos</span>
-            <span class="badge" id="badge-todos" style="background:var(--muted)">0</span>
-          </div>
           <div class="nav-item" data-panel="training">
             <span class="nav-item-icon"><i data-lucide="graduation-cap"></i></span>
             <span class="nav-item-label">Apprentissage</span>
@@ -234,6 +229,11 @@
             <span class="nav-item-icon"><i data-lucide="bot"></i></span>
             <span class="nav-item-label">Autonomie</span>
             <span class="badge" id="stat-autonomy" style="background:var(--muted)">—</span>
+          </div>
+          <div class="nav-item" data-panel="infra-network">
+            <span class="nav-item-icon"><i data-lucide="network"></i></span>
+            <span class="nav-item-label">Instances &amp; Réseau</span>
+            <span class="badge" id="badge-network" style="background:var(--muted)">—</span>
           </div>
           <div class="nav-item" data-panel="providers">
             <span class="nav-item-icon"><i data-lucide="zap"></i></span>
@@ -351,7 +351,9 @@
         <div class="chat-main">
           <div class="chat-thread" id="chat-thread" aria-live="polite" aria-relevant="additions">
             <div class="chat-welcome" id="chat-welcome">
-              <div class="chat-welcome-avatar"><i data-lucide="sparkles" style="width:40px;height:40px"></i></div>
+              <div class="chat-welcome-avatar">
+                <img src="/static/branding/lumena-logo.png" alt="Lumena">
+              </div>
               <h2>Lumena</h2>
               <div class="chat-welcome-badge">● Prete a discuter</div>
               <p style="color:var(--muted);font-size:14px;max-width:400px">
@@ -919,19 +921,46 @@
     <!-- ======= SESSIONS ======= -->
     <div class="panel" id="panel-sessions">
       <div class="card">
-        <div class="card-title"><i data-lucide="layers"></i> Sessions & Conversations</div>
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <span><i data-lucide="layers"></i> Historique des conversations</span>
+          <button class="btn" style="font-size:12px" data-action="loadSessions"><i data-lucide="refresh-cw"></i> Rafraichir</button>
+        </div>
         <div class="card-content">
-          <p style="color:var(--muted);font-size:13px">Consultez les taches et l'etat de vos conversations. L'API expose les sessions par ID de conversation.</p>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:14px">Toutes les conversations utilisateur sont enregistrees ici avec leurs messages, evenements, taches et traces associees.</p>
+          <div class="sessions-toolbar">
+            <div class="sessions-search">
+              <i data-lucide="search"></i>
+              <input id="session-search-input" type="text" placeholder="Rechercher une conversation..." oninput="filterSessions()">
+            </div>
+            <select id="session-status-filter" class="input" onchange="loadSessions()">
+              <option value="">Tous les statuts</option>
+              <option value="running">Actives</option>
+              <option value="done">Terminees</option>
+              <option value="error">Erreurs</option>
+              <option value="cancelled">Annulees</option>
+            </select>
+            <select id="session-channel-filter" class="input" onchange="loadSessions()">
+              <option value="">Tous les canaux</option>
+              <option value="web">Web</option>
+              <option value="ide">IDE</option>
+              <option value="discord">Discord</option>
+              <option value="telegram">Telegram</option>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="api">API</option>
+            </select>
+          </div>
         </div>
       </div>
-      <div id="sessions-list" class="list"></div>
-      <div id="session-detail" style="display:none">
-        <div class="card">
-          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-            <span id="session-detail-title">Session</span>
-            <button class="btn" data-action="closeSessionDetail">Retour</button>
+      <div id="sessions-stats" class="grid-3" style="margin-bottom:16px"></div>
+      <div class="sessions-layout">
+        <div class="sessions-list-pane">
+          <div id="sessions-list" class="list"></div>
+        </div>
+        <div id="session-detail" class="sessions-detail-pane">
+          <div class="sessions-empty-detail">
+            <i data-lucide="message-square-text"></i>
+            <div>Selectionne une conversation pour voir son detail.</div>
           </div>
-          <div id="session-messages" style="max-height:60vh;overflow-y:auto"></div>
         </div>
       </div>
     </div>
@@ -1000,6 +1029,222 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ======= INFRA NETWORK ======= -->
+    <div class="panel" id="panel-infra-network">
+
+      <!-- ══ VUE SIMPLE (default) ══════════════════════════════════════════ -->
+      <div id="net-simple-view">
+
+        <!-- Statut réseau de cette instance -->
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-content" id="net-simple-status">
+            <div style="color:var(--muted)">Chargement...</div>
+          </div>
+          <!-- Panneau de diagnostic inline — masqué par défaut, affiché par loadNetworkDiagnostic() -->
+          <div id="net-diag-detail" style="display:none;padding:12px;border-top:1px solid var(--border);font-size:12px"></div>
+        </div>
+
+        <!-- Action naturelle equipe Lumena -->
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-title"><i data-lucide="sparkles"></i> Demander a l'equipe Lumena</div>
+          <div class="card-content">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input id="net-team-prompt" placeholder="Ex: demande a la Lumena du salon d'analyser ce sujet" style="font-size:13px;padding:9px 11px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);flex:1;min-width:260px">
+              <button class="btn primary" style="font-size:12px" onclick="sendTeamPromptFromUi()"><i data-lucide="send" style="width:13px;height:13px"></i> Demander</button>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:8px">Lumena choisit l'instance, le scope et le fallback. Pour les reglages techniques, utilisez le mode avance.</div>
+            <div id="net-team-msg" style="display:none;font-size:12px;margin-top:8px"></div>
+          </div>
+        </div>
+
+        <!-- Santé production du réseau Lumena -->
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+            <span><i data-lucide="activity"></i> Santé réseau Lumena</span>
+            <button class="btn" style="font-size:11px" onclick="loadNetworkObservability()"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraîchir</button>
+          </div>
+          <div class="card-content" id="net-observability-content">
+            <div style="color:var(--muted)">Chargement...</div>
+          </div>
+          <div id="net-maintenance-msg" style="display:none;padding:0 12px 12px;font-size:12px"></div>
+        </div>
+
+        <!-- Liste simplifiée des pairs -->
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+            <span><i data-lucide="users"></i> Equipe Lumena</span>
+            <div style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn" style="font-size:11px" onclick="discoverLanPeers()"><i data-lucide="search" style="width:12px;height:12px"></i> Chercher</button>
+              <button class="btn primary" style="font-size:11px" onclick="showSimplePairingForm()"><i data-lucide="key-round" style="width:12px;height:12px"></i> Connecter</button>
+            </div>
+          </div>
+          <div class="card-content" id="net-simple-peers">
+            <div style="color:var(--muted)">Chargement...</div>
+          </div>
+        </div>
+
+        <!-- Collaboration légère : connaissances + tâches -->
+        <div class="grid-2" style="margin-bottom:12px">
+          <div class="card">
+            <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+              <span><i data-lucide="brain"></i> Connaissances partagées</span>
+              <button class="btn" style="font-size:11px" onclick="loadCollaborationPanel()"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraîchir</button>
+            </div>
+            <div class="card-content" id="net-knowledge-list">
+              <div style="color:var(--muted)">Chargement...</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><i data-lucide="list-checks"></i> Tâches inter-Lumena</div>
+            <div class="card-content" id="net-task-list">
+              <div style="color:var(--muted)">Chargement...</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="margin-bottom:12px">
+          <div class="card-title"><i data-lucide="share-2"></i> Partager une connaissance</div>
+          <div class="card-content">
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12px">
+              <div style="display:grid;grid-template-columns:minmax(180px,1fr) minmax(160px,220px);gap:8px">
+                <input id="net-knowledge-title" placeholder="Titre court" style="font-size:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <select id="net-knowledge-peer" style="font-size:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                  <option value="">Garder privé</option>
+                </select>
+              </div>
+              <textarea id="net-knowledge-summary" placeholder="Résumé contrôlé à partager, sans secret ni document brut" rows="3" style="font-size:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);resize:vertical"></textarea>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <input id="net-knowledge-tags" placeholder="tags: mémoire, idée, bug" style="font-size:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);flex:1;min-width:180px">
+                <button class="btn primary" style="font-size:11px" onclick="createSharedKnowledgeFromUi()"><i data-lucide="send" style="width:12px;height:12px"></i> Créer</button>
+              </div>
+              <div id="net-knowledge-msg" style="display:none;font-size:12px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Formulaire jumelage (simple, caché par défaut) -->
+        <div id="net-simple-pairing-form" class="card" style="display:none;margin-bottom:12px">
+          <div class="card-title"><i data-lucide="key-round"></i> Jumelage par code</div>
+          <div class="card-content">
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12px">
+              <div style="color:var(--muted)">Générez un code sur cet hôte, puis entrez-le sur l'autre instance — ou l'inverse.</div>
+              <button class="btn" style="font-size:11px;align-self:flex-start" onclick="generatePairingCode()"><i data-lucide="hash" style="width:12px;height:12px"></i> Générer un code pour cet hôte</button>
+              <div id="net-pairing-code-display" style="display:none;padding:8px;background:var(--surface);border-radius:6px;text-align:center">
+                <div style="font-size:26px;font-weight:700;letter-spacing:8px;color:var(--accent)" id="net-pairing-code-value">——</div>
+                <div style="font-size:10px;color:var(--muted);margin-top:4px">Valide 5 minutes · Usage unique · À entrer sur l'autre instance</div>
+              </div>
+              <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;color:var(--muted)">Jumeler depuis cet appareil :</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+                <input id="net-pairing-host" placeholder="192.168.x.x" style="font-size:12px;padding:5px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);flex:1;min-width:120px">
+                <input id="net-pairing-port" placeholder="8081" type="number" style="font-size:12px;padding:5px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);width:72px">
+                <input id="net-pairing-code-input" placeholder="Code (ex: A7X3K9)" style="font-size:12px;padding:5px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);text-transform:uppercase;width:120px">
+                <button class="btn primary" style="font-size:11px" onclick="acceptPairing()"><i data-lucide="link-2" style="width:12px;height:12px"></i> Connecter</button>
+              </div>
+              <div id="net-pairing-msg" style="display:none;font-size:12px"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bouton mode avancé -->
+        <div style="text-align:center;padding:8px 0">
+          <button class="btn" style="font-size:11px;color:var(--muted);border-color:var(--border)" onclick="toggleNetworkAdvanced()">
+            <i data-lucide="settings-2" style="width:12px;height:12px"></i> Mode avancé
+          </button>
+        </div>
+      </div><!-- /net-simple-view -->
+
+      <!-- ══ VUE AVANCÉE (masquée par défaut) ══════════════════════════════ -->
+      <div id="net-advanced-view" style="display:none">
+        <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button class="btn" style="font-size:11px" onclick="toggleNetworkAdvanced()"><i data-lucide="arrow-left" style="width:12px;height:12px"></i> Vue simple</button>
+          <button class="btn" style="font-size:11px" onclick="loadInstancesNetwork()"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraîchir tout</button>
+          <button class="btn" style="font-size:11px" onclick="cleanupLocalInstances()"><i data-lucide="trash-2" style="width:12px;height:12px"></i> Nettoyer registre local</button>
+          <span style="font-size:11px;color:var(--muted)">Mode avancé — toutes les cartes techniques</span>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:16px">
+          <div class="card">
+            <div class="card-title"><i data-lucide="cpu"></i> Instance courante</div>
+            <div class="card-content" id="net-self-content">
+              <div style="color:var(--muted)">Chargement...</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><i data-lucide="monitor"></i> Instances locales sur ce PC</div>
+            <div class="card-content" id="net-local-list">
+              <div style="color:var(--muted)">Chargement...</div>
+            </div>
+          </div>
+        </div>
+        <div class="grid-2" style="margin-bottom:16px">
+          <div class="card">
+            <div class="card-title"><i data-lucide="users"></i> Pairs LAN connus</div>
+            <div class="card-content" id="net-peers-list">
+              <div style="color:var(--muted)">Chargement...</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><i data-lucide="radar"></i> Découverte LAN</div>
+            <div class="card-content">
+              <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+                <select id="net-discover-iface" style="font-size:12px;padding:5px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);flex:1">
+                  <option value="">Auto (tous les réseaux)</option>
+                </select>
+                <button class="btn primary" style="font-size:12px" onclick="discoverLanPeers()"><i data-lucide="search" style="width:14px;height:14px"></i> Scanner</button>
+              </div>
+              <div id="net-discover-msg" style="display:none;font-size:12px;margin-bottom:8px"></div>
+              <div id="net-discover-result" style="font-size:12px;color:var(--muted)">Sélectionnez un réseau ou laissez "Auto" puis cliquez Scanner.</div>
+            </div>
+          </div>
+        </div>
+        <div class="grid-2" style="margin-bottom:16px">
+          <div class="card">
+            <div class="card-title"><i data-lucide="shield-check"></i> Actions sur les pairs</div>
+            <div class="card-content">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <input id="net-action-id" placeholder="instance_id ou host:port" style="font-size:12px;padding:6px 8px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn" style="font-size:11px" onclick="pairSelectedPeer()"><i data-lucide="link" style="width:12px;height:12px"></i> Jumeler</button>
+                  <button class="btn" style="font-size:11px;background:rgba(239,68,68,.15);color:var(--danger)" onclick="blockSelectedPeer()"><i data-lucide="ban" style="width:12px;height:12px"></i> Bloquer</button>
+                </div>
+                <div id="net-action-msg" style="display:none;font-size:12px"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><i data-lucide="key-round"></i> Jumelage par code</div>
+            <div class="card-content">
+              <div style="font-size:12px;color:var(--muted)">
+                Le jumelage par code court est disponible en vue simple.<br>
+                <button class="btn" style="font-size:11px;margin-top:8px" onclick="toggleNetworkAdvanced()"><i data-lucide="arrow-left" style="width:12px;height:12px"></i> Retour à la vue simple</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title"><i data-lucide="flame"></i> Pare-feu Windows</div>
+            <div class="card-content">
+              <div style="display:flex;flex-direction:column;gap:8px;font-size:12px">
+                <div style="color:var(--muted)">Si les autres instances ne peuvent pas vous joindre, ouvrez le port dans le pare-feu Windows.</div>
+                <button class="btn" style="font-size:11px;align-self:flex-start" onclick="loadFirewallCommand()"><i data-lucide="terminal" style="width:12px;height:12px"></i> Voir la commande</button>
+                <div id="net-firewall-cmd" style="display:none"></div>
+                <button id="net-firewall-apply-btn" class="btn" style="display:none;font-size:11px;align-self:flex-start;background:rgba(239,68,68,.15);color:var(--danger)" onclick="applyFirewallRule()"><i data-lucide="shield-plus" style="width:12px;height:12px"></i> Appliquer (confirmation requise)</button>
+                <div id="net-firewall-msg" style="display:none;font-size:12px"></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title"><i data-lucide="scroll-text"></i> Audit inter-instances</div>
+            <div class="card-content" id="net-audit-list">
+              <div style="color:var(--muted)">Chargement...</div>
+            </div>
+          </div>
+        </div>
+      </div><!-- /net-advanced-view -->
+
     </div>
 
     <!-- ======= CONFIGURATION ======= -->
@@ -1226,21 +1471,6 @@
       </div>
     </div>
 
-    <!-- ======= TODOS =======-->
-    <div class="panel" id="panel-todos">
-      <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span><i data-lucide="list-checks"></i> Todo List Lumena</span>
-          <span style="color:var(--muted);font-size:12px" id="todo-stats"></span>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:12px">
-          <input type="text" class="input" id="todo-input" placeholder="Nouvelle tache..." style="flex:1" onkeydown="if(event.key==='Enter')addTodo()">
-          <button class="btn primary" data-action="addTodo">+ Ajouter</button>
-        </div>
-      </div>
-      <div id="todo-list" class="list" style="margin-top:8px"></div>
-    </div>
-
     <!-- ======= WORKSPACES ======= -->
     <div class="panel" id="panel-workspaces">
       <!-- Header fixe -->
@@ -1289,16 +1519,16 @@
 <!-- ============================================================
      JAVASCRIPT
      ============================================================ -->
-<script src="/static/js/state.js?v=3"></script>
+<script src="/static/js/state.js?v=4"></script>
 <script src="/static/js/bindings.js?v=1"></script>
 <script>
 // Helpers pour les data-action convertis depuis onclick inline
 window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
-<script type="module" src="/static/js/main.js?v=3"></script>
+<script type="module" src="/static/js/main.js?v=7"></script>
 <script type="module">
-import { initSetupWizard } from '/static/js/setup.js?v=18';
+import { initSetupWizard } from '/static/js/setup.js?v=20';
 document.addEventListener('DOMContentLoaded', () => initSetupWizard());
 </script>
 

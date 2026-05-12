@@ -26,6 +26,7 @@ import web.routes.deps as _deps_module
 import web.routes.chat as _chat_module
 import web.routes.system as _system_module
 import web.routes.tasks as _tasks_module
+import web.routes.sessions as _sessions_module
 import web.routes.lifespan as _lifespan_module
 from web.routes.schemas import (
     ChatRequest as _ChatRequest,
@@ -58,6 +59,7 @@ _DEPS_VARS: frozenset[str] = frozenset({
     "_CONVERSATION_CACHE",
     "_SESSION_STATE_LOCK",
     "_SESSION_STATE",
+    "_SESSION_STORE",
 })
 
 # Variables that live directly in system.py
@@ -107,6 +109,10 @@ class _ServerCompat:
     cancel_task = staticmethod(_tasks_module.cancel_task)
     resume_task = staticmethod(_tasks_module.resume_task)
     get_task = staticmethod(_tasks_module.get_task)
+    list_sessions = staticmethod(_sessions_module.list_sessions)
+    archive_session = staticmethod(_sessions_module.archive_session)
+    resume_session = staticmethod(_sessions_module.resume_session)
+    delete_session = staticmethod(_sessions_module.delete_session)
 
     def __getattr__(self, name: str):
         if name in _DEPS_VARS:

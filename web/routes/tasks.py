@@ -151,19 +151,36 @@ async def get_task(task_id: str):
 
 @router.get("/api/sessions/{conversation_id}", dependencies=[Depends(deps.verify_admin_token)])
 async def get_session(conversation_id: str, limit: int = 50):
-    """Retourne les taches connues pour une conversation omnicanal."""
-    if not _task_orchestrator_enabled():
-        raise HTTPException(status_code=503, detail="task orchestrator disabled")
+    """Retourne les details connus pour une conversation omnicanal."""
     bounded_limit = max(1, min(int(limit), 200))
     try:
-        tasks = deps._TASK_ORCHESTRATOR.get_conversation_tasks(conversation_id, limit=bounded_limit)
+        tasks = []
+        if _task_orchestrator_enabled():
+            tasks = deps._TASK_ORCHESTRATOR.get_conversation_tasks(conversation_id, limit=bounded_limit)
         session_state = _get_session_state(conversation_id)
-        return {
+        session_detail = None
+        store = getattr(deps, "_SESSION_STORE", None)
+        if store is not None:
+            session_detail = store.get_session(
+                conversation_id,
+                message_limit=bounded_limit,
+                event_limit=bounded_limit,
+            )
+        payload = {
             "conversation_id": conversation_id,
             "count": len(tasks),
             "tasks": tasks,
             "session_state": session_state,
         }
+        if session_detail:
+            payload.update(
+                {
+                    "session": session_detail.get("session"),
+                    "messages": session_detail.get("messages", []),
+                    "events": session_detail.get("events", []),
+                }
+            )
+        return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 # ──────────────────────────────────────────────────────────────────────────────

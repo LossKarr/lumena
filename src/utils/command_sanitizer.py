@@ -348,7 +348,7 @@ def _split_shell_operators_respecting_quotes(command: str) -> list:
 
     Exemple :
         'python -c "import os; os.getcwd()" && echo ok'
-        â†’ ['python -c "import os; os.getcwd()"', 'echo ok']
+        → ['python -c "import os; os.getcwd()"', 'echo ok']
 
     Sans cette fonction, re.split couperait naïvement sur le ';' interne,
     créant une fausse sous-commande 'os.getcwd()' et bloquant la commande.

@@ -19,6 +19,12 @@ class ChatRequest(BaseModel):
     active_file_path: Optional[str] = None
     open_files: List[str] = Field(default_factory=list)
     attachments: List[Dict[str, Any]] = Field(default_factory=list)
+    # Phase 0 — identité utilisateur (tous optionnels, fallback local:owner)
+    user_id: Optional[str] = None
+    owner_user_id: Optional[str] = None
+    user_role: Optional[str] = None
+    profile_id: Optional[str] = None
+    client_instance_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

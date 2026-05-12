@@ -56,6 +56,34 @@ def _react_allow_project_shell() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+_PEER_TEAM_INTENT_KEYWORDS: frozenset[str] = frozenset({
+    "autre lumena", "l'autre lumena", "lautre lumena", "lumena salon",
+    "autre instance", "instance salon", "pair lumena", "pairs lumena",
+    "collègue lumena", "collegue lumena", "équipe lumena", "equipe lumena",
+    "demande lui", "demande-lui", "demande à l'autre", "demande a l'autre",
+    "fais vérifier", "fais verifier", "fait vérifier", "fait verifier",
+    "répartis", "repartis", "délègue", "delegue", "déléguer", "deleguer",
+    "inter-lumena", "inter instance", "inter-instance",
+})
+
+_PEER_RAW_NETWORK_TOOLS: frozenset[str] = frozenset({
+    "http_request", "web_fetch", "browser_navigate", "browser_open",
+    "browser_open_tab", "run_command",
+})
+
+def _is_peer_team_query(query_lower: str) -> bool:
+    """Détecte les demandes naturelles de collaboration entre Lumena."""
+    if not query_lower:
+        return False
+    if any(kw in query_lower for kw in _PEER_TEAM_INTENT_KEYWORDS):
+        return True
+    # Formulation courte fréquente après un tour où "l'autre Lumena" est déjà en contexte.
+    return (
+        ("demande" in query_lower or "dit lui" in query_lower or "dis lui" in query_lower)
+        and ("lui" in query_lower or "l'autre" in query_lower or "lautre" in query_lower)
+    )
+
+
 # ── Exception micro-fix : éditions locales et bornées autorisées pour ReAct ──
 # Outils d'édition ciblés uniquement — write_file et delete_file exclus.
 _MICRO_FIX_TOOLS: frozenset[str] = frozenset({
@@ -296,6 +324,10 @@ class ToolRegistry:
             (".handlers.ionos",          "get_ionos_handler_defs",         "ionos"),
             (".handlers.image_gen",     "get_image_gen_handler_defs",     "image"),
             (".handlers.batch",          "get_batch_handler_defs",         "files"),
+            (".handlers.peer_delegation","get_peer_delegation_handler_defs","peers"),
+            (".handlers.peer_knowledge", "get_peer_knowledge_handler_defs",  "peers"),
+            (".handlers.peer_tasks",    "get_peer_tasks_handler_defs",      "peers"),
+            (".handlers.peer_orchestrator","get_peer_orchestrator_handler_defs","peers"),
         ]
 
         import importlib
@@ -899,7 +931,13 @@ class ToolRegistry:
              "quotidien", "planifie", "programme pour", "enregistre",
              "récurrent", "recurren", "bg_start", "plan",
              "chaque matin", "chaque soir", "toutes les heures",
-             "chaque semaine", "planifier", "schedule"},
+             "chaque semaine", "planifier", "schedule",
+             "tu as fait quoi", "tu a fait quoi", "qu'as-tu fait",
+             "qu as tu fait", "tu na rien fait", "depuis minuit",
+             "de 00h", "activite autonome", "activite daemon",
+             "quoi faire", "que faire", "prochaine action",
+             "next best action", "qu'aurais tu du faire",
+             "tu aurais du", "prends une initiative", "sois autonome"},
             {"autonomy"},
         ),
 
@@ -995,6 +1033,7 @@ class ToolRegistry:
             return
 
         query_lower = query.lower()
+        peer_team_query = _is_peer_team_query(query_lower)
         matched_categories: set = set()
 
         for keywords, categories in self._CONTEXT_RULES:
@@ -1005,10 +1044,21 @@ class ToolRegistry:
 
         # Toujours inclure les catégories obligatoires
         matched_categories |= self._ALWAYS_INCLUDE_CATEGORIES
+        if peer_team_query:
+            # Phase 11A : une demande naturelle "demande à l'autre Lumena" doit
+            # rendre visibles les outils peer, même si le classifier la voit comme
+            # un simple chat.
+            matched_categories.discard("agents")
+            matched_categories |= {"peers", "network", "web", "memory"}
 
         # Override intent-based : CHAT pur → restreindre à memory+system (réponse directe)
         if intent == "chat":
-            matched_categories = {"memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
+            if peer_team_query:
+                matched_categories = {"peers", "network", "web", "memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
+            elif "autonomy" in matched_categories:
+                matched_categories = {"autonomy", "memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
+            else:
+                matched_categories = {"memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
         elif intent == "tool_direct" and matched_categories != self._ALWAYS_INCLUDE_CATEGORIES:
             # tool_direct : garder uniquement les catégories matchées (pas de fallback large)
             pass
@@ -1293,7 +1343,7 @@ class ToolRegistry:
                     trusted=True,
                 )
 
-            _append_candidate(self.ide_context.get("workspace_path"), trusted=True)
+            _append_candidate((getattr(self, "ide_context", {}) or {}).get("workspace_path"), trusted=True)
 
             explicit_workspace_keys = (
                 "workspace_path",
@@ -1369,6 +1419,84 @@ class ToolRegistry:
             return ""
         return get_semantic_category(module_cat)
 
+    def _known_callable_peer_targets(self) -> List[Dict[str, Any]]:
+        """Retourne les pairs Lumena trusted appelables, sans exposer de token."""
+        if (
+            os.getenv("LUMENA_PEER_COLLABORATION", "0").strip() != "1"
+            and os.getenv("LUMENA_PEER_AWARENESS", "0").strip() != "1"
+        ):
+            return []
+        try:
+            from src.utils import paths as _paths
+            registry = _paths.DATA_DIR / "peer_registry.json"
+            if not registry.exists():
+                return []
+            data = json.loads(registry.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+        peers: List[Dict[str, Any]] = []
+        for peer in data.values() if isinstance(data, dict) else []:
+            if not isinstance(peer, dict):
+                continue
+            if peer.get("trust") != "trusted" or not peer.get("peer_token_outbound"):
+                continue
+            host = str(peer.get("host") or "").strip()
+            if not host:
+                continue
+            try:
+                port = int(peer.get("port") or 8080)
+            except Exception:
+                port = 8080
+            peers.append({
+                "instance_id": str(peer.get("instance_id") or ""),
+                "instance_name": str(peer.get("instance_name") or peer.get("instance_id") or "Lumena"),
+                "host": host,
+                "port": port,
+            })
+        return peers
+
+    def _peer_raw_network_refusal(self, tool_name: str, args: Dict[str, Any]) -> Optional[Observation]:
+        """Empêche ReAct de contourner le protocole peer avec HTTP/browser/curl.
+
+        Les logs ont montré que l'agent essayait /api/chat, curl ou browser vers
+        une IP Lumena trusted. En Phase 11A, ces appels doivent être redirigés
+        vers les outils peer, qui gèrent tokens, scopes, audit et anti-boucle.
+        """
+        if tool_name not in _PEER_RAW_NETWORK_TOOLS:
+            return None
+        try:
+            raw = json.dumps(args or {}, ensure_ascii=False).lower()
+        except Exception:
+            raw = str(args or {}).lower()
+        if tool_name == "run_command" and not any(k in raw for k in ("http://", "https://", "curl", "invoke-webrequest")):
+            return None
+
+        for peer in self._known_callable_peer_targets():
+            host = peer["host"].lower()
+            port = peer["port"]
+            target_markers = (
+                f"http://{host}:{port}",
+                f"https://{host}:{port}",
+                f"{host}:{port}",
+            )
+            if not any(marker in raw for marker in target_markers):
+                continue
+            peer_label = peer["instance_name"]
+            peer_id = peer["instance_id"]
+            return Observation(
+                content=(
+                    f"Refus Phase 11A: {tool_name} ne doit pas contacter directement "
+                    f"la Lumena trusted {peer_label} ({host}:{port}). "
+                    "Utilise le protocole inter-instance: `peer_team_request` "
+                    "par défaut, ou `orchestrate_peer_request`, `delegate_to_peer`, "
+                    "`run_peer_task_sync`, `query_peer_knowledge` selon le besoin. "
+                    f"instance_id cible: {peer_id}."
+                ),
+                success=False,
+            )
+        return None
+
     async def execute(
         self,
         name: str,
@@ -1398,6 +1526,10 @@ class ToolRegistry:
         _cat_refusal = self._category_contract_check(name, args or {}, caller)
         if _cat_refusal is not None:
             return _cat_refusal
+
+        _peer_refusal = self._peer_raw_network_refusal(name, args or {})
+        if _peer_refusal is not None:
+            return _peer_refusal
 
         if name not in self.tools:
             # Auto-fix: normalisation + fuzzy strict (cutoff=0.75) avant d'échouer

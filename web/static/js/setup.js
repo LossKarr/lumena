@@ -551,6 +551,9 @@ function _renderKeysStep(cont, step) {
       if (wasHidden) {
         body.removeAttribute('hidden');
         header.classList.add('open');
+        requestAnimationFrame(() => {
+          header.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        });
       }
       if (typeof lucide !== 'undefined') lucide.createIcons();
     };
@@ -1099,7 +1102,7 @@ function _renderAutonomyStep(cont, step) {
   }
 
   cont.innerHTML = `
-    <div class="setup-step active" style="display:flex;flex-direction:column;max-height:82vh;overflow:hidden">
+    <div class="setup-step active setup-autonomy-step">
       <div style="flex-shrink:0">
         <div class="setup-step-icon"><i data-lucide="zap"></i></div>
         <h2>${_esc(step.title)} <span class="setup-optional">optionnel</span></h2>
@@ -1121,8 +1124,8 @@ function _renderAutonomyStep(cont, step) {
         </div>
       </div>
 
-      <div class="models-scroll-container" style="margin-top:0;flex:1;min-height:0;max-height:none">
-        <div style="display:flex;flex-direction:column;gap:14px">${catHtml}</div>
+      <div class="models-scroll-container setup-autonomy-scroll">
+        <div class="setup-autonomy-actions">${catHtml}</div>
       </div>
 
       <div style="flex-shrink:0;margin-top:12px">

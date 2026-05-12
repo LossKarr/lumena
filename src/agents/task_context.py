@@ -265,18 +265,26 @@ class TaskContext:
 
             # D'abord : chemins entre guillemets (supportent les espaces)
             for match in _PATH_QUOTED_RE.findall(text):
-                cleaned = match.rstrip(".,;:!?)")
+                cleaned = TaskContext._clean_extracted_path_candidate(match)
                 p = TaskContext._normalize_extracted_path(cleaned)
                 # Accepter même si le dossier n'existe pas encore
                 # (on vérifie que le parent existe comme heuristique)
-                if p.is_dir() or (p.parent.is_dir() and not p.suffix):
+                if (
+                    TaskContext._is_drive_less_windows_path(cleaned)
+                    or p.is_dir()
+                    or (p.parent.is_dir() and not p.suffix)
+                ):
                     return p
 
             # Ensuite : chemins bare (sans espaces)
             for match in _PATH_BARE_RE.finditer(text):
-                raw = match.group(0).rstrip(".,;:!?)")
+                raw = TaskContext._clean_extracted_path_candidate(match.group(0))
                 p = TaskContext._normalize_extracted_path(raw)
-                if p.is_dir() or (p.parent.is_dir() and not p.suffix):
+                if (
+                    TaskContext._is_drive_less_windows_path(raw)
+                    or p.is_dir()
+                    or (p.parent.is_dir() and not p.suffix)
+                ):
                     return p
                 # Le chemin peut avoir des espaces (ex: "projet fusee") —
                 # on tente d'ajouter les mots suivants mot par mot.
@@ -297,6 +305,23 @@ class TaskContext:
         return None
 
     @staticmethod
+    def _clean_extracted_path_candidate(raw: str) -> str:
+        """Nettoie la ponctuation autour d'un chemin extrait."""
+        cleaned = (raw or "").rstrip(".,;:!?)")
+        if cleaned.endswith(("\\", "/")) and len(cleaned) > 1:
+            # Cas fréquent en texte libre : \"C:\path\" ou \"\Users\...\"
+            # La regex s'arrête avant le guillemet et garde le backslash d'échappement.
+            cleaned = cleaned.rstrip("\\/")
+        return cleaned
+
+    @staticmethod
+    def _is_drive_less_windows_path(raw: str) -> bool:
+        return bool(
+            Path.cwd().drive
+            and re.match(r'^[\\/](?:Users|workspace)(?:[\\/]|$)', raw or "", re.IGNORECASE)
+        )
+
+    @staticmethod
     def _normalize_extracted_path(raw: str) -> Path:
         """Normalise un chemin extrait du texte libre.
 
@@ -307,10 +332,7 @@ class TaskContext:
         """
         cleaned = (raw or "").strip()
         if cleaned:
-            _looks_drive_less_windows = bool(
-                re.match(r'^[\\/](?:Users|workspace)(?:[\\/]|$)', cleaned, re.IGNORECASE)
-            )
-            if _looks_drive_less_windows:
+            if TaskContext._is_drive_less_windows_path(cleaned):
                 _drive = Path.cwd().drive
                 if _drive:
                     cleaned = _drive + cleaned.replace("/", "\\")

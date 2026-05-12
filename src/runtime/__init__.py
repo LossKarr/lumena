@@ -9,8 +9,9 @@ from .context import (
 )
 from .channel_envelope import ChannelEnvelope, ChannelContinuityRegistry
 from .task_orchestrator import TaskOrchestrator
+from .session_store import SessionStore
 from .slo_monitor import SLOMonitor
-from .workspace_policy import WorkspaceResolution, resolve_workspace_for_request
+from .workspace_policy import WorkspaceResolution, resolve_workspace_for_request, resolve_workspace_for_user
 from .execution_ledger import ExecutionLedger, LedgerEntry, MUTATION_TOOLS
 
 __all__ = [
@@ -22,9 +23,11 @@ __all__ = [
     "ChannelEnvelope",
     "ChannelContinuityRegistry",
     "TaskOrchestrator",
+    "SessionStore",
     "SLOMonitor",
     "WorkspaceResolution",
     "resolve_workspace_for_request",
+    "resolve_workspace_for_user",
     "ExecutionLedger",
     "LedgerEntry",
     "MUTATION_TOOLS",

@@ -47,6 +47,14 @@ _PUBLIC_ROUTES = frozenset({
     "GET /api/files/workspace/{file_path:path}",
     # Reliability metrics — read-only HUD feed (like /api/health)
     "GET /api/system/reliability",
+    # Phase 4 — Instance discovery (public by design: permet aux pairs de se présenter)
+    # Ne retourne aucun secret. La route /api/peers et pair/block restent protégées.
+    "GET /api/instance/hello",
+    "GET /api/instance/capabilities",
+    "GET /api/instance/health",
+    # Phase 8.4/8.5 — Validation code de jumelage (le code à 6 chiffres fait office d'auth,
+    # usage unique, TTL 5 min). Appelé par l'instance distante, pas par l'admin local.
+    "POST /api/peer/validate-pairing-code",
 })
 
 
@@ -80,12 +88,12 @@ class TestAuthCoverageExhaustive:
                 route_key = f"{method} {path}"
 
                 # Check if auth is present in decorator line (dependencies=[...])
-                has_auth_decorator = "verify_admin_token" in line
+                has_auth_decorator = "verify_admin_token" in line or "verify_peer_token" in line
 
-                # Check next 5 lines for Depends(verify_admin_token) in function signature
+                # Check next 5 lines for Depends(verify_admin_token|verify_peer_token)
                 has_auth_param = False
                 for j in range(i + 1, min(i + 6, len(lines))):
-                    if "verify_admin_token" in lines[j]:
+                    if "verify_admin_token" in lines[j] or "verify_peer_token" in lines[j]:
                         has_auth_param = True
                         break
 
@@ -149,7 +157,7 @@ class TestAuthCoverageExhaustive:
         protected = sum(1 for r in routes if r["has_auth"])
         public = sum(1 for r in routes if r["key"] in _PUBLIC_ROUTES)
 
-        # Current: 80+ total, 69+ protected, 11 public (emotion routes read-only ajoutées)
-        assert len(routes) >= 73, f"Route count dropped to {len(routes)} — accidental deletion?"
-        assert protected >= 62, f"Protected routes dropped to {protected} — auth removed?"
-        assert public <= 17, f"Public routes increased to {public} — review whitelist"
+        # Current: 116 total, 95 protected, 21 public (Lot B — pairing code + peer token + firewall)
+        assert len(routes) >= 110, f"Route count dropped to {len(routes)} — accidental deletion?"
+        assert protected >= 88, f"Protected routes dropped to {protected} — auth removed?"
+        assert public <= 25, f"Public routes increased to {public} — review whitelist"

@@ -366,6 +366,64 @@ class TestDaemon:
             pytest.skip("LumenaDaemon/Curiosity non disponible")
 
 
+    @pytest.mark.asyncio
+    async def test_disk_guard_blocks_heavy_autonomous_action(self, tmp_path, monkeypatch):
+        """Sous seuil disque, les actions lourdes autonomes doivent etre bloquees et tracees."""
+        try:
+            from src.autonomy.daemon import LumenaDaemon
+            from src.autonomy.curiosity import AutonomousAction, ActionType
+            from src.autonomy.activity_ledger import read_autonomy_events
+
+            monkeypatch.setenv("LUMENA_AUTONOMY_LEDGER_IN_TESTS", "1")
+            daemon = LumenaDaemon(data_dir=tmp_path / "data")
+            daemon.running = True
+            daemon.enable_action_execution = True
+            daemon.autonomy_min_free_gb = 10
+            daemon._free_disk_gb = lambda: 1.0
+
+            fake_lumena = AsyncMock()
+            fake_lumena.think_and_act = AsyncMock(return_value="ok")
+            daemon.lumena = fake_lumena
+
+            action = AutonomousAction(
+                action_type=ActionType.EXPLORE_WEB,
+                description="Explorer sous disque critique",
+                metadata={"topic": "ia"},
+            )
+
+            await daemon._execute_autonomous_action(action)
+
+            fake_lumena.think_and_act.assert_not_awaited()
+            events = read_autonomy_events(data_dir=daemon.data_dir, date=datetime.now().strftime("%Y-%m-%d"))
+            assert any(e.get("event_type") == "action_candidate" for e in events)
+            blocked = [e for e in events if e.get("event_type") == "action_blocked"]
+            assert blocked
+            assert "disk_guard" in blocked[-1].get("reason", "")
+        except ImportError:
+            pytest.skip("LumenaDaemon/Curiosity non disponible")
+
+    @pytest.mark.asyncio
+    async def test_disk_guard_allows_reflection_low_disk(self, tmp_path):
+        """La reflexion locale reste autorisee sous pression disque."""
+        try:
+            from src.autonomy.daemon import LumenaDaemon
+            from src.autonomy.curiosity import AutonomousAction, ActionType
+
+            daemon = LumenaDaemon(data_dir=tmp_path / "data")
+            daemon.enable_action_execution = True
+            daemon.autonomy_min_free_gb = 10
+            daemon._free_disk_gb = lambda: 1.0
+
+            action = AutonomousAction(
+                action_type=ActionType.REFLECT,
+                description="Reflechir",
+            )
+
+            assert daemon._can_execute_autonomous_action(action) is True
+        except ImportError:
+            pytest.skip("LumenaDaemon/Curiosity non disponible")
+
+
 class TestHeartbeat:
     """Tests pour le système de heartbeat."""
     

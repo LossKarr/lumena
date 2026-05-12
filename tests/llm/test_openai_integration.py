@@ -14,7 +14,7 @@ class TestOpenAIRegistry:
 
     def test_catalogue_principal_present(self):
         from src.llm.providers import AVAILABLE_MODELS, ProviderType
-        expected = {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4.1"}
+        expected = {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4.1"}
         openai_names = {n for n, c in AVAILABLE_MODELS.items() if c.provider == ProviderType.OPENAI}
         assert expected.issubset(openai_names)
 
@@ -25,6 +25,17 @@ class TestOpenAIRegistry:
         assert cfg.supports_tools is True
         assert cfg.badge == "Fallback"
         assert "vision_describe" in cfg.capabilities
+
+    def test_gpt55_present_and_configured(self):
+        from src.llm.providers import AVAILABLE_MODELS, ProviderType
+        cfg = AVAILABLE_MODELS["gpt-5.5"]
+        assert cfg.provider == ProviderType.OPENAI
+        assert cfg.model_id == "gpt-5.5"
+        assert cfg.context_window == 1050000
+        assert cfg.max_output_tokens == 128000
+        assert cfg.supports_vision is True
+        assert cfg.supports_tools is True
+        assert "reasoning" in cfg.capabilities
 
     def test_dalle3_removed(self):
         from src.llm.providers import AVAILABLE_MODELS
@@ -53,12 +64,12 @@ class TestOpenAIRegistry:
 
     def test_gpt5_supports_vision(self):
         from src.llm.providers import AVAILABLE_MODELS
-        for name in ("gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"):
+        for name in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"):
             assert AVAILABLE_MODELS[name].supports_vision is True
 
     def test_gpt5_supports_tools(self):
         from src.llm.providers import AVAILABLE_MODELS
-        for name in ("gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"):
+        for name in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"):
             assert AVAILABLE_MODELS[name].supports_tools is True
 
     def test_reasoning_models_have_vision(self):
@@ -68,12 +79,12 @@ class TestOpenAIRegistry:
 
     def test_vision_describe_capability(self):
         from src.llm.providers import AVAILABLE_MODELS
-        for name in ("gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "o3", "o4-mini"):
+        for name in ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "o3", "o4-mini"):
             assert "vision_describe" in AVAILABLE_MODELS[name].capabilities
 
     def test_model_skills_openai_entries(self):
         from src.llm.providers import MODEL_SKILLS
-        expected = {"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3", "o4-mini"}
+        expected = {"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3", "o4-mini"}
         for name in expected:
             assert name in MODEL_SKILLS, f"{name} absent de MODEL_SKILLS"
         assert "dall-e-3" not in MODEL_SKILLS
@@ -93,6 +104,7 @@ class TestGPT5Detection:
 
     def test_gpt5_detected(self):
         from src.llm.multi_provider import MultiProviderLLM
+        assert MultiProviderLLM._is_gpt5_model("gpt-5.5") is True
         assert MultiProviderLLM._is_gpt5_model("gpt-5.4") is True
         assert MultiProviderLLM._is_gpt5_model("gpt-5.4-mini") is True
         assert MultiProviderLLM._is_gpt5_model("gpt-5.4-nano") is True
@@ -285,6 +297,16 @@ class TestBuildOpenAIPayload:
     def test_gpt5_no_temperature(self):
         p = self._build("gpt-5.4", temperature=0.7)
         assert "temperature" not in p
+
+    def test_gpt55_reasoning_effort_env(self, monkeypatch):
+        monkeypatch.setenv("LUMENA_OPENAI_REASONING_EFFORT", "xhigh")
+        p = self._build("gpt-5.5")
+        assert p["reasoning_effort"] == "xhigh"
+
+    def test_invalid_reasoning_effort_ignored(self, monkeypatch):
+        monkeypatch.setenv("LUMENA_OPENAI_REASONING_EFFORT", "maximum")
+        p = self._build("gpt-5.5")
+        assert "reasoning_effort" not in p
 
     def test_gpt5_no_stop(self):
         p = self._build("gpt-5.4", stop=["OBSERVATION:"])

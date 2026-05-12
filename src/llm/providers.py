@@ -95,6 +95,20 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
     # === OPENAI ===
+    "gpt-5.5": ModelConfig(
+        name="gpt-5.5",
+        display_name="GPT-5.5 (OpenAI)",
+        provider=ProviderType.OPENAI,
+        model_id="gpt-5.5",
+        context_window=1050000,
+        max_output_tokens=128000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=5.0,
+        description="GPT-5.5 — frontier OpenAI, 1.05M context, 128K output, highest reasoning",
+        badge="Frontier",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use"}),
+    ),
     "gpt-5.4": ModelConfig(
         name="gpt-5.4",
         display_name="GPT-5.4 (OpenAI)",
@@ -1480,6 +1494,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "glm-4.6v-flash":              {"code": 60, "speed": 90, "reasoning": 62, "creative": 65, "research": 60, "vision": 72, "web": 58},
     "glm-5v-turbo":                {"code": 72, "speed": 68, "reasoning": 74, "creative": 76, "research": 70, "vision": 85, "web": 68},
     # ── OpenAI ─────────────────────────────────────────────────────────────
+    "gpt-5.5":                     {"code": 98, "speed": 72, "reasoning": 99, "creative": 94, "research": 97, "vision": 98, "web": 96},
     "gpt-5.4":                     {"code": 92, "speed": 75, "reasoning": 93, "creative": 90, "research": 91, "vision": 96, "web": 93},
     "gpt-5.4-mini":                {"code": 86, "speed": 88, "reasoning": 85, "creative": 82, "research": 84, "vision": 88, "web": 87},
     "gpt-5.4-nano":                {"code": 55, "speed": 94, "reasoning": 48, "creative": 45, "research": 42, "vision": 72, "web": 50},

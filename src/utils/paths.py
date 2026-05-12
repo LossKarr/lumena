@@ -20,6 +20,16 @@ ROOT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 INSTANCE_ID: str = os.getenv("LUMENA_INSTANCE_ID", "default")
 INSTANCE_NAME: str = os.getenv("LUMENA_INSTANCE_NAME", "Lumena")
 
+# ── Multi-user feature flag ─────────────────────────────────────────────────
+MULTI_USER_ENABLED: bool = os.getenv("LUMENA_MULTI_USER", "0").strip() == "1"
+
+# ── Multi-instance feature flag ──────────────────────────────────────────────
+MULTI_INSTANCE_ENABLED: bool = os.getenv("LUMENA_MULTI_INSTANCE", "0").strip() == "1"
+
+# ── Instance role ────────────────────────────────────────────────────────────
+_raw_role = os.getenv("LUMENA_INSTANCE_ROLE", "standalone").strip().lower()
+INSTANCE_ROLE: str = _raw_role if _raw_role in {"primary", "worker", "standalone"} else "standalone"
+
 # ── Top-level directories ──────────────────────────────────────────────────
 DATA_DIR: Path = Path(os.getenv("LUMENA_DATA_DIR", str(ROOT_DIR / "data")))
 WORKSPACE_DIR: Path = Path(os.getenv("LUMENA_WORKSPACE_DIR", str(ROOT_DIR / "workspace")))
@@ -72,6 +82,7 @@ APIS_REGISTRY_JSON: Path = DATA_DIR / "apis_registry.json"
 FINETUNED_REGISTRY: Path = MEMORY_DIR / "finetuned_models.json"
 EMOTION_STATE_FILE: Path = DATA_DIR / "emotion_state.json"
 EMOTION_HISTORY_FILE: Path = DATA_DIR / "emotion_history.jsonl"
+SESSIONS_SQLITE: Path = Path(os.getenv("LUMENA_SESSIONS_DB", str(DATA_DIR / "sessions.sqlite")))
 
 
 # ── Instance ID auto-generation ────────────────────────────────────────────
@@ -110,6 +121,17 @@ def ensure_instance_id(env_file: Path | None = None) -> str:
         pass  # Échec d'écriture non bloquant
 
     return new_id
+
+
+# ── Per-instance browser profile dir ──────────────────────────────────────
+
+def get_instance_browser_profile_dir(instance_id: str = INSTANCE_ID) -> Path:
+    """Retourne data/browser_profiles/<instance_id>/ pour isoler les profils Playwright.
+
+    Quand LUMENA_MULTI_INSTANCE=1 et instance_id distinct, chaque instance dispose
+    de son propre profil navigateur, évitant les conflits de cookies/sessions.
+    """
+    return BROWSER_PROFILES_DIR / instance_id
 
 
 # ── Directory bootstrap ────────────────────────────────────────────────────

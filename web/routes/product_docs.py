@@ -484,6 +484,20 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 </div>
 
 <div class="doc-cap-card">
+  <h4>Multi-Lumena LAN</h4>
+  <ul>
+    <li>Jumelage sécurisé par code court 6 chars (TTL 5 min, usage unique)</li>
+    <li>Peer tokens révocables stockés hashés (SHA-256), liés à l'instance (anti-usurpation)</li>
+    <li>Délégation de tâches inter-instances via peer token (admin token jamais exposé)</li>
+    <li>Découverte LAN active (<code>LUMENA_PEER_DISCOVERY=1</code>) multi-réseau (sélection par adaptateur)</li>
+    <li>Découverte mDNS passive <code>_lumena._tcp.local</code> — optionnel, sans secret dans les TXT records</li>
+    <li>Validation RFC1918 stricte anti-SSRF sur toutes les sorties réseau</li>
+    <li>Audit log des délégations, pare-feu Windows assisté avec confirmation explicite</li>
+    <li>UI vue simple (statut/actions) + vue avancée (cartes techniques complètes)</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
   <h4>Génération d'images</h4>
   <ul>
     <li>12 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax, Z.AI (CogView-4)</li>
@@ -1216,8 +1230,9 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tr><td>Logs</td><td>Logs daemon en temps réel</td></tr>
 <tr><td>Alertes</td><td>Alertes critiques et notifications</td></tr>
 
-<tr><td rowspan="5"><strong>Infra</strong></td><td>Telegram</td><td>Statut et détails du bot Telegram</td></tr>
+<tr><td rowspan="6"><strong>Infra</strong></td><td>Telegram</td><td>Statut et détails du bot Telegram</td></tr>
 <tr><td>Autonomie</td><td>État du daemon, tâches planifiées</td></tr>
+<tr><td>Réseau Lumena</td><td>Statut réseau, pairs LAN, jumelage par code, découverte mDNS, délégation, pare-feu assisté</td></tr>
 <tr><td>Providers LLM</td><td>Santé de chaque provider, latence, coûts</td></tr>
 <tr><td>Configuration</td><td>Variables d'environnement, clés API (149 entrées, 23 groupes)</td></tr>
 <tr><td>Fichiers</td><td>Éditeur .lumena_rules, README, HEARTBEAT</td></tr>
@@ -1260,7 +1275,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tr><td><code>/api/tools</code></td><td>GET</td><td>Liste des outils enregistrés</td></tr>
 </tbody>
 </table>
-<p>Voir la section <strong>Référence API</strong> pour les 93 endpoints complets.</p>
+<p>Voir la section <strong>Référence API</strong> pour les 123 endpoints complets.</p>
 """,
     },
     {
@@ -1588,32 +1603,33 @@ python -m src
         "icon": "code",
         "title": "Référence API",
         "content": """
-<p class="doc-lead">93 endpoints REST répartis dans 18 fichiers route actifs. Toutes les routes sensibles
-protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code>.</p>
+<p class="doc-lead">123 endpoints REST répartis dans 19 fichiers route actifs. Toutes les routes sensibles
+protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code> (admin) ou <code>Bearer &lt;peer_token&gt;</code> (peer).</p>
 
-<h3>Vue d'ensemble — 93 endpoints</h3>
+<h3>Vue d'ensemble — 123 endpoints</h3>
 <table class="doc-table">
 <thead><tr><th>Fichier route</th><th>GET</th><th>POST</th><th>PUT</th><th>DEL</th><th>Total</th><th>Auth</th></tr></thead>
 <tbody>
+<tr><td><code>peers.py</code></td><td>11</td><td>13</td><td>0</td><td>0</td><td>24</td><td>Admin / Peer / Public</td></tr>
 <tr><td><code>advanced.py</code></td><td>8</td><td>2</td><td>0</td><td>1</td><td>11</td><td>Token</td></tr>
-<tr><td><code>system.py</code></td><td>8</td><td>3</td><td>0</td><td>0</td><td>11</td><td>Token</td></tr>
-<tr><td><code>finetuning.py</code></td><td>5</td><td>3</td><td>0</td><td>1</td><td>9</td><td>Token</td></tr>
+<tr><td><code>system.py</code></td><td>9</td><td>3</td><td>0</td><td>0</td><td>12</td><td>Token</td></tr>
+<tr><td><code>finetuning.py</code></td><td>5</td><td>4</td><td>0</td><td>1</td><td>10</td><td>Token</td></tr>
 <tr><td><code>content.py</code></td><td>4</td><td>2</td><td>1</td><td>1</td><td>8</td><td>Token</td></tr>
 <tr><td><code>setup.py</code></td><td>3</td><td>4</td><td>0</td><td>0</td><td>7</td><td>Mixte</td></tr>
 <tr><td><code>tasks.py</code></td><td>4</td><td>3</td><td>0</td><td>0</td><td>7</td><td>Token</td></tr>
+<tr><td><code>product_docs.py</code></td><td>2</td><td>1</td><td>1</td><td>1</td><td>5</td><td>Mixte</td></tr>
 <tr><td><code>stripe_dashboard.py</code></td><td>4</td><td>1</td><td>0</td><td>0</td><td>5</td><td>Token</td></tr>
 <tr><td><code>ionos.py</code></td><td>2</td><td>2</td><td>0</td><td>1</td><td>5</td><td>Token</td></tr>
 <tr><td><code>config.py</code></td><td>3</td><td>0</td><td>1</td><td>0</td><td>4</td><td>Token</td></tr>
 <tr><td><code>models.py</code></td><td>3</td><td>1</td><td>0</td><td>0</td><td>4</td><td>Token</td></tr>
+<tr><td><code>chat.py</code></td><td>0</td><td>4</td><td>0</td><td>0</td><td>4</td><td>Token</td></tr>
 <tr><td><code>workspaces.py</code></td><td>3</td><td>0</td><td>0</td><td>1</td><td>4</td><td>Token</td></tr>
 <tr><td><code>docs.py</code></td><td>2</td><td>0</td><td>1</td><td>0</td><td>3</td><td>Token</td></tr>
 <tr><td><code>emotion.py</code></td><td>2</td><td>1</td><td>0</td><td>0</td><td>3</td><td>Token</td></tr>
 <tr><td><code>image_gen.py</code></td><td>2</td><td>1</td><td>0</td><td>0</td><td>3</td><td>Token</td></tr>
 <tr><td><code>whatsapp.py</code></td><td>2</td><td>1</td><td>0</td><td>0</td><td>3</td><td>Token</td></tr>
-<tr><td><code>chat.py</code></td><td>0</td><td>2</td><td>0</td><td>0</td><td>2</td><td>Token</td></tr>
-<tr><td><code>product_docs.py</code></td><td>1</td><td>0</td><td>0</td><td>0</td><td>1</td><td>Public</td></tr>
 <tr><td><code>stripe_webhook.py</code></td><td>0</td><td>1</td><td>0</td><td>0</td><td>1</td><td>Signature</td></tr>
-<tr style="font-weight:bold"><td>TOTAL</td><td>57</td><td>27</td><td>3</td><td>4</td><td>93</td><td></td></tr>
+<tr style="font-weight:bold"><td>TOTAL</td><td>71</td><td>44</td><td>4</td><td>5</td><td>123</td><td></td></tr>
 </tbody>
 </table>
 
@@ -1796,6 +1812,32 @@ protégées par <code>Authorization: Bearer &lt;LUMENA_ADMIN_TOKEN&gt;</code>.</
     <code>/api/stripe/webhook</code>
     <span class="doc-api-desc">Webhook Stripe (signature HMAC vérifiée)</span>
   </div>
+</div>
+
+<h3>Réseau Multi-Lumena</h3>
+<div class="doc-api-group">
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/instance/hello</code><span class="doc-api-desc">Présentation de l'instance (public)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/instance/capabilities</code><span class="doc-api-desc">Capacités déclarées (public)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/instance/health</code><span class="doc-api-desc">Health check instance (public)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/instance/network-diagnostic</code><span class="doc-api-desc">Diagnostic réseau complet (bind, LAN IPs, pare-feu)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/instance/network-interfaces</code><span class="doc-api-desc">Liste des sous-réseaux /24 disponibles pour le scan</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/instance/firewall-command</code><span class="doc-api-desc">Commande netsh à exécuter pour ouvrir le port</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/instance/firewall-apply</code><span class="doc-api-desc">Applique la règle pare-feu Windows (confirmation requise)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/peers</code><span class="doc-api-desc">Liste des pairs connus (tokens filtrés)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peers/pair</code><span class="doc-api-desc">Jumelage direct host:port (mode avancé)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peers/block</code><span class="doc-api-desc">Bloquer un pair</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/probe</code><span class="doc-api-desc">Sonder un pair (anti-SSRF RFC1918)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/discover</code><span class="doc-api-desc">Scan LAN actif pour découvrir des instances</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/pairing-code</code><span class="doc-api-desc">Génère un code de jumelage 6 chars (TTL 5 min)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/validate-pairing-code</code><span class="doc-api-desc">Valide le code + échange symétrique de peer tokens (public)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/accept-pairing</code><span class="doc-api-desc">Initie le jumelage depuis cet hôte vers un pair distant</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/revoke-token/{instance_id}</code><span class="doc-api-desc">Révoque les tokens d'un pair, repasse à trust=unknown</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/delegate</code><span class="doc-api-desc">Reçoit une délégation de tâche (auth peer token)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/peer/test-delegation</code><span class="doc-api-desc">Teste la délégation vers un pair connu</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/peer/audit-log</code><span class="doc-api-desc">Journal des délégations (refus inclus)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method get">GET</span><code>/api/mdns/status</code><span class="doc-api-desc">État mDNS (flag, lib disponible, service type)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/mdns/browse</code><span class="doc-api-desc">Découverte mDNS passive (intègre les pairs en unknown)</span></div>
+  <div class="doc-api-item"><span class="doc-api-method post">POST</span><code>/api/mdns/advertise</code><span class="doc-api-desc">Démarre/arrête l'annonce mDNS de cette instance</span></div>
 </div>
 
 <div class="doc-callout" style="text-align:right;color:var(--muted);font-size:11px;border:none;padding-top:0">
@@ -2232,6 +2274,127 @@ coordonnées, labels, pour permettre des clics ciblés sans dépendre uniquement
 <div class="doc-callout" style="text-align:right;color:var(--muted);font-size:11px;border:none;padding-top:0">
   Lumena — Beta-v1.0
 </div>
+""",
+    },
+    {
+        "id": "multi-lumena",
+        "icon": "network",
+        "title": "Réseau Multi-Lumena",
+        "content": """
+<p class="doc-lead">Plusieurs instances Lumena sur le même réseau LAN peuvent se découvrir,
+se jumeler et se déléguer des tâches de manière sécurisée — sans copier de token admin,
+sans configuration IP manuelle.</p>
+
+<h3>Architecture générale</h3>
+<div class="doc-code-block">
+<pre>
+Instance A                         Instance B
+──────────                         ──────────
+Génère code court (6 cars)
+  → POST /api/peer/pairing-code
+                                    Soumet code + host:port
+                                    → POST /api/peer/validate-pairing-code
+                                         ↓
+                              Échange symétrique de peer tokens
+                                 (hash stocké, raw jamais exposé)
+                                         ↓
+                         trust = "trusted" des deux côtés
+                                         ↓
+                         Délégation de tâches bidirectionnelle
+                         POST /api/peer/delegate
+                         Authorization: Bearer &lt;peer_token_outbound&gt;
+</pre>
+</div>
+
+<h3>Jumelage par code court</h3>
+<table class="doc-table">
+<thead><tr><th>Étape</th><th>Endpoint</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td>1 — Générer</td><td><code>POST /api/peer/pairing-code</code></td><td>Génère un code 6 chars alphanumérique, TTL 5 min, usage unique</td></tr>
+<tr><td>2 — Valider</td><td><code>POST /api/peer/validate-pairing-code</code></td><td>L'autre instance soumet le code + son host:port — échange de tokens automatique</td></tr>
+<tr><td>3 — Initier</td><td><code>POST /api/peer/accept-pairing</code></td><td>Initie le pairing depuis cet hôte vers un pair distant (avec son code)</td></tr>
+<tr><td>4 — Révoquer</td><td><code>POST /api/peer/revoke-token/{id}</code></td><td>Supprime les tokens d'un pair, repasse à trust=unknown</td></tr>
+</tbody>
+</table>
+
+<h3>Sécurité des peer tokens</h3>
+<ul>
+<li><strong>Stockage hashé</strong> — SHA-256 du token reçu stocké dans le registre ; le raw n'est jamais exposé via l'API</li>
+<li><strong>Liaison à l'instance</strong> — <code>verify_peer_token</code> retourne le pair authentifié ; <code>receive_delegation</code> vérifie que <code>authenticated_peer.instance_id == req.from_instance_id</code> (anti-usurpation P1)</li>
+<li><strong>Token admin isolé</strong> — jamais utilisé pour la délégation entre instances</li>
+<li><strong>Révocation</strong> — suppression immédiate des tokens, audit tracé</li>
+<li><strong>Champs last_seen et allowed_scopes</strong> — traçabilité et contrôle de portée</li>
+</ul>
+
+<h3>Anti-SSRF</h3>
+<p>Toutes les sorties réseau vers des pairs sont filtrées par <code>_validate_peer_host()</code> :</p>
+<ul>
+<li>Whitelist RFC1918 stricte : <code>10.0.0.0/8</code>, <code>172.16.0.0/12</code>, <code>192.168.0.0/16</code></li>
+<li>Rejette CGNAT (<code>100.64/10</code>), loopback, link-local, domaines, IPs publiques</li>
+<li>Appliqué sur : <code>/api/peers/pair</code>, <code>/api/peer/probe</code>, <code>/api/peer/accept-pairing</code>, résultats mDNS</li>
+</ul>
+
+<h3>Découverte réseau</h3>
+<table class="doc-table">
+<thead><tr><th>Méthode</th><th>Variable</th><th>Description</th></tr></thead>
+<tbody>
+<tr><td><strong>Scan LAN actif</strong></td><td><code>LUMENA_PEER_DISCOVERY=1</code></td><td>Scan /24 sur tous les adaptateurs détectés, configurable par sous-réseau</td></tr>
+<tr><td><strong>Multi-réseau</strong></td><td>—</td><td><code>GET /api/instance/network-interfaces</code> liste les sous-réseaux disponibles pour cibler le bon adaptateur</td></tr>
+<tr><td><strong>mDNS/Zeroconf</strong></td><td><code>LUMENA_MDNS_DISCOVERY=1</code></td><td>Annonce et découverte passive via <code>_lumena._tcp.local.</code> — nécessite <code>pip install zeroconf</code></td></tr>
+</tbody>
+</table>
+
+<h4>mDNS — règles de sécurité</h4>
+<ul>
+<li>TXT records autorisés : <code>instance_id</code>, <code>instance_name</code>, <code>role</code>, <code>version</code>, <code>caps_hash</code>, <code>port</code></li>
+<li>Aucun secret (token, hash, clé) ne sort via mDNS</li>
+<li>Instances découvertes → <code>trust: "unknown"</code> — <strong>le jumelage par code reste obligatoire</strong></li>
+<li>Auto-exclusion : l'instance ne se découvre pas elle-même</li>
+<li>Fallback gracieux si <code>python-zeroconf</code> absent — Lumena continue sans erreur</li>
+</ul>
+
+<h3>Délégation de tâches</h3>
+<div class="doc-code-block">
+<pre>
+POST /api/peer/delegate
+Authorization: Bearer &lt;peer_token_outbound&gt;
+
+{
+  "task_id": "uuid",
+  "from_instance_id": "instance-b-id",
+  "from_user_id": "user",
+  "actor_id": "actor",
+  "scope": "chat",
+  "prompt": "Fais X..."
+}
+</pre>
+</div>
+<p>Chaque délégation est auditée (<code>GET /api/peer/audit-log</code>). Les refus (mauvais token, usurpation d'instance_id) sont également tracés.</p>
+
+<h3>Diagnostic réseau</h3>
+<p><code>GET /api/instance/network-diagnostic</code> retourne :</p>
+<ul>
+<li>Adresses LAN de l'instance, port d'écoute, état bind host</li>
+<li>Accessibilité réseau, vérification pare-feu Windows (via netsh)</li>
+<li>Issues détectées avec sévérité (<code>error</code> / <code>warning</code>) et actions suggérées</li>
+</ul>
+
+<h3>Pare-feu assisté</h3>
+<p>Windows uniquement. Nécessite une confirmation explicite <code>{"confirmed": true}</code> — jamais automatique.</p>
+<ul>
+<li><code>GET /api/instance/firewall-command</code> — retourne la commande netsh à exécuter</li>
+<li><code>POST /api/instance/firewall-apply</code> — applique la règle (confirmation obligatoire)</li>
+</ul>
+
+<h3>Panel UI — Vue simple / Vue avancée</h3>
+<p>Le panel <strong>Infra → Réseau Lumena</strong> propose deux niveaux d'affichage :</p>
+<table class="doc-table">
+<thead><tr><th>Vue</th><th>Contenu</th></tr></thead>
+<tbody>
+<tr><td><strong>Vue simple</strong> (défaut)</td><td>Statut réseau (dot coloré), liste des pairs avec actions rapides (Tester / Jumeler / Bloquer), formulaire de jumelage par code, diagnostic inline</td></tr>
+<tr><td><strong>Vue avancée</strong></td><td>Toutes les cartes techniques : instance courante, pairs LAN, découverte multi-réseau, actions directes host:port, pare-feu, audit log</td></tr>
+</tbody>
+</table>
 """,
     },
 ]

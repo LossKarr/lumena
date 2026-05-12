@@ -55,7 +55,7 @@ export function loadPanelData(p){
     case'infra-telegram':loadTelegramDetails();break;
     case'infra-whatsapp':loadWhatsAppDetails();break;
     case'infra-autonomy':loadAutonomyDetails();break;
-    case'todos':loadTodos();break;
+    case'infra-network':loadNetworkSimple();break;
     case'journal':loadJournal();break;
     case'facts':loadFacts();break;
     case'providers':loadProviders();break;

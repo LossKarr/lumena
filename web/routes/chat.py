@@ -64,6 +64,206 @@ def _normalize_channel(channel: Optional[str]) -> str:
     return value if value in allowed else "web"
 
 
+def _session_user_id(request: ChatRequest) -> str:
+    return (request.user_id or "local:owner").strip() or "local:owner"
+
+
+def _session_common_meta(request: ChatRequest, mode: str) -> Dict[str, Any]:
+    return {
+        "mode": mode,
+        "use_agent": bool(request.use_agent),
+        "attachments_count": len(request.attachments or []),
+        "owner_user_id": request.owner_user_id,
+        "user_role": request.user_role,
+        "profile_id": request.profile_id,
+        "client_instance_id": request.client_instance_id,
+    }
+
+
+def _session_file_edit_summary(file_edits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for edit in (file_edits or [])[:50]:
+        out.append(
+            {
+                "action": edit.get("action"),
+                "file_path": edit.get("workspace_relative") or edit.get("file_path"),
+                "additions": edit.get("additions", 0),
+                "deletions": edit.get("deletions", 0),
+                "summary": edit.get("summary", ""),
+            }
+        )
+    return out
+
+
+def _record_session_user_message(
+    request: ChatRequest,
+    *,
+    envelope: Dict[str, Any],
+    channel: str,
+    client_name: str,
+    mode: str,
+    task_id: Optional[str],
+    trace_id: Optional[str],
+    ide_context: Dict[str, Any],
+) -> None:
+    store = getattr(deps, "_SESSION_STORE", None)
+    conv_id = str(envelope.get("conversation_id") or "").strip()
+    if store is None or not conv_id:
+        return
+    try:
+        store.record_message(
+            conversation_id=conv_id,
+            role="user",
+            content=request.message or "",
+            channel=channel,
+            client=client_name,
+            user_id=_session_user_id(request),
+            owner_user_id=request.owner_user_id,
+            profile_id=request.profile_id,
+            request_id=envelope.get("request_id"),
+            message_id=envelope.get("message_id"),
+            task_id=task_id,
+            trace_id=trace_id,
+            workspace_path=ide_context.get("workspace_path"),
+            status="running",
+            metadata={
+                **_session_common_meta(request, mode),
+                "message_source": "api_chat_stream" if mode == "agent" else "api_chat",
+            },
+        )
+        store.record_event(
+            conversation_id=conv_id,
+            event_type="request_started",
+            status="running",
+            summary=request.message,
+            channel=channel,
+            client=client_name,
+            user_id=_session_user_id(request),
+            request_id=envelope.get("request_id"),
+            task_id=task_id,
+            trace_id=trace_id,
+            workspace_path=ide_context.get("workspace_path"),
+            metadata=_session_common_meta(request, mode),
+        )
+    except Exception as exc:
+        logger.warning("session_store: failed to record user message: {}", exc)
+
+
+def _record_session_assistant_message(
+    request: ChatRequest,
+    *,
+    envelope: Dict[str, Any],
+    channel: str,
+    client_name: str,
+    mode: str,
+    task_id: Optional[str],
+    trace_id: Optional[str],
+    ide_context: Dict[str, Any],
+    response: str,
+    llm_meta: Dict[str, Any],
+    agent_meta: Dict[str, Any],
+    file_edits: List[Dict[str, Any]],
+    edit_session_id: Optional[str],
+    created_documents: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    store = getattr(deps, "_SESSION_STORE", None)
+    conv_id = str(envelope.get("conversation_id") or "").strip()
+    if store is None or not conv_id:
+        return
+    try:
+        meta = {
+            **_session_common_meta(request, mode),
+            **dict(llm_meta or {}),
+            **dict(agent_meta or {}),
+            "edit_session_id": edit_session_id,
+            "file_edits": _session_file_edit_summary(file_edits),
+            "created_documents": [
+                {"name": item.get("name"), "path": item.get("path"), "type": item.get("type")}
+                for item in (created_documents or [])[:50]
+            ],
+        }
+        store.record_message(
+            conversation_id=conv_id,
+            role="assistant",
+            content=response or "",
+            channel=channel,
+            client=client_name,
+            user_id=_session_user_id(request),
+            owner_user_id=request.owner_user_id,
+            profile_id=request.profile_id,
+            request_id=envelope.get("request_id"),
+            task_id=task_id,
+            trace_id=trace_id,
+            model_used=llm_meta.get("model_used"),
+            provider_used=llm_meta.get("provider_used"),
+            workspace_path=ide_context.get("workspace_path"),
+            status="done",
+            metadata=meta,
+        )
+        store.record_event(
+            conversation_id=conv_id,
+            event_type="response_sent",
+            status="done",
+            summary=response,
+            channel=channel,
+            client=client_name,
+            user_id=_session_user_id(request),
+            request_id=envelope.get("request_id"),
+            task_id=task_id,
+            trace_id=trace_id,
+            workspace_path=ide_context.get("workspace_path"),
+            metadata=meta,
+        )
+    except Exception as exc:
+        logger.warning("session_store: failed to record assistant message: {}", exc)
+
+
+def _record_session_error(
+    request: ChatRequest,
+    *,
+    envelope: Dict[str, Any],
+    channel: str,
+    client_name: str,
+    mode: str,
+    task_id: Optional[str],
+    trace_id: Optional[str],
+    ide_context: Dict[str, Any],
+    status: str,
+    error: Any,
+) -> None:
+    store = getattr(deps, "_SESSION_STORE", None)
+    conv_id = str(envelope.get("conversation_id") or "").strip()
+    if store is None or not conv_id:
+        return
+    try:
+        store.record_event(
+            conversation_id=conv_id,
+            event_type="request_failed" if status != "cancelled" else "request_cancelled",
+            status=status,
+            summary=str(error),
+            channel=channel,
+            client=client_name,
+            user_id=_session_user_id(request),
+            request_id=envelope.get("request_id"),
+            task_id=task_id,
+            trace_id=trace_id,
+            workspace_path=ide_context.get("workspace_path"),
+            metadata={**_session_common_meta(request, mode), "error": str(error)[:1000]},
+        )
+        store.update_status(
+            conv_id,
+            status,
+            channel=channel,
+            client=client_name,
+            user_id=_session_user_id(request),
+            task_id=task_id,
+            trace_id=trace_id,
+            workspace_path=ide_context.get("workspace_path"),
+        )
+    except Exception as exc:
+        logger.warning("session_store: failed to record error: {}", exc)
+
+
 def _normalize_existing_dir(path: Optional[str]) -> Optional[str]:
     if not path:
         return None
@@ -295,12 +495,13 @@ def _cleanup_session_state_locked() -> None:
 
 
 def _build_conversation_cache_key(request: ChatRequest, channel: str, client_name: str) -> str:
+    uid = (getattr(request, "user_id", None) or "local:owner").strip() or "local:owner"
     if request.ide_session_id:
-        return f"conv:ide_session:{request.ide_session_id.strip().lower()}"
+        return f"conv:ide:{request.ide_session_id.strip().lower()}:{uid}"
     normalized_client = (client_name or "").strip().lower()
     if normalized_client and normalized_client != "unknown":
-        return f"conv:client:{normalized_client}"
-    return f"conv:channel:{channel}"
+        return f"conv:client:{normalized_client}:{uid}"
+    return f"conv:channel:{channel}:{uid}"
 
 
 def _load_cached_conversation_id(cache_key: str) -> Optional[str]:
@@ -436,7 +637,7 @@ def _extract_ide_context(request: ChatRequest, channel: str) -> Dict[str, Any]:
             open_files.append(normalized)
 
     # Signaux bruts uniquement — pas d'inférence ici.
-    # resolve_workspace_for_request() (via _apply_workspace_policy) est la seule
+    # resolve_workspace_for_user() (via _apply_workspace_policy) est la seule
     # source de vérité pour la résolution finale du workspace.
     incoming = {
         "workspace_path": workspace_path,
@@ -589,12 +790,12 @@ def _apply_workspace_policy(
     ide_context: Dict[str, Any],
 ) -> Dict[str, Any]:
     # P1 — le chemin V2 est la seule vérité. Si le runtime n'est pas disponible, on fail explicitement.
-    if not (WORKSPACE_POLICY_V2_ENABLED and deps.RUNTIME_AVAILABLE and deps.resolve_workspace_for_request is not None):
+    if not (WORKSPACE_POLICY_V2_ENABLED and deps.RUNTIME_AVAILABLE and deps.resolve_workspace_for_user is not None):
         logger.error(
             "[workspace] Runtime V2 indisponible (V2_ENABLED={} RUNTIME={} resolver={}) — résolution workspace impossible.",
             WORKSPACE_POLICY_V2_ENABLED,
             deps.RUNTIME_AVAILABLE,
-            deps.resolve_workspace_for_request is not None,
+            deps.resolve_workspace_for_user is not None,
         )
         raise WorkspacePolicyError(
             "workspace_runtime_unavailable: le runtime V2 n'est pas initialisé. "
@@ -602,7 +803,18 @@ def _apply_workspace_policy(
             status_code=503,
         )
 
-    # ── Chemin V2 — resolve_workspace_for_request est la SEULE source de vérité ──
+    user_id = (getattr(request, "user_id", None) or "local:owner").strip() or "local:owner"
+
+    # Workspace base par utilisateur (pour extraction de date et résolution)
+    from src.runtime.user_profile import MULTI_USER_ENABLED as _MU_WS
+    if _MU_WS:
+        from src.runtime.user_profile import _safe_user_id as _safe_uid_ws
+        from src.utils.paths import DATA_DIR as _DATA_DIR_WS
+        _user_ws_base = str(_DATA_DIR_WS / "users" / _safe_uid_ws(user_id) / "workspaces")
+    else:
+        _user_ws_base = DEFAULT_WORKSPACE_PATH
+
+    # ── Chemin V2 — resolve_workspace_for_user est la SEULE source de vérité ──
     # Aucun appel à _infer_workspace_path() autorisé ici.
     requested_workspace = (request.workspace_path or "").strip() or ide_context.get("workspace_path")
 
@@ -612,7 +824,7 @@ def _apply_workspace_policy(
     # parle d'un projet créé à une date antérieure.
     if not requested_workspace:
         _msg_lower = (request.message or "").lower()
-        _extracted_ws = _extract_dated_workspace(_msg_lower, DEFAULT_WORKSPACE_PATH)
+        _extracted_ws = _extract_dated_workspace(_msg_lower, _user_ws_base)
         if _extracted_ws:
             requested_workspace = _extracted_ws
             logger.info(
@@ -657,10 +869,10 @@ def _apply_workspace_policy(
         incoming_open_files,
     )
 
-    resolved = deps.resolve_workspace_for_request(
+    resolved = deps.resolve_workspace_for_user(
+        user_id,
         workspace_policy=request.workspace_policy,
         requested_workspace=requested_workspace,
-        default_workspace=DEFAULT_WORKSPACE_PATH,
         active_file_path=active_file_path,
         open_files=open_files,
     )
@@ -732,6 +944,12 @@ def _build_runtime_context(
         resolved_workspace=ide_context.get("workspace_path"),
         resolved_date=ide_context.get("resolved_date"),
         resolution_reason=ide_context.get("resolution_reason"),
+        # Phase 0 — propagation identité
+        user_id=request.user_id,
+        owner_user_id=request.owner_user_id,
+        user_role=request.user_role,
+        profile_id=request.profile_id,
+        instance_id=request.client_instance_id,
     )
 
 
@@ -1179,6 +1397,16 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
         resolved_date=ide_context.get("resolved_date"),
         status="running",
     )
+    _record_session_user_message(
+        request,
+        envelope=envelope,
+        channel=channel,
+        client_name=client_name,
+        mode=mode,
+        task_id=task_id,
+        trace_id=trace_id,
+        ide_context=ide_context,
+    )
     tool_runtime_tokens = _push_tool_runtime_context(ide_context)
 
     try:
@@ -1320,6 +1548,23 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
         except Exception:
             pass
 
+        _record_session_assistant_message(
+            request,
+            envelope=envelope,
+            channel=channel,
+            client_name=client_name,
+            mode=mode,
+            task_id=task_id,
+            trace_id=trace_id,
+            ide_context=ide_context,
+            response=response,
+            llm_meta=llm_meta,
+            agent_meta=agent_meta,
+            file_edits=file_edits,
+            edit_session_id=edit_session_id,
+            created_documents=_created_docs,
+        )
+
         return ChatResponse(
             response=response,
             mood=mood,
@@ -1369,6 +1614,18 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
             resolved_date=ide_context.get("resolved_date"),
             status=("cancelled" if error_kind == "cancelled" else "error"),
             error=str(e),
+        )
+        _record_session_error(
+            request,
+            envelope=envelope,
+            channel=channel,
+            client_name=client_name,
+            mode=mode,
+            task_id=task_id,
+            trace_id=trace_id,
+            ide_context=ide_context,
+            status=("cancelled" if error_kind == "cancelled" else "error"),
+            error=e,
         )
         _record_slo_outcome(
             success=False,
@@ -1517,6 +1774,16 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
             workspace_path=ide_context.get("workspace_path"),
             resolved_date=ide_context.get("resolved_date"),
             status="running",
+        )
+        _record_session_user_message(
+            request,
+            envelope=envelope,
+            channel=channel,
+            client_name=client_name,
+            mode=mode,
+            task_id=task_id,
+            trace_id=trace_id,
+            ide_context=ide_context,
         )
 
         # Envoyer le debut
@@ -1922,6 +2189,18 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                             status=("cancelled" if error_kind == "cancelled" else "error"),
                             error=str(result_container["error"]),
                         )
+                        _record_session_error(
+                            request,
+                            envelope=envelope,
+                            channel=channel,
+                            client_name=client_name,
+                            mode=mode,
+                            task_id=task_id,
+                            trace_id=trace_id,
+                            ide_context=ide_context,
+                            status=("cancelled" if error_kind == "cancelled" else "error"),
+                            error=result_container["error"],
+                        )
                         _record_slo_outcome(
                             success=False,
                             latency_ms=int((time.perf_counter() - request_started_perf) * 1000),
@@ -2145,6 +2424,22 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                 resolved_date=ide_context.get("resolved_date"),
                 status="done",
             )
+            _record_session_assistant_message(
+                request,
+                envelope=envelope,
+                channel=channel,
+                client_name=client_name,
+                mode=mode,
+                task_id=task_id,
+                trace_id=trace_id,
+                ide_context=ide_context,
+                response=response,
+                llm_meta=llm_meta,
+                agent_meta=agent_meta,
+                file_edits=file_edits,
+                edit_session_id=edit_session_id,
+                created_documents=created_documents,
+            )
             _record_slo_outcome(
                 success=True,
                 latency_ms=int((time.perf_counter() - request_started_perf) * 1000),
@@ -2175,6 +2470,18 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                 resolved_date=ide_context.get("resolved_date"),
                 status=("cancelled" if error_kind == "cancelled" else "error"),
                 error=str(e),
+            )
+            _record_session_error(
+                request,
+                envelope=envelope,
+                channel=channel,
+                client_name=client_name,
+                mode=mode,
+                task_id=task_id,
+                trace_id=trace_id,
+                ide_context=ide_context,
+                status=("cancelled" if error_kind == "cancelled" else "error"),
+                error=e,
             )
             _record_slo_outcome(
                 success=False,

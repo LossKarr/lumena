@@ -19,10 +19,12 @@ try:
         ChannelEnvelope,
         RuntimeContext,
         SLOMonitor,
+        SessionStore,
         TaskOrchestrator,
         pop_runtime_context,
         push_runtime_context,
         resolve_workspace_for_request,
+        resolve_workspace_for_user,
     )
     RUNTIME_AVAILABLE = True
 except Exception:
@@ -30,10 +32,12 @@ except Exception:
     ChannelEnvelope = None
     RuntimeContext = None
     SLOMonitor = None
+    SessionStore = None
     TaskOrchestrator = None
     pop_runtime_context = None
     push_runtime_context = None
     resolve_workspace_for_request = None
+    resolve_workspace_for_user = None
 
 try:
     from src.autonomy.daemon import get_daemon
@@ -98,6 +102,7 @@ _PIPELINE_METRICS: Dict[str, Any] = {
     "last_error_ts": None,
 }
 _TASK_ORCHESTRATOR = TaskOrchestrator() if (RUNTIME_AVAILABLE and TaskOrchestrator is not None) else None
+_SESSION_STORE = SessionStore() if (RUNTIME_AVAILABLE and SessionStore is not None) else None
 _SLO_MONITOR = None
 _AUTONOMY_DAEMON = None
 _AUTONOMY_STARTED_BY_WEB = False
@@ -147,6 +152,10 @@ def get_lumena() -> Optional[LumenaCore]:
 
 def get_task_orchestrator():
     return _TASK_ORCHESTRATOR
+
+
+def get_session_store():
+    return _SESSION_STORE
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)

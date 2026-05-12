@@ -114,13 +114,13 @@ class TestGuard5BusinessTaskNotCompletedByExploration:
         assert loop._task_plan[0].completed
 
     def test_parallel_tools_cannot_mark_deleguer_task(self):
-        """parallel_tools ne doit pas contourner Guard 5 sur une tÃ¢che mÃ©tier."""
-        loop = self._make_loop_with_plan(["DÃ©lÃ©guer la correction au CodeAgent"])
+        """parallel_tools ne doit pas contourner Guard 5 sur une tâche métier."""
+        loop = self._make_loop_with_plan(["Déléguer la correction au CodeAgent"])
         loop._last_auto_advance_iter = -1
         loop._update_plan_progress(
             tool_name="parallel_tools",
             tool_args={"tools": [{"tool": "read_file", "args": {"path": "js/game.js"}}]},
-            observation_content="âœ… 2 outils exÃ©cutÃ©s en parallÃ¨le",
+            observation_content="✅ 2 outils exécutés en paralléle",
             iteration=1,
         )
         assert not loop._task_plan[0].completed
@@ -195,13 +195,14 @@ class TestIdentityServiceCodeContext:
         assert key == "telegram:42"
 
     def test_resolve_channel_key_no_sender(self):
-        rt = SimpleNamespace(channel="web", session_id="sess123")
+        # Phase 0 : la clé utilise user_id + conversation_id, pas session_id
+        rt = SimpleNamespace(channel="web", user_id="local:owner", conversation_id="sess123")
         key = IdentityService.resolve_channel_key(rt)
-        assert key == "web:sess123"
+        assert "web" in key and "local:owner" in key and "sess123" in key
 
     def test_resolve_channel_key_fallback(self):
         rt = SimpleNamespace(channel="web")
-        # session_id absent → fallback
+        # Ni user_id ni session_id → fallback sur user_id=local:owner
         key = IdentityService.resolve_channel_key(rt)
         assert "web" in key
 
@@ -245,8 +246,9 @@ class TestRecentProjectPromptInjection:
             instinct_system=None, auto_speak=False,
         )
         svc = IdentityService(_ctx_obj, tg_contexts=OrderedDict(), discord_contexts=OrderedDict(), discord_users={})
+        # Phase 0 : la clé utilise user_id, pas session_id
         svc.remember_code_context(
-            "web:default",
+            "web:local:owner",
             str(tmp_path / "workspace" / "mon-jeu"),
             project_slug="mon-jeu",
         )
@@ -261,8 +263,8 @@ class TestRecentProjectPromptInjection:
         )
         registry = ToolRegistry(lumena=_lum_mock, lumena_root=tmp_path)
 
-        # RuntimeContext pointant vers le bon canal
-        rt = SimpleNamespace(channel="web", session_id="default")
+        # RuntimeContext pointant vers le bon canal (user_id, pas session_id)
+        rt = SimpleNamespace(channel="web", user_id="local:owner")
 
         loop = ReActLoop(
             llm_chat_func=_llm,
@@ -344,8 +346,9 @@ class TestDelegateTaskUsesRecentContext:
             instinct_system=None, auto_speak=False,
         )
         svc = IdentityService(_ctx_obj, tg_contexts=OrderedDict(), discord_contexts=OrderedDict(), discord_users={})
-        rt = SimpleNamespace(channel="web", session_id="u1")
-        svc.remember_code_context("web:u1", str(project_dir), project_slug="mon-super-jeu")
+        # Phase 0 : la clé utilise user_id, pas session_id
+        rt = SimpleNamespace(channel="web", user_id="local:owner")
+        svc.remember_code_context("web:local:owner", str(project_dir), project_slug="mon-super-jeu")
 
         # Capturer l'appel TaskContext.from_delegate_call
         captured_project_path: list[str] = []

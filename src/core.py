@@ -363,8 +363,10 @@ class LumenaCore:
             self.emotion_manager._personality_ref = self.personality
             self.emotion_manager.force_mood(self.personality.current_mood)
         
-        # Système de mémoire persistante
+        # Système de mémoire persistante (owner local, singleton legacy)
         self.memory = LumenaMemory(self.data_dir / "memory") if MEMORY_AVAILABLE else None
+        # Cache mémoire par user_id (remplit au fil des requêtes)
+        self._user_memory_cache: dict = {}
         
         # 🛠️ Système de tools automatique (toujours actif)
         self.tool_system = get_tool_system() if TOOL_SYSTEM_AVAILABLE else None
@@ -982,6 +984,29 @@ class LumenaCore:
 
     def learn_fact(self, key: str, value: Any) -> bool:
         return self._memory_svc.learn_fact(key, value)
+
+    def get_user_memory(self, user_id: str = "local:owner"):
+        """Retourne une instance LumenaMemory isolée par user_id (cache interne).
+
+        En mode LUMENA_MULTI_USER=1, le répertoire mémoire est data/users/<safe_id>/memory/.
+        En mode single-user, retourne self.memory (local:owner partagé, comportement legacy).
+        """
+        if not MEMORY_AVAILABLE:
+            return None
+        uid = (user_id or "local:owner").strip() or "local:owner"
+        if not hasattr(self, "_user_memory_cache"):
+            self._user_memory_cache = {}
+        if uid not in self._user_memory_cache:
+            try:
+                from src.runtime.user_profile import MULTI_USER_ENABLED, get_user_memory_dir
+                if MULTI_USER_ENABLED:
+                    mem_dir = get_user_memory_dir(uid, create=True)
+                    self._user_memory_cache[uid] = LumenaMemory(mem_dir, user_id=uid)
+                else:
+                    self._user_memory_cache[uid] = self.memory
+            except Exception:
+                self._user_memory_cache[uid] = self.memory
+        return self._user_memory_cache[uid]
 
     def get_fact(self, key: str) -> Optional[Any]:
         return self._memory_svc.get_fact(key)

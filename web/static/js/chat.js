@@ -3,8 +3,25 @@
    ============================================================ */
 export function setupTextarea(){
   const ta=document.getElementById('message-input');
-  ta.addEventListener('input',()=>{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,400)+'px'});
-  ta.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}});
+  if(!ta)return;
+  const resize=()=>{
+    const maxHeight=Math.min(320, Math.max(180, Math.floor(window.innerHeight*0.34)));
+    ta.style.height='36px';
+    const contentHeight=ta.scrollHeight;
+    const minReadableHeight=(ta.value.length||document.activeElement===ta)?128:36;
+    const nextHeight=Math.min(Math.max(contentHeight,minReadableHeight),maxHeight);
+    ta.style.height=nextHeight+'px';
+    ta.style.overflowY=contentHeight>maxHeight?'auto':'hidden';
+  };
+  const scheduleResize=()=>setTimeout(resize,0);
+  ta.addEventListener('input',resize);
+  ta.addEventListener('keyup',resize);
+  ta.addEventListener('focus',resize);
+  ta.addEventListener('blur',resize);
+  ta.addEventListener('paste',()=>setTimeout(resize,0));
+  ta.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}else{scheduleResize()}});
+  window.addEventListener('resize',scheduleResize);
+  resize();
 }
 
 export function quickSend(msg){document.getElementById('message-input').value=msg;sendMessage()}
@@ -47,7 +64,7 @@ export async function sendMessage(){
   addMsg('user',message,null,userExtra);
   _pushChat('user',message);
   logC(`"${message.substring(0,50)}..."`,`info`);
-  input.value='';input.style.height='auto';
+  input.value='';input.style.height='auto';input.style.overflowY='hidden';
   isLoading=true;
   _pendingCancel=false; // Réinitialiser l'annulation différée pour ce nouveau run
   _abortController=new AbortController();
@@ -191,6 +208,7 @@ export async function sendMessage(){
 
   // Build request body
   const reqBody={message,use_agent:useAgent};
+  if(activeConversationId)reqBody.conversation_id=activeConversationId;
   if(uploadedPaths.length)reqBody.attachments=uploadedPaths;
 
   try{
@@ -416,6 +434,10 @@ export async function sendMessage(){
       window._streamingRaw='';
       addMsg('assistant',finalResponse.response,finalResponse);
       _pushChat('assistant',finalResponse.response,finalResponse);
+      if(finalResponse.conversation_id){
+        activeConversationId=finalResponse.conversation_id;
+        localStorage.setItem('lumena_active_conversation_id',activeConversationId);
+      }
       pushActivity('checkpoint','',`Reponse terminee — ${finalResponse.provider_used||'?'}/${finalResponse.model_used||'?'}`);
       logC('Reponse recue','success');
       if(finalResponse.mood)setText('mood-value',finalResponse.mood);
@@ -975,6 +997,8 @@ export function loadChatHistory(){
 export function clearChatHistory(){
   _chatMessages=[];
   localStorage.removeItem(_CHAT_KEY);
+  activeConversationId='';
+  localStorage.removeItem('lumena_active_conversation_id');
   const thread=document.getElementById('chat-thread');
   if(thread)thread.innerHTML='';
   const welcome=document.getElementById('chat-welcome');
@@ -992,4 +1016,36 @@ export function exportChatMarkdown(){
   a.download='lumena-chat-'+new Date().toISOString().slice(0,10)+'.md';
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+export async function resumeSessionInChat(convId){
+  if(!convId)return;
+  try{
+    const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+    const r=await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(convId)}?limit=1000`,{headers:h});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const messages=d.messages||[];
+    activeConversationId=convId;
+    localStorage.setItem('lumena_active_conversation_id',convId);
+    _chatMessages=[];
+    const thread=document.getElementById('chat-thread');
+    if(thread)thread.innerHTML='';
+    const welcome=document.getElementById('chat-welcome');
+    if(welcome)welcome.style.display='none';
+    chatHasMessages=true;
+    for(const m of messages){
+      const meta={
+        conversation_id:convId,
+        task_id:m.task_id||null,
+        trace_id:m.trace_id||null,
+        provider_used:m.provider_used||undefined,
+        model_used:m.model_used||undefined,
+      };
+      addMsg(m.role==='user'?'user':'assistant',m.content||'',meta);
+      _pushChat(m.role==='user'?'user':'assistant',m.content||'',meta);
+    }
+    if(typeof switchPanel==='function')switchPanel('chat');
+    logC(`Session reprise: ${convId.substring(0,16)}`,'success');
+  }catch(e){logC(`Reprise session: ${e.message}`,'error')}
 }

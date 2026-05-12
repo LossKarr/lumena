@@ -1347,6 +1347,9 @@ class MultiProviderLLM:
             # GPT-5.x et reasoning : max_completion_tokens, pas de temperature/stop
             if max_tokens is not None:
                 payload["max_completion_tokens"] = max_tokens
+            reasoning_effort = os.getenv("LUMENA_OPENAI_REASONING_EFFORT", "").strip().lower()
+            if reasoning_effort in {"none", "low", "medium", "high", "xhigh"}:
+                payload["reasoning_effort"] = reasoning_effort
         else:
             # Legacy : paramètres classiques
             if max_tokens is not None:

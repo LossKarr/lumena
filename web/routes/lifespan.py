@@ -23,7 +23,11 @@ from src.core import LumenaCore, initialize_lumena
 from src.utils.file_lock import ProcessFileLock, default_lock_path
 from web.routes import deps
 
-from src.utils.paths import ROOT_DIR, DATA_DIR, WORKSPACE_DIR
+from src.utils.paths import ROOT_DIR, DATA_DIR, WORKSPACE_DIR, INSTANCE_ROLE, MULTI_INSTANCE_ENABLED
+
+# ── Instance role ── (primary | worker | standalone) ─────────────────────────
+_INSTANCE_ROLE: str = INSTANCE_ROLE
+_IS_WORKER: bool = _INSTANCE_ROLE == "worker"
 
 _PROJECT_ROOT = ROOT_DIR
 
@@ -35,6 +39,105 @@ def _env_flag(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _channel_msg_metadata(msg: Any) -> Dict[str, Any]:
+    metadata = getattr(msg, "metadata", {}) or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _channel_msg_conversation_id(channel: str, msg: Any, fallback_id: Optional[str] = None) -> str:
+    metadata = _channel_msg_metadata(msg)
+    explicit = str(metadata.get("conversation_id") or "").strip()
+    if explicit:
+        return explicit
+    base = (
+        fallback_id
+        or getattr(msg, "chat_id", None)
+        or getattr(msg, "channel_id", None)
+        or getattr(msg, "user_id", None)
+        or uuid.uuid4().hex
+    )
+    return f"{channel}_chat_{base}"
+
+
+def _channel_msg_user_id(channel: str, msg: Any, fallback_id: Optional[str] = None) -> str:
+    user_id = fallback_id or getattr(msg, "user_id", None) or getattr(msg, "chat_id", None) or "unknown"
+    return f"{channel}:{user_id}"
+
+
+def _record_channel_session_message(
+    *,
+    channel: str,
+    client: str,
+    conversation_id: str,
+    role: str,
+    content: str,
+    user_id: str,
+    message_id: Optional[str] = None,
+    status: str = "running",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    store = getattr(deps, "_SESSION_STORE", None)
+    conv_id = str(conversation_id or "").strip()
+    if store is None or not conv_id:
+        return
+    try:
+        store.record_message(
+            conversation_id=conv_id,
+            role=role,
+            content=content or "",
+            channel=channel,
+            client=client,
+            user_id=user_id or f"{channel}:unknown",
+            message_id=message_id,
+            request_id=message_id,
+            status=status,
+            metadata=metadata or {},
+        )
+        store.record_event(
+            conversation_id=conv_id,
+            event_type="request_started" if role == "user" else "response_sent",
+            status=status,
+            summary=content or "",
+            channel=channel,
+            client=client,
+            user_id=user_id or f"{channel}:unknown",
+            request_id=message_id,
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        logger.debug(f"session_store: external channel record skipped: {exc}")
+
+
+def _record_channel_session_error(
+    *,
+    channel: str,
+    client: str,
+    conversation_id: str,
+    user_id: str,
+    error: Any,
+    message_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    store = getattr(deps, "_SESSION_STORE", None)
+    conv_id = str(conversation_id or "").strip()
+    if store is None or not conv_id:
+        return
+    try:
+        store.record_event(
+            conversation_id=conv_id,
+            event_type="request_failed",
+            status="error",
+            summary=str(error),
+            channel=channel,
+            client=client,
+            user_id=user_id or f"{channel}:unknown",
+            request_id=message_id,
+            metadata=metadata or {},
+        )
+    except Exception as exc:
+        logger.debug(f"session_store: external channel error skipped: {exc}")
 
 
 # ── TG mode helpers ─────────────────────────────────────────────────────────
@@ -323,6 +426,10 @@ def _get_autonomy_daemon_instance() -> Optional[Any]:
 
 
 async def _start_autonomy_daemon_if_enabled() -> None:
+    if _IS_WORKER:
+        print("[AUTONOMY] Skipped — instance role=worker (scheduler et daemon désactivés)")
+        deps._AUTONOMY_LAST_ERROR = "worker_role"
+        return
     if not AUTONOMY_ON_WEB_ENABLED:
         deps._AUTONOMY_LAST_ERROR = None
         return
@@ -404,14 +511,27 @@ async def lifespan(app: FastAPI):
     """Gestion du cycle de vie de l'application (startup/shutdown)."""
     _stripe_bg_task = None
     _n8n_bg_task = None
+    _peer_network_task = None
+    _heartbeat_task = None  # stocké pour cancellation propre au shutdown
 
     try:
+        # ensure_instance_id() DOIT être appelé avant le lock pour garantir
+        # que l'INSTANCE_ID stable (depuis .env) est utilisé partout.
+        from src.utils.paths import ensure_instance_id as _ensure_iid
+        _stable_iid = _ensure_iid()
+        deps.INSTANCE_ID = _stable_iid  # mise à jour du singleton deps
+
         if _env_flag("LUMENA_SINGLE_INSTANCE", True):
-            lock_path = _resolve_lock_path("LUMENA_INSTANCE_LOCK_PATH", "lumena_web.lock")
+            # Multi-instance : lock nommé par instance_id stable pour éviter les collisions
+            if MULTI_INSTANCE_ENABLED:
+                _lock_filename = f"lumena_web_{_stable_iid}.lock"
+            else:
+                _lock_filename = "lumena_web.lock"
+            lock_path = _resolve_lock_path("LUMENA_INSTANCE_LOCK_PATH", _lock_filename)
             deps.instance_lock = ProcessFileLock(
                 lock_path,
                 lock_name="lumena-web",
-                owner_id=f"web:{deps.INSTANCE_ID}",
+                owner_id=f"web:{_stable_iid}",
             )
             if not deps.instance_lock.acquire():
                 holder = deps.instance_lock.read_lock_info()
@@ -419,7 +539,7 @@ async def lifespan(app: FastAPI):
                 raise RuntimeError(
                     f"Lumena web already running (lock={lock_path}, owner_pid={holder_pid})"
                 )
-            print(f"[LOCK] Instance lock acquired: {lock_path}")
+            print(f"[LOCK] Instance lock acquired: {lock_path} (id={_stable_iid})")
 
         # === STARTUP ===
 
@@ -502,6 +622,51 @@ async def lifespan(app: FastAPI):
         elif autonomy_meta.get("autonomy_enabled_on_web"):
             print(f"[AUTONOMY] Non actif ({autonomy_meta.get('autonomy_last_error') or 'startup skipped'})")
 
+        # ── Registre multi-instance ───────────────────────────────────────
+        try:
+            from src.runtime.peer_network_autonomy import start_peer_network_autonomy
+            _peer_network_task = start_peer_network_autonomy()
+            if _peer_network_task:
+                print("[PEERS] Autonomie reseau active")
+        except Exception as _peer_auto_err:
+            logger.warning("[PEERS] Autonomie reseau non demarree: {}", _peer_auto_err)
+
+        _instance_registry = None
+        if MULTI_INSTANCE_ENABLED:
+            try:
+                from src.runtime.instance_registry import InstanceRecord, get_registry
+                from src.utils.paths import INSTANCE_ID, INSTANCE_NAME, WORKSPACE_DIR as _WS_DIR
+                _instance_registry = get_registry()
+                _instance_registry.cleanup_stale()
+                _port_env = int(os.getenv("LUMENA_PORT", os.getenv("PORT", "8080")))
+                _record = InstanceRecord(
+                    instance_id=INSTANCE_ID,
+                    instance_name=INSTANCE_NAME,
+                    pid=os.getpid(),
+                    port=_port_env,
+                    role=_INSTANCE_ROLE,
+                    data_dir=str(DATA_DIR),
+                    workspace_dir=str(_WS_DIR),
+                    started_at=datetime.now(timezone.utc).isoformat(),
+                    last_seen=datetime.now(timezone.utc).isoformat(),
+                    host=os.uname().nodename if hasattr(os, "uname") else os.environ.get("COMPUTERNAME", ""),
+                )
+                _instance_registry.register(_record)
+                print(f"[REGISTRY] Instance enregistrée — role={_INSTANCE_ROLE} port={_port_env}")
+
+                # Heartbeat toutes les 30 s
+                async def _heartbeat_loop():
+                    while True:
+                        try:
+                            _instance_registry.update_heartbeat(INSTANCE_ID)
+                        except Exception:
+                            pass
+                        await asyncio.sleep(30)
+
+                _heartbeat_task = asyncio.create_task(_heartbeat_loop())
+            except Exception as _reg_err:
+                logger.warning("[REGISTRY] Enregistrement instance échoué: {}", _reg_err)
+
         def _register_runtime_channel(channel: Any) -> None:
             try:
                 from src.channels.manager import get_channel_manager
@@ -514,6 +679,9 @@ async def lifespan(app: FastAPI):
         try:
             if deps.setup_only_mode:
                 raise ImportError("setup_only")
+            if _IS_WORKER:
+                print("[TELEGRAM] Skipped — instance role=worker (intégrations externes désactivées)")
+                raise ImportError("worker_role")
             from src.channels.telegram_channel import TelegramChannel
 
             if _env_flag("LUMENA_WEB_ONLY", False):
@@ -666,6 +834,16 @@ async def lifespan(app: FastAPI):
                             # Send final response
                             if response:
                                 log.info(f"[AGENT-BG] Sending final response ({len(response)} chars) to chat_id={chat_id}")
+                                _record_channel_session_message(
+                                    channel="telegram",
+                                    client="telegram_bot",
+                                    conversation_id=f"tg_chat_{chat_id}",
+                                    role="assistant",
+                                    content=response,
+                                    user_id=f"telegram:{chat_id}",
+                                    status="done",
+                                    metadata={"mode": "agent", "background": True},
+                                )
                                 try:
                                     if len(response) > 4096:
                                         chunks = [response[i:i + 4000] for i in range(0, len(response), 4000)]
@@ -689,6 +867,14 @@ async def lifespan(app: FastAPI):
                                 await deps.telegram_channel.send_message("⚠️ Mode Agent terminé mais aucune réponse générée.", chat_id)
 
                         except Exception as e:
+                            _record_channel_session_error(
+                                channel="telegram",
+                                client="telegram_bot",
+                                conversation_id=f"tg_chat_{chat_id}",
+                                user_id=f"telegram:{chat_id}",
+                                error=e,
+                                metadata={"mode": "agent", "background": True},
+                            )
                             log.error(f"[AGENT-BG] Agent background task error: {e}")
                             import traceback
                             log.error(f"[AGENT-BG] Traceback: {traceback.format_exc()}")
@@ -832,6 +1018,21 @@ async def lifespan(app: FastAPI):
                                 f"is_agent={is_agent}, mode={route_mode}, sticky={sticky_mode}, "
                                 f"chat_id={chat_id}, text_preview={text[:100]}..."
                             )
+                            _tg_metadata = _channel_msg_metadata(msg)
+                            _tg_message_id = str(_tg_metadata.get("message_id") or "")
+                            _tg_conv_id = _channel_msg_conversation_id("telegram", msg, chat_id)
+                            _tg_user_id = _channel_msg_user_id("telegram", msg, getattr(msg, "user_id", None) or chat_id)
+                            _record_channel_session_message(
+                                channel="telegram",
+                                client="telegram_bot",
+                                conversation_id=_tg_conv_id,
+                                role="user",
+                                content=text,
+                                user_id=_tg_user_id,
+                                message_id=_tg_message_id,
+                                status="running",
+                                metadata={"mode": route_mode, **_tg_metadata},
+                            )
 
                             if is_agent:
                                 # Mode Agent - EXECUTE EN ARRIERE-PLAN pour ne pas bloquer Telegram
@@ -878,6 +1079,17 @@ async def lifespan(app: FastAPI):
                                         "username": (msg.metadata or {}).get("username", ""),
                                     }
                                     response = await deps.lumena.chat(text, source_channel="telegram", sender=_tg_sender)
+                                    _record_channel_session_message(
+                                        channel="telegram",
+                                        client="telegram_bot",
+                                        conversation_id=_tg_conv_id,
+                                        role="assistant",
+                                        content=response or "",
+                                        user_id=_tg_user_id,
+                                        message_id=_tg_message_id,
+                                        status="done",
+                                        metadata={"mode": "chat", **_tg_metadata},
+                                    )
 
                                     # Envoyer un resume des outils utilises (si plusieurs)
                                     tools_used = []
@@ -957,6 +1169,9 @@ async def lifespan(app: FastAPI):
         try:
             if deps.setup_only_mode:
                 raise ImportError("setup_only")
+            if _IS_WORKER:
+                print("[DISCORD] Skipped — instance role=worker")
+                raise ImportError("worker_role")
             from src.channels.discord_channel import DiscordChannel as _DiscordChan
 
             if _env_flag("LUMENA_DISABLE_DISCORD", False):
@@ -967,20 +1182,60 @@ async def lifespan(app: FastAPI):
                 if deps.discord_channel_bot.is_available:
 
                     async def discord_stream_callback(msg):
-                        async for token in deps.lumena.chat_stream(
-                            msg.content,
-                            source_channel="discord",
-                            channel_id=msg.channel_id,
-                            user_id=msg.user_id,
-                            username=msg.username,
-                            active_users=msg.metadata.get("active_users_in_channel"),
-                            image_paths=msg.metadata.get("discord_image_paths"),
-                            is_admin=msg.metadata.get("is_discord_admin", False),
-                            channel_name=msg.metadata.get("channel_name"),
-                            channel_topic=msg.metadata.get("channel_topic"),
-                            available_channels=msg.metadata.get("available_channels"),
-                        ):
-                            yield token
+                        _dc_metadata = _channel_msg_metadata(msg)
+                        _dc_conv_id = _channel_msg_conversation_id("discord", msg, getattr(msg, "channel_id", None))
+                        _dc_user_id = _channel_msg_user_id("discord", msg, getattr(msg, "user_id", None))
+                        _dc_message_id = str(_dc_metadata.get("message_id") or "")
+                        _record_channel_session_message(
+                            channel="discord",
+                            client="discord_bot",
+                            conversation_id=_dc_conv_id,
+                            role="user",
+                            content=msg.content,
+                            user_id=_dc_user_id,
+                            message_id=_dc_message_id,
+                            status="running",
+                            metadata=_dc_metadata,
+                        )
+                        collected_response = []
+                        try:
+                            async for token in deps.lumena.chat_stream(
+                                msg.content,
+                                source_channel="discord",
+                                channel_id=msg.channel_id,
+                                user_id=msg.user_id,
+                                username=msg.username,
+                                active_users=msg.metadata.get("active_users_in_channel"),
+                                image_paths=msg.metadata.get("discord_image_paths"),
+                                is_admin=msg.metadata.get("is_discord_admin", False),
+                                channel_name=msg.metadata.get("channel_name"),
+                                channel_topic=msg.metadata.get("channel_topic"),
+                                available_channels=msg.metadata.get("available_channels"),
+                            ):
+                                collected_response.append(token)
+                                yield token
+                            _record_channel_session_message(
+                                channel="discord",
+                                client="discord_bot",
+                                conversation_id=_dc_conv_id,
+                                role="assistant",
+                                content="".join(collected_response),
+                                user_id=_dc_user_id,
+                                message_id=_dc_message_id,
+                                status="done",
+                                metadata=_dc_metadata,
+                            )
+                        except Exception as exc:
+                            _record_channel_session_error(
+                                channel="discord",
+                                client="discord_bot",
+                                conversation_id=_dc_conv_id,
+                                user_id=_dc_user_id,
+                                error=exc,
+                                message_id=_dc_message_id,
+                                metadata=_dc_metadata,
+                            )
+                            raise
 
                     deps.discord_channel_bot.set_stream_callback(discord_stream_callback)
 
@@ -1003,6 +1258,9 @@ async def lifespan(app: FastAPI):
         try:
             if deps.setup_only_mode:
                 raise ImportError("setup_only")
+            if _IS_WORKER:
+                print("[TWITTER] Skipped — instance role=worker")
+                raise ImportError("worker_role")
             from src.channels.twitter_channel import TwitterChannel
             import src.channels.twitter_channel as _tw_mod
             _tw_disabled = _env_flag("LUMENA_DISABLE_TWITTER", False)
@@ -1052,6 +1310,9 @@ async def lifespan(app: FastAPI):
         try:
             if deps.setup_only_mode:
                 raise ImportError("setup_only")
+            if _IS_WORKER:
+                print("[WHATSAPP] Skipped — instance role=worker")
+                raise ImportError("worker_role")
             from src.channels.whatsapp_channel import WhatsAppChannel
 
             if _env_flag("LUMENA_WEB_ONLY", False):
@@ -1065,14 +1326,49 @@ async def lifespan(app: FastAPI):
                     async def whatsapp_callback(msg):
                         sender = msg.chat_id or msg.user_id
                         text = msg.content
+                        _wa_metadata = _channel_msg_metadata(msg)
+                        _wa_conv_id = _channel_msg_conversation_id("whatsapp", msg, sender)
+                        _wa_user_id = _channel_msg_user_id("whatsapp", msg, sender)
+                        _wa_message_id = str(_wa_metadata.get("message_id") or "")
+                        _record_channel_session_message(
+                            channel="whatsapp",
+                            client="whatsapp_cloud",
+                            conversation_id=_wa_conv_id,
+                            role="user",
+                            content=text,
+                            user_id=_wa_user_id,
+                            message_id=_wa_message_id,
+                            status="running",
+                            metadata=_wa_metadata,
+                        )
                         try:
                             response = await deps.lumena.chat(
                                 text,
                                 source_channel="whatsapp",
                                 sender=sender,
                             )
+                            _record_channel_session_message(
+                                channel="whatsapp",
+                                client="whatsapp_cloud",
+                                conversation_id=_wa_conv_id,
+                                role="assistant",
+                                content=response or "",
+                                user_id=_wa_user_id,
+                                message_id=_wa_message_id,
+                                status="done",
+                                metadata=_wa_metadata,
+                            )
                             return response
                         except Exception as e:
+                            _record_channel_session_error(
+                                channel="whatsapp",
+                                client="whatsapp_cloud",
+                                conversation_id=_wa_conv_id,
+                                user_id=_wa_user_id,
+                                error=e,
+                                message_id=_wa_message_id,
+                                metadata=_wa_metadata,
+                            )
                             logger.error(f"WhatsApp chat error: {e}")
                             return f"❌ Erreur: {e}"
 
@@ -1107,6 +1403,9 @@ async def lifespan(app: FastAPI):
         try:
             if deps.setup_only_mode:
                 raise ImportError("setup_only")
+            if _IS_WORKER:
+                print("[IDE-Bridge] Skipped — instance role=worker")
+                raise ImportError("worker_role")
             from src.tools.ide_bridge import get_ide_bridge
             ide_bridge = get_ide_bridge()
             asyncio.create_task(ide_bridge.start_server())
@@ -1116,7 +1415,9 @@ async def lifespan(app: FastAPI):
 
         # Démarrer l'assistant vocal si LUMENA_VOICE_AUTO=1
         try:
-            if _env_flag("LUMENA_VOICE_AUTO", False) and deps.VoiceManager:
+            if _IS_WORKER:
+                print("[VOICE] Skipped — instance role=worker")
+            elif _env_flag("LUMENA_VOICE_AUTO", False) and deps.VoiceManager:
                 _vm = deps.VoiceManager.get_instance()
                 _voice_ok = await _vm.start(deps.lumena)
                 if _voice_ok:
@@ -1131,6 +1432,9 @@ async def lifespan(app: FastAPI):
         # ── Stripe CLI auto-start (non-bloquant) ─────────────────────────
 
         async def _start_stripe_cli_bg():
+            if _IS_WORKER:
+                print("[STRIPE] Skipped — instance role=worker")
+                return
             try:
                 stripe_key = os.getenv("STRIPE_API_KEY", "").strip()
                 stripe_cli_auto = _env_flag("STRIPE_CLI_AUTO", default=True)
@@ -1191,6 +1495,9 @@ async def lifespan(app: FastAPI):
 
         async def _start_n8n_bg():
             try:
+                if _IS_WORKER:
+                    print("[N8N] Skipped — instance role=worker")
+                    return
                 n8n_auto = _env_flag("N8N_AUTO_START", default=True)
                 if not n8n_auto:
                     print("[N8N] Auto-start desactive (N8N_AUTO_START=0)")
@@ -1333,6 +1640,33 @@ async def lifespan(app: FastAPI):
             _SERVING_WORKSPACES.clear()
         except Exception:
             pass
+
+        # Arrêt du heartbeat multi-instance + dé-enregistrement
+        if _peer_network_task and not _peer_network_task.done():
+            try:
+                from src.runtime.peer_network_autonomy import stop_peer_network_autonomy
+                await stop_peer_network_autonomy()
+            except Exception:
+                _peer_network_task.cancel()
+                try:
+                    await _peer_network_task
+                except asyncio.CancelledError:
+                    pass
+
+        if _heartbeat_task and not _heartbeat_task.done():
+            _heartbeat_task.cancel()
+            try:
+                await _heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if MULTI_INSTANCE_ENABLED:
+            try:
+                from src.runtime.instance_registry import get_registry as _get_reg
+                from src.utils.paths import INSTANCE_ID as _IID
+                _get_reg().unregister(_IID)
+                logger.debug("[REGISTRY] Instance {} dé-enregistrée", _IID)
+            except Exception:
+                pass
 
         if deps.instance_lock:
             deps.instance_lock.release()

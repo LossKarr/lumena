@@ -4,11 +4,13 @@
 Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-8515%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-8872%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Version](https://img.shields.io/badge/version-v1.0.31-orange)
+![Version](https://img.shields.io/badge/version-v1.0.32-orange)
 
-> **⚠️ Version Bêta — v1.0.31**
+![Lumena Control Panel](assets/pic1readme.png)
+
+> **⚠️ Version Bêta — v1.0.32**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 ---
@@ -36,9 +38,10 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** ré
 | **Fine-tuning** | Pipeline local LoRA→GGUF→Ollama automatique, 30 modèles, détection GPU nvidia-smi |
 | **Voix** | STT (Whisper) + TTS (Piper / Coqui XTTS provider) — *pipeline de base opérationnel, intégration avancée en cours* |
 | **Web** | FastAPI + interface admin complète, chat temps réel (SSE), WebSocket IDE bridge, panel workspaces CodeAgent |
-| **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard, rate limiter, path traversal guard |
+| **Multi-Lumena LAN** | Jumelage sécurisé par code court (6 cars, TTL 5 min), peer tokens révocables stockés hashés, délégation de tâches inter-instances, découverte LAN + mDNS/Zeroconf optionnel (`_lumena._tcp.local`) |
+| **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard RFC1918 strict, rate limiter, path traversal guard, peer tokens liés à l'instance (anti-usurpation) |
 | **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, parallel_tools avec résultats structurés par sous-appel |
-| **Tests** | 8 515 tests, 0 failed, ~163s suite complète |
+| **Tests** | 8 872 tests, 0 failed, ~150s suite complète |
 
 ---
 
@@ -351,6 +354,66 @@ Ou depuis l'interface web : panneau **Fine-tuning** → **Installer les dépenda
 | 8 Go | Mistral 7B, DeepSeek-R1 7B |
 | 10 Go | Qwen3 8B, LLaMA 3.3 8B |
 | 24 Go | Gemma3 27B |
+
+---
+
+## Réseau Multi-Lumena
+
+Plusieurs instances Lumena sur le même réseau LAN peuvent se découvrir, se jumeler et se déléguer des tâches de façon sécurisée.
+
+### Jumelage par code court
+
+1. Instance A génère un code à 6 caractères (`POST /api/peer/pairing-code`, TTL 5 min, usage unique)
+2. Instance B soumet le code avec son `host:port` (`POST /api/peer/validate-pairing-code`)
+3. Un échange symétrique de **peer tokens** s'effectue automatiquement — chaque instance stocke le hash du token reçu, jamais le token de l'autre en clair
+4. Les deux instances se retrouvent avec `trust: "trusted"` dans leurs registres respectifs
+
+### Sécurité
+
+| Propriété | Détail |
+|---|---|
+| **Peer tokens** | Stockés hashés (SHA-256), révocables (`POST /api/peer/revoke-token/{id}`), liés à l'`instance_id` (anti-usurpation P1) |
+| **Admin token** | Ne sort jamais de l'instance locale — la délégation utilise exclusivement les peer tokens |
+| **Anti-SSRF** | Validation RFC1918 stricte (`10/8`, `172.16/12`, `192.168/16`) sur toutes les sorties réseau, incluant les résultats mDNS |
+| **Audit** | Chaque tentative de délégation est journalisée (`GET /api/peer/audit-log`) |
+
+### Découverte réseau
+
+```bash
+# Scan LAN actif (LUMENA_PEER_DISCOVERY=1)
+POST /api/peer/discover
+
+# Découverte mDNS passive (LUMENA_MDNS_DISCOVERY=1 + pip install zeroconf)
+GET  /api/mdns/status
+POST /api/mdns/browse
+POST /api/mdns/advertise
+```
+
+Les instances découvertes par mDNS apparaissent avec `trust: "unknown"` — **le jumelage par code reste obligatoire** pour obtenir la confiance.
+
+### Délégation de tâches
+
+```bash
+# Instance B délègue une tâche à l'instance A
+POST /api/peer/delegate
+Authorization: Bearer <peer_token_outbound>
+
+{
+  "task_id": "...",
+  "from_instance_id": "instance-b",
+  "from_user_id": "user",
+  "scope": "chat",
+  "prompt": "Analyse ce document..."
+}
+```
+
+### Variables d'environnement
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `LUMENA_PEER_DISCOVERY` | `0` | Active le scan LAN actif |
+| `LUMENA_MDNS_DISCOVERY` | `0` | Active la découverte mDNS (`python-zeroconf` requis) |
+| `LUMENA_MULTI_INSTANCE` | `0` | Active le mode multi-instance |
 
 ---
 

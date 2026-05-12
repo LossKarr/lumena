@@ -53,7 +53,7 @@ class ToolCategoryContract:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Registre des 18 catégories sémantiques
+# Registre des 19 catégories sémantiques
 # ──────────────────────────────────────────────────────────────────────────────
 
 _CONTRACTS: Dict[str, ToolCategoryContract] = {
@@ -152,6 +152,33 @@ _CONTRACTS: Dict[str, ToolCategoryContract] = {
         ],
         autonomy_allowed=True,
         requires_workspace=True,
+        delegate_code_threshold=0,
+    ),
+
+    "peers": ToolCategoryContract(
+        name="peers",
+        role="Collaboration inter-Lumena : délégation réseau, connaissances partagées, tâches peer.",
+        preconditions=[
+            "peer trusted",
+            "peer token sortant disponible",
+            "scope autorisé dans allowed_scopes",
+            "host pair validé RFC1918",
+        ],
+        allowed_effects=[
+            "appel pair Lumena trusted",
+            "délégation chat",
+            "requête connaissance read-only",
+            "tâche peer bornée et auditée",
+        ],
+        refusal_reasons=[
+            "pair non trusted ou bloqué",
+            "peer token absent",
+            "scope absent",
+            "host refusé par anti-SSRF",
+            "secret détecté dans le payload",
+        ],
+        autonomy_allowed=True,
+        requires_workspace=False,
         delegate_code_threshold=0,
     ),
 
@@ -310,6 +337,7 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "browser":       "browser",
     "computer_use":  "computer_use",
     "agents":        "agents",
+    "peers":         "peers",
     "mail":          "communication",
     "discord":       "communication",
     "social":        "communication",

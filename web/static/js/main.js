@@ -30,7 +30,8 @@ import {
   toggleDiffFile, toggleAllDiffs, acceptAllEdits, buildDocumentsHtml,
   undoSessionEdits, undoSingleFile, undoSessionEnc, undoSingleFileEnc,
   handleFileSelect, addAttachment, removeAttachment, clearAttachments,
-  renderAttachments, loadChatHistory, clearChatHistory, exportChatMarkdown
+  renderAttachments, loadChatHistory, clearChatHistory, exportChatMarkdown,
+  resumeSessionInChat
 } from './chat.js';
 
 // ── API ──
@@ -48,11 +49,19 @@ import {
   loadJournal, renderJournal, loadFacts, loadProviders, loadAlerts,
   loadTraining, loadFinetuning, loadLogsRecent, renderLogs, loadConfig, toggleSecret,
   saveConfig, showCfgMsg, setCfgLevel, loadSessions, filterSessions,
-  loadSessionDetail, closeSessionDetail, loadOverview,
+  loadSessionDetail, closeSessionDetail, archiveSession, exportSessionMarkdown, loadOverview,
   loadTelegramDetails, loadAutonomyDetails, loadWhatsAppDetails,
   loadDocs, switchDoc, saveDoc,
   loadProductDocs, switchDocSection,
-  loadIonosSites, addIonosSite, removeIonosSite
+  loadIonosSites, addIonosSite, removeIonosSite,
+  loadInstancesNetwork, discoverLanPeers, pairSelectedPeer, blockSelectedPeer,
+  generatePairingCode, acceptPairing, loadFirewallCommand, applyFirewallRule,
+  loadNetworkSimple, toggleNetworkAdvanced, showSimplePairingForm, blockPeerSimple,
+  deletePeerSimple, deleteLocalInstance, cleanupLocalInstances,
+  testDelegation, loadNetworkDiagnostic, hideNetworkDiagnostic,
+  loadCollaborationPanel, createSharedKnowledgeFromUi, shareKnowledgeFromUi,
+  revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope,
+  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi
 } from './panels.js';
 
 // ── Stripe ──
@@ -73,9 +82,7 @@ import {
   showNewTaskForm, createTask, startTaskPoll, cancelTask,
   loadActiveTasks, renderTasks, loadDaemonActivity, renderDaemon,
   renderScheduledTasks, pushOverviewTraceEvent, renderOverviewTraceFeed,
-  renderTaskProgress, resetTaskProgress, hideTaskProgressDelayed,
-  loadTodos, getTodosFromStorage, saveTodosToStorage, updateTodoBadge,
-  addTodo, toggleTodo, deleteTodo, renderTodoList
+  renderTaskProgress, resetTaskProgress, hideTaskProgressDelayed
 } from './tasks.js';
 
 // ── Startup ──
@@ -105,6 +112,7 @@ Object.assign(window, {
   undoSessionEdits, undoSingleFile, undoSessionEnc, undoSingleFileEnc,
   handleFileSelect, addAttachment, removeAttachment, clearAttachments,
   renderAttachments, loadChatHistory, clearChatHistory, exportChatMarkdown,
+  resumeSessionInChat,
   // api
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
@@ -116,11 +124,19 @@ Object.assign(window, {
   loadJournal, renderJournal, loadFacts, loadProviders, loadAlerts,
   loadTraining, loadFinetuning, loadLogsRecent, renderLogs, loadConfig, toggleSecret,
   saveConfig, showCfgMsg, setCfgLevel, loadSessions, filterSessions,
-  loadSessionDetail, closeSessionDetail, loadOverview,
+  loadSessionDetail, closeSessionDetail, archiveSession, exportSessionMarkdown, loadOverview,
   loadTelegramDetails, loadAutonomyDetails, loadWhatsAppDetails,
   loadDocs, switchDoc, saveDoc,
   loadProductDocs, switchDocSection,
   loadIonosSites, addIonosSite, removeIonosSite,
+  loadInstancesNetwork, discoverLanPeers, pairSelectedPeer, blockSelectedPeer,
+  generatePairingCode, acceptPairing, loadFirewallCommand, applyFirewallRule,
+  loadNetworkSimple, toggleNetworkAdvanced, showSimplePairingForm, blockPeerSimple,
+  deletePeerSimple, deleteLocalInstance, cleanupLocalInstances,
+  testDelegation, loadNetworkDiagnostic, hideNetworkDiagnostic,
+  loadCollaborationPanel, createSharedKnowledgeFromUi, shareKnowledgeFromUi,
+  revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope,
+  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi,
   // stripe
   loadStripeOverview, loadStripePayments,
   loadStripeSubscriptions, loadStripeProducts,
@@ -133,8 +149,6 @@ Object.assign(window, {
   loadActiveTasks, renderTasks, loadDaemonActivity, renderDaemon,
   renderScheduledTasks, pushOverviewTraceEvent, renderOverviewTraceFeed,
   renderTaskProgress, resetTaskProgress, hideTaskProgressDelayed,
-  loadTodos, getTodosFromStorage, saveTodosToStorage, updateTodoBadge,
-  addTodo, toggleTodo, deleteTodo, renderTodoList,
   // startup
   loadStartupModels, selectStartupModel, startLumena,
   toggleModelDropdown, closeModelPicker, setModelFilter, filterModelSearch,

@@ -64,7 +64,7 @@ export async function startLumena(){
     // Restore saved theme
     const savedTheme=localStorage.getItem('lumena_theme');
     if(savedTheme&&typeof applyTheme==='function')applyTheme(savedTheme);
-    setupNavigation();setupTextarea();loadStatus();loadModels();loadTools();initTraceStream();loadTraceRecent();startLiveRefreshLoops();renderTodoList();loadChatHistory();
+    setupNavigation();setupTextarea();loadStatus();loadModels();loadTools();initTraceStream();loadTraceRecent();startLiveRefreshLoops();loadChatHistory();
     document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModelPicker()});
   }catch(e){
     alert('Erreur: '+e.message);btn.textContent='Demarrer Lumena';btn.disabled=false;
@@ -264,7 +264,7 @@ export function startLiveRefreshLoops(){
     const active=document.querySelector('.nav-item.active');
     const p=active?active.dataset.panel:'chat';
     // Seuls les panneaux live se rafraîchissent automatiquement
-    const livePanels=['overview','trace','emotions','tasks','todos','sessions'];
+    const livePanels=['overview','trace','emotions','tasks','sessions'];
     if(p&&livePanels.includes(p)){
       // Sauvegarder scroll avant refresh, restaurer après
       const panelEl=document.getElementById('panel-'+p);

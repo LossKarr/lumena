@@ -19,7 +19,7 @@ Toutes les fonctions publiques sont des fonctions pures :
 elles n'ont aucune dépendance sur ReActLoop et sont testables de façon isolée.
 
 Architecture à 3 niveaux :
-  Niveau 1 : catégories sémantiques (18) de tool_categories.py  — inchangées
+  Niveau 1 : catégories sémantiques (19) de tool_categories.py
   Niveau 2 : ProofCapability — couche plus fine, mappée depuis les catégories
   Niveau 3 : VerificationKind — détecté depuis la description de la tâche
 
@@ -182,6 +182,7 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "browser":       frozenset({ProofCapability.BROWSER_PROBE}),
     "computer_use":  frozenset({ProofCapability.GENERIC_MUTATION}),
     "agents":        frozenset({ProofCapability.GENERIC_MUTATION}),
+    "peers":         frozenset({ProofCapability.GENERIC_MUTATION}),
     "communication": frozenset({ProofCapability.MESSAGE_SEND}),
     "documents":     frozenset({ProofCapability.DOC_ARTIFACT}),
     "media":         frozenset({ProofCapability.DOC_ARTIFACT}),

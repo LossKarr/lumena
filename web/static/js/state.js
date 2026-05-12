@@ -28,6 +28,7 @@ let pendingUndoAvailable=false;
 let navCollapsed=false;
 let focusMode=false;
 let chatHasMessages=false;
+let activeConversationId=localStorage.getItem('lumena_active_conversation_id')||'';
 let activeTasks=new Map();
 let taskPollTimers=new Map();
 let allSessions=[];

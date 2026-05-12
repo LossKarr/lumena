@@ -9,6 +9,7 @@ import asyncio
 import signal
 import sys
 import os
+import shutil
 from typing import Optional, Dict, Any, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -21,6 +22,7 @@ from .curiosity import get_curiosity_module, AutonomousAction, ActionType
 from .goals import get_goal_manager
 from .scheduler import get_scheduler
 from .heartbeat import HeartbeatSystem, get_heartbeat
+from .activity_ledger import append_autonomy_event
 from ..learning.reflection import get_self_reflection
 from ..utils.persistence import atomic_write_json
 
@@ -92,6 +94,7 @@ class LumenaDaemon:
         self.progressive_mode_enabled = _env_flag("LUMENA_AUTONOMY_PROGRESSIVE_MODE", True)
         self.max_actions_per_hour = int(os.getenv("LUMENA_AUTONOMY_MAX_ACTIONS_PER_HOUR", "6"))
         self.action_repeat_cooldown_seconds = int(os.getenv("LUMENA_AUTONOMY_ACTION_REPEAT_COOLDOWN_SEC", "900"))
+        self.autonomy_min_free_gb = float(os.getenv("LUMENA_AUTONOMY_MIN_FREE_GB", "10"))
         self.allowed_action_types = self._parse_allowed_action_types(
             os.getenv("LUMENA_AUTONOMY_ALLOWED_ACTIONS", "EXPLORE_WEB,LEARN_SOMETHING,REFLECT,WRITE_DIARY,CHECK_NEWS")
         )
@@ -138,7 +141,68 @@ class LumenaDaemon:
         signature = self._action_signature(action)
         return signature in self._recent_action_signatures
 
+    def _free_disk_gb(self) -> float | None:
+        try:
+            usage = shutil.disk_usage(self.data_dir)
+            return usage.free / (1024 ** 3)
+        except Exception as e:
+            logger.debug(f"Impossible de lire l'espace disque libre: {e}")
+            return None
+
+    def _disk_guard_block_reason(self, action: AutonomousAction) -> str:
+        if self.autonomy_min_free_gb <= 0:
+            return ""
+        if not self.running and os.getenv("LUMENA_AUTONOMY_LEDGER_IN_TESTS", "") != "1":
+            return ""
+        free_gb = self._free_disk_gb()
+        if free_gb is None or free_gb >= self.autonomy_min_free_gb:
+            return ""
+        allowed_when_low_disk = {ActionType.REFLECT, ActionType.WRITE_DIARY}
+        if action.action_type in allowed_when_low_disk:
+            return ""
+        return (
+            f"disk_guard: free disk {free_gb:.1f} GB below "
+            f"{self.autonomy_min_free_gb:.1f} GB; heavy autonomous action blocked"
+        )
+
+    def _autonomy_block_reason(self, action: AutonomousAction) -> str:
+        if not self.enable_action_execution:
+            return "execution_disabled"
+        if self.progressive_mode_enabled and self.allowed_action_types:
+            action_key = action.action_type.name.upper()
+            if action_key not in self.allowed_action_types:
+                return f"allowlist_blocked:{action_key}"
+        disk_reason = self._disk_guard_block_reason(action)
+        if disk_reason:
+            return disk_reason
+        if self._is_repeated_action(action):
+            return "repeat_cooldown"
+        self._prune_action_window()
+        if self.max_actions_per_hour > 0 and len(self._executed_action_timestamps) >= self.max_actions_per_hour:
+            return "hourly_budget_reached"
+        return ""
+
+    def _log_autonomy_event(self, event_type: str, action: AutonomousAction, **extra) -> None:
+        if not self.running and os.getenv("LUMENA_AUTONOMY_LEDGER_IN_TESTS", "") != "1":
+            return
+        try:
+            append_autonomy_event(
+                event_type,
+                data_dir=self.data_dir,
+                action_type=action.action_type.value,
+                description=action.description,
+                metadata=action.metadata if isinstance(action.metadata, dict) else {},
+                **extra,
+            )
+        except Exception as e:
+            logger.debug(f"Ledger autonomie non ecrit: {e}")
+
     def _can_execute_autonomous_action(self, action: AutonomousAction) -> bool:
+        reason = self._autonomy_block_reason(action)
+        if reason:
+            logger.debug(f"Action autonome bloquee: {reason}")
+            return False
+
         if not self.enable_action_execution:
             return False
 
@@ -340,7 +404,9 @@ class LumenaDaemon:
     async def _execute_autonomous_action(self, action: AutonomousAction):
         """Exécute une action autonome."""
         # Vérifier si l'action peut être exécutée AVANT de logger/notifier
-        if self._can_execute_autonomous_action(action):
+        self._log_autonomy_event("action_candidate", action, decision="considered")
+        block_reason = self._autonomy_block_reason(action)
+        if not block_reason:
             logger.info(f"🎯 Exécution: {action.description}")
             # P7 — telemetry action autonome
             if _TELEMETRY_AVAILABLE:
@@ -358,6 +424,7 @@ class LumenaDaemon:
             executed = await self._execute_action_with_core(action)
             if executed:
                 self._record_executed_action(action)
+                self._log_autonomy_event("action_completed", action, decision="completed")
                 if _TELEMETRY_AVAILABLE:
                     try:
                         publish_trace(
@@ -369,6 +436,12 @@ class LumenaDaemon:
                     except Exception:
                         pass
             else:
+                self._log_autonomy_event(
+                    "action_failed",
+                    action,
+                    decision="failed",
+                    reason="core_returned_false",
+                )
                 if _TELEMETRY_AVAILABLE:
                     try:
                         publish_trace(
@@ -383,6 +456,15 @@ class LumenaDaemon:
             logger.debug("Autonomy action execution désactivée (LUMENA_AUTONOMY_EXECUTE_ACTIONS=0)")
         
         # Obtenir une pensée de LUMENA sur l'action
+        if block_reason:
+            self._log_autonomy_event(
+                "action_blocked",
+                action,
+                decision="blocked",
+                reason=block_reason,
+                safe_to_execute=False,
+            )
+
         thought = self.curiosity.get_thought()
         logger.info(f"💭 {thought}")
 
@@ -720,6 +802,8 @@ class LumenaDaemon:
             "max_actions_per_hour": self.max_actions_per_hour,
             "actions_last_hour": len(self._executed_action_timestamps),
             "action_repeat_cooldown_seconds": self.action_repeat_cooldown_seconds,
+            "autonomy_min_free_gb": self.autonomy_min_free_gb,
+            "disk_free_gb": self._free_disk_gb(),
             "recent_action_signatures": len(self._recent_action_signatures),
             "curiosity": self.curiosity.get_status(),
             "goals": self.goals.get_stats(),

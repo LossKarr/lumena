@@ -918,7 +918,7 @@ export function showCfgMsg(text,color){
 /* ============================================================
    SESSIONS
    ============================================================ */
-export async function loadSessions(){
+async function loadSessionsLegacy(){
   const list=document.getElementById('sessions-list');if(!list)return;
   const d=lastStatusData;
   if(!d){list.innerHTML='<div style="color:var(--muted);padding:20px;text-align:center">Donnees status non disponibles</div>';return}
@@ -931,9 +931,9 @@ export async function loadSessions(){
   list.innerHTML=statsHtml+'<div class="card"><div class="card-title"><i data-lucide="search"></i> Rechercher une session</div><div class="card-content"><p style="color:var(--muted);font-size:13px;margin-bottom:12px">Entrez un ID de conversation pour voir ses taches et son etat.</p><div style="display:flex;gap:8px"><input type="text" class="input" id="session-conv-id" placeholder="Ex: web_1234567890"><button class="btn primary" onclick="loadSessionDetail(document.getElementById(\'session-conv-id\').value.trim())">Charger</button></div></div></div>';
 }
 
-export function filterSessions(){}
+function filterSessionsLegacy(){}
 
-export async function loadSessionDetail(convId){
+async function loadSessionDetailLegacy(convId){
   if(!convId)return;
   document.getElementById('session-detail').style.display='block';
   document.getElementById('session-detail-title').textContent=`Session ${convId.length>16?convId.substring(0,16)+'...':convId}`;
@@ -962,8 +962,258 @@ export async function loadSessionDetail(convId){
   }catch(e){container.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`}
 }
 
-export function closeSessionDetail(){
+function closeSessionDetailLegacy(){
   document.getElementById('session-detail').style.display='none';
+}
+
+let _selectedSessionId=null;
+
+function _sessionStatusClass(status){
+  const s=(status||'').toLowerCase();
+  if(s==='done')return'ok';
+  if(s==='error'||s==='failed')return'danger';
+  if(s==='running'||s==='waiting_io'||s==='checkpointed')return'accent';
+  if(s==='cancelled'||s==='archived')return'muted';
+  return'warn';
+}
+
+function _sessionStatusLabel(status){
+  const s=(status||'').toLowerCase();
+  return({running:'active',waiting_io:'attente',checkpointed:'checkpoint',done:'terminee',error:'erreur',failed:'erreur',cancelled:'annulee'}[s]||s||'inconnue');
+}
+
+function _fmtSessionDate(value){
+  if(!value)return'--';
+  try{return new Date(value).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return value}
+}
+
+function _sessionHeaders(){
+  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;return h;
+}
+
+function _sessionFilters(){
+  return {
+    q:(document.getElementById('session-search-input')?.value||'').trim(),
+    status:(document.getElementById('session-status-filter')?.value||'').trim(),
+    channel:(document.getElementById('session-channel-filter')?.value||'').trim()
+  };
+}
+
+export async function loadSessions(){
+  const list=document.getElementById('sessions-list');if(!list)return;
+  const stats=document.getElementById('sessions-stats');
+  if(!list.dataset.rendered)list.innerHTML=loadingDots('Chargement des conversations...');
+  try{
+    const f=_sessionFilters();
+    const params=new URLSearchParams({limit:'120'});
+    if(f.q)params.set('q',f.q);
+    if(f.status)params.set('status',f.status);
+    if(f.channel)params.set('channel',f.channel);
+    const r=await fetch(`${API_BASE}/api/sessions?${params.toString()}`,{headers:_sessionHeaders()});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    allSessions=Array.isArray(d.sessions)?d.sessions:[];
+    const s=d.stats||{};
+    const statsHtml=`
+      <div class="card"><div class="card-title">Conversations</div><div style="font-size:28px;font-weight:700;color:var(--accent)">${s.total??d.total??0}</div><div class="list-item-sub">Historique persistant</div></div>
+      <div class="card"><div class="card-title">Actives</div><div style="font-size:28px;font-weight:700;color:var(--ok)">${s.active||0}</div><div class="list-item-sub">En cours ou en attente</div></div>
+      <div class="card"><div class="card-title">Archivees</div><div style="font-size:28px;font-weight:700;color:var(--warn)">${s.archived||0}</div><div class="list-item-sub">Masquees par defaut</div></div>
+    `;
+    if(stats&&stats.dataset.snapshot!==statsHtml){
+      stats.innerHTML=statsHtml;
+      stats.dataset.snapshot=statsHtml;
+    }
+    renderSessionsList(allSessions);
+    if(_selectedSessionId&&!allSessions.some(x=>x.conversation_id===_selectedSessionId))closeSessionDetail();
+    else if(_selectedSessionId&&!document.querySelector('#session-detail .session-detail-head'))loadSessionDetail(_selectedSessionId);
+  }catch(e){
+    if(stats)stats.innerHTML='';
+    list.innerHTML=`<div class="card" style="color:var(--danger);font-size:13px">Impossible de charger les sessions: ${esc(e.message)}</div>`;
+  }
+}
+
+export function filterSessions(){
+  clearTimeout(window._sessionFilterTimer);
+  window._sessionFilterTimer=setTimeout(()=>loadSessions(),180);
+}
+
+export function renderSessionsList(sessions){
+  const list=document.getElementById('sessions-list');if(!list)return;
+  if(!sessions.length){
+    const emptyHtml='<div class="card" style="color:var(--muted);font-size:13px;text-align:center;padding:28px">Aucune conversation enregistree pour le moment. Les prochaines discussions apparaitront ici automatiquement.</div>';
+    if(list.dataset.snapshot!==emptyHtml){
+      list.innerHTML=emptyHtml;
+      list.dataset.snapshot=emptyHtml;
+      list.dataset.rendered='1';
+    }
+    const detail=document.getElementById('session-detail');
+    if(detail&&!_selectedSessionId){
+      const detailEmpty='<div class="sessions-empty-detail"><i data-lucide="message-square-text"></i><div>Demarre une conversation pour alimenter cet historique.</div></div>';
+      if(detail.dataset.snapshot!==detailEmpty){
+        detail.innerHTML=detailEmpty;
+        detail.dataset.snapshot=detailEmpty;
+      }
+    }
+    if(window.lucide)window.lucide.createIcons();
+    return;
+  }
+  const html=sessions.map(s=>{
+    const active=s.conversation_id===_selectedSessionId?'active':'';
+    const title=s.title||s.last_message_preview||s.conversation_id;
+    const preview=s.last_response_preview||s.last_message_preview||'Aucun message resume';
+    return`
+      <div class="list-item session-row ${active}" data-action="loadSessionDetail" data-arg="${esc(String(s.conversation_id||''))}">
+        <div class="session-row-main">
+          <div class="session-row-title">
+            <i data-lucide="${(s.status||'')==='done'?'check-circle-2':'message-square'}" style="width:15px;height:15px;color:var(--accent);flex-shrink:0"></i>
+            <span title="${esc(title)}">${esc(title)}</span>
+          </div>
+          <div class="session-row-preview">${esc(preview)}</div>
+          <div class="session-row-meta">
+            <span class="pill ${_sessionStatusClass(s.status)}">${esc(_sessionStatusLabel(s.status))}</span>
+            <span class="pill muted">${esc(s.channel||'web')}</span>
+            <span class="pill muted">${Number(s.message_count||0)} msg</span>
+            <span class="pill muted">${esc(_fmtSessionDate(s.updated_at))}</span>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+  if(list.dataset.snapshot!==html){
+    list.innerHTML=html;
+    list.dataset.snapshot=html;
+    list.dataset.rendered='1';
+    if(window.lucide)window.lucide.createIcons();
+  }
+}
+
+export async function loadSessionDetail(convId, opts){
+  if(!convId)return;
+  const options=(opts&&opts.constructor===Object)?opts:{};
+  const detail=document.getElementById('session-detail');
+  _selectedSessionId=convId;
+  renderSessionsList(allSessions||[]);
+  if(detail&&!options.silent){
+    detail.innerHTML=loadingDots('Chargement du detail...');
+    delete detail.dataset.snapshot;
+  }
+  try{
+    const r=await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(convId)}?limit=250`,{headers:_sessionHeaders()});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const tasks=d.tasks||[];
+    const state=d.session_state||{};
+    const session=d.session||state||{conversation_id:d.conversation_id,status:state.status};
+    const messages=d.messages||[];
+    const events=d.events||state.events||[];
+    const title=session.title||session.last_message_preview||`Session ${convId}`;
+    const status=session.status||state.status||'unknown';
+    const messageHtml=messages.length?messages.map(m=>`
+      <div class="session-message ${esc(m.role||'')}">
+        <div class="session-message-head">
+          <span class="pill ${m.role==='user'?'accent':'ok'}">${esc(m.role==='user'?'Utilisateur':'Lumena')}</span>
+          <span>${esc(_fmtSessionDate(m.ts))}${m.model_used?` - ${esc(m.provider_used||'?')}/${esc(m.model_used)}`:''}</span>
+        </div>
+        <div class="session-message-body">${esc(m.content||'')}</div>
+      </div>`).join(''):'<div class="list-item-sub">Aucun message persistant pour cette session.</div>';
+    const taskHtml=tasks.length?tasks.map(t=>`
+      <div class="list-item" style="margin-bottom:6px">
+        <div style="min-width:0">
+          <div class="list-item-title">${esc(t.message_preview||t.task_id||'?')}</div>
+          <div class="list-item-sub">ID ${esc((t.task_id||'').substring(0,16))} - ${esc(t.channel||'web')} - ${esc(_fmtSessionDate(t.updated_at||t.created_at))}</div>
+          ${t.last_error?`<div style="font-size:12px;color:var(--danger);margin-top:4px">${esc(t.last_error)}</div>`:''}
+        </div>
+        <span class="pill ${_sessionStatusClass(t.state||t.status)}">${esc(t.state||t.status||'?')}</span>
+      </div>`).join(''):'<div class="list-item-sub">Aucune tache liee a cette conversation.</div>';
+    const eventHtml=events.length?events.slice(-80).reverse().map(ev=>`
+      <div class="session-timeline-item">
+        <div class="session-timeline-time">${esc(_fmtSessionDate(ev.ts))}</div>
+        <div class="session-timeline-body">
+          <strong>${esc(ev.type||ev.status||'event')}</strong>
+          <div title="${esc(ev.summary||ev.error||'')}">${esc(ev.summary||ev.error||ev.status||'')}</div>
+        </div>
+      </div>`).join(''):'<div class="list-item-sub">Aucun evenement detaille.</div>';
+    const detailHtml=`
+      <div class="session-detail-head">
+        <div style="min-width:0">
+          <div class="session-detail-title">${esc(title)}</div>
+          <div class="session-detail-sub">
+            <span class="pill ${_sessionStatusClass(status)}">${esc(_sessionStatusLabel(status))}</span>
+            <span class="pill muted">${esc(session.channel||state.last_channel||'web')}</span>
+            <span class="pill muted">${Number(session.message_count||messages.length||0)} messages</span>
+            <span class="pill muted">Maj ${esc(_fmtSessionDate(session.updated_at||state.updated_at))}</span>
+          </div>
+          <div class="list-item-sub" style="margin-top:8px">ID: ${esc(convId)}</div>
+        </div>
+        <div class="session-detail-actions">
+          <button class="btn primary" data-action="resumeSessionInChat" data-arg="${esc(convId)}"><i data-lucide="play"></i> Reprendre</button>
+          <button class="btn" data-action="exportSessionMarkdown" data-arg="${esc(convId)}"><i data-lucide="download"></i> Exporter</button>
+          <button class="btn" data-action="archiveSession" data-arg="${esc(convId)}"><i data-lucide="archive"></i> Archiver</button>
+        </div>
+      </div>
+      <div class="session-section">
+        <div class="session-section-title">Messages</div>
+        ${messageHtml}
+      </div>
+      <div class="session-section">
+        <div class="session-section-title">Taches liees</div>
+        ${taskHtml}
+      </div>
+      <div class="session-section">
+        <div class="session-section-title">Timeline</div>
+        ${eventHtml}
+      </div>`;
+    if(detail&&detail.dataset.snapshot!==detailHtml){
+      detail.innerHTML=detailHtml;
+      detail.dataset.snapshot=detailHtml;
+      if(window.lucide)window.lucide.createIcons();
+    }
+  }catch(e){
+    if(detail)detail.innerHTML=`<div class="card" style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+}
+
+export function closeSessionDetail(){
+  _selectedSessionId=null;
+  renderSessionsList(allSessions||[]);
+  const detail=document.getElementById('session-detail');
+  if(detail){
+    detail.innerHTML='<div class="sessions-empty-detail"><i data-lucide="message-square-text"></i><div>Selectionne une conversation pour voir son detail.</div></div>';
+    delete detail.dataset.snapshot;
+  }
+  if(window.lucide)window.lucide.createIcons();
+}
+
+export async function archiveSession(convId){
+  if(!convId)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(convId)}/archive`,{method:'POST',headers:_sessionHeaders()});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    _selectedSessionId=null;
+    closeSessionDetail();
+    loadSessions();
+  }catch(e){logC(`Archive session: ${e.message}`,'error')}
+}
+
+export async function exportSessionMarkdown(convId){
+  if(!convId)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(convId)}?limit=1000`,{headers:_sessionHeaders()});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const session=d.session||{};
+    const messages=d.messages||[];
+    const title=session.title||convId;
+    const lines=[`# ${title}`,'',`Conversation: ${convId}`,`Date: ${_fmtSessionDate(session.created_at)}`,''];
+    for(const m of messages){
+      lines.push(`## ${m.role==='user'?'Utilisateur':'Lumena'}`,'',m.content||'','');
+    }
+    const blob=new Blob([lines.join('\n')],{type:'text/markdown'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`lumena-session-${convId.substring(0,12)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }catch(e){logC(`Export session: ${e.message}`,'error')}
 }
 
 /* ============================================================
@@ -1361,4 +1611,1104 @@ export async function removeIonosSite(domain) {
       alert(`Erreur: ${d.detail || 'Échec suppression'}`);
     }
   } catch (e) { alert(`Erreur: ${e.message}`); }
+}
+
+/* ============================================================
+   INSTANCES & RÉSEAU — Phase 8.8 : Vue simplifiée
+   ============================================================ */
+
+function _netStatusInfo(diag, own) {
+  if (!diag && !own) return {label:'Chargement…', color:'var(--muted)', dot:'○', action:null};
+  if (diag) {
+    if (diag.ok) {
+      const ip = diag.lan_ips?.[0] ? `${diag.lan_ips[0]}:${diag.port}` : `port ${diag.port}`;
+      return {label:`Réseau OK · ${ip}`, color:'var(--ok)', dot:'●', action:null};
+    }
+    const errs = (diag.issues||[]).filter(i=>i.severity==='error');
+    const warns = (diag.issues||[]).filter(i=>i.severity==='warning');
+    if (errs.length) {
+      const msg = errs[0]?.message?.slice(0,60)||'Erreur réseau';
+      return {label:`Non accessible · ${msg}`, color:'var(--danger)', dot:'●',
+              action:{label:'Diagnostiquer', fn:'loadNetworkDiagnostic()'}};
+    }
+    if (warns.length) {
+      return {label:'Pare-feu requis · Port potentiellement bloqué', color:'var(--warning,#f59e0b)', dot:'◉',
+              action:{label:'Réparer', fn:'loadFirewallCommand();toggleNetworkAdvanced()'}};
+    }
+  }
+  if (own) {
+    return {label:`Instance active · port ${own.port}`, color:'var(--ok)', dot:'●', action:null};
+  }
+  return {label:'Statut inconnu', color:'var(--muted)', dot:'○', action:null};
+}
+
+function _peerStatusInfo(p) {
+  if (p.trust === 'trusted' && p.has_peer_token)
+    return {label:'Connecté', color:'var(--ok)', dot:'●'};
+  if (p.trust === 'trusted' && !p.has_peer_token)
+    return {label:'Token requis', color:'var(--warning,#f59e0b)', dot:'◉'};
+  if (p.trust === 'blocked')
+    return {label:'Bloqué', color:'var(--danger)', dot:'●'};
+  return {label:'Non connecté', color:'var(--muted)', dot:'○'};
+}
+
+function _peerScopesHtml(p) {
+  const scopes = Array.isArray(p.allowed_scopes) ? p.allowed_scopes : [];
+  if (!scopes.length) {
+    return '<span class="pill muted" style="font-size:10px">scope: aucun</span>';
+  }
+  return scopes.map(s => `<span class="pill" style="font-size:10px">${esc(s)}</span>`).join(' ');
+}
+
+function _peerActionsHtml(p) {
+  const iid = esc(p.instance_id);
+  const host = esc(p.host||'');
+  const port = p.port||8080;
+  const scopes = Array.isArray(p.allowed_scopes) ? p.allowed_scopes : [];
+  const canChat = scopes.includes('chat');
+  if (p.trust === 'blocked') {
+    return `<button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple(${_jsArg(p.instance_id)})">Supprimer</button>`;
+  }
+  if (p.trust === 'trusted' && p.has_peer_token) {
+    const testBtn = canChat
+      ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="testDelegation('${iid}','ns-test-${iid}')"><i data-lucide="zap" style="width:10px;height:10px"></i> Tester</button>`
+      : '';
+    const shareBtn = !scopes.includes('knowledge.share')
+      ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="setPeerScope(${_jsArg(p.instance_id)},'knowledge.share',true)">+ savoir</button>`
+      : '';
+    const taskBtn = !scopes.includes('task.delegate')
+      ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="setPeerScope(${_jsArg(p.instance_id)},'task.delegate',true)">+ tâches</button>`
+      : '';
+    return `${testBtn}
+            ${shareBtn}
+            ${taskBtn}
+            <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple(${_jsArg(p.instance_id)})">Bloquer</button>
+            <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple(${_jsArg(p.instance_id)})">Supprimer</button>`;
+  }
+  // trusted sans token, ou unknown → proposer jumelage par code
+  return `<button class="btn primary" style="font-size:10px;padding:2px 8px" onclick="showSimplePairingForm('${host}',${port})"><i data-lucide="key-round" style="width:10px;height:10px"></i> Jumeler</button>
+          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple(${_jsArg(p.instance_id)})">Bloquer</button>
+          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple(${_jsArg(p.instance_id)})">Supprimer</button>`;
+}
+
+function _jsArg(value) {
+  return JSON.stringify(String(value || ''));
+}
+
+function _showNetworkActionMessage(message, tone = 'muted') {
+  const candidates = [
+    document.getElementById('net-maintenance-msg'),
+    document.getElementById('net-action-msg'),
+    document.getElementById('net-team-msg'),
+  ].filter(Boolean);
+  const el = candidates.find(node => node.offsetParent !== null) || candidates[0];
+  if (!el) return;
+  el.style.display = 'block';
+  el.style.color = `var(--${tone})`;
+  el.textContent = message;
+}
+
+function _refreshNetworkPanels() {
+  const simple = document.getElementById('net-simple-view');
+  const advanced = document.getElementById('net-advanced-view');
+  const isAdvanced = advanced && advanced.style.display !== 'none';
+  const jobs = [loadCollaborationPanel()];
+  if (isAdvanced) jobs.push(loadInstancesNetwork());
+  else if (simple) jobs.push(loadNetworkSimple());
+  return Promise.allSettled(jobs);
+}
+
+function _hasPeerScope(peer, scope) {
+  const scopes = Array.isArray(peer?.allowed_scopes) ? peer.allowed_scopes : [];
+  return scopes.includes(scope);
+}
+
+function _taskStatusColor(status) {
+  if (['completed'].includes(status)) return 'ok';
+  if (['failed','timeout','cancelled','interrupted'].includes(status)) return 'danger';
+  if (['queued','running'].includes(status)) return 'accent';
+  return 'muted';
+}
+
+function _knowledgeVisibilityLabel(k, peersById) {
+  if (k.visibility === 'shared_with_peer') {
+    const peer = peersById.get(k.shared_with_peer_id);
+    return `partagé avec ${peer ? (peer.instance_name || peer.instance_id) : (k.shared_with_peer_id || 'pair')}`;
+  }
+  return 'privé';
+}
+
+function _networkOverallLabel(overall) {
+  if (overall === 'healthy') return {label:'sain', cls:'ok', color:'var(--ok)'};
+  if (overall === 'degraded') return {label:'dégradé', cls:'accent', color:'var(--accent)'};
+  if (overall === 'down') return {label:'hors ligne', cls:'danger', color:'var(--danger)'};
+  return {label:'aucun pair trusted', cls:'muted', color:'var(--muted)'};
+}
+
+export async function loadNetworkObservability() {
+  const el = document.getElementById('net-observability-content');
+  const h = {'Authorization': `Bearer ${ADMIN_TOKEN}`};
+  if (el) el.innerHTML = loadingDots('Chargement...');
+  try {
+    const [metricsRes, healthRes] = await Promise.allSettled([
+      fetch(`${API_BASE}/api/peer/metrics`, {headers:h}),
+      fetch(`${API_BASE}/api/peers/health`, {headers:h}),
+    ]);
+    const metrics = metricsRes.status === 'fulfilled' && metricsRes.value.ok ? await metricsRes.value.json() : null;
+    const health = healthRes.status === 'fulfilled' && healthRes.value.ok ? await healthRes.value.json() : null;
+    if (!el) return;
+    if (!metrics && !health) {
+      el.innerHTML = '<div style="color:var(--danger);font-size:12px">Observabilité indisponible.</div>';
+      return;
+    }
+    const overall = _networkOverallLabel(health?.overall || 'empty');
+    const downPeers = (health?.peers || []).filter(p => p.trust === 'trusted' && !p.reachable);
+    const issues = metrics?.user_issues || [];
+    el.innerHTML = `<div style="display:flex;flex-direction:column;gap:8px;font-size:12px">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="pill ${overall.cls}" style="font-size:11px">réseau ${overall.label}</span>
+        <span style="color:var(--muted)">trusted: ${metrics?.peers?.trusted ?? health?.trusted_count ?? 0}</span>
+        <span style="color:var(--muted)">accessibles: ${health?.reachable_trusted ?? 0}</span>
+        <span style="color:var(--muted)">latence moy.: ${health?.avg_latency_ms ?? metrics?.latency?.avg_ms ?? '—'}ms</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px">
+        <div class="pill" style="justify-content:center">délégations: ${metrics?.delegations?.total_events ?? 0}</div>
+        <div class="pill" style="justify-content:center">succès: ${metrics?.delegations?.success_rate_percent ?? 100}%</div>
+        <div class="pill" style="justify-content:center">tâches actives: ${metrics?.tasks?.active ?? 0}</div>
+        <div class="pill" style="justify-content:center">rate-limit: ${metrics?.errors?.rate_limited ?? 0}</div>
+      </div>
+      ${downPeers.length ? `<div style="color:var(--danger)">Pairs à vérifier : ${downPeers.map(p => esc(p.instance_name || p.instance_id)).join(', ')}</div>` : ''}
+      ${issues.length ? `<div style="color:var(--muted)">Derniers problèmes : ${issues.map(esc).join(' · ')}</div>` : ''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn" style="font-size:11px" onclick="cleanupPeerRuntime(true)">Dry-run nettoyage</button>
+        <button class="btn" style="font-size:11px;color:var(--danger)" onclick="cleanupPeerRuntime(false)">Nettoyer anciens logs</button>
+      </div>
+    </div>`;
+  } catch (e) {
+    if (el) el.innerHTML = `<div style="color:var(--danger);font-size:12px">Erreur observabilité: ${esc(e.message)}</div>`;
+  }
+}
+
+export async function cleanupPeerRuntime(dryRun=true) {
+  const msgEl = document.getElementById('net-maintenance-msg');
+  if (!dryRun && !confirm('Nettoyer les anciens logs inter-Lumena ? Le registre, les tokens et les connaissances ne seront pas supprimés.')) return;
+  if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--muted)'; msgEl.textContent = dryRun ? 'Simulation nettoyage…' : 'Nettoyage en cours…'; }
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/maintenance/cleanup`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({
+        dry_run: !!dryRun,
+        keep_audit_lines: 1000,
+        keep_task_event_lines: 1000,
+        cleanup_memory_tasks: true,
+        clear_terminal_task_events: true,
+        cleanup_terminal_memory_tasks: true,
+      }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Nettoyage impossible');
+    if (msgEl) {
+      msgEl.style.color = 'var(--ok)';
+      msgEl.textContent = `${dryRun ? 'Simulation' : 'Nettoyage'} OK — audit retirables: ${d.audit?.removed ?? 0}, events taches retirables: ${d.task_events?.removed ?? 0}, memoire: ${d.memory_tasks_removed ?? 0}`;
+    }
+    loadNetworkObservability();
+    loadCollaborationPanel();
+  } catch (e) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; }
+  }
+}
+
+export async function loadCollaborationPanel() {
+  const knowledgeEl = document.getElementById('net-knowledge-list');
+  const tasksEl = document.getElementById('net-task-list');
+  const peerSelect = document.getElementById('net-knowledge-peer');
+  const h = {'Authorization': `Bearer ${ADMIN_TOKEN}`};
+
+  if (knowledgeEl) knowledgeEl.innerHTML = loadingDots('Chargement...');
+  if (tasksEl) tasksEl.innerHTML = loadingDots('Chargement...');
+
+  const [peersRes, knowledgeRes, tasksRes] = await Promise.allSettled([
+    fetch(`${API_BASE}/api/peers`, {headers: h}),
+    fetch(`${API_BASE}/api/shared-knowledge`, {headers: h}),
+    fetch(`${API_BASE}/api/peer/local-tasks?limit=20`, {headers: h}),
+  ]);
+
+  let peers = [], knowledge = [], tasks = [];
+  try {
+    const d = peersRes.status === 'fulfilled' && peersRes.value.ok ? await peersRes.value.json() : {peers: []};
+    peers = d.peers || [];
+  } catch (_) {}
+  try {
+    const d = knowledgeRes.status === 'fulfilled' && knowledgeRes.value.ok ? await knowledgeRes.value.json() : {items: []};
+    knowledge = d.items || [];
+  } catch (_) {}
+  try {
+    const d = tasksRes.status === 'fulfilled' && tasksRes.value.ok ? await tasksRes.value.json() : {items: []};
+    tasks = d.items || [];
+  } catch (_) {}
+
+  const peersById = new Map(peers.map(p => [p.instance_id, p]));
+  const sharePeers = peers.filter(p => p.trust === 'trusted' && p.has_peer_token && _hasPeerScope(p, 'knowledge.share'));
+
+  if (peerSelect) {
+    const current = peerSelect.value;
+    peerSelect.innerHTML = '<option value="">Garder privé</option>' + sharePeers.map(p =>
+      `<option value="${esc(p.instance_id)}">${esc(p.instance_name || p.instance_id)} — ${esc(p.host || '')}:${p.port || 8080}</option>`
+    ).join('');
+    if (current && sharePeers.some(p => p.instance_id === current)) peerSelect.value = current;
+  }
+
+  if (knowledgeEl) {
+    if (!knowledge.length) {
+      knowledgeEl.innerHTML = '<div style="color:var(--muted);font-size:12px">Aucune connaissance contrôlée. Créez un résumé court puis partagez-le avec un pair trusted.</div>';
+    } else {
+      knowledgeEl.innerHTML = knowledge.slice(0, 8).map(k => {
+        const id = k.knowledge_id;
+        const vis = _knowledgeVisibilityLabel(k, peersById);
+        const tags = (k.tags || []).slice(0, 4).map(t => `<span class="pill" style="font-size:10px">${esc(t)}</span>`).join(' ');
+        const shared = k.visibility === 'shared_with_peer';
+        const imported = !!k.imported_memory_id;
+        const shareBtn = sharePeers.length
+          ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="shareKnowledgeFromUi(${_jsArg(id)})"><i data-lucide="share-2" style="width:10px;height:10px"></i> Partager</button>`
+          : '';
+        const revokeBtn = shared
+          ? `<button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="revokeKnowledgeFromUi(${_jsArg(id)})">Révoquer</button>`
+          : '';
+        const importBtn = imported
+          ? `<span class="pill ok" style="font-size:10px">importé</span>`
+          : `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="importKnowledgeFromUi(${_jsArg(id)})">Importer</button>`;
+        return `<div class="list-item" style="padding:8px 0">
+          <div style="flex:1;min-width:0;font-size:12px">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <strong>${esc(k.title || id)}</strong>
+              <span class="pill ${shared ? 'ok' : 'muted'}" style="font-size:10px">${esc(vis)}</span>
+              ${tags}
+            </div>
+            <div style="color:var(--muted);margin-top:4px">${esc((k.summary || '').slice(0, 220))}${(k.summary || '').length > 220 ? '…' : ''}</div>
+          </div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${shareBtn}${revokeBtn}${importBtn}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  if (tasksEl) {
+    if (!tasks.length) {
+      tasksEl.innerHTML = '<div style="color:var(--muted);font-size:12px">Aucune tâche inter-Lumena récente.</div>';
+    } else {
+      tasksEl.innerHTML = tasks.slice(0, 8).map(t => {
+        const peer = peersById.get(t.from_instance_id);
+        const who = peer ? (peer.instance_name || peer.instance_id) : (t.from_instance_id || 'pair');
+        const latest = t.latest_event || {};
+        const result = t.result ? `<div style="color:var(--muted);margin-top:3px">${esc(String(t.result).slice(0, 180))}${String(t.result).length > 180 ? '…' : ''}</div>` : '';
+        return `<div class="list-item" style="padding:8px 0">
+          <div style="flex:1;min-width:0;font-size:12px">
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <span class="pill ${_taskStatusColor(t.status)}" style="font-size:10px">${esc(t.status || 'unknown')}</span>
+              <strong>${esc(who)}</strong>
+              <code style="font-size:10px;color:var(--muted)">${esc(t.task_id || '')}</code>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">${esc(latest.event || 'event')} ${latest.ts ? '— ' + esc(latest.ts.substring(0,19).replace('T',' ')) : ''}</div>
+            ${result}
+          </div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  if (typeof lucide !== 'undefined') lucide.createIcons({attrs:{class:'lucide'}});
+}
+
+export async function createSharedKnowledgeFromUi() {
+  const titleEl = document.getElementById('net-knowledge-title');
+  const summaryEl = document.getElementById('net-knowledge-summary');
+  const tagsEl = document.getElementById('net-knowledge-tags');
+  const peerEl = document.getElementById('net-knowledge-peer');
+  const msgEl = document.getElementById('net-knowledge-msg');
+  const title = (titleEl?.value || '').trim();
+  const summary = (summaryEl?.value || '').trim();
+  const tags = (tagsEl?.value || '').split(',').map(x => x.trim()).filter(Boolean);
+  const peerId = (peerEl?.value || '').trim();
+  if (!title || !summary) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent='Titre et résumé sont obligatoires.'; }
+    return;
+  }
+  if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--muted)'; msgEl.textContent='Création en cours…'; }
+  try {
+    const r = await fetch(`${API_BASE}/api/shared-knowledge`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({title, summary, tags, origin_user_id:'local:owner'}),
+    });
+    const k = await r.json();
+    if (!r.ok) throw new Error(k.detail || 'Création impossible');
+    if (peerId) await _shareKnowledge(k.knowledge_id, peerId);
+    if (titleEl) titleEl.value = '';
+    if (summaryEl) summaryEl.value = '';
+    if (tagsEl) tagsEl.value = '';
+    if (msgEl) { msgEl.style.color='var(--ok)'; msgEl.textContent = peerId ? 'Connaissance créée et partagée.' : 'Connaissance créée en privé.'; }
+    loadCollaborationPanel();
+  } catch (e) {
+    if (msgEl) { msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; }
+  }
+}
+
+async function _shareKnowledge(knowledgeId, peerId) {
+  const r = await fetch(`${API_BASE}/api/shared-knowledge/${encodeURIComponent(knowledgeId)}/share`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+    body:JSON.stringify({peer_id: peerId}),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.detail || 'Partage impossible');
+  return d;
+}
+
+export async function shareKnowledgeFromUi(knowledgeId) {
+  const peerId = (document.getElementById('net-knowledge-peer')?.value || '').trim();
+  const msgEl = document.getElementById('net-knowledge-msg');
+  if (!peerId) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent='Choisissez un pair avec le scope knowledge.share.'; }
+    return;
+  }
+  try {
+    await _shareKnowledge(knowledgeId, peerId);
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--ok)'; msgEl.textContent='Connaissance partagée.'; }
+    loadCollaborationPanel();
+  } catch (e) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; }
+  }
+}
+
+export async function revokeKnowledgeFromUi(knowledgeId) {
+  const msgEl = document.getElementById('net-knowledge-msg');
+  try {
+    const r = await fetch(`${API_BASE}/api/shared-knowledge/${encodeURIComponent(knowledgeId)}/revoke`, {
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Révocation impossible');
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--ok)'; msgEl.textContent='Partage révoqué.'; }
+    loadCollaborationPanel();
+  } catch (e) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; }
+  }
+}
+
+export async function importKnowledgeFromUi(knowledgeId) {
+  const msgEl = document.getElementById('net-knowledge-msg');
+  try {
+    const r = await fetch(`${API_BASE}/api/shared-knowledge/${encodeURIComponent(knowledgeId)}/import`, {
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Import impossible');
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--ok)'; msgEl.textContent='Connaissance importée en mémoire locale.'; }
+    loadCollaborationPanel();
+  } catch (e) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; }
+  }
+}
+
+export async function setPeerScope(instanceId, scope, enabled) {
+  _showNetworkActionMessage('Mise a jour des droits du pair...', 'muted');
+  try {
+    const h = {'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`};
+    const r = await fetch(`${API_BASE}/api/peers/${encodeURIComponent(instanceId)}/scopes`, {headers:h});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Lecture scopes impossible');
+    const current = new Set(d.allowed_scopes || ['chat']);
+    if (enabled) current.add(scope); else current.delete(scope);
+    const next = Array.from(current);
+    const wr = await fetch(`${API_BASE}/api/peers/${encodeURIComponent(instanceId)}/scopes`, {
+      method:'PUT',
+      headers:h,
+      body:JSON.stringify({allowed_scopes: next}),
+    });
+    const wd = await wr.json().catch(() => ({}));
+    if (!wr.ok) throw new Error(wd.detail || 'Mise a jour scopes impossible');
+    _showNetworkActionMessage('Droits du pair mis a jour.', 'ok');
+    await _refreshNetworkPanels();
+  } catch (e) {
+    _showNetworkActionMessage(`Erreur: ${e.message}`, 'danger');
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+export function sendTeamPromptFromUi() {
+  const input = document.getElementById('net-team-prompt');
+  const msgEl = document.getElementById('net-team-msg');
+  const prompt = (input?.value || '').trim();
+  if (!prompt) {
+    if (msgEl) {
+      msgEl.style.display = 'block';
+      msgEl.style.color = 'var(--danger)';
+      msgEl.textContent = 'Ecris une demande pour l equipe Lumena.';
+    }
+    return;
+  }
+  if (msgEl) {
+    msgEl.style.display = 'block';
+    msgEl.style.color = 'var(--muted)';
+    msgEl.textContent = 'Envoi vers le chat Lumena...';
+  }
+  if (typeof window.quickSend === 'function') {
+    window.quickSend(`Travaille avec l equipe Lumena si utile : ${prompt}`);
+    if (input) input.value = '';
+    return;
+  }
+  const chatInput = document.getElementById('message-input');
+  if (chatInput) {
+    chatInput.value = `Travaille avec l equipe Lumena si utile : ${prompt}`;
+    chatInput.focus();
+    if (msgEl) {
+      msgEl.style.color = 'var(--ok)';
+      msgEl.textContent = 'Demande prete dans le chat.';
+    }
+  }
+}
+
+export async function loadNetworkSimple() {
+  const statusEl = document.getElementById('net-simple-status');
+  const peersEl  = document.getElementById('net-simple-peers');
+  const h = {'Authorization': `Bearer ${ADMIN_TOKEN}`};
+
+  if (statusEl) statusEl.innerHTML = '<div style="color:var(--muted)">Chargement…</div>';
+  if (peersEl)  peersEl.innerHTML  = '<div style="color:var(--muted)">Chargement…</div>';
+
+  // Chargement parallèle : instances locales + diagnostic + pairs
+  const [localRes, diagRes, peersRes] = await Promise.allSettled([
+    fetch(`${API_BASE}/api/instances/local`, {headers: h}),
+    fetch(`${API_BASE}/api/instance/network-diagnostic`, {headers: h}),
+    fetch(`${API_BASE}/api/peers`, {headers: h}),
+  ]);
+
+  let own = null, diag = null, peers = [];
+  try {
+    const d = localRes.status==='fulfilled'&&localRes.value.ok ? await localRes.value.json() : {instances:[]};
+    own = (d.instances||[]).find(i=>i.is_self)||null;
+  } catch(_) {}
+  try {
+    if (diagRes.status==='fulfilled'&&diagRes.value.ok) diag = await diagRes.value.json();
+  } catch(_) {}
+  try {
+    const d = peersRes.status==='fulfilled'&&peersRes.value.ok ? await peersRes.value.json() : {peers:[]};
+    peers = d.peers||[];
+  } catch(_) {}
+
+  // Rendu statut réseau
+  if (statusEl) {
+    const {label, color, dot, action} = _netStatusInfo(diag, own);
+    const actionBtn = action
+      ? `<button class="btn" style="font-size:11px;margin-left:8px" onclick="${action.fn}">${action.label}</button>`
+      : '';
+    statusEl.innerHTML = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:18px;color:${color}">${dot}</span>
+      <span style="font-size:13px;color:${color};font-weight:500">${esc(label)}</span>
+      ${actionBtn}
+      <button class="btn" style="font-size:11px;margin-left:auto" onclick="loadNetworkDiagnostic()"><i data-lucide="activity" style="width:11px;height:11px"></i> Détails</button>
+    </div>`;
+  }
+
+  // Rendu pairs
+  if (peersEl) {
+    if (!peers.length) {
+      peersEl.innerHTML = `<div style="color:var(--muted);font-size:12px">Aucune instance connue. Scannez le réseau ou jumelez par code.</div>`;
+    } else {
+      peersEl.innerHTML = peers.map(p => {
+        const {label, color, dot} = _peerStatusInfo(p);
+        const iid = esc(p.instance_id);
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+          <span style="font-size:16px;color:${color};flex-shrink:0">${dot}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:500">${esc(p.instance_name||p.instance_id)}</div>
+            <div style="font-size:11px;color:${color}">${label}</div>
+            <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${_peerScopesHtml(p)}</div>
+            <div id="ns-test-${iid}" style="font-size:10px;margin-top:2px"></div>
+          </div>
+          <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap">${_peerActionsHtml(p)}</div>
+        </div>`;
+      }).join('');
+    }
+  }
+
+  // Charge le sélecteur d'interface dans le mode avancé (8.10)
+  _loadNetworkInterfaces();
+  loadNetworkObservability();
+  loadCollaborationPanel();
+}
+
+export function toggleNetworkAdvanced() {
+  const simple   = document.getElementById('net-simple-view');
+  const advanced = document.getElementById('net-advanced-view');
+  if (!simple || !advanced) return;
+  const showAdv = advanced.style.display === 'none';
+  simple.style.display   = showAdv ? 'none' : 'block';
+  advanced.style.display = showAdv ? 'block' : 'none';
+  if (showAdv) loadInstancesNetwork();
+}
+
+export function showSimplePairingForm(host='', port=8080) {
+  const form = document.getElementById('net-simple-pairing-form');
+  if (!form) return;
+  form.style.display = 'block';
+  const hostEl = document.getElementById('net-pairing-host');
+  const portEl = document.getElementById('net-pairing-port');
+  if (host && hostEl) hostEl.value = host;
+  if (port && portEl) portEl.value = port;
+  form.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+
+export async function blockPeerSimple(instanceId) {
+  if (!confirm(`Bloquer ${instanceId} ?`)) return;
+  _showNetworkActionMessage('Blocage du pair en cours...', 'muted');
+  try {
+    const r = await fetch(`${API_BASE}/api/peers/block`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({instance_id:instanceId}),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || 'Blocage impossible');
+    }
+    _showNetworkActionMessage('Pair bloque.', 'ok');
+    await _refreshNetworkPanels();
+  } catch(e) {
+    _showNetworkActionMessage(`Erreur: ${e.message}`, 'danger');
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+export async function deletePeerSimple(instanceId) {
+  if (!confirm(`Supprimer ${instanceId} du registre local ? Les tokens de ce pair seront oublies.`)) return;
+  _showNetworkActionMessage('Suppression du pair en cours...', 'muted');
+  try {
+    const r = await fetch(`${API_BASE}/api/peers/${encodeURIComponent(instanceId)}`, {
+      method:'DELETE',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || 'Suppression impossible');
+    }
+    _showNetworkActionMessage('Pair supprime du registre local.', 'ok');
+    await _refreshNetworkPanels();
+  } catch(e) {
+    _showNetworkActionMessage(`Erreur: ${e.message}`, 'danger');
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+export async function deleteLocalInstance(instanceId) {
+  if (!confirm(`Supprimer l'entree locale ${instanceId} ?`)) return;
+  _showNetworkActionMessage('Suppression de l entree locale en cours...', 'muted');
+  try {
+    const r = await fetch(`${API_BASE}/api/instances/local/${encodeURIComponent(instanceId)}`, {
+      method:'DELETE',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.detail || 'Suppression impossible');
+    }
+    _showNetworkActionMessage('Entree locale supprimee.', 'ok');
+    await loadInstancesNetwork();
+  } catch(e) {
+    _showNetworkActionMessage(`Erreur: ${e.message}`, 'danger');
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+export async function cleanupLocalInstances() {
+  _showNetworkActionMessage('Nettoyage du registre local en cours...', 'muted');
+  try {
+    const r = await fetch(`${API_BASE}/api/instances/local/cleanup`, {
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Nettoyage impossible');
+    _showNetworkActionMessage(`${d.removed || 0} entree(s) locale(s) supprimee(s).`, 'ok');
+    await loadInstancesNetwork();
+  } catch(e) {
+    _showNetworkActionMessage(`Erreur: ${e.message}`, 'danger');
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+// ── Phase 8.10 — Sélecteur multi-réseaux ─────────────────────────────────────
+async function _loadNetworkInterfaces() {
+  const sel = document.getElementById('net-discover-iface');
+  if (!sel) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/instance/network-interfaces`, {
+      headers: {'Authorization': `Bearer ${ADMIN_TOKEN}`},
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    const ifaces = d.interfaces||[];
+    // Réinitialise sans toucher à l'option "Auto"
+    while (sel.options.length > 1) sel.remove(1);
+    ifaces.forEach(iface => {
+      const opt = document.createElement('option');
+      opt.value = iface.network;
+      opt.textContent = iface.label;
+      sel.appendChild(opt);
+    });
+  } catch(_) {}
+}
+
+/* ============================================================
+   INSTANCES & RÉSEAU (Phase 4-6) — Vue avancée
+   ============================================================ */
+export async function loadInstancesNetwork(){
+  const selfEl=document.getElementById('net-self-content');
+  const localEl=document.getElementById('net-local-list');
+  const peersEl=document.getElementById('net-peers-list');
+  const auditEl=document.getElementById('net-audit-list');
+  if(selfEl)selfEl.innerHTML=loadingDots('Chargement...');
+  if(localEl)localEl.innerHTML=loadingDots('Chargement...');
+  if(peersEl)peersEl.innerHTML=loadingDots('Chargement...');
+  if(auditEl)auditEl.innerHTML=loadingDots('Chargement...');
+  const h={'Authorization':`Bearer ${ADMIN_TOKEN}`};
+
+  // Instance courante + instances locales + diagnostic réseau (en parallèle)
+  const [localResp, diagResp] = await Promise.allSettled([
+    fetch(`${API_BASE}/api/instances/local`,{headers:h}),
+    fetch(`${API_BASE}/api/instance/network-diagnostic`,{headers:h}),
+  ]);
+  try{
+    const d=localResp.status==='fulfilled'&&localResp.value.ok?await localResp.value.json():{instances:[]};
+    let diag=null;
+    if(diagResp.status==='fulfilled'&&diagResp.value.ok){try{diag=await diagResp.value.json();}catch(_){}}
+    const own=d.instances?.find(i=>i.is_self)||null;
+    if(selfEl){
+      if(own){
+        // Badge réseau
+        let netBadge='';
+        if(diag){
+          if(diag.ok){
+            netBadge=`<span class="pill ok" style="font-size:10px">réseau OK</span>`;
+          }else{
+            const errs=(diag.issues||[]).filter(i=>i.severity==='error');
+            const warns=(diag.issues||[]).filter(i=>i.severity==='warning');
+            if(errs.length) netBadge=`<span class="pill danger" style="font-size:10px">réseau ✗</span>`;
+            else if(warns.length) netBadge=`<span class="pill" style="font-size:10px;background:var(--warning,#f59e0b);color:#000">pare-feu ?</span>`;
+          }
+        }
+        // Issues réseau
+        let issuesHtml='';
+        if(diag&&diag.issues&&diag.issues.length){
+          issuesHtml=`<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">`
+            +diag.issues.map(i=>`<div style="font-size:11px;color:var(--${i.severity==='error'?'danger':'muted'})">${esc(i.message)}</div>`).join('')
+            +`</div>`;
+        }
+        // LAN IPs
+        const lanIps=diag?.lan_ips?.length?diag.lan_ips.map(ip=>`<code style="font-size:10px">${esc(ip)}:${diag.port}</code>`).join(' '):'—';
+        selfEl.innerHTML=`<div style="display:flex;flex-direction:column;gap:6px;font-size:12px">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+            <strong>${esc(own.instance_name)}</strong>
+            <span class="pill ${own.role==='worker'?'muted':'accent'}">${esc(own.role)}</span>
+            ${netBadge}
+          </div>
+          <div><span style="color:var(--muted)">ID :</span> <code style="font-size:11px">${esc(own.instance_id)}</code></div>
+          <div><span style="color:var(--muted)">Adresse LAN :</span> ${lanIps}</div>
+          <div><span style="color:var(--muted)">Port :</span> ${own.port} &nbsp;|&nbsp; <span style="color:var(--muted)">PID :</span> ${own.pid} &nbsp;|&nbsp; <span style="color:var(--muted)">v</span>${esc(own.version||'?')}</div>
+          <div><span style="color:var(--muted)">Capacités :</span> ${(own.capabilities||[]).map(c=>`<span class="pill">${esc(c)}</span>`).join(' ')||'—'}</div>
+          ${issuesHtml}
+          <div style="margin-top:4px"><button class="btn" style="font-size:11px" onclick="loadNetworkDiagnostic()"><i data-lucide="activity" style="width:12px;height:12px"></i> Diagnostiquer</button></div>
+        </div>`;
+      }else{
+        selfEl.innerHTML='<div style="color:var(--muted)">Chargement du registre…</div>';
+      }
+    }
+    const badge=document.getElementById('badge-network');
+    if(badge){badge.textContent=d.count||0;badge.style.background='var(--accent)';}
+    if(localEl){
+      const others=(d.instances||[]).filter(i=>!i.is_self);
+      if(!others.length){
+        localEl.innerHTML='<div style="color:var(--muted)">Aucune autre instance Lumena active sur ce PC.</div>';
+      }else{
+        localEl.innerHTML=others.map(inst=>`<div class="list-item" style="cursor:default">
+          <div style="flex:1;min-width:0;font-size:12px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+              <span class="pill ${inst.role==='worker'?'muted':'accent'}" style="font-size:10px">${esc(inst.role)}</span>
+              <strong>${esc(inst.instance_name)}</strong>
+              <span style="color:var(--muted)">— port ${inst.port}</span>
+            </div>
+            <div style="color:var(--muted)">${esc(inst.instance_id)}</div>
+            <div style="color:var(--muted)">PID ${inst.pid} · v${esc(inst.version||'?')}</div>
+          </div>
+          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deleteLocalInstance(${_jsArg(inst.instance_id)})">Supprimer</button>
+        </div>`).join('');
+      }
+    }
+  }catch(e){
+    if(selfEl)selfEl.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+    if(localEl)localEl.innerHTML='';
+  }
+
+  // Pairs LAN connus
+  try{
+    const r=await fetch(`${API_BASE}/api/peers`,{headers:h});
+    const d=await r.json();
+    const peers=d.peers||[];
+    if(peersEl){
+      if(!peers.length){
+        peersEl.innerHTML='<div style="color:var(--muted)">Aucun pair connu. Scannez le LAN ou jumelez manuellement.</div>';
+      }else{
+        const tc={trusted:'ok',unknown:'muted',blocked:'danger'};
+        peersEl.innerHTML=peers.map(p=>`<div class="list-item">
+          <div style="flex:1;min-width:0;font-size:12px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+              <span class="pill ${tc[p.trust]||'muted'}" style="font-size:10px">${esc(p.trust)}</span>
+              <strong>${esc(p.instance_name||p.instance_id)}</strong>
+              <span style="color:var(--muted)">— ${esc(p.host)}:${p.port}</span>
+            </div>
+            <div style="color:var(--muted)">${esc(p.instance_id)}</div>
+            <div>${(p.capabilities||[]).map(c=>`<span class="pill" style="font-size:10px">${esc(c)}</span>`).join(' ')||''}</div>
+            <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${_peerScopesHtml(p)}</div>
+            <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">${_peerActionsHtml(p)}</div>
+          </div>
+        </div>`).join('');
+      }
+    }
+  }catch(e){
+    if(peersEl)peersEl.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+
+  // Audit inter-instances (20 derniers)
+  try{
+    const r=await fetch(`${API_BASE}/api/peer/audit?limit=20`,{headers:h});
+    const d=await r.json();
+    const entries=d.entries||[];
+    if(auditEl){
+      if(!entries.length){
+        auditEl.innerHTML='<div style="color:var(--muted)">Aucun événement inter-instances enregistré.</div>';
+      }else{
+        const ec={delegate_accepted:'ok',delegate_refused:'danger',delegate_completed:'accent'};
+        auditEl.innerHTML=entries.slice().reverse().map(e=>`<div class="list-item" style="padding:6px 0">
+          <div style="flex:1;min-width:0;font-size:11px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
+              <span class="pill ${ec[e.event]||'muted'}" style="font-size:10px">${esc(e.event)}</span>
+              <span style="color:var(--muted)">${esc((e.ts||'').substring(0,19).replace('T',' '))}</span>
+            </div>
+            <div style="color:var(--text)">${esc(e.from_instance_id)} → scope:${esc(e.scope)} [${esc(e.status)}]</div>
+            ${e.detail?`<div style="color:var(--danger);font-size:10px">${esc(e.detail)}</div>`:''}
+          </div>
+        </div>`).join('');
+      }
+    }
+  }catch(e){
+    if(auditEl)auditEl.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+}
+
+export async function discoverLanPeers(){
+  const msgEl=document.getElementById('net-discover-msg');
+  const resultEl=document.getElementById('net-discover-result');
+  // Indique le scan uniquement dans la carte Découverte — les autres cartes restent intactes
+  if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--muted)';msgEl.textContent='Scan en cours… (jusqu\'à 12s)';}
+  if(resultEl)resultEl.textContent='';
+  const ifaceEl=document.getElementById('net-discover-iface');
+  const body=ifaceEl&&ifaceEl.value?{network:ifaceEl.value}:{};
+  try{
+    const r=await fetch(`${API_BASE}/api/peer/discover`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify(body),
+    });
+    const d=await r.json();
+    if(!r.ok){
+      if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${d.detail||'Échec du scan'}`;}
+      return;
+    }
+    if(msgEl){msgEl.style.color='var(--ok)';msgEl.textContent=`${d.discovered} instance(s) découverte(s).`;}
+    if(resultEl){
+      if(!d.peers?.length){
+        resultEl.textContent='Aucune instance Lumena trouvée sur le réseau local.';
+      }else{
+        resultEl.innerHTML=d.peers.map(p=>`<div style="margin-bottom:4px"><strong>${esc(p.instance_name||p.instance_id)}</strong> — ${esc(p.host)}:${p.port} <span class="pill muted" style="font-size:10px">${esc(p.trust)}</span></div>`).join('');
+      }
+    }
+    // Recharge uniquement la liste des pairs (pas toutes les cartes)
+    _reloadPeersList();
+  }catch(e){
+    if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${e.message}`;}
+  }
+}
+
+async function _reloadPeersList(){
+  const peersEl=document.getElementById('net-peers-list');
+  if(!peersEl)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/peers`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d=await r.json();
+    const peers=d.peers||[];
+    if(!peers.length){
+      peersEl.innerHTML='<div style="color:var(--muted)">Aucun pair connu. Scannez le LAN ou jumelez manuellement.</div>';
+    }else{
+      const tc={trusted:'ok',unknown:'muted',blocked:'danger'};
+      peersEl.innerHTML=peers.map(p=>{
+        const iid=esc(p.instance_id);
+        const scopes=Array.isArray(p.allowed_scopes)?p.allowed_scopes:[];
+        const testBtn=p.trust==='trusted'&&scopes.includes('chat')
+          ?`<button class="btn" style="font-size:10px;padding:2px 8px" onclick="testDelegation('${iid}','net-test-${iid}')"><i data-lucide="zap" style="width:10px;height:10px"></i> Tester</button>`
+          :'';
+        return`<div class="list-item">
+          <div style="flex:1;min-width:0;font-size:12px">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
+              <span class="pill ${tc[p.trust]||'muted'}" style="font-size:10px">${esc(p.trust)}</span>
+              <strong>${esc(p.instance_name||p.instance_id)}</strong>
+              <span style="color:var(--muted)">— ${esc(p.host)}:${p.port}</span>
+              ${testBtn}
+            </div>
+            <div style="color:var(--muted)">${esc(p.instance_id)}</div>
+            <div>${(p.capabilities||[]).map(c=>`<span class="pill" style="font-size:10px">${esc(c)}</span>`).join(' ')||''}</div>
+            <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${_peerScopesHtml(p)}</div>
+            <div id="net-test-${iid}" style="font-size:11px;margin-top:4px"></div>
+          </div>
+        </div>`;
+      }).join('');
+      if(typeof lucide!=='undefined')lucide.createIcons({attrs:{class:'lucide'}});
+    }
+  }catch(e){
+    if(peersEl)peersEl.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+}
+
+export async function testDelegation(instanceId, resultElId){
+  const el=resultElId?document.getElementById(resultElId):null;
+  if(el){el.style.color='var(--muted)';el.textContent='Test en cours…';}
+  try{
+    const r=await fetch(`${API_BASE}/api/peer/test-delegation`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({instance_id:instanceId}),
+    });
+    const d=await r.json();
+    if(el){
+      if(d.ok){
+        el.style.color='var(--ok)';
+        el.textContent=`✓ Délégation OK — ${d.latency_ms}ms`;
+      }else{
+        el.style.color='var(--danger)';
+        el.textContent=`✗ Échec — ${d.error||d.status}`;
+      }
+    }
+  }catch(e){
+    if(el){el.style.color='var(--danger)';el.textContent=`✗ Erreur: ${e.message}`;}
+  }
+}
+
+export async function loadNetworkDiagnostic(){
+  // Détecte la vue active pour cibler le bon conteneur
+  const simpleView=document.getElementById('net-simple-view');
+  const isSimple=simpleView&&simpleView.style.display!=='none';
+
+  let targetEl, backFn;
+  if(isSimple){
+    // Vue simple : expansion inline sous le statut, sans remplacer la ligne de statut
+    targetEl=document.getElementById('net-diag-detail');
+    backFn='hideNetworkDiagnostic()';
+    if(targetEl){targetEl.style.display='block';targetEl.innerHTML=loadingDots('Diagnostic en cours…');}
+  }else{
+    // Vue avancée : remplace le contenu de la carte Instance courante
+    targetEl=document.getElementById('net-self-content');
+    backFn='loadInstancesNetwork()';
+    if(targetEl){targetEl.innerHTML=loadingDots('Diagnostic en cours…');}
+  }
+  if(!targetEl)return;
+
+  try{
+    const r=await fetch(`${API_BASE}/api/instance/network-diagnostic`,{
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d=await r.json();
+    const statusColor=d.ok?'var(--ok)':'var(--danger)';
+    const statusText=d.ok?'Réseau OK':'Problème détecté';
+    const lanIps=(d.lan_ips||[]).map(ip=>`<code style="font-size:10px">${esc(ip)}:${d.port}</code>`).join(' ')||'—';
+    let issuesHtml='';
+    if(d.issues&&d.issues.length){
+      issuesHtml='<div style="margin-top:8px;display:flex;flex-direction:column;gap:4px">'
+        +d.issues.map(i=>`<div style="font-size:11px;color:var(--${i.severity==='error'?'danger':'muted'})">${esc(i.message)}</div>`).join('')
+        +'</div>';
+    }
+    let actionsHtml='';
+    if((d.suggested_actions||[]).includes('open_windows_firewall_port')){
+      const cmd=`netsh advfirewall firewall add rule name="Lumena HTTP ${d.port}" protocol=TCP dir=in localport=${d.port} action=allow`;
+      actionsHtml=`<div style="margin-top:8px;font-size:11px;color:var(--muted)">Commande pare-feu :</div>
+        <code style="font-size:10px;word-break:break-all;display:block;margin-top:2px;padding:4px;background:var(--surface);border-radius:4px">${esc(cmd)}</code>`;
+    }
+    const backLabel=isSimple
+      ?'<i data-lucide="x" style="width:12px;height:12px"></i> Masquer'
+      :'<i data-lucide="arrow-left" style="width:12px;height:12px"></i> Retour';
+    targetEl.innerHTML=`<div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-weight:600;color:${statusColor}">${statusText}</div>
+      <div><span style="color:var(--muted)">Bind :</span> ${esc(d.host)} &nbsp;|&nbsp; <span style="color:var(--muted)">Port :</span> ${d.port}</div>
+      <div><span style="color:var(--muted)">Adresses LAN :</span> ${lanIps}</div>
+      <div><span style="color:var(--muted)">Écoute locale :</span> <span style="color:var(--${d.listening?'ok':'danger'})">${d.listening?'oui':'non'}</span></div>
+      <div><span style="color:var(--muted)">Accessible réseau :</span> <span style="color:var(--${d.network_accessible?'ok':'danger'})">${d.network_accessible?'oui':'non'}</span></div>
+      <div><span style="color:var(--muted)">Pare-feu :</span> ${esc(d.firewall_check||'—')}</div>
+      ${issuesHtml}${actionsHtml}
+      <div style="margin-top:4px"><button class="btn" style="font-size:11px" onclick="${backFn}">${backLabel}</button></div>
+    </div>`;
+  }catch(e){
+    targetEl.innerHTML=`<div style="color:var(--danger)">Erreur diagnostic: ${esc(e.message)}</div>`;
+  }
+}
+
+export function hideNetworkDiagnostic(){
+  const el=document.getElementById('net-diag-detail');
+  if(el){el.style.display='none';el.innerHTML='';}
+}
+
+export async function generatePairingCode(){
+  const displayEl=document.getElementById('net-pairing-code-display');
+  const codeEl=document.getElementById('net-pairing-code-value');
+  const h={'Authorization':`Bearer ${ADMIN_TOKEN}`};
+  try{
+    const r=await fetch(`${API_BASE}/api/peer/pairing-code`,{method:'POST',headers:h});
+    const d=await r.json();
+    if(!r.ok){alert(`Erreur: ${d.detail||'Échec'}`);return;}
+    if(codeEl)codeEl.textContent=d.code;
+    if(displayEl)displayEl.style.display='block';
+    // Masquer automatiquement après 5 min
+    setTimeout(()=>{
+      if(displayEl)displayEl.style.display='none';
+      if(codeEl)codeEl.textContent='——';
+    }, (d.expires_in||300)*1000);
+  }catch(e){alert(`Erreur: ${e.message}`);}
+}
+
+export async function acceptPairing(){
+  const hostEl=document.getElementById('net-pairing-host');
+  const portEl=document.getElementById('net-pairing-port');
+  const codeEl=document.getElementById('net-pairing-code-input');
+  const msgEl=document.getElementById('net-pairing-msg');
+  const host=(hostEl?.value||'').trim();
+  const port=parseInt(portEl?.value||'8080',10);
+  const code=(codeEl?.value||'').trim().toUpperCase();
+  if(!host||!code){
+    if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--danger)';msgEl.textContent='Remplissez host, port et code.';}
+    return;
+  }
+  if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--muted)';msgEl.textContent='Jumelage en cours…';}
+  try{
+    const r=await fetch(`${API_BASE}/api/peer/accept-pairing`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({host,port,code}),
+    });
+    const d=await r.json();
+    if(r.ok){
+      if(msgEl){msgEl.style.color='var(--ok)';msgEl.textContent=`✓ Jumelé avec ${d.instance_name||d.instance_id} (${host}:${port})`;}
+      if(codeEl)codeEl.value='';
+      _reloadPeersList();
+    }else{
+      if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${d.detail||'Échec'}`;}}
+  }catch(e){if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${e.message}`;}}
+}
+
+export async function loadFirewallCommand(){
+  const cmdEl=document.getElementById('net-firewall-cmd');
+  const applyBtn=document.getElementById('net-firewall-apply-btn');
+  const msgEl=document.getElementById('net-firewall-msg');
+  try{
+    const r=await fetch(`${API_BASE}/api/instance/firewall-command`,{
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d=await r.json();
+    if(!r.ok){if(cmdEl){cmdEl.style.display='block';cmdEl.innerHTML=`<span style="color:var(--danger)">${esc(d.detail||'Erreur')}</span>`;}return;}
+    if(cmdEl){
+      cmdEl.style.display='block';
+      cmdEl.innerHTML=`<div style="margin-bottom:4px;font-size:11px;color:var(--muted)">Commande (${esc(d.platform)}, port ${d.port}) :</div>
+        <code style="font-size:10px;word-break:break-all;display:block;padding:6px 8px;background:var(--surface);border-radius:4px;color:var(--text)">${esc(d.command)}</code>`;
+    }
+    if(applyBtn&&d.platform==='Windows')applyBtn.style.display='block';
+  }catch(e){if(cmdEl){cmdEl.style.display='block';cmdEl.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;}}
+}
+
+export async function applyFirewallRule(){
+  const msgEl=document.getElementById('net-firewall-msg');
+  if(!confirm('Appliquer la règle pare-feu Windows pour Lumena ? Cette action modifie les paramètres système.'))return;
+  if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--muted)';msgEl.textContent='Application en cours…';}
+  try{
+    const r=await fetch(`${API_BASE}/api/instance/firewall-apply`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({confirmed:true}),
+    });
+    const d=await r.json();
+    if(r.ok&&d.ok){
+      if(msgEl){msgEl.style.color='var(--ok)';msgEl.textContent=`✓ Règle "${d.rule_name}" appliquée (port ${d.port}).`;}
+    }else{
+      if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${d.detail||d.command_output||'Échec'}`;}
+    }
+  }catch(e){if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${e.message}`;}}
+}
+
+export async function pairSelectedPeer(){
+  const idEl=document.getElementById('net-action-id');
+  const msgEl=document.getElementById('net-action-msg');
+  const val=(idEl?.value||'').trim();
+  if(!val){if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--danger)';msgEl.textContent='Entrez un instance_id ou host:port.';}return;}
+  if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--muted)';msgEl.textContent='Jumelage en cours...';}
+  try{
+    let body;
+    if(val.includes(':')){
+      const[host,portStr]=val.split(':');
+      const probe=await fetch(`${API_BASE}/api/peer/probe`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+        body:JSON.stringify({host,port:parseInt(portStr,10),timeout:3}),
+      });
+      if(!probe.ok){
+        const pd=await probe.json();
+        if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=pd.detail||'Instance non trouvée à cette adresse.';}
+        return;
+      }
+      const found=await probe.json();
+      body={instance_id:found.instance_id,instance_name:found.instance_name,host:found.host,port:found.port,version:found.version,role:found.role,capabilities:found.capabilities};
+    }else{
+      const pr=await fetch(`${API_BASE}/api/peers`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+      const pd=await pr.json();
+      const peer=(pd.peers||[]).find(p=>p.instance_id===val);
+      if(!peer){if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent='Pair inconnu. Utilisez host:port pour un nouveau pair.';}return;}
+      body={instance_id:peer.instance_id,instance_name:peer.instance_name||'',host:peer.host,port:peer.port,version:peer.version||'',role:peer.role||'standalone',capabilities:peer.capabilities||[]};
+    }
+    const r=await fetch(`${API_BASE}/api/peers/pair`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify(body),
+    });
+    const d=await r.json();
+    if(r.ok){if(msgEl){msgEl.style.color='var(--ok)';msgEl.textContent=`Pair ${d.instance_id} jumelé (trust=${d.trust}).`;}}
+    else{if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${d.detail||'Échec'}.`;}}
+    _reloadPeersList();
+  }catch(e){if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${e.message}`;}}
+}
+
+export async function blockSelectedPeer(){
+  const idEl=document.getElementById('net-action-id');
+  const msgEl=document.getElementById('net-action-msg');
+  const val=(idEl?.value||'').trim();
+  if(!val){if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--danger)';msgEl.textContent='Entrez un instance_id.';}return;}
+  if(!confirm(`Bloquer le pair ${val} ?`))return;
+  if(msgEl){msgEl.style.display='block';msgEl.style.color='var(--muted)';msgEl.textContent='Blocage en cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/peers/block`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({instance_id:val}),
+    });
+    const d=await r.json();
+    if(r.ok){if(msgEl){msgEl.style.color='var(--ok)';msgEl.textContent=`Pair ${val} bloqué.`;}}
+    else{if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${d.detail||'Échec'}.`;}}
+    _reloadPeersList();
+  }catch(e){if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${e.message}`;}}
 }

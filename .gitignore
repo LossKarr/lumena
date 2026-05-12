@@ -91,3 +91,4 @@ nul
 
 # Installeur - workflow de build privé
 installer/
+/.tmp

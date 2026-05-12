@@ -69,10 +69,11 @@ class ChromaMemoryStore:
     
     COLLECTION_NAME = "lumena_memories"
     
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, user_id: str = "local:owner"):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+        self.user_id = user_id
+
         self.client = None
         self.collection = None
         
@@ -88,10 +89,59 @@ class ChromaMemoryStore:
                 self._sync_bm25_index()
 
     @staticmethod
+    def _matches_where(meta: Dict[str, Any], where: Dict[str, Any]) -> bool:
+        """Vérifie qu'une entrée metadata satisfait un filtre where style ChromaDB.
+
+        Gère les structures simples {"key": value} et composées {"$and": [...]}.
+        """
+        if not where:
+            return True
+        if "$and" in where:
+            return all(ChromaMemoryStore._matches_where_single(meta, cond) for cond in where["$and"])
+        return ChromaMemoryStore._matches_where_single(meta, where)
+
+    @staticmethod
+    def _matches_where_single(meta: Dict[str, Any], condition: Dict[str, Any]) -> bool:
+        for key, val in condition.items():
+            if key.startswith("$"):
+                continue
+            actual = meta.get(key)
+            if isinstance(val, dict):
+                for op, operand in val.items():
+                    if op == "$gte" and not (actual is not None and actual >= operand):
+                        return False
+                    elif op == "$lte" and not (actual is not None and actual <= operand):
+                        return False
+                    elif op == "$eq" and actual != operand:
+                        return False
+                    elif op == "$ne" and actual == operand:
+                        return False
+            else:
+                if actual != val:
+                    return False
+        return True
+
+    @staticmethod
     def _compute_hash(text: str) -> str:
         """Hash déterministe pour déduplication (compat legacy tests)."""
         normalized = (text or "").strip().lower()
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+
+    def _build_where(
+        self,
+        *,
+        memory_type: Optional[str] = None,
+        min_importance: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Construit le filtre ChromaDB en incluant toujours user_id."""
+        conditions: List[Dict[str, Any]] = [{"user_id": self.user_id}]
+        if memory_type:
+            conditions.append({"type": memory_type})
+        if min_importance > 0:
+            conditions.append({"importance": {"$gte": min_importance}})
+        if len(conditions) == 1:
+            return conditions[0]
+        return {"$and": conditions}
     
     def _init_chromadb(self):
         """Initialise ChromaDB."""
@@ -147,6 +197,7 @@ class ChromaMemoryStore:
                 "type": memory_type,
                 "importance": importance,
                 "timestamp": datetime.now().isoformat(),
+                "user_id": self.user_id,
             })
             
             # Ajouter à ChromaDB
@@ -227,11 +278,12 @@ class ChromaMemoryStore:
         """
         if not self.collection or self.collection.count() == 0:
             return False
-        
+
         try:
             results = self.collection.query(
                 query_texts=[content],
-                n_results=1
+                n_results=1,
+                where=self._build_where(),
             )
             
             if results and results.get("distances"):
@@ -258,8 +310,8 @@ class ChromaMemoryStore:
             return 0
         
         try:
-            # Récupérer toutes les mémoires
-            all_data = self.collection.get()
+            # Récupérer toutes les mémoires de cet utilisateur
+            all_data = self.collection.get(where=self._build_where())
             if not all_data or not all_data.get("ids"):
                 return 0
             
@@ -321,19 +373,17 @@ class ChromaMemoryStore:
             return []
         
         try:
-            # Construire le filtre
-            where = {}
-            if memory_type:
-                where["type"] = memory_type
-            if min_importance > 0:
-                where["importance"] = {"$gte": min_importance}
-            
+            where = self._build_where(
+                memory_type=memory_type,
+                min_importance=min_importance,
+            )
+
             # Recherche vectorielle (sémantique)
-            vector_results = self._search_vector(query, limit * 2, where if where else None)
+            vector_results = self._search_vector(query, limit * 2, where)
             
             if hybrid:
                 # Recherche par mots-clés
-                keyword_results = self._search_keywords(query, limit * 2, where if where else None)
+                keyword_results = self._search_keywords(query, limit * 2, where)
                 
                 # Fusion hybride
                 memories = self._merge_hybrid_results(
@@ -459,15 +509,10 @@ class ChromaMemoryStore:
             memories = []
             for i, mem_id in enumerate(docs["ids"]):
                 meta = docs["metadatas"][i] if docs["metadatas"] else {}
-                
-                # Appliquer le filtre where si spécifié
-                if where:
-                    if "type" in where and meta.get("type") != where["type"]:
-                        continue
-                    if "importance" in where:
-                        min_imp = where["importance"].get("$gte", 0)
-                        if meta.get("importance", 0) < min_imp:
-                            continue
+
+                # Filtre where complet (user_id + type + importance + $and)
+                if where and not self._matches_where(meta, where):
+                    continue
                 
                 # Score normalisé
                 raw_score = scores_by_id.get(mem_id, 0)
@@ -662,8 +707,8 @@ class ChromaMemoryStore:
             return []
         
         try:
-            # Récupérer tous et trier par timestamp
-            results = self.collection.get(limit=limit)
+            # Récupérer les mémoires de cet utilisateur, triées par timestamp
+            results = self.collection.get(where=self._build_where(), limit=limit)
             
             memories = []
             if results["ids"]:
@@ -730,15 +775,16 @@ class LumenaMemory:
     Combine mémoire vectorielle (ChromaDB) et mémoire factuelle (JSON).
     """
     
-    def __init__(self, data_dir: Optional[Path] = None):
+    def __init__(self, data_dir: Optional[Path] = None, user_id: str = "local:owner"):
         if data_dir is None:
             from src.utils.paths import MEMORY_DIR
             data_dir = MEMORY_DIR
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        
+        self.user_id = user_id
+
         # Mémoire vectorielle (pour les souvenirs)
-        self.vector_store = ChromaMemoryStore(data_dir / "vector")
+        self.vector_store = ChromaMemoryStore(data_dir / "vector", user_id=user_id)
         
         # Mémoire factuelle (pour les faits sur l'utilisateur)
         self.facts_file = data_dir / "facts.json"
@@ -995,11 +1041,11 @@ class ChromaDBStore(ChromaMemoryStore):
     Certains tests/imports historiques attendent `ChromaDBStore`.
     """
 
-    def __init__(self, data_dir: Optional[Path] = None):
+    def __init__(self, data_dir: Optional[Path] = None, user_id: str = "local:owner"):
         if data_dir is None:
             from src.utils.paths import VECTOR_DIR
             data_dir = VECTOR_DIR
-        super().__init__(data_dir)
+        super().__init__(data_dir, user_id=user_id)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
