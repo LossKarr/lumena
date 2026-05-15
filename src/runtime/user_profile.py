@@ -140,6 +140,6 @@ def is_local_owner(user_id: Optional[str]) -> bool:
     return (user_id or "").strip() == LOCAL_OWNER_ID
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

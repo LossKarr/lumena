@@ -185,6 +185,6 @@ async def get_session(conversation_id: str, limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

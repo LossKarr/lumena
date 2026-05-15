@@ -121,6 +121,6 @@ async def probe_single_peer(host: str, port: int, timeout: float = 3.0) -> Optio
         return await _probe_hello(host, port, _OWN_ID, client)
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

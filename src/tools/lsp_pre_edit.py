@@ -209,5 +209,5 @@ def format_related_files_note(related: Sequence[str], edited_file: str) -> str:
 __all__ = ["get_related_files", "format_related_files_note"]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # ──────────────────────────────────────────────────────────────────────────────

@@ -206,5 +206,5 @@ def _compact_prettier(name: str, raw: str) -> str:
 __all__ = ["scan_conventions"]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # ──────────────────────────────────────────────────────────────────────────────
