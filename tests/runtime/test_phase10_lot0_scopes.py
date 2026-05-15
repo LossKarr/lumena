@@ -36,7 +36,7 @@ def _write_registry(path, peers: dict) -> None:
 TRUSTED_PEER = {
     "instance_id": "peer-aaa",
     "instance_name": "Lumena Salon",
-    "host": "192.168.1.57",
+    "host": "192.168.1.100",
     "port": 8081,
     "capabilities": ["chat", "browser"],
     "trust": "trusted",

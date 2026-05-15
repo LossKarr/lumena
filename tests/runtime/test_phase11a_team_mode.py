@@ -60,7 +60,7 @@ def _write_peer_registry(tmp_path: Path) -> Path:
             "peer-salon": {
                 "instance_id": "peer-salon",
                 "instance_name": "Lumena Salon",
-                "host": "192.168.1.57",
+                "host": "192.168.1.100",
                 "port": 8081,
                 "trust": "trusted",
                 "peer_token_outbound": "raw-token-not-rendered",
@@ -109,7 +109,7 @@ class TestPeerRawNetworkGuard:
 
         obs = reg._peer_raw_network_refusal(
             "http_request",
-            {"url": "http://192.168.1.57:8081/api/chat"},
+            {"url": "http://192.168.1.100:8081/api/chat"},
         )
 
         assert obs is not None
@@ -127,7 +127,7 @@ class TestPeerRawNetworkGuard:
 
         obs = reg._peer_raw_network_refusal(
             "browser_navigate",
-            {"url": "http://192.168.1.57:8081/"},
+            {"url": "http://192.168.1.100:8081/"},
         )
 
         assert obs is not None
@@ -143,7 +143,7 @@ class TestPeerRawNetworkGuard:
 
         obs = reg._peer_raw_network_refusal(
             "run_command",
-            {"command": "Test-NetConnection -ComputerName 192.168.1.57 -Port 8081"},
+            {"command": "Test-NetConnection -ComputerName 192.168.1.100 -Port 8081"},
         )
 
         assert obs is None
@@ -157,7 +157,7 @@ class TestPeerRawNetworkGuard:
 
         obs = reg._peer_raw_network_refusal(
             "run_command",
-            {"command": 'curl http://192.168.1.57:8081/api/chat'},
+            {"command": 'curl http://192.168.1.100:8081/api/chat'},
         )
 
         assert obs is not None

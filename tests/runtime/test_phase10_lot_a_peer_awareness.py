@@ -34,7 +34,7 @@ def _make_registry(tmp_path: Path, peers: dict) -> Path:
 TRUSTED_FULL = {
     "instance_id": "peer-aaa",
     "instance_name": "Lumena Salon",
-    "host": "192.168.1.57",
+    "host": "192.168.1.100",
     "port": 8081,
     "capabilities": ["chat", "browser"],
     "trust": "trusted",
@@ -260,7 +260,7 @@ class TestBuildPeerAwarenessContext:
     def test_context_mentions_host_port(self, tmp_path, monkeypatch):
         pa = _patch(monkeypatch, tmp_path, "1", {"p": TRUSTED_FULL})
         ctx = pa.build_peer_awareness_context()
-        assert "192.168.1.57" in ctx
+        assert "192.168.1.100" in ctx
         assert "8081" in ctx
 
     def test_multiple_peers_different_states(self, tmp_path, monkeypatch):
@@ -372,7 +372,7 @@ class TestReactPromptInjection:
         loop = self._make_loop(monkeypatch, tmp_path, "1", {"p": TRUSTED_FULL})
         prompt = loop._build_react_prompt("tu as d'autres Lumena disponibles ?")
         assert "Réseau Lumena" in prompt
-        assert "192.168.1.57" in prompt
+        assert "192.168.1.100" in prompt
 
 
 # ─────────────────────────────────────────────────────────────────────────────

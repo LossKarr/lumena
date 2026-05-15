@@ -476,8 +476,8 @@ class TestDelegateAntiSSRF:
 
     @pytest.mark.asyncio
     async def test_rfc1918_host_passes_ssrf(self, monkeypatch, tmp_path):
-        """192.168.1.57 est RFC1918 → l'appel HTTP est émis (pas bloqué par anti-SSRF)."""
-        peer = {**TRUSTED_PEER_FULL, "host": "192.168.1.57"}
+        """192.168.1.100 est RFC1918 → l'appel HTTP est émis (pas bloqué par anti-SSRF)."""
+        peer = {**TRUSTED_PEER_FULL, "host": "192.168.1.100"}
         result = await _call_handler(
             monkeypatch, tmp_path, peer_dict=peer,
             http_response={"status_code": 200, "json": {"status": "ok", "response": "OK"}},

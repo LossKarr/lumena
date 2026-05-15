@@ -115,9 +115,9 @@ class TestPeerNetworkAutonomy:
             return [{
                 "instance_id": "peer-new",
                 "instance_name": "Salon",
-                "host": "192.168.1.57",
+                "host": "192.168.1.100",
                 "port": 8081,
-                "version": "1.0.35",
+                "version": "1.0.38",
                 "role": "standalone",
                 "capabilities": ["chat", "browser"],
                 "requires_pairing": True,
