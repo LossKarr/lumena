@@ -5,12 +5,12 @@ Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Tests](https://img.shields.io/badge/tests-9264%20passed-brightgreen)
-![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Version](https://img.shields.io/badge/version-v1.0.34-orange)
+![License](https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Commercial-blue)
+![Version](https://img.shields.io/badge/version-v1.0.35-orange)
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.34**
+> **⚠️ Version Bêta — v1.0.35**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 > **👤 Projet solo**
@@ -448,4 +448,13 @@ Pour l'installation : oui, un minimum de confort avec un terminal est nécessair
 
 ## Licence
 
-GNU General Public License v3.0 — Copyright (c) 2025-2026 LossKarr. Voir [LICENSE](LICENSE).
+Lumena est publié sous **double licence** :
+
+| Usage | Licence |
+|---|---|
+| Personnel, open source, académique, associatif | [AGPL-3.0](LICENSE) — gratuit |
+| Commercial, SaaS, produit propriétaire | [Licence commerciale](LICENSE_COMMERCIAL.md) — contact requis |
+
+Pour tout usage commercial (intégration dans un produit ou service sans publication du code source), contactez **contact@losskarr.fr**.
+
+Copyright (c) 2025-2026 LossKarr.
