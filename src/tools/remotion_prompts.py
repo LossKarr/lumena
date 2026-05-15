@@ -61,7 +61,7 @@ CONTRAINTES:
 - La somme des duration_frames de toutes les scènes DOIT = {total_frames}
 - Chaque scène DOIT avoir un id unique et un component_name en PascalCase
 - background_type: "gradient" | "solid" | "image"
-- Si background_type = "image" ET aucun asset fourni, image_url DOIT être une URL Unsplash valide
+- Si background_type = "image" ET aucun asset fourni: UTILISER "gradient" à la place — les URLs externes (Unsplash, etc.) sont bloquées pendant le rendu
 - Si des assets sont fournis (section ASSETS CI-DESSUS), utilise image_url = "public/<nom_fichier>" pour les utiliser
 - animation_in: "fadeIn" | "slideLeft" | "slideRight" | "slideUp" | "scaleUp" | "typewriter"
 - animation_out: "fadeOut" | "slideLeft" | "slideRight" | "scaleDown"
@@ -435,6 +435,11 @@ RENDER_FIX_PROMPT = """Le rendu de ce projet Remotion échoue. Corrige le fichie
 
 CORRIGE le fichier ci-dessus. Retourne le code COMPLET et CORRIGÉ du fichier.
 Aucun commentaire, aucune explication. UNIQUEMENT le code TSX corrigé.
+
+RÈGLES CRITIQUES:
+- Si le fichier est Video.tsx: CONSERVER les imports depuis './scenes/' — NE JAMAIS les remplacer par des stubs inline
+- NE JAMAIS utiliser <Img> avec des URLs externes (Unsplash, etc.) — remplacer par un fond CSS gradient
+- Si l'erreur est liée à une image externe: supprimer le <Img> et mettre un backgroundColor ou gradient en CSS
 """
 
 
@@ -473,7 +478,7 @@ def build_scene_prompt(
     image_constraint = (
         "Images: utiliser staticFile('nom_fichier') pour les assets locaux"
         if has_assets else
-        "Images: utiliser UNIQUEMENT des URL https:// (Unsplash, etc.) ou pas d'image"
+        "Images: INTERDIT d'utiliser <Img> ou des URLs externes (Unsplash, etc.) — les images externes sont bloquées pendant le rendu. Utiliser UNIQUEMENT des fonds CSS (background, gradient, backgroundColor)"
     )
 
     # Base prompt

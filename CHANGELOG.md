@@ -7,6 +7,40 @@ et ce projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
+## [Unreleased]
+
+### Corrections
+- **Remotion — vidéo noire** : auto-fix ne remplace plus les imports de scènes par des stubs vides (`const IntroScene = () => <div>Intro</div>`) lors d'une correction d'erreur de rendu — les vrais fichiers de scènes sont conservés
+- **Remotion — images externes bloquées** : le prompt de génération TSX interdit désormais `<Img>` avec des URLs Unsplash/externes (bloquées par ORB pendant le rendu) — fonds CSS gradient utilisés à la place
+- **Remotion — prompt plan** : `background_type = "image"` sans asset local est redirigé vers `"gradient"` automatiquement
+- **DeepSeek reasoning_content** : seuil de déclenchement abaissé de 200 à 30 caractères — le raisonnement court de DeepSeek-R1 est désormais exploité
+
+### Ajouts
+- **TaskProofDecision** : annotation de preuve par tâche — chaque tâche complétée reçoit un `evidence_kind` (tool_success, stripe_id…) et un `confidence` (strong/medium/weak) loggés en temps réel, sans blocage du flux
+- **Thought dedup** : si le LLM répète `THOUGHT:` plus de 2 fois dans le même bloc (DeepSeek), seul le dernier segment est conservé — élimine les boucles de 5 000+ chars hallucinées
+- **Read guard seuil 3** : le CodeAgent bloque dès la 4ème lecture identique consécutive (était 6ème) pour détecter plus tôt les boucles de relecture sans modification
+
+---
+
+## [1.0.33] — 2026-05-08
+
+### Ajouts
+- **Réseau Multi-Lumena LAN** — Jumelage sécurisé par code court (6 chars, TTL 5 min, usage unique), peer tokens SHA-256 révocables, délégation de tâches inter-instances, découverte LAN + mDNS `_lumena._tcp.local`, SSRF guard RFC1918 sur toutes les sorties réseau, audit log des délégations, UI vue simple + vue avancée
+- **Expansion providers LLM** — Mistral (Large, Codestral, Devstral, Pixtral), Z.AI (GLM-4), NVIDIA NIM ajoutés/renforcés dans la chaîne de fallback
+
+### Changements
+- `.env.example` enrichi — nouvelles variables réseau peer, providers Mistral, configuration mDNS
+
+---
+
+## [1.0.31] — 2026-04-30
+
+### Ajouts
+- **HEARTBEAT** — monitoring vital asynchrone : RAM, disque, providers LLM actifs, pipeline training, ChromaDB ; alerte sur dégradation
+- **Installateur amélioré** — détection GPU nvidia-smi, clés image Flux/Ideogram/Recraft ajoutées
+
+---
+
 ## [1.0.9] — 2026-04-22
 
 ### Ajouts

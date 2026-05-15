@@ -1,17 +1,20 @@
 # Lumena
 
 **Autonomous AI assistant with persistent memory, ReAct reasoning, and multi-channel support.**
-Tourne 24/7 sur Windows, Linux ou macOS. Raisonne, agit, apprend, s'améliore seul.
+Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-8872%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-9264%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
-![Version](https://img.shields.io/badge/version-v1.0.32-orange)
+![Version](https://img.shields.io/badge/version-v1.0.33-orange)
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.32**
+> **⚠️ Version Bêta — v1.0.33**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
+
+> **👤 Projet solo**
+> Lumena est développé et maintenu par une seule personne. Des bugs peuvent être présents — certains connus, d'autres moins. Si vous en rencontrez, merci de votre compréhension et n'hésitez pas à ouvrir une issue sur GitHub. Chaque retour compte et aide à améliorer le projet.
 
 ---
 
@@ -32,6 +35,7 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** ré
 | **Outils** | 511 handlers V2 dans 18 packs : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use |
 | **Documents** | 36 handlers, 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
 | **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 39 modèles, 15 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image) |
+| **Vidéo** | Remotion 4.x (React TSX → MP4/WebM), 5 templates (presentation, social_short, explainer, square_social, custom), rendu local Node.js ou Docker, auto-fix sur erreur de rendu, assets locaux via `staticFile()` |
 | **Mémoire** | 4 niveaux : session, ChromaDB vectorielle, Knowledge Graph, BM25 — embedding cache, file watcher |
 | **Autonomie** | Scheduler CRON, goals auto-évalués, curiosité, self_improve, cycle quotidien de skills |
 | **Computer Use** | Cascade native CU (Anthropic→OpenAI→Google→fallback), pywinauto, vision (Gemini→Claude→Ollama→OCR) |
@@ -40,16 +44,28 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** ré
 | **Web** | FastAPI + interface admin complète, chat temps réel (SSE), WebSocket IDE bridge, panel workspaces CodeAgent |
 | **Multi-Lumena LAN** | Jumelage sécurisé par code court (6 cars, TTL 5 min), peer tokens révocables stockés hashés, délégation de tâches inter-instances, découverte LAN + mDNS/Zeroconf optionnel (`_lumena._tcp.local`) |
 | **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard RFC1918 strict, rate limiter, path traversal guard, peer tokens liés à l'instance (anti-usurpation) |
-| **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, parallel_tools avec résultats structurés par sous-appel |
-| **Tests** | 8 872 tests, 0 failed, ~150s suite complète |
+| **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, TaskProofDecision annotation (evidence + confidence par tâche complétée) |
+| **Tests** | 9 264 tests, 0 failed, ~150s suite complète |
 
 ---
 
 ## Démarrage rapide
 
+### Compatibilité
+
+| Fonctionnalité | Windows | Linux | macOS |
+|---|---|---|---|
+| Interface web, chat, LLM | ✅ | ✅ | ✅ |
+| Mémoire, autonomie, scheduler | ✅ | ✅ | ✅ |
+| Channels (Discord, Telegram…) | ✅ | ✅ | ✅ |
+| Navigateur Playwright | ✅ | ✅ | ✅ |
+| Documents, images, vidéo | ✅ | ✅ | ✅ |
+| Computer Use (contrôle fenêtres, apps) | ✅ | ⚠️ partiel | ⚠️ partiel |
+
+> Le Computer Use natif (contrôle de fenêtres via `pywinauto`, automation d'applications Win32) est conçu pour Windows. Sur Linux et macOS, Lumena démarre et fonctionne normalement — seule cette couche sera limitée.
+
 ### Prérequis
 
-- **Windows 10/11**, **Linux** ou **macOS**
 - **Python 3.10 – 3.12**
 - **Docker Desktop** (optionnel — pour le sandbox d'exécution)
 - **Ollama** (optionnel — pour les modèles locaux)
@@ -61,26 +77,25 @@ git clone https://github.com/Losskarr/lumena.git
 cd lumena
 ```
 
-**Windows :**
+**Windows (automatique) :**
 ```cmd
 INSTALL.bat
 ```
 
 **Linux / macOS :**
 ```bash
-chmod +x install.sh start.sh
+chmod +x install.sh
 ./install.sh
 ```
 
 **Manuelle :**
 ```bash
-python3 -m venv venv
-source venv/bin/activate        # Linux/Mac
-# venv\Scripts\activate         # Windows
+python -m venv venv
+source venv/bin/activate      # Linux/macOS
+# venv\Scripts\activate       # Windows
 
 pip install -r requirements.txt
 cp .env.example .env
-# → Configurer les clés API dans .env
 ```
 
 ### Lancement
@@ -92,12 +107,7 @@ START.bat
 
 **Linux / macOS :**
 ```bash
-./start.sh                  # Serveur web (port 8080)
-./start.sh --daemon         # Mode daemon autonome 24/7
-./start.sh --telegram       # Mode Telegram
-./start.sh --whatsapp       # Mode WhatsApp
-./start.sh --full           # Mode complet (autonomie maximale)
-./start.sh --safe           # Mode safe (autonomie limitée)
+./start.sh
 ```
 
 **Commandes directes :**
@@ -236,7 +246,7 @@ web/
 
 assets/templates/           # 13 templates Jinja2 (documents pro)
 models/                     # Modèles TTS Piper + pipeline fine-tuning
-tests/                      # 8 177 tests pytest
+tests/                      # 9 264 tests pytest
 ```
 
 ---

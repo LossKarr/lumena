@@ -4743,8 +4743,7 @@ class CodeAgent(SubAgent):
                 # ── HARD STOP : 5+ lectures IDENTIQUES SANS modification du fichier entre-temps
                 # • gros fichiers OK : nouvelles plages = clés différentes
                 # • petits fichiers OK : après un edit, le mtime change → compteur reset auto
-                # • seuil 5 (et non 3) : laisse P3 anti-stagnation + cache servi faire leur
-                #   travail en premier ; ce hard stop devient un vrai dernier recours
+                # • seuil 3 : bloque dès la 4ème lecture identique sans modif
                 _args_sig = f"{_norm_key}::{_req_start}::{_req_end}"
                 _identical_args_state = getattr(self, "_read_identical_args_state", None)
                 if _identical_args_state is None:
@@ -4762,7 +4761,7 @@ class CodeAgent(SubAgent):
                     _identical_count = _prev_state.get("count", 0)
                 else:
                     _identical_count = 0  # mtime changé (édition) ou première fois → reset
-                if _identical_count >= 5:
+                if _identical_count >= 3:
                     logger.error(
                         "[CodeAgent] read_file({} L{}-{}) BLOQUÉ — {}× lectures identiques sans modif",
                         _raw_path, _req_start, _req_end, _identical_count,

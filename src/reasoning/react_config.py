@@ -112,6 +112,8 @@ class TaskItem:
     completed_at_iteration: Optional[int] = None
     completed_by_tool: Optional[str] = None
     completion_status: str = ""  # TaskCompletionStatus — créé/vérifié/envoyé/déployé…
+    completion_evidence: str = ""   # phrase courte expliquant la preuve
+    completion_confidence: str = "" # "strong" | "medium" | "weak"
 
 
 # ── LLM Output Sanitization (corrige bugs courants des LLM) ────────

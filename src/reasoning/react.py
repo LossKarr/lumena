@@ -332,6 +332,7 @@ from .plan_evidence import (
     classify_observation,
     is_verify_task,
     has_sufficient_proof,
+    evaluate_task_proof,
     reconcile_delegate_report,
     task_completion_status,
 )
@@ -3345,12 +3346,16 @@ Maintenant, reflechis et reponds:"""
                         task.description, tool_name, iteration,
                     )
                     continue
+                _proof = evaluate_task_proof(task.description, tool_name, observation_content)
                 task.completed = True
                 task.completed_at_iteration = iteration
                 task.completed_by_tool = tool_name
                 task.completion_status = task_completion_status(
                     tool_name, desc_lower, tool_semantic_category, tool_module_category,
                 )
+                task.completion_evidence = _proof.evidence_summary
+                task.completion_confidence = _proof.confidence
+                logger.info("[PROOF] '{}' — {} ({})", task.description[:50], _proof.evidence_kind, _proof.confidence)
                 _any_matched = True
                 _completed_this_call += 1
                 if is_specific:
@@ -3444,12 +3449,15 @@ Maintenant, reflechis et reponds:"""
                                 task.description, tool_name, iteration,
                             )
                             break
+                        _proof = evaluate_task_proof(task.description, tool_name, observation_content)
                         task.completed = True
                         task.completed_at_iteration = iteration
                         task.completed_by_tool = f"{tool_name}:seq"
                         task.completion_status = task_completion_status(
                             tool_name, desc_lower, tool_semantic_category, tool_module_category,
                         )
+                        task.completion_evidence = _proof.evidence_summary
+                        task.completion_confidence = _proof.confidence
                         _seq_matched = True
                         logger.debug(
                             "[PLAN] Fallback séquentiel: '%s' marquée via %s (iter %d)",
@@ -3647,12 +3655,15 @@ Maintenant, reflechis et reponds:"""
                                 task.description, tool_name, iteration,
                             )
                             break
+                        _proof = evaluate_task_proof(task.description, tool_name, observation_content)
                         task.completed = True
                         task.completed_at_iteration = iteration
                         task.completed_by_tool = f"{tool_name}:auto"
                         task.completion_status = task_completion_status(
                             tool_name, desc_lower, tool_semantic_category, tool_module_category,
                         )
+                        task.completion_evidence = _proof.evidence_summary
+                        task.completion_confidence = _proof.confidence
                         self._last_auto_advance_iter = iteration
                         logger.debug(
                             "[PLAN] Fallback auto-avancement: '{}' marquée via {} (iter {})",

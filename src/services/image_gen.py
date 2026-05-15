@@ -134,7 +134,9 @@ _MODEL_PROVIDER: Dict[str, str] = {
     "recraft-v4": "recraft",
     "recraft-v4-svg": "recraft",
     # xAI
-    "grok-imagine-image": "xai",
+    "grok-imagine-image":         "xai",
+    "grok-imagine-image-quality": "xai",
+    "grok-imagine-image-pro":     "xai",
     # Replicate hosted
     "seedream-5-lite": "replicate",
     "seedream-4.5": "replicate",
@@ -429,12 +431,30 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
     # ── xAI ──
     "grok-imagine-image": ModelInfo(
         name="Grok Imagine", provider="xai", quality=7, speed=7,
-        cost_per_image=0.04, free=False, max_resolution="2048x2048",
+        cost_per_image=0.02, free=False, max_resolution="2048x2048",
         styles=["photoréaliste", "créatif", "mème"],
         strengths="Bon en créativité et humour, peu de restrictions contenu",
         weaknesses="Qualité générale en dessous de FLUX/Imagen",
         capabilities=["text-to-image"],
         best_for="Images créatives, mèmes, contenu décalé",
+    ),
+    "grok-imagine-image-quality": ModelInfo(
+        name="Grok Imagine Quality", provider="xai", quality=8, speed=6,
+        cost_per_image=0.05, free=False, max_resolution="2048x2048",
+        styles=["photoréaliste", "créatif", "haute qualité"],
+        strengths="Qualité supérieure, peu de restrictions contenu",
+        weaknesses="Plus lent que la version standard",
+        capabilities=["text-to-image"],
+        best_for="Images haute qualité, illustrations détaillées",
+    ),
+    "grok-imagine-image-pro": ModelInfo(
+        name="Grok Imagine Pro", provider="xai", quality=9, speed=4,
+        cost_per_image=0.07, free=False, max_resolution="2048x2048",
+        styles=["photoréaliste", "professionnel", "artistique"],
+        strengths="Meilleure qualité xAI, résultats pro",
+        weaknesses="Lent, rate limit faible (30 RPM)",
+        capabilities=["text-to-image"],
+        best_for="Images professionnelles, qualité maximale xAI",
     ),
     # ── Replicate ──
     "seedream-5-lite": ModelInfo(
@@ -552,6 +572,8 @@ _PROVIDER_FALLBACK_ORDER: List[str] = [
     "sd3.5-large-turbo",
     "flux-2-klein-9b",
     "grok-imagine-image",
+    "grok-imagine-image-quality",
+    "grok-imagine-image-pro",
     "minimax-image-01",
     "seedream-4.5",
     "wan-2.7-image-pro",
@@ -1561,7 +1583,7 @@ class ImageGenService:
         resp = await client.post(
             "https://api.x.ai/v1/images/generations",
             headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": "grok-2-image", "prompt": prompt, "n": 1},
+            json={"model": model, "prompt": prompt, "n": 1},
         )
         resp.raise_for_status()
         data = resp.json()

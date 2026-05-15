@@ -665,7 +665,6 @@ class MultiProviderLLM:
         # Skip si le client a déjà été recréé pour cette loop
         if _current_loop_id and _current_loop_id == self._http_loop_id:
             return
-        logger.debug("🔄 Recréation du client HTTP (event loop changé)")
         # Ne pas tenter de fermer l'ancien client : ses connexions sont liées à
         # l'ancienne event loop (potentiellement fermée sur Windows ProactorEventLoop).
         # Appeler aclose() sur cet event loop cause "RuntimeError: Event loop is closed".
@@ -696,7 +695,6 @@ class MultiProviderLLM:
             _cur_loop_id = id(_asyncio_chk.get_running_loop())
             if _cur_loop_id and _cur_loop_id != self._http_loop_id:
                 self._recreate_http_client()
-                logger.debug("🔄 Client HTTP recréé proactivement (event loop changé)")
         except RuntimeError:
             pass
         for attempt in range(self._TRANSIENT_RETRIES + 1):
@@ -711,7 +709,6 @@ class MultiProviderLLM:
                     # (Windows ProactorEventLoop ou changement de loop entre deux requêtes)
                     # → recréer le client HTTP et retry immédiatement
                     self._recreate_http_client()
-                    logger.debug(f"🔄 {provider.value} event loop changed — client HTTP recréé, retry")
                     last_exc = exc
                     continue
                 raise
@@ -1847,7 +1844,7 @@ class MultiProviderLLM:
         
         NVIDIA NIM utilise un format compatible OpenAI.
         URL : https://integrate.api.nvidia.com/v1/chat/completions
-        7 modèles gratuits: kimi-k2-instruct, kimi-k2-instruct-0905, kimi-k2-thinking, deepseek-v3.2, deepseek-v3.1, glm-4.7, minimax-m2.5
+        6 modèles gratuits: kimi-k2-instruct, kimi-k2-instruct-0905, kimi-k2-thinking, deepseek-v3.2, deepseek-v3.1, minimax-m2.5
         """
         api_key = get_api_key(ProviderType.NVIDIA)
         if not api_key:
@@ -2000,7 +1997,7 @@ class MultiProviderLLM:
                         elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
                             content = reasoning_content
                             logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (contient du code)")
-                        elif len(reasoning_content.strip()) >= 200:
+                        elif len(reasoning_content.strip()) >= 30:
                             content = reasoning_content.strip()
                             logger.warning("⚠️ DeepSeek: content vide, reasoning_content descriptif accepté comme fallback ({} chars)", len(content))
                         else:
@@ -2014,7 +2011,7 @@ class MultiProviderLLM:
                     elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
                         content = reasoning_content
                         logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (exception)")
-                    elif len(reasoning_content.strip()) >= 200:
+                    elif len(reasoning_content.strip()) >= 30:
                         content = reasoning_content.strip()
                         logger.warning("⚠️ DeepSeek: content vide, reasoning_content descriptif accepté (exception, {} chars)", len(content))
                     else:

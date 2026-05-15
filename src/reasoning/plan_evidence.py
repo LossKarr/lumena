@@ -552,6 +552,58 @@ class TaskCompletionStatus:
     UNKNOWN            = ""
 
 
+# ── Proof typée ────────────────────────────────────────────────────────────────
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass
+class TaskProofDecision:
+    """Décision typée sur la preuve d'une tâche du plan."""
+    status: str        # "proved" | "not_proved"
+    confidence: str    # "strong" | "medium" | "weak"
+    evidence_kind: str # "file_exists" | "tool_success" | "stripe_id" | "email_confirmed" | "text_inference"
+    evidence_summary: str
+
+
+# Kinds stricts : bloquent task.completed si preuve absente.
+_STRICT_PROOF_KINDS: frozenset = frozenset({
+    VerificationKind.DOCUMENT,
+    VerificationKind.DELIVERY,
+    VerificationKind.PAYMENT,
+})
+
+
+def evaluate_task_proof(
+    task_desc: str,
+    tool_name: str,
+    observation: str,
+) -> TaskProofDecision:
+    """Retourne une décision typée sur la preuve d'une tâche.
+
+    Wrapper fin autour de has_sufficient_proof() — le système existant à 500 outils
+    reste le seul oracle. Cette fonction ne fait qu'enrichir la décision booléenne
+    avec un type structuré (confidence, evidence_kind, evidence_summary).
+    Ne bloque jamais directement : les gardes existants (_proof_for_task,
+    _requires_strict_proof) font déjà le travail dans react.py.
+    """
+    proved = has_sufficient_proof(tool_name, observation, task_desc)
+    kind = detect_verification_kind(task_desc)
+
+    if proved:
+        if kind == VerificationKind.PAYMENT:
+            raw = observation or ""
+            if "plink_" in raw or "checkout.stripe.com" in raw:
+                return TaskProofDecision("proved", "strong", "stripe_id", "ID Stripe présent")
+        return TaskProofDecision("proved", "medium", "tool_success", f"{tool_name} preuve suffisante")
+
+    # has_sufficient_proof a retourné False
+    if kind in _STRICT_PROOF_KINDS:
+        return TaskProofDecision("not_proved", "weak", "text_inference", f"preuve insuffisante ({kind.value})")
+    # Kind non-strict : on annote weak mais on ne bloque pas (proved=True côté react)
+    return TaskProofDecision("proved", "weak", "text_inference", "preuve par défaut")
+
+
 # Capabilities dont la présence dans la preuve implique une vérification réelle.
 _VERIFIED_CAPABILITIES: frozenset = frozenset({
     ProofCapability.HTTP_PROBE,

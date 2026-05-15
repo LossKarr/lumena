@@ -7,7 +7,7 @@ Supporte plusieurs providers LLM :
 - Anthropic : Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 4.5
 - Google : Gemini 3.1 Pro, Gemini 2.5 Flash
 - Moonshot : Kimi K2.5
-- xAI : Grok 4.1
+- xAI : Grok 4.3, Grok 4.20, Grok 4.1
 - DeepSeek : V3.2, Reasoner
 """
 
@@ -500,6 +500,20 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
     
     # === XAI (Grok) ===
+    "grok-4.3": ModelConfig(
+        name="grok-4.3",
+        display_name="Grok 4.3 (xAI)",
+        provider=ProviderType.XAI,
+        model_id="grok-4.3",
+        context_window=1_000_000,
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=1.25,
+        description="Grok 4.3 — modèle xAI équilibré, 1M contexte, vision, tool calling",
+        badge="Nouveau",
+        capabilities=frozenset({"vision_describe", "tool_calling", "long_context"}),
+    ),
     "grok-4-1-fast-reasoning": ModelConfig(
         name="grok-4-1-fast-reasoning",
         display_name="Grok 4.1 Fast Reasoning (xAI)",
@@ -525,19 +539,6 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=1.0,
         description="Grok 4.1 Fast — réponse directe sans raisonnement explicite",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
-    ),
-    "grok-code-fast-1": ModelConfig(
-        name="grok-code-fast-1",
-        display_name="Grok Code Fast 1 (xAI)",
-        provider=ProviderType.XAI,
-        model_id="grok-code-fast-1",
-        context_window=131072,
-        max_output_tokens=131072,
-        supports_vision=False,
-        supports_tools=True,
-        cost_per_million_tokens=1.5,
-        description="Grok Code Fast 1 — spécialisé code, ultra rapide",
-        capabilities=frozenset({"tool_calling"}),
     ),
     "grok-4.20-0309-reasoning": ModelConfig(
         name="grok-4.20-0309-reasoning",
@@ -580,20 +581,6 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
 
     # === NVIDIA NIM ===
-    "nvidia-glm-4.7": ModelConfig(
-        name="nvidia-glm-4.7",
-        display_name="GLM-4.7 (NVIDIA NIM)",
-        provider=ProviderType.NVIDIA,
-        model_id="z-ai/glm4.7",
-        context_window=131072,
-        max_output_tokens=32768,
-        supports_vision=False,
-        supports_tools=True,
-        cost_per_million_tokens=0.0,
-        description="GLM-4.7 — agentic coding, tool use, UI skills, multilingual, gratuit via NVIDIA NIM. ⚠️ Serveurs souvent saturés : latence élevée possible.",
-        badge="Gratuit",
-        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text"}),
-    ),
     "nvidia-minimax-m2.7": ModelConfig(
         name="nvidia-minimax-m2.7",
         display_name="MiniMax M2.7 (NVIDIA NIM)",
@@ -1460,7 +1447,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "claude-3-5-sonnet":           {"code": 82, "speed": 70, "reasoning": 84, "creative": 86, "research": 80, "vision": 82, "web": 80},
     "claude-3-5-haiku":            {"code": 68, "speed": 96, "reasoning": 66, "creative": 72, "research": 62, "vision": 68, "web": 65},
     # ── xAI / Grok ─────────────────────────────────────────────────────────
-    "grok-code-fast-1":            {"code": 90, "speed": 95, "reasoning": 55, "creative": 40, "research": 52, "vision": 30, "web": 60},
+    "grok-4.3":                    {"code": 80, "speed": 85, "reasoning": 82, "creative": 75, "research": 80, "vision": 80, "web": 82},
     "grok-4-1-fast-reasoning":     {"code": 75, "speed": 80, "reasoning": 90, "creative": 60, "research": 78, "vision": 75, "web": 82},
     "grok-4-1-fast-non-reasoning": {"code": 72, "speed": 90, "reasoning": 65, "creative": 58, "research": 70, "vision": 72, "web": 78},
     "grok-4.20-0309-reasoning":    {"code": 80, "speed": 72, "reasoning": 93, "creative": 65, "research": 84, "vision": 85, "web": 88},
@@ -1478,7 +1465,6 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     # ── Moonshot (Kimi) ────────────────────────────────────────────────────
     "kimi-k2.5":                   {"code": 74, "speed": 75, "reasoning": 78, "creative": 72, "research": 90, "vision":  0, "web": 82},
     # ── NVIDIA NIM ─────────────────────────────────────────────────────────
-    "nvidia-glm-4.7":              {"code": 87, "speed": 82, "reasoning": 83, "creative": 82, "research": 78, "vision": 55, "web": 70},
     "nvidia-minimax-m2.7":         {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision": 52, "web": 70},
     # ── MiniMax (natif) ────────────────────────────────────────────────────
     "minimax-m2.5":                {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
@@ -1520,7 +1506,7 @@ def best_model_for(
     Règle "réserve Claude" : les modèles premium (claude-opus-4.7) ne sont
     sélectionnés que si leur score dépasse le meilleur modèle non-premium
     d'au moins _PREMIUM_THRESHOLD points. Autrement le modèle spécialisé
-    moins cher gagne (grok-code pour code, deepseek-reasoner pour reasoning, etc.)
+    moins cher gagne (grok-4.3 pour code/vision, deepseek-reasoner pour reasoning, etc.)
 
     Args:
         domain: "code" | "speed" | "reasoning" | "creative" | "research"

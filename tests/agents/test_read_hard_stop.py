@@ -1,11 +1,10 @@
 """
 Tests pour le HARD STOP anti-relecture dans CodeAgent._execute_loop_action.
 
-Seuil = 5 : laisse les couches P3 anti-stagnation + cache servi faire leur travail
-en premier, le hard stop devient un vrai dernier recours.
+Seuil = 3 : bloque à la 4ème lecture identique (sans modif entre-temps).
 
 Vérifie :
-  • 5 lectures identiques tolérées, 6ème bloquée (même path + même plage).
+  • 3 lectures identiques tolérées, 4ème bloquée (même path + même plage).
   • Nouvelles plages (args différents) toujours autorisées = gros fichier OK.
   • Compteur par signature (path::start::end), pas par path seul.
   • Reset auto du compteur si le fichier a été modifié entre-temps (mtime).
@@ -54,7 +53,7 @@ def test_architect_reread_budget_respects_custom_default():
 
 @pytest.mark.asyncio
 async def test_hard_stop_blocks_6th_identical_read(tmp_path):
-    """6ème lecture avec args EXACTEMENT identiques = refus 🛑."""
+    """4ème lecture avec args EXACTEMENT identiques = refus 🛑 (seuil >= 3)."""
     from src.agents.sub_agent import CodeAgent
 
     agent = CodeAgent.__new__(CodeAgent)
@@ -64,13 +63,13 @@ async def test_hard_stop_blocks_6th_identical_read(tmp_path):
 
     action = {"action": "read_file", "path": "big.py", "start_line": 1, "end_line": 50}
 
-    for i in range(5):
+    for i in range(3):
         r = await agent._execute_loop_action(action)
         assert "🛑" not in str(r), f"Lecture #{i+1} bloquée à tort: {r}"
 
-    r6 = await agent._execute_loop_action(action)
-    assert "🛑" in str(r6), f"6ème lecture devrait être bloquée, got: {r6}"
-    assert "REFUS" in str(r6)
+    r4 = await agent._execute_loop_action(action)
+    assert "🛑" in str(r4), f"4ème lecture devrait être bloquée, got: {r4}"
+    assert "REFUS" in str(r4)
 
 
 @pytest.mark.asyncio
@@ -104,7 +103,7 @@ async def test_hard_stop_signature_is_path_plus_range(tmp_path):
     f.write_text("\n".join(f"line {i}" for i in range(1, 501)))
 
     action_a = {"action": "read_file", "path": "mid.py", "start_line": 1, "end_line": 100}
-    for _ in range(5):
+    for _ in range(3):
         r = await agent._execute_loop_action(action_a)
         assert "🛑" not in str(r)
 
@@ -112,8 +111,8 @@ async def test_hard_stop_signature_is_path_plus_range(tmp_path):
     r_b = await agent._execute_loop_action(action_b)
     assert "🛑" not in str(r_b), f"Plage B devrait être autorisée: {r_b}"
 
-    r_a6 = await agent._execute_loop_action(action_a)
-    assert "🛑" in str(r_a6), f"6ème sur plage A devrait être bloquée: {r_a6}"
+    r_a4 = await agent._execute_loop_action(action_a)
+    assert "🛑" in str(r_a4), f"4ème sur plage A devrait être bloquée: {r_a4}"
 
 
 @pytest.mark.asyncio
@@ -128,7 +127,7 @@ async def test_hard_stop_resets_on_mtime_change(tmp_path):
 
     action = {"action": "read_file", "path": "small.py", "start_line": 1, "end_line": 50}
 
-    for _ in range(5):
+    for _ in range(3):
         r = await agent._execute_loop_action(action)
         assert "🛑" not in str(r)
 
@@ -140,9 +139,9 @@ async def test_hard_stop_resets_on_mtime_change(tmp_path):
     r_after = await agent._execute_loop_action(action)
     assert "🛑" not in str(r_after), f"Lecture post-modif devrait être autorisée: {r_after}"
 
-    for _ in range(4):
+    for _ in range(2):
         r = await agent._execute_loop_action(action)
         assert "🛑" not in str(r)
 
-    r6 = await agent._execute_loop_action(action)
-    assert "🛑" in str(r6), f"6ème lecture sans modif devrait être bloquée: {r6}"
+    r4 = await agent._execute_loop_action(action)
+    assert "🛑" in str(r4), f"4ème lecture sans modif devrait être bloquée: {r4}"

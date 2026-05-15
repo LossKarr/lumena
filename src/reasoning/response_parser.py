@@ -163,6 +163,13 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
     )
     thought_content = thought_matches[-1].group(1).strip() if thought_matches else ""
 
+    # ── Déduplication : si le LLM répète "THOUGHT:" à l'intérieur du même bloc
+    # (ex: DeepSeek génère 13× la même intention), garder uniquement le dernier segment.
+    if thought_content.upper().count("THOUGHT:") > 2:
+        _parts = [p.strip() for p in re.split(r"(?i)\bTHOUGHT\s*:", thought_content) if p.strip()]
+        if _parts:
+            thought_content = _parts[-1]
+
     # ── Nettoyer le THOUGHT des blocs ACTION:/OBSERVATION: que Kimi y injecte parfois
     halluc_flag = False
     _first_halluc = re.search(

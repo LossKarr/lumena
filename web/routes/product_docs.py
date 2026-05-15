@@ -517,12 +517,14 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
   <h4>Vidéo & Multimédia</h4>
   <ul>
     <li>Génération vidéo programmatique avec <strong>Remotion</strong> (React TSX → MP4/WebM)</li>
-    <li>6 templates : <code>presentation</code>, <code>social_short</code>, <code>explainer</code>, <code>square_social</code>, <code>custom</code>, <code>auto</code></li>
+    <li>5 templates : <code>presentation</code>, <code>social_short</code>, <code>explainer</code>, <code>square_social</code>, <code>custom</code></li>
     <li>3 formats : paysage 1920×1080, portrait 1080×1920, carré 1080×1080</li>
-    <li>Intégration assets : upload image/vidéo/audio → <code>public/</code> → <code>staticFile()</code> TSX</li>
+    <li>Intégration assets locaux : upload image/vidéo/audio → <code>public/</code> → <code>staticFile()</code> TSX</li>
     <li>Auto-détection assets récents (images/documents reçus dans les 24h)</li>
     <li>Retry JSON plan (2 tentatives, température +0.1) + regex fallback</li>
     <li>Rendu local Node.js ≥18 (prioritaire) ou Docker en mode sandbox</li>
+    <li>Auto-fix sur erreur de rendu : correction LLM ciblée sur le fichier fautif sans casser les imports des scènes</li>
+    <li>Pas d'images externes : fonds CSS gradient exclusivement — les URLs Unsplash/externes sont interdites pour garantir un rendu stable</li>
     <li>SSE logs en direct : phases 1→4 visibles dans le chat</li>
   </ul>
 </div>
@@ -1390,6 +1392,27 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
       <p>Délégation d'agents protégée par <code>DelegationContext</code> immuable</p>
     </div>
   </div>
+  <div class="doc-rel-item">
+    <span class="doc-rel-icon"><i data-lucide="badge-check"></i></span>
+    <div>
+      <strong>TaskProofDecision</strong>
+      <p>Chaque tâche complétée reçoit une annotation <code>evidence_kind</code> + <code>confidence</code> (strong/medium/weak) — observabilité sans blocage</p>
+    </div>
+  </div>
+  <div class="doc-rel-item">
+    <span class="doc-rel-icon"><i data-lucide="brain"></i></span>
+    <div>
+      <strong>Thought dedup</strong>
+      <p>Si le LLM répète <code>THOUGHT:</code> plus de 2 fois dans un bloc (hallucination DeepSeek), seul le dernier segment est conservé</p>
+    </div>
+  </div>
+  <div class="doc-rel-item">
+    <span class="doc-rel-icon"><i data-lucide="eye-off"></i></span>
+    <div>
+      <strong>Read guard seuil 3</strong>
+      <p>CodeAgent bloqué dès la 4ème lecture identique consécutive sans modification — détecte les boucles de relecture au plus tôt</p>
+    </div>
+  </div>
 </div>
 
 <h3>Health checks — <code>health_check.py</code> (378L)</h3>
@@ -1410,6 +1433,8 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tr><td>Verbalization redirect</td><td>Monologue interne sans action (<code>**THOUGHT:**</code>, "je délègue") → nudge forcé vers action concrète</td></tr>
 <tr><td>established_facts zéro-lock</td><td>Chemin projet lu directement dans <code>StructuredState</code>, fallback IdentityService si absent</td></tr>
 <tr><td>Cache invalidation post-edit</td><td>Cache lecture LRU invalidé après chaque modification de fichier (pas de contenu périmé)</td></tr>
+<tr><td>Thought dedup</td><td>Bloc THOUGHT répété &gt;2× (hallucination DeepSeek) → seul le dernier segment est conservé, les 5 000+ chars simulés sont ignorés</td></tr>
+<tr><td>Fausses OBSERVATION: strip</td><td>Les blocs <code>OBSERVATION:</code> hallucinés par le LLM dans sa propre réponse sont supprimés avant parsing — seules les observations système sont acceptées</td></tr>
 </tbody>
 </table>
 
@@ -1440,7 +1465,7 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
         "content": """
 <div class="doc-callout doc-callout-warn" style="border-left:4px solid #f59e0b;margin-bottom:18px">
   <strong>⚠️ Version Beta — Lumena Beta-v1.0</strong><br>
-  Lumena est actuellement en bêta active. Le déploiement est fonctionnel et stable pour un usage personnel,
+  Lumena v1.0 est actuellement en bêta active. Le déploiement est fonctionnel et stable pour un usage personnel,
   mais des comportements inattendus peuvent survenir sur certaines configurations ou fonctionnalités en cours d'intégration.
   Nous recommandons de consulter les <strong>logs daemon</strong> en cas d'anomalie.
 </div>
