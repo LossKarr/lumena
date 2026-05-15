@@ -22,7 +22,7 @@ et ce projet adhère au [Semantic Versioning](https://semver.org/lang/fr/).
 
 ---
 
-## [1.0.33] — 2026-05-08
+## [1.0.34] — 2026-05-08
 
 ### Ajouts
 - **Réseau Multi-Lumena LAN** — Jumelage sécurisé par code court (6 chars, TTL 5 min, usage unique), peer tokens SHA-256 révocables, délégation de tâches inter-instances, découverte LAN + mDNS `_lumena._tcp.local`, SSRF guard RFC1918 sur toutes les sorties réseau, audit log des délégations, UI vue simple + vue avancée
