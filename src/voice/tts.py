@@ -1,7 +1,7 @@
 """
 🌟 LUMENA - Text-to-Speech (TTS)
 
-Module pour faire parler LUMENA en utilisant edge-tts.
+Module pourr faire parler LUMENA en utilisant edge-tts.
 
 Fonctionnalités:
 - Système de fallback (edge-tts → pyttsx3)
