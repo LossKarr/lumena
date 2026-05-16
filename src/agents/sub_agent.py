@@ -1186,6 +1186,11 @@ class CodeAgent(SubAgent):
         self._SESSION_MEMORY_TTL = 4 * 3600  # 4 heures
         # P5: compteur d'échecs d'édition par fichier (réinitialisé à chaque tentative)
         self._edit_fail_for_path: dict[str, int] = {}
+        # Phase 0.2 — Compteur d'échecs run_command par signature normalisée
+        # (clé = tête de commande + indice d'erreur, pas chemin complet)
+        # Déclenche une Reflexion à la 3e répétition pour aider à réveiller
+        # l'apprentissage sur les patterns d'errance shell observés en prod.
+        self._cmd_fail_count: dict[str, int] = {}
         # P6: compteur de self-repair syntaxe par fichier + snapshot dernier état valide
         self._self_repair_count: int = 0
         self._self_repair_count_per_file: dict[str, int] = {}
@@ -1342,6 +1347,8 @@ class CodeAgent(SubAgent):
         self._reflexion_generated_count = 0
         self._grep_zero_repeats = 0
         self._applied_reflexion_ids = []
+        # Phase 0.2 — Reset compteur cmd fail à chaque tâche
+        self._cmd_fail_count = {}
         # P1/P2 : SuccessStore + auto-eval
         self._applied_success_ids = []
         self._success_generated_count = 0
@@ -1682,6 +1689,44 @@ class CodeAgent(SubAgent):
         store[key] = int(store.get(key, 0)) + 1
         return store[key]
 
+    @staticmethod
+    def _normalize_cmd_fail_signature(command: str, observation: str) -> str:
+        """Phase 0.2 — Réduit une commande shell + obs à une signature stable.
+
+        Objectif : grouper les variantes d'une même tentative ("node --check X",
+        "cd Y && node --check X", "node --check \"Z\"") sous la même clé pour
+        détecter les patterns d'errance shell (vu en prod : 5 tentatives
+        node --check avec chemins différents → 1 seule lesson à apprendre).
+
+        Format clé : "<verbe_principal>|<indice_erreur>"
+        Exemple : "node|exit:1", "python|exit:2", "npm|chemin_introuvable"
+        """
+        import re as _re_cmd
+        cmd = (command or "").strip().lower()
+        # Retire les préfixes cd / Set-Location / cmd /c qui varient
+        cmd = _re_cmd.sub(r"^(cd\s+/d\s+\".*?\"\s*&&\s*|cd\s+\S+\s*&&\s*|set-location\s+\S+\s*[;&]+\s*)", "", cmd)
+        # Premier mot exécutable significatif
+        first_word = cmd.split()[0] if cmd.split() else "cmd"
+        first_word = _re_cmd.sub(r"[^a-z0-9_.-]", "", first_word)[:24] or "cmd"
+        # Indice d'erreur depuis l'observation (tronquée et lowered)
+        obs = (observation or "").lower()[:400]
+        err_hint = "fail"
+        # Capture le code exit EXACT (regex avec word boundary pour ne pas
+        # confondre exit:1 et exit:128)
+        m = _re_cmd.search(r"exit[:\s]\s*(\d+)\b", obs)
+        if m:
+            err_hint = f"exit:{m.group(1)}"
+        elif "exit code" in obs:
+            m2 = _re_cmd.search(r"exit code\s+(\d+)\b", obs)
+            err_hint = f"exit:{m2.group(1)}" if m2 else "exit:?"
+        elif "introuvable" in obs or "not found" in obs or "n'est pas reconnu" in obs:
+            err_hint = "not_found"
+        elif "denied" in obs or "permission" in obs or "non autoris" in obs:
+            err_hint = "permission"
+        elif "bloqu" in obs or "blocked" in obs:
+            err_hint = "blocked"
+        return f"{first_word}|{err_hint}"
+
     # ─────────────────────────────────────────────────────────────────────
     # Architect Plan → TODO_STATE SSE (affichage UI style ReAct)
     # ─────────────────────────────────────────────────────────────────────
@@ -1981,25 +2026,21 @@ class CodeAgent(SubAgent):
         messages = build_reflexion_prompt(signal=signal, context=ctx)
 
         try:
-            # Utilise le client LLM du sub_agent (OpenAI-compatible)
-            client = getattr(self, "client", None) or getattr(self, "_client", None)
-            if client is None:
+            # FIX Phase 0: utiliser l'API standard Lumena (await llm.chat) au lieu
+            # du client OpenAI inexistant. `self.client` n'a jamais été défini sur
+            # SubAgent → bail out silencieux qui désactivait l'apprentissage.
+            # `current_task` peut être None (fire-and-forget post-tâche) ;
+            # `_get_llm(None)` retombe alors gracieusement sur core.llm (cf. L.410).
+            llm = self._get_llm(getattr(self, "current_task", None))
+            if llm is None:
                 return
-            # Appel non bloquant, paramètres conservateurs
-            model = getattr(self, "reflexion_model", None) or getattr(self, "model", "deepseek-chat")
-            loop = asyncio.get_event_loop()
 
-            def _call() -> str:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    max_tokens=350,
-                    stream=False,
-                )
-                return (resp.choices[0].message.content or "").strip()
-
-            raw = await loop.run_in_executor(None, _call)
+            raw = await llm.chat(
+                messages=messages,
+                temperature=0.2,
+                max_tokens=350,
+            )
+            raw = str(raw or "").strip()
             parsed = parse_reflexion_llm_response(raw)
             if not parsed:
                 logger.debug("[Reflexion] LLM response could not be parsed")
@@ -2052,29 +2093,25 @@ class CodeAgent(SubAgent):
             return
 
         try:
-            client = getattr(self, "client", None) or getattr(self, "_client", None)
-            if client is None:
+            # FIX Phase 0: API standard Lumena. `current_task` peut être None
+            # car fonction lancée en fire-and-forget après fin de tâche.
+            # `_get_llm(None)` retombe sur core.llm (cf. L.410).
+            llm = self._get_llm(getattr(self, "current_task", None))
+            if llm is None:
                 return
-            model = getattr(self, "reflexion_model", None) or getattr(self, "model", "deepseek-chat")
             messages = build_success_prompt(
                 task_description=task_description,
                 tools_used=list(tools_used or []),
                 iterations=int(iterations or 0),
                 outcome_summary=outcome_summary or "",
             )
-            loop = asyncio.get_event_loop()
 
-            def _call() -> str:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    temperature=0.2,
-                    max_tokens=350,
-                    stream=False,
-                )
-                return (resp.choices[0].message.content or "").strip()
-
-            raw = await loop.run_in_executor(None, _call)
+            raw = await llm.chat(
+                messages=messages,
+                temperature=0.2,
+                max_tokens=350,
+            )
+            raw = str(raw or "").strip()
             parsed = parse_success_llm_response(raw)
             if not parsed:
                 logger.debug("[Success] LLM response could not be parsed")
@@ -2119,10 +2156,11 @@ class CodeAgent(SubAgent):
             return
 
         try:
-            client = getattr(self, "client", None) or getattr(self, "_client", None)
-            if client is None:
+            # FIX Phase 0: API standard Lumena. `current_task` peut être None
+            # (fire-and-forget post-succès). `_get_llm(None)` retombe sur core.llm.
+            llm = self._get_llm(getattr(self, "current_task", None))
+            if llm is None:
                 return
-            model = getattr(self, "reflexion_model", None) or getattr(self, "model", "deepseek-chat")
             # Résumé ultra-compact des fichiers modifiés (chemin + extrait fin)
             snippets: list[str] = []
             for _p in list(edits_done)[-5:]:
@@ -2151,22 +2189,16 @@ class CodeAgent(SubAgent):
                 "Sois SÉVÈRE sur la pertinence : ne signale RIEN si le code est simplement correct."
             )
             user = f"TÂCHE :\n{task_description[:400]}\n\nFICHIERS MODIFIÉS :\n" + "\n\n".join(snippets)
-            loop = asyncio.get_event_loop()
 
-            def _call() -> str:
-                resp = client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=0.2,
-                    max_tokens=300,
-                    stream=False,
-                )
-                return (resp.choices[0].message.content or "").strip()
-
-            raw = await loop.run_in_executor(None, _call)
+            raw = await llm.chat(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=0.2,
+                max_tokens=300,
+            )
+            raw = str(raw or "").strip()
             import json as _json_ae
             import re as _re_ae
             _m = _re_ae.search(r"\{.*\}", raw, _re_ae.DOTALL) if raw else None
@@ -4006,6 +4038,53 @@ class CodeAgent(SubAgent):
                                 task_hint=getattr(task, "description", "") or "",
                             )
                         )
+                    except Exception:
+                        pass
+
+        # ── Phase 0.2 — Trigger Reflexion : run_command qui échoue en boucle ──
+        # Observé en prod (session 09:35-09:37) : 5 tentatives consécutives
+        # `node --check` avec chemins différents sans qu'aucune lesson ne soit
+        # générée. Les triggers existants (grep zero, str_replace fail) ne
+        # couvraient pas ce pattern.
+        # Signature normalisée pour grouper les variantes de la même cause
+        # (ex. "node|exit:1" indépendamment du chemin testé).
+        if action_type == "run_command":
+            _obs_run = str(observation)[:600].lower()
+            _is_run_error = (
+                "exit:1" in _obs_run or "exit:2" in _obs_run
+                or "introuvable" in _obs_run or "not found" in _obs_run
+                or "n'est pas reconnu" in _obs_run or "denied" in _obs_run
+                or "bloqu" in _obs_run or "❌" in str(observation)[:10]
+            )
+            if _is_run_error:
+                _cmd_text = str(action.get("command", "") or "")
+                _sig = self._normalize_cmd_fail_signature(_cmd_text, _obs_run)
+                _cmd_store = getattr(self, "_cmd_fail_count", None)
+                if not isinstance(_cmd_store, dict):
+                    _cmd_store = {}
+                    self._cmd_fail_count = _cmd_store
+                _cmd_store[_sig] = _cmd_store.get(_sig, 0) + 1
+                _cmd_count = _cmd_store[_sig]
+                # 3e échec sur la même signature → leçon Reflexion (fire-and-forget)
+                if _cmd_count >= 3:
+                    logger.info(
+                        "[CmdFailTrack] signature répétée ({}×): {} — déclenche reflexion",
+                        _cmd_count, _sig,
+                    )
+                    try:
+                        _trace_tail = "\n".join(
+                            f"[{m.get('role','?')}] {str(m.get('content',''))[:200]}"
+                            for m in messages[-4:]
+                        )
+                        asyncio.create_task(
+                            self._maybe_generate_reflexion(
+                                signal=f"run_command échoué {_cmd_count}× sur signature {_sig} (cmd préfix: {_cmd_text[:80]})",
+                                context_tail=_trace_tail,
+                                task_hint=getattr(task, "description", "") or "",
+                            )
+                        )
+                        # Reset pour éviter spam sur même signature dans la tâche
+                        _cmd_store[_sig] = 0
                     except Exception:
                         pass
 

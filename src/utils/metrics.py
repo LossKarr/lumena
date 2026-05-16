@@ -2,18 +2,33 @@
 
 Écrit des métriques structurées (JSONL) à chaque tâche CodeAgent :
 - task_id, model_name, attempt, iterations, success, status_code, duration_s
-- Path : `<LOGS_DIR>/codeagent/metrics.jsonl`
+- Path prod : `<LOGS_DIR>/codeagent/metrics.jsonl`
+- Path test : `<LOGS_DIR>/codeagent/metrics_test.jsonl` (auto-isolé sous pytest)
 
 Gardé par flag LUMENA_CODING_METRICS. Best-effort, fail-safe.
+
+FIX Phase 0 (DIAGNOSTIC_PROD.md §1) : isolation test/prod pour éviter de
+polluer les métriques de production avec les entrées des tests automatisés.
 """
 from __future__ import annotations
 
 import json
+import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+
+def _is_running_under_pytest() -> bool:
+    """True si le code tourne sous pytest.
+
+    Permet d'isoler les métriques test des métriques production sans
+    obliger les tests à mocker `record_task_metrics`.
+    """
+    return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 
 
 def record_task_metrics(
@@ -54,7 +69,17 @@ def record_task_metrics(
         from src.utils.paths import LOGS_DIR
         metrics_dir = LOGS_DIR / "codeagent"
         metrics_dir.mkdir(parents=True, exist_ok=True)
-        metrics_file = metrics_dir / "metrics.jsonl"
+        # Isolation test/prod : sous pytest → metrics_test.jsonl pour ne pas
+        # polluer les analyses production. Override possible via
+        # LUMENA_METRICS_FILE (utile pour les tests d'observabilité ciblés).
+        _override = os.environ.get("LUMENA_METRICS_FILE", "").strip()
+        if _override:
+            metrics_file = Path(_override)
+            metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        elif _is_running_under_pytest():
+            metrics_file = metrics_dir / "metrics_test.jsonl"
+        else:
+            metrics_file = metrics_dir / "metrics.jsonl"
 
         entry: dict[str, Any] = {
             "ts": time.time(),
@@ -78,10 +103,17 @@ def record_task_metrics(
 
 
 def read_recent_metrics(limit: int = 100) -> list[dict[str, Any]]:
-    """Lit les N dernières entrées (best-effort, pour UI/debug)."""
+    """Lit les N dernières entrées (best-effort, pour UI/debug).
+
+    Toujours lit le fichier prod, jamais le fichier test (sauf override env).
+    """
     try:
         from src.utils.paths import LOGS_DIR
-        metrics_file = LOGS_DIR / "codeagent" / "metrics.jsonl"
+        _override = os.environ.get("LUMENA_METRICS_FILE", "").strip()
+        if _override:
+            metrics_file = Path(_override)
+        else:
+            metrics_file = LOGS_DIR / "codeagent" / "metrics.jsonl"
         if not metrics_file.exists():
             return []
         lines = metrics_file.read_text(encoding="utf-8", errors="ignore").splitlines()

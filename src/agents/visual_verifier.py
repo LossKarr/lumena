@@ -36,11 +36,26 @@ class VisualVerifier:
         """
         Retourne None si visuellement correct, sinon description des problèmes.
         Ne bloque JAMAIS — timeout 15s, toutes erreurs ignorées.
+
+        Phase 0.2 — Chaque path de sortie loggue explicitement sa raison
+        (auparavant beaucoup de `return None` silencieux rendaient le skip
+        impossible à diagnostiquer en prod).
         """
         index = workspace_path / "index.html"
         if not index.exists():
+            logger.debug(
+                "[VisualVerifier] Skip: no_index_html (workspace={})",
+                workspace_path,
+            )
             return None
         if llm is None:
+            logger.debug("[VisualVerifier] Skip: llm_is_none")
+            return None
+        if not hasattr(llm, "describe_image"):
+            logger.debug(
+                "[VisualVerifier] Skip: llm_no_describe_image (type={})",
+                type(llm).__name__,
+            )
             return None
 
         proc = None
@@ -58,6 +73,7 @@ class VisualVerifier:
             browser = PlaywrightBrowser(headless=True, profile_name=None)
             started = await browser.start()
             if not started:
+                logger.debug("[VisualVerifier] Skip: playwright_browser_start_failed")
                 return None
 
             nav = await browser.navigate(
@@ -65,26 +81,49 @@ class VisualVerifier:
                 wait_until="domcontentloaded",
             )
             if not nav.get("success"):
+                logger.debug(
+                    "[VisualVerifier] Skip: navigate_failed (error={!r})",
+                    str(nav.get("error", "unknown"))[:200],
+                )
                 return None
 
             await asyncio.sleep(1.0)
 
             shot = await browser.screenshot(full_page=True)
             if not shot.get("success"):
+                logger.debug(
+                    "[VisualVerifier] Skip: screenshot_failed (error={!r})",
+                    str(shot.get("error", "unknown"))[:200],
+                )
                 return None
             screenshot_path = shot["path"]
 
-            result = await asyncio.wait_for(
-                llm.describe_image(screenshot_path, self._VISION_PROMPT),
-                timeout=12.0,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    llm.describe_image(screenshot_path, self._VISION_PROMPT),
+                    timeout=12.0,
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "[VisualVerifier] Skip: vision_timeout_12s (screenshot={})",
+                    screenshot_path,
+                )
+                return None
             response = str(result).strip()
             if response.upper().startswith("OK"):
+                logger.debug("[VisualVerifier] OK: pas de problème visuel détecté")
                 return None
+            logger.info(
+                "[VisualVerifier] Problème détecté : {}",
+                response[:160],
+            )
             return response
 
         except Exception as e:
-            logger.debug("[VisualVerifier] Skip: {}", e)
+            logger.debug(
+                "[VisualVerifier] Skip: exception ({}): {}",
+                type(e).__name__, str(e)[:200] or "<empty message>",
+            )
             return None
         finally:
             if proc:

@@ -107,6 +107,20 @@ def register_project(
     logger.info("[registry] Nouveau projet enregistré: {} → {}", slug, path_str)
 
 
+def _is_slug_explicitly_named(query: str, found: Path) -> bool:
+    """True si le slug complet du projet apparaît littéralement dans la query.
+
+    Un simple mot en commun (ex: 'images' dans 'crée un site d\\'images')
+    ne suffit pas — le nom entier doit être présent pour éviter qu\\'un match
+    flou sur intent=create écrase un nouveau projet.
+    """
+    q_norm = _norm(query)
+    return (
+        _norm(found.name) in q_norm
+        or _norm(found.name.replace("-", " ")) in q_norm
+    )
+
+
 def _is_fallback_match(query: str, found: Path) -> bool:
     """Détecte si find_project a retourné un fallback sans vrai match.
 
@@ -633,56 +647,61 @@ def resolve_workspace(
         # c'est probablement la suite de la conversation en cours ("transforme la
         # nouvelle page" 2 min après l'avoir créée). On bascule l'intent en modify
         # pour éviter de créer un projet orphelin.
+        # _recently_active : calculé inconditionnellement (fallback ET match réel).
+        # Nécessaire pour que la continuation de conversation soit détectée même
+        # quand le match n'est pas un fallback (ex: user revient sur un projet
+        # nommé explicitement 3 min après l'avoir créé).
         _recently_active = False
-        if _is_fallback:
-            try:
-                for _p in load_registry():
-                    if Path(_p.get("path", "")).resolve() == found.resolve():
-                        _last = _p.get("last_accessed", "")
-                        if _last:
-                            _delta = (datetime.now() - datetime.fromisoformat(_last)).total_seconds()
-                            if 0 <= _delta <= 600:  # 10 min
-                                _recently_active = True
-                        break
-            except Exception:
-                pass
+        try:
+            for _p in load_registry():
+                if Path(_p.get("path", "")).resolve() == found.resolve():
+                    _last = _p.get("last_accessed", "")
+                    if _last:
+                        _delta = (datetime.now() - datetime.fromisoformat(_last)).total_seconds()
+                        if 0 <= _delta <= 600:  # 10 min
+                            _recently_active = True
+                    break
+        except Exception:
+            pass
 
-        # Si l'intent est clairement "create" ET que le match n'est qu'un fallback
-        # (= "projet le plus récent" sans correspondance par nom), ignorer le match :
-        # l'utilisateur veut un NOUVEAU projet, pas un vieux dossier.
-        # MAIS si le match est RÉEL (nom/keywords matchent la query) OU si le projet
-        # a été touché très récemment (suite de conversation), on garde :
-        # "crée une page AU site canapé" = ajout à projet existant, pas nouveau projet.
+        # Règles de fall-through vers la création (step 4) pour intent=create :
+        #
+        # Cas 1 — fallback pur (aucun mot du slug dans la query) + pas récent :
+        #   l'utilisateur veut un NOUVEAU projet, pas un vieux dossier sans rapport.
+        #
+        # Cas 2 — match flou (mots en commun) MAIS slug non cité explicitement + pas récent :
+        #   "crée un site images" avec projet "projet-images" existant = nouveau projet,
+        #   pas un ajout. Seul le slug complet cité littéralement justifie un modify.
+        #   Ex valide : "crée une page pour echo-drift" → "echo-drift" dans la query → modify.
         if intent == "create" and _is_fallback and not _recently_active:
-            logger.info("[resolve_workspace] Intent=create + fallback match ignoré: {}", found)
-            # Fall through to creation (step 4)
+            logger.info("[resolve_workspace] Intent=create + fallback ignoré → création: {}", found)
+            # Fall through to step 4
+        elif intent == "create" and not _is_slug_explicitly_named(query, found) and not _recently_active:
+            logger.info("[resolve_workspace] Intent=create + match ambigu (mots communs seulement) ignoré → création: {}", found)
+            # Fall through to step 4
         else:
             # Quand l'intent est "unknown" (aucun verbe d'action dans la query),
             # on abaisse la confiance à 0.5 pour éviter le fast-route CodeAgent
             # sur des messages purement conversationnels ("ca va ?", "bah alors").
             # Le seuil du fast-route est 0.7 — intent explicite ("modify") garde 0.8.
-            #
-            # Fallback pur (aucun match réel, pas récemment actif) → conf 0.4 max
-            # pour ne JAMAIS déclencher le fast-route sur une requête sans rapport.
             if _is_fallback and not _recently_active:
                 _conf = 0.4
             elif _is_fallback and _recently_active:
-                # Projet récemment actif = suite de conversation → conf 0.75
                 _conf = 0.75
             elif intent == "unknown":
                 _conf = 0.5
             else:
                 _conf = 0.8
-            # intent "create" sur match réel OU projet récemment actif → traité comme "modify"
-            if intent == "create" and (not _is_fallback or _recently_active):
+            # intent "create" + slug explicite OU récemment actif → modify (ajout à existant)
+            if intent == "create" and (_is_slug_explicitly_named(query, found) or _recently_active):
                 effective_intent = "modify"
-                _why = "match réel" if not _is_fallback else "projet récemment actif (<10min)"
-                logger.info("[resolve_workspace] Intent=create sur {} → traité comme modify (ajout à projet existant)", _why)
+                _why = "slug explicite" if _is_slug_explicitly_named(query, found) else "projet récemment actif (<10min)"
+                logger.info("[resolve_workspace] Intent=create sur {} → modify (ajout à projet existant)", _why)
             # intent "unknown" + projet récemment actif → modify (suite de conversation)
             elif intent == "unknown" and _recently_active:
                 effective_intent = "modify"
-                logger.info("[resolve_workspace] Intent=unknown + projet récemment actif → traité comme modify")
-            logger.info("[resolve_workspace] Projet trouvé via registre: {} (intent={}, conf={:.1f}, fallback={}, recent={})", found, effective_intent, _conf, _is_fallback, _recently_active)
+                logger.info("[resolve_workspace] Intent=unknown + projet récemment actif → modify")
+            logger.info("[resolve_workspace] Projet trouvé: {} (intent={}, conf={:.1f}, fallback={}, recent={})", found, effective_intent, _conf, _is_fallback, _recently_active)
             return WorkspaceResolution(path=found, intent=effective_intent, source="registry", confidence=_conf)
 
     # ── 4. Création si intention détectée et aucun projet existant ──

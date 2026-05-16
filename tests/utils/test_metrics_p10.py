@@ -12,6 +12,11 @@ import pytest
 def _reset_logs_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("LUMENA_LOGS_DIR", str(tmp_path))
     monkeypatch.delenv("LUMENA_CODING_METRICS", raising=False)
+    # FIX Phase 0 : depuis l'isolation test/prod (src/utils/metrics.py),
+    # sous pytest les métriques vont par défaut dans metrics_test.jsonl.
+    # Ces tests historiques attendent metrics.jsonl — on utilise l'override
+    # explicite LUMENA_METRICS_FILE pour cibler le fichier voulu.
+    monkeypatch.setenv("LUMENA_METRICS_FILE", str(tmp_path / "codeagent" / "metrics.jsonl"))
     import src.config.codeagent_flags as cf
     import src.utils.paths as paths
     importlib.reload(cf)
