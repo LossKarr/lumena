@@ -100,16 +100,20 @@ class TestMaybeGenerateSuccessPattern:
             m_store.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_skips_when_no_client(self):
+    async def test_skips_when_no_llm(self):
+        """Phase 0 — Adapté : on n'utilise plus self.client mais self._get_llm().
+
+        Si _get_llm() retourne None (cas edge), la fonction doit skip silencieusement.
+        """
         agent = _make_agent()
-        agent.client = None
-        # Ne doit pas crasher et rien créer
-        await agent._maybe_generate_success_pattern(
-            task_description="Tâche qui a réussi plein de code",
-            tools_used=["read_file"],
-            iterations=3,
-            outcome_summary="Tests passent",
-        )
+        # Patch _get_llm pour qu'il retourne None
+        with patch.object(agent, "_get_llm", return_value=None):
+            await agent._maybe_generate_success_pattern(
+                task_description="Tâche qui a réussi plein de code",
+                tools_used=["read_file"],
+                iterations=3,
+                outcome_summary="Tests passent",
+            )
         assert agent._success_generated_count == 0
 
     @pytest.mark.asyncio
@@ -126,6 +130,12 @@ class TestMaybeGenerateSuccessPattern:
 
     @pytest.mark.asyncio
     async def test_generates_on_valid_llm_response(self, tmp_path):
+        """Phase 0 — Adapté : on utilise self._get_llm() + AsyncMock.
+
+        Phase 0.5 — Le mot "bug" déclenche le filtre anti-pollution (strict
+        volontaire). On utilise "problème" dans la description pour valider
+        qu'une tâche légitime SANS mot destructif passe normalement.
+        """
         from src.learning.success_store import (
             get_success_store, reset_success_store, SuccessStore,
         )
@@ -133,23 +143,21 @@ class TestMaybeGenerateSuccessPattern:
         # Redirige le store vers tmp_path
         with patch.object(SuccessStore, "DEFAULT_PATH", tmp_path / "s.jsonl"):
             agent = _make_agent()
-            fake_resp = MagicMock()
-            fake_resp.choices = [MagicMock()]
-            fake_resp.choices[0].message.content = (
-                '{"task_type":"bugfix","summary":"Fix X","approach":"read then edit",'
-                '"apply_when":"bug","tags":["x"],"confidence":0.8}'
-            )
-            client = MagicMock()
-            client.chat.completions.create.return_value = fake_resp
-            agent.client = client
-            agent.model = "deepseek-chat"
 
-            await agent._maybe_generate_success_pattern(
-                task_description="Corriger bug authentification critique",
-                tools_used=["read_file", "edit_file"],
-                iterations=4,
-                outcome_summary="Tests passent",
-            )
+            # Mock LLM avec API standard Lumena : await llm.chat(messages=..., ...)
+            mock_llm = MagicMock()
+            mock_llm.chat = AsyncMock(return_value=(
+                '{"task_type":"bugfix","summary":"Fix X","approach":"read then edit",'
+                '"apply_when":"auth issue","tags":["x"],"confidence":0.8}'
+            ))
+
+            with patch.object(agent, "_get_llm", return_value=mock_llm):
+                await agent._maybe_generate_success_pattern(
+                    task_description="Corriger problème authentification critique",
+                    tools_used=["read_file", "edit_file"],
+                    iterations=4,
+                    outcome_summary="Tests passent",
+                )
             assert agent._success_generated_count == 1
             store = get_success_store()
             assert len(store) == 1
@@ -185,6 +193,10 @@ class TestAutoEvaluate:
 
     @pytest.mark.asyncio
     async def test_generates_preventive_reflexion_on_issue(self, tmp_path):
+        """Phase 0 — Adapté : on utilise self._get_llm() au lieu de self.client.
+
+        Le mock LLM expose `chat()` async au lieu de `client.chat.completions.create`.
+        """
         from src.learning.reflexion_store import (
             get_reflexion_store, reset_reflexion_store, ReflexionStore,
         )
@@ -197,18 +209,15 @@ class TestAutoEvaluate:
         agent = _make_agent()
         agent._resolve_path = lambda p: Path(p)
 
-        fake_resp = MagicMock()
-        fake_resp.choices = [MagicMock()]
-        fake_resp.choices[0].message.content = (
+        # Mock LLM avec API standard Lumena : await llm.chat(messages=..., ...)
+        mock_llm = MagicMock()
+        mock_llm.chat = AsyncMock(return_value=(
             '{"has_issue":true,"issue":"edge case non géré",'
             '"severity":"medium","lesson":"Tester aussi None"}'
-        )
-        client = MagicMock()
-        client.chat.completions.create.return_value = fake_resp
-        agent.client = client
-        agent.model = "deepseek-chat"
+        ))
 
-        with patch.object(ReflexionStore, "DEFAULT_PATH", tmp_path / "r.jsonl"):
+        with patch.object(agent, "_get_llm", return_value=mock_llm), \
+             patch.object(ReflexionStore, "DEFAULT_PATH", tmp_path / "r.jsonl"):
             await agent._maybe_auto_evaluate_success(
                 task_description="Implémenter fonction foo",
                 edits_done=[str(f)],

@@ -98,6 +98,17 @@ async def delegate_task_handler(
             except Exception as _rpc_exc:
                 logger.debug("delegate_task: récupération contexte récent échouée: {}", _rpc_exc)
 
+        # Phase 0.6 : injecter la demande utilisateur originale (verbatim)
+        # dans le context passé au sub-agent. La reformulation LLM (description)
+        # peut perdre l'intent ; on garde la phrase exacte pour Architect/CodeAgent.
+        # Cf. DIAGNOSTIC_PROD.md §14.
+        _orig_user_q = getattr(ctx, "original_user_query", "") or ""
+        if _orig_user_q:
+            if context is None:
+                context = {}
+            if isinstance(context, dict) and "user_original_request" not in context:
+                context["user_original_request"] = _orig_user_q
+
         task_ctx = TaskContext.from_delegate_call(
             description=description,
             context=context,

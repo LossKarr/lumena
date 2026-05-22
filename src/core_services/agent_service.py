@@ -1181,7 +1181,7 @@ Conversations et apprentissages de la journée.
                 if user_name:
                     injection_parts.append(f"• L'utilisateur se nomme {user_name}. C'est ton créateur.")
 
-            injection_parts.append("• Tu es Lumena, créée par Losskarr-G.C. PAS Qwen, PAS Alibaba.")
+            injection_parts.append("• Tu es Lumena, créée par l'equipe OpenLumena-G.C. PAS Qwen, PAS Alibaba.")
             injection_parts.append("[FIN DES RÈGLES]\n")
 
             injection_text = "\n".join(injection_parts)

@@ -3,7 +3,7 @@
 import pytest
 import tempfile
 import os
-from src.utils.inventory_service import InventoryService, Product
+from tests.fixtures.codeagent_targets.inventory_service import InventoryService, Product
 
 
 @pytest.fixture

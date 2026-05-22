@@ -328,6 +328,10 @@ class ToolRegistry:
             (".handlers.peer_knowledge", "get_peer_knowledge_handler_defs",  "peers"),
             (".handlers.peer_tasks",    "get_peer_tasks_handler_defs",      "peers"),
             (".handlers.peer_orchestrator","get_peer_orchestrator_handler_defs","peers"),
+            (".handlers.datagouv",      "get_datagouv_handler_defs",      "web"),
+            (".handlers.data_workbench","get_data_workbench_handler_defs","documents"),
+            (".handlers.sirene",        "get_sirene_handler_defs",        "web"),
+            (".handlers.geo_gouv",      "get_geo_gouv_handler_defs",      "web"),
         ]
 
         import importlib

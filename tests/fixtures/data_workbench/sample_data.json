@@ -1,0 +1,8 @@
+{
+  "data": [
+    {"id": 1, "nom": "Région A", "code_insee": "01", "valeur": 100.5, "date": "2024-01-15"},
+    {"id": 2, "nom": "Région B", "code_insee": "02", "valeur": 200.0, "date": "2024-02-15"},
+    {"id": 3, "nom": "Région C", "code_insee": "03", "valeur": null, "date": "2024-03-15"},
+    {"id": 4, "nom": "Région D", "code_insee": "04", "valeur": 400.25, "date": "2024-04-15"}
+  ]
+}

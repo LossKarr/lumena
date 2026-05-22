@@ -279,6 +279,7 @@ def _fmt(n: int) -> str:
     return f"{n:,}".replace(",", "\u202f")
 
 
+
 # ── Full product documentation structure ────────────────────────
 # Returns a JSON tree of sections rendered client-side.
 # Placeholders like {tools_count} are replaced at request time.
@@ -458,6 +459,17 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
     <li>GitHub — 10 outils (repos, issues, PRs, commits)</li>
     <li>Email Gmail — lecture, envoi, pièces jointes</li>
     <li>HTTP générique — 5 outils (GET/POST/PUT/DELETE/PATCH)</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
+  <h4>Données publiques France 🇫🇷</h4>
+  <ul>
+    <li><strong>data.gouv.fr</strong> — 3 outils : recherche dans 50 000+ datasets officiels (INSEE, DVF immobilier, marchés publics, démographie), scoring qualité /100 par dataset, téléchargement avec sidecar provenance (MD5 + URL stable)</li>
+    <li><strong>SIRENE</strong> — 2 outils : recherche entreprise (nom/dirigeant/NAF) et lookup direct par SIRET via <code>recherche-entreprises.api.gouv.fr</code></li>
+    <li><strong>Géocodage BAN</strong> — 3 outils : adresse → GPS, GPS → adresse, métadonnées commune par code INSEE (population, surface, EPCI)</li>
+    <li><strong>Workbench tabulaire</strong> — 6 outils sur CSV/JSON/XLSX téléchargés : profile (colonnes/types/nulls), filter (ops whitelistés), aggregate (group_by + count/sum/mean/min/max/median), unique_values, export transformé, join multi-fichiers (inner/left/right/outer)</li>
+    <li>APIs publiques officielles, <strong>0 clé requise</strong>, scoring anti-faux-positifs (taille resource, profil acheteur détecté)</li>
   </ul>
 </div>
 

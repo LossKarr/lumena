@@ -165,6 +165,11 @@ class TestMetricsSyntheticGuard:
         import src.utils.paths as paths_mod
         monkeypatch.setattr(paths_mod, "LOGS_DIR", parent)
 
+        # FIX Phase 0 : isolation test/prod (src/utils/metrics.py) redirige
+        # vers metrics_test.jsonl sous pytest. On force le chemin exact avec
+        # LUMENA_METRICS_FILE pour préserver la sémantique de ce test.
+        monkeypatch.setenv("LUMENA_METRICS_FILE", str(metrics_file))
+
         m.record_task_metrics(
             task_id=task_id,
             model_name="test-model",

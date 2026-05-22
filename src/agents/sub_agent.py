@@ -670,6 +670,112 @@ class SubAgent:
 
         return await self._call_tool(tool_name, args)
 
+    # ── Phase 0.5 — Filtre anti-pollution SuccessStore ────────────────────────
+
+    @staticmethod
+    def _normalize_text_for_filter(s: str) -> str:
+        """Phase 0.5 — Normalise un texte : lowercase + retrait accents.
+
+        Permet un matching robuste insensible à la casse et aux accents
+        ("CASSÉ", "Cassé", "casse" → "casse" ; "abîmer", "ABIMER" → "abimer").
+        """
+        import unicodedata as _ud_norm
+        if not s:
+            return ""
+        nfkd = _ud_norm.normalize("NFKD", str(s).lower())
+        return "".join(c for c in nfkd if not _ud_norm.combining(c))
+
+    @staticmethod
+    def _should_block_success_capture(
+        task_description: str,
+        outcome_summary: str = "",
+        current_task: Any = None,
+    ) -> tuple[bool, str]:
+        """Phase 0.5 — Filtre anti-pollution SuccessStore.
+
+        Bloque la capture d'un pattern de succès si le contexte contient des
+        signaux destructeurs ou ambigus ("casser", "bugs subtils", "saboter"...),
+        SAUF si l'utilisateur a explicitement indiqué une intention de test
+        ("volontairement", "test de bug", "chaos engineering"...).
+
+        Contexte du bug (DIAGNOSTIC_PROD.md §13 — session 15:55 du 16/05) :
+        La tâche "corriger le site et casser à certain endroit à toi de trouver"
+        a fait capturer un pattern `Introduire des bugs subtils en modifiant
+        des constantes numériques` comme un succès — Lumena apprenait donc à
+        casser intentionnellement les projets utilisateur sur demande ambiguë.
+
+        Inspecte un maximum de sources pour ne pas être contournable par une
+        reformulation de description en aval :
+          - task_description (paramètre direct)
+          - outcome_summary (paramètre direct)
+          - current_task.description (si dispo)
+          - current_task.context (si dispo, str-ifié)
+
+        Returns:
+            (blocked, reason) : (True, "destructif:<mot>") si bloqué, (False, "") sinon.
+        """
+        import re as _re_filter
+
+        # 1. Collecte du contexte texte disponible
+        parts: list[str] = [
+            str(task_description or ""),
+            str(outcome_summary or ""),
+        ]
+        if current_task is not None:
+            parts.append(str(getattr(current_task, "description", "") or ""))
+            ctx_val = getattr(current_task, "context", None)
+            if ctx_val:
+                try:
+                    parts.append(str(ctx_val))
+                except Exception:
+                    pass
+        combined = " | ".join(p for p in parts if p)
+        if not combined:
+            return False, ""
+
+        # 2. Normalisation : case + accent insensitive
+        normalized = SubAgent._normalize_text_for_filter(combined)
+
+        # 3. Patterns destructifs (regex avec word boundary pour éviter
+        # les faux positifs : "casse" ne matche pas "casserole", "bug" ne
+        # matche pas "debugger", etc.)
+        destructive_patterns = (
+            r"\bcasse[rs]?\b",        # casse, casser, casses, cassé (après NFKD)
+            r"\bbuguer\b",
+            r"\bbugs?\b",             # bug, bugs (peut bloquer "fix le bug" — strict volontaire)
+            r"\bdetruire\b",          # détruire → detruire
+            r"\bsaboter\b",
+            r"\babimer\b",            # abîmer → abimer
+            r"\bfoirer\b",
+            r"\bpourrir\b",
+            r"\bendommager\b",
+            r"\bdegrader\b",          # dégrader → degrader
+            r"\bregression\b",        # régression → regression
+        )
+        matched: list[str] = []
+        for pat in destructive_patterns:
+            m = _re_filter.search(pat, normalized)
+            if m:
+                matched.append(m.group(0))
+
+        if not matched:
+            return False, ""
+
+        # 4. Intention explicite annule le blocage
+        intention_markers = (
+            "volontairement",
+            "intentionnellement",
+            "test de bug",
+            "simuler",
+            "chaos engineering",
+            "pour tester",
+            "test destructif",
+        )
+        if any(m in normalized for m in intention_markers):
+            return False, ""
+
+        return True, f"destructif:{matched[0]}"
+
 
 # ── Registre des délégations actives (cancel coopératif) ────────────────────
 # parent_task_id (TaskOrchestrator) → asyncio.Task en cours d'exécution.
@@ -1013,13 +1119,48 @@ def _is_local_bugfix_task(
     )
     if any(k in desc for k in broad_scope_markers):
         return False
+
+    # Phase 0.3 — Bypass si l'utilisateur demande une INVESTIGATION
+    # multi-fichiers. Ces tâches ressemblent à des correctifs ("corrige",
+    # "bug") mais sont en réalité des chantiers d'analyse qui bénéficient
+    # massivement de la phase Architect.
+    # Cas observé en prod (session 15:26 du 16/05) : "corrige le site cassé,
+    # à toi de trouver" → faussement classé bugfix local → Architect skip
+    # → 14 itérations sans plan, dont 2 perdues sur cache hit identique.
+    investigation_markers = (
+        "à toi de trouver", "a toi de trouver", "trouve et corrige",
+        "analyse et corrige", "identifie les", "cherche les bugs",
+        "audit", "analyse complète", "analyse complete",
+        "tous les bugs", "tous les problèmes", "tous les problemes",
+    )
+    if any(k in desc for k in investigation_markers):
+        return False
+
+    file_targets = _extract_explicit_code_targets(task_description)
+
+    # Phase 0.4 — Heuristique de cible globale (sans fichier précis)
+    # Cas observé en prod (session 15:44 du 16/05) : ReAct a reformulé
+    # "à toi de trouver" en "Corriger les problèmes du site" → les markers
+    # Phase 0.3 ne matchent plus → Architect skip à nouveau.
+    # Solution : si la description vise une cible GLOBALE ("site", "projet",
+    # "page", "app") SANS mentionner de fichier précis, c'est un chantier
+    # multi-fichiers qui bénéficie d'Architect, même si "corriger" est présent.
+    if not file_targets and workspace_path:
+        global_target_markers = (
+            "le site", "du site", "ce site", "tout le site",
+            "le projet", "du projet", "ce projet",
+            "la page", "de la page", "les pages",
+            "l'app", "l app", "l'application", "l application",
+        )
+        if any(k in desc for k in global_target_markers):
+            return False
+
     local_fix_markers = (
         "corrige", "correct", "fix", "bug", "erreur", "crash", "plante",
         "marche pas", "ne marche pas", "cassé", "casse", "bloque",
         "touche", "entrée", "enter", "bouton", "click", "clic",
         "répare", "repare",
     )
-    file_targets = _extract_explicit_code_targets(task_description)
     has_workspace_anchor = bool(workspace_path)
     intent_ok = resolved_intent in {"modify", "read"}
     local_signal = any(k in desc for k in local_fix_markers) or bool(file_targets)
@@ -2079,6 +2220,27 @@ class CodeAgent(SubAgent):
                 return
             if getattr(self, "_success_generated_count", 0) > 0:
                 return
+            # Phase 0.5 — Filtre anti-pollution SuccessStore
+            # Bloque la capture si le contexte contient un signal destructeur
+            # ("casser", "bugs subtils", "saboter"...) sans intention explicite.
+            # Cf. DIAGNOSTIC_PROD.md §13 — bug observé session 15:55 du 16/05 :
+            # "corriger ET casser le site" → pattern pollué enregistré.
+            try:
+                blocked, reason = self._should_block_success_capture(
+                    task_description=task_description,
+                    outcome_summary=outcome_summary,
+                    current_task=getattr(self, "current_task", None),
+                )
+                if blocked:
+                    logger.info(
+                        "[Success] capture BLOQUÉE (Phase 0.5 anti-pollution): {}",
+                        reason,
+                    )
+                    return
+            except Exception as _filter_exc:
+                # Le filtre ne doit jamais casser le flow ; en cas d'erreur,
+                # on laisse passer (fail-open pour ne pas perdre d'apprentissage légitime).
+                logger.debug(f"[Success] anti-pollution filter error (fail-open): {_filter_exc}")
         except Exception:
             return
 
@@ -2608,12 +2770,35 @@ class CodeAgent(SubAgent):
                             _test_runner_section = f"\n\n{_tr_fmt}\n"
                 except Exception:
                     pass
+                # Phase 0.6 : si la demande utilisateur originale a été transmise
+                # par ReAct (cf. delegate_task_handler), on l'injecte explicitement
+                # dans le prompt Architect AVANT la reformulation.
+                # Règle : LA DEMANDE ORIGINALE PRIME SUR LA REFORMULATION en cas
+                # de divergence (l'utilisateur a toujours raison sur son intent).
+                _user_orig = ""
+                try:
+                    _ctx_dict = (task.context or {}) if isinstance(task.context, dict) else {}
+                    _user_orig = str(_ctx_dict.get("user_original_request", "") or "").strip()
+                except Exception:
+                    _user_orig = ""
+
+                _user_orig_block = ""
+                if _user_orig and _user_orig.lower() != (task.description or "").lower().strip():
+                    _user_orig_block = (
+                        f"\n=== DEMANDE UTILISATEUR ORIGINALE (verbatim — PRIME sur la reformulation) ===\n"
+                        f"{_user_orig[:1500]}\n"
+                        f"=== FIN DEMANDE ORIGINALE ===\n\n"
+                        f"⚠️ Si la 'Tâche reformulée' ci-dessous diverge de la demande originale, "
+                        f"BASE TON PLAN SUR LA DEMANDE ORIGINALE en priorité.\n"
+                    )
+
                 _architect_messages = [
                     {"role": "system", "content": _ARCHITECT_PROMPT},
                     {"role": "user", "content": (
-                        f"Contexte : modification du projet dans {_workspace_path}.\n\n"
+                        f"Contexte : modification du projet dans {_workspace_path}.\n"
+                        f"{_user_orig_block}"
                         f"Fichiers du projet :\n{_files_listing}\n\n"
-                        f"Tâche : {task.description}\n"
+                        f"Tâche {'reformulée par ReAct' if _user_orig_block else ''} : {task.description}\n"
                         f"{_content_section}"
                         f"{_test_runner_section}\n"
                         "Décris PRÉCISÉMENT quelles modifications faire dans quels fichiers. "

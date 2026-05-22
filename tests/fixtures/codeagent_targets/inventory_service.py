@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Optional
-from src.utils.inventory_db import InventoryDB
+from tests.fixtures.codeagent_targets.inventory_db import InventoryDB
 
 
 @dataclass
@@ -96,8 +96,9 @@ class InventoryService:
         for listener in self._listeners:
             try:
                 listener(event, product)
-            except Exception:
-                pass  # Bug 5: avale silencieusement les erreurs des listeners
+            except Exception as e:
+                # Bug 5 corrigé : on propage l'erreur au lieu de l'avaler
+                raise RuntimeError(f"Erreur dans le listener {listener.__name__ if hasattr(listener, '__name__') else listener}: {e}") from e
 
     def _get_or_load(self, sku: str) -> Product:
         if sku in self._cache:
@@ -110,6 +111,6 @@ class InventoryService:
         return product
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
-# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
+# Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────

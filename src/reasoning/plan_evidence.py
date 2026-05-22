@@ -231,6 +231,17 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "process_status":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     # git deploy is a real exception from the generic git category
     "git_push_pull":         frozenset({ProofCapability.DEPLOY_MUTATION}),
+    # skills / config_manager — module "system" (défaut PROCESS_LAUNCH) mais
+    # ces outils sont de la pure introspection read-only.
+    "get_lumena_config":     frozenset({ProofCapability.GENERIC_READONLY}),
+    "explain_lumena_config": frozenset({ProofCapability.GENERIC_READONLY}),
+    "list_skills":           frozenset({ProofCapability.GENERIC_READONLY}),
+    "get_my_capabilities":   frozenset({ProofCapability.GENERIC_READONLY}),
+    "list_backups":          frozenset({ProofCapability.GENERIC_READONLY}),
+    "read_own_code":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "read_skill_reference":  frozenset({ProofCapability.GENERIC_READONLY}),
+    "pip_check":             frozenset({ProofCapability.GENERIC_READONLY}),
+    "search_in_code":        frozenset({ProofCapability.GENERIC_READONLY}),
 }
 
 
@@ -380,6 +391,36 @@ def get_tool_capabilities(
             frozenset({ProofCapability.GENERIC_READONLY}),
         )
     return frozenset({ProofCapability.GENERIC_READONLY})
+
+
+def tool_capabilities_are_known_readonly(
+    tool_name: str,
+    module_category: str = "",
+    semantic_category: str = "",
+) -> bool:
+    """Verdict guard-safe : l'outil est-il un read-only CONNU ?
+
+    Contrairement à `get_tool_capabilities`, qui retourne le fallback
+    conservateur GENERIC_READONLY pour tout outil non référencé, ce helper
+    distingue « capability connue read-only » de « fallback inconnu ».
+
+    Un outil/catégorie inconnu n'est JAMAIS considéré read-only : il ne doit
+    pas pouvoir désarmer un guard anti-hallucination par erreur.
+
+    Retourne True uniquement si une source explicite (override outil, module,
+    ou catégorie sémantique) résout l'outil ET que ses capabilities sont
+    toutes read-only (⊆ _NON_PROOF_CAPABILITIES).
+    """
+    if tool_name in _TOOL_CAPABILITY_OVERRIDES:
+        caps = _TOOL_CAPABILITY_OVERRIDES[tool_name]
+    elif module_category and module_category in _MODULE_CAPABILITIES:
+        caps = _MODULE_CAPABILITIES[module_category]
+    elif semantic_category and semantic_category in _CATEGORY_CAPABILITIES:
+        caps = _CATEGORY_CAPABILITIES[semantic_category]
+    else:
+        # Aucune source explicite — inconnu, donc non bypassable.
+        return False
+    return caps <= _NON_PROOF_CAPABILITIES
 
 
 def detect_verification_kind(task_desc: str) -> VerificationKind:

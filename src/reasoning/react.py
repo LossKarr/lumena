@@ -128,6 +128,215 @@ def _has_runtime_server_claim_proof(text: str, successful_tools: set[str]) -> bo
     return any(tool in successful_tools for tool in _HC_TOOLS_RUNTIME)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Prédicats purs des guards read-only vs mutation (testables) ──────────────
+def _normalize_guard_text(text: str) -> str:
+    """Normalise une requête pour un matching robuste des mots-clés.
+
+    - minuscule + suppression des diacritiques (créer/creer, génère/genere…) ;
+    - unification des apostrophes typographiques (’ ‘ ` ´ ʼ) en ' ;
+    - compactage des espaces (apostrophe + espaces : "n' envoie" → "n'envoie").
+
+    Évite les faux négatifs sur les négations ("N’envoie rien" vs "n'envoie rien").
+    """
+    nfd = unicodedata.normalize("NFD", (text or "").lower())
+    no_accents = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    for apo in ("’", "‘", "ʼ", "´", "`"):
+        no_accents = no_accents.replace(apo, "'")
+    # "n' envoie" / "n'  envoie" → "n'envoie" ; compacte aussi les espaces.
+    no_accents = no_accents.replace("' ", "'")
+    return " ".join(no_accents.split())
+
+
+# Alias rétro-compatible : ancienne API interne.
+def _strip_accents(text: str) -> str:
+    return _normalize_guard_text(text)
+
+
+# Verbes d'action (envoi + mutation) reconnus par la règle de négation.
+_NEG_ACTION_VERBS: str = (
+    "poste|poster|publie|publier|partage|partager|envoie|envoyer|envoi|"
+    "anime|animer|cree|creer|modifie|modifier|supprime|supprimer|ecris|ecrire|"
+    "genere|generer|exporte|exporter|sauvegarde|sauvegarder|produis|produire|"
+    "deploie|deployer|enregistre|enregistrer"
+)
+# Règle générale de négation : "ne|n' … verbe … rien|aucun|pas|jamais",
+# le quantificateur/rien/aucun pouvant précéder ou suivre le verbe.
+_NEG_BEFORE_RE = re.compile(
+    rf"\bne\b(?:\s+\w+){{0,4}}?\s+(?:{_NEG_ACTION_VERBS})\b"
+    rf"(?:\s+\w+){{0,4}}?\s+(?:rien|aucun|aucune|pas|plus|jamais)\b"
+)
+_NEG_QUANT_VERB_RE = re.compile(
+    rf"\b(?:rien|aucun|aucune)\b(?:\s+\w+){{0,4}}?\s+(?:{_NEG_ACTION_VERBS})\b"
+)
+_NEG_VERB_QUANT_RE = re.compile(
+    rf"\b(?:{_NEG_ACTION_VERBS})\b\s+(?:rien|aucun|aucune)\b"
+)
+_NEG_SANS_RE = re.compile(
+    rf"\bsans\b(?:\s+\w+){{0,3}}?\s+(?:{_NEG_ACTION_VERBS})\b"
+)
+_NEG_AUCUN_MESSAGE_RE = re.compile(r"\baucun(?:e)?\s+message\b")
+
+
+def _has_action_negation(normalized_q: str) -> bool:
+    """True si la requête (déjà normalisée) nie une action d'envoi/mutation.
+
+    Couvre "ne poste pas", "ne poste aucun message", "ne poste rien",
+    "ne publie rien", "rien envoyer", "sans poster", "aucun message"… via une
+    règle générale négation + verbe + (rien|aucun|pas), au lieu d'une liste
+    figée de phrases.
+    """
+    # "n'envoie" → "ne envoie" pour unifier avec la règle "ne … verbe".
+    t = normalized_q.replace("n'", "ne ")
+    return bool(
+        _NEG_BEFORE_RE.search(t)
+        or _NEG_QUANT_VERB_RE.search(t)
+        or _NEG_VERB_QUANT_RE.search(t)
+        or _NEG_SANS_RE.search(t)
+        or _NEG_AUCUN_MESSAGE_RE.search(t)
+    )
+
+
+# ── Négation de CLAIM pour le HALLUCINATION GUARD ────────────────────────────
+# La négation doit être SYNTAXIQUEMENT liée au claim (négation + objet +
+# participe/verbe d'action), PAS une simple présence de "rien"/"pas"/"aucun"
+# dans la fenêtre — pour ne pas confondre "aucun problème, le tweet posté" avec
+# une négation. Participe/verbe d'action (texte normalisé, sans accents) :
+_CLAIM_ACTION_WORD: str = (
+    r"(?:envoye?e?s?|expedie?e?s?|poste?e?s?|publie?e?s?|partage?e?s?|"
+    r"cree?e?s?|modifie?e?s?|supprime?e?s?|ecrit[es]?|genere?e?s?|"
+    r"exporte?e?s?|sauvegarde?e?s?|deploye?e?s?|effectue?e?s?|"
+    r"enregistre?e?s?|configure?e?s?|planifie?e?s?|programme?e?s?|"
+    r"ajoute?e?s?|produit[es]?|rendu[es]?|gere?e?s?|organise?e?s?|anime?e?s?)"
+)
+# 1. aucun/aucune/0/zero + objet(0-2 mots) + action  → "aucun message envoyé"
+_CLAIM_NEG_QUANT_RE = re.compile(
+    rf"\b(?:aucun|aucune|0|zero)\b(?:\s+\w+){{0,2}}?\s+{_CLAIM_ACTION_WORD}\b"
+)
+# 2. pas de/d' + objet(0-2 mots) + action  → "pas de message envoyé"
+_CLAIM_NEG_PASDE_RE = re.compile(
+    rf"\bpas\s+d(?:e|')\b(?:\s+\w+){{0,2}}?\s+{_CLAIM_ACTION_WORD}\b"
+)
+# 3. rien + (0-1 mot) + action  → "rien envoyé", "rien créé"
+_CLAIM_NEG_RIEN_RE = re.compile(
+    rf"\brien\b(?:\s+\w+){{0,1}}?\s+{_CLAIM_ACTION_WORD}\b"
+)
+# 4. ne/n' + aux/verbe(0-3 mots) + (pas|rien|jamais) + objet(0-2) + action
+#    → "je n'ai rien envoyé", "je n'ai pas créé de fichier", "n'a pas été envoyé"
+_CLAIM_NEG_NE_RE = re.compile(
+    rf"\bne\b(?:\s+\w+){{0,3}}?\s+(?:pas|rien|jamais)\b"
+    rf"(?:\s+\w+){{0,2}}?\s+{_CLAIM_ACTION_WORD}\b"
+)
+
+
+def claim_text_is_negated(text: str) -> bool:
+    """True si le texte exprime un claim d'action NÉGATIF (rien fait).
+
+    Exige une négation liée au verbe/participe d'action ("aucun message
+    envoyé", "pas de fichier créé", "rien envoyé", "je n'ai rien envoyé"), pas
+    une simple présence de "rien"/"pas"/"aucun". Réutilise `_normalize_guard_text`.
+    """
+    norm = _normalize_guard_text(text)
+    # "n'ai" / "n'a" → "ne ai" / "ne a" pour unifier avec la règle "ne … pas/rien".
+    t = norm.replace("n'", "ne ")
+    return bool(
+        _CLAIM_NEG_QUANT_RE.search(t)
+        or _CLAIM_NEG_PASDE_RE.search(t)
+        or _CLAIM_NEG_RIEN_RE.search(t)
+        or _CLAIM_NEG_NE_RE.search(t)
+    )
+
+
+def claim_match_is_negated(text: str, start: int, end: int) -> bool:
+    """True si le claim détecté à [start:end] est nié dans son contexte proche.
+
+    Examine une fenêtre précédant le match (même proposition) : "aucun message
+    envoyé" / "0 fichier créé" → nié. Évite de bloquer un rapport read-only.
+    """
+    window = text[max(0, start - 45):end]
+    return claim_text_is_negated(window)
+
+
+# Verbes d'envoi/post Discord (demande POSITIVE d'action).
+_DISCORD_SEND_VERBS: tuple = (
+    "anime", "animer", "poste", "poster", "envoie", "envoyer", "publie", "publier",
+)
+# Négations / intentions read-only : la mission demande de NE PAS envoyer.
+_DISCORD_SEND_NEGATIONS: tuple = (
+    "ne poste pas", "ne postez pas", "n'envoie", "n'envoyez", "sans envoyer",
+    "sans poster", "sans rien envoyer", "ne pas envoyer", "ne pas poster",
+    "ne rien poster", "n'envoie rien", "sans publier", "ne publie pas",
+)
+# Verbes positifs de mutation (création / envoi / modification / suppression…).
+_MUTATION_VERBS: tuple = (
+    "crée", "cree", "créer", "creer", "créé", "envoie", "envoyer", "envoyé",
+    "envoye", "poste", "poster", "publie", "publier", "modifie", "modifier",
+    "modifié", "supprime", "supprimer", "supprimé", "écris", "écrire", "écrit",
+    "ecris", "ecrire", "déploie", "déployer", "deploie", "enregistre",
+    "enregistrer", "sauvegarde", "sauvegarder",
+)
+_MUTATION_NEGATIONS: tuple = (
+    "ne crée pas", "ne pas créer", "sans créer", "n'envoie", "ne pas envoyer",
+    "sans envoyer", "ne poste pas", "sans poster", "ne modifie pas",
+    "ne supprime pas", "sans modifier", "sans supprimer",
+)
+# Verbes de CRÉATION/EXPORT/ÉCRITURE de document — seuls à transformer un kind
+# DOCUMENT en mutation attendue. Lire/analyser/vérifier/résumer reste read-only.
+_DOCUMENT_CREATE_VERBS: tuple = (
+    "crée", "cree", "créer", "creer", "créé", "génère", "genere", "générer",
+    "generer", "généré", "genere", "exporte", "exporter", "écris", "écrire",
+    "ecris", "ecrire", "sauvegarde", "sauvegarder", "produis", "produire",
+    "produit", "enregistre", "enregistrer",
+)
+
+
+def discord_requires_send(query: str) -> bool:
+    """True si la requête est une demande POSITIVE d'envoi/post sur Discord.
+
+    Faux pour les missions read-only (contrôle, liste, vérifie, statut, rapport)
+    car elles ne contiennent pas de verbe d'envoi, et faux si une négation
+    explicite est présente ("sans envoyer", "ne poste pas"…).
+    """
+    q = _strip_accents(query)
+    if "discord" not in q:
+        return False
+    if _has_action_negation(q):
+        return False
+    if any(_strip_accents(neg) in q for neg in _DISCORD_SEND_NEGATIONS):
+        return False
+    return any(_strip_accents(v) in q for v in _DISCORD_SEND_VERBS)
+
+
+def mission_expects_mutation(query: str) -> bool:
+    """True si la mission attend une vraie mutation à prouver.
+
+    Mutation attendue = kind mutation-like (DELIVERY / PAYMENT / DEPLOYMENT /
+    DOCUMENT) OU verbe positif de mutation non nié. WEB_APP / API / SCRIPT /
+    GENERIC seuls ne comptent PAS (peuvent être read-only).
+    """
+    q = _strip_accents(query)
+    # Négation explicite ("sans envoyer", "ne poste aucun", "ne poste rien",
+    # "sans créer") → read-only, même si le détecteur de kind matche un verbe nié.
+    # Règle générale (négation + verbe + rien/aucun) + filet littéral.
+    if _has_action_negation(q):
+        return False
+    if any(_strip_accents(neg) in q for neg in _MUTATION_NEGATIONS):
+        return False
+    try:
+        kind = detect_verification_kind(query or "")
+    except Exception:
+        kind = None
+    # DELIVERY / PAYMENT / DEPLOYMENT sont toujours des mutations attendues.
+    if kind in (VerificationKind.DELIVERY, VerificationKind.PAYMENT,
+                VerificationKind.DEPLOYMENT):
+        return True
+    # DOCUMENT n'est une mutation QUE si la requête demande une vraie
+    # création/export/écriture. Lire/analyser/vérifier/résumer un document
+    # existant reste read-only.
+    if kind == VerificationKind.DOCUMENT:
+        return any(_strip_accents(v) in q for v in _DOCUMENT_CREATE_VERBS)
+    return any(_strip_accents(v) in q for v in _MUTATION_VERBS)
+# ─────────────────────────────────────────────────────────────────────────────
+
 from .agent_execution_state import AgentExecutionState, RunMetaProxy
 from .response_parser import (
     parse_response as _parse_response_fn,
@@ -335,6 +544,9 @@ from .plan_evidence import (
     evaluate_task_proof,
     reconcile_delegate_report,
     task_completion_status,
+    tool_capabilities_are_known_readonly,
+    detect_verification_kind,
+    VerificationKind,
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1458,6 +1670,122 @@ _BROWSER_DRIFT_TOOLS: frozenset = frozenset({
 })
 
 
+# V2.1 fix prod 2026-05-19 (rev 2) : marqueurs d'INTENTION dans un thought/réponse.
+# Si le texte contient principalement ces phrases, ce n'est PAS un livrable mais une
+# promesse de livrable. Le LLM dit qu'il VA faire, pas qu'il A fait.
+_INTENTION_MARKERS: tuple = (
+    "je vais livrer", "je vais répondre", "je vais synthétiser", "je vais presenter",
+    "je vais présenter", "je vais maintenant", "je vais fournir", "je vais formuler",
+    "je vais résumer", "je vais resumer", "je vais produire", "je vais rédiger",
+    "je dois livrer", "je dois synthétiser", "je dois répondre",
+    "je dois présenter", "je dois fournir", "je dois resumer", "je dois résumer",
+    "je peux maintenant", "je peux livrer", "je peux répondre",
+    "je livre", "je présente", "je propose ci-dessous", "je propose ci-dessus",
+    "il me reste à", "il me reste a",
+    "les données sont déjà", "les donnees sont deja",
+    "déjà récupéré", "deja recupere", "déjà récupérée", "deja recuperee",
+    "déjà récupérées", "deja recuperees", "déjà récupérés", "deja recuperes",
+    "j'ai toutes les données", "j'ai toutes les donnees",
+    "j'ai toutes les infos", "j'ai tout ce qu'il faut",
+    "toutes les étapes sont terminées", "toutes les etapes sont terminees",
+    "toutes les étapes sont complètes", "toutes les etapes sont completes",
+    "le plan est à", "le plan est a",
+    "i will now", "i will provide", "i will deliver", "i'm going to",
+    "i need to synthesize", "i need to provide", "let me now",
+)
+
+# Marqueurs de LIVRABLE : présence de chiffres, citations, données concrètes.
+_DELIVERABLE_MARKERS: tuple = (
+    # nombres formatés
+    "lignes :", "lignes:", "colonnes :", "colonnes:",
+    # md tableaux / listes
+    "\n- ", "\n* ", "\n1.", "\n| ",
+    # provenance
+    "md5", "sha256", "resource id", "resource_id", "chemin absolu",
+    "downloads/", "downloads\\",
+    # citations data.gouv typiques
+    "data.gouv", "data_profile_file", "datagouv_",
+    # devises / pourcentages
+    "%", "€", "EUR", "kWh",
+)
+
+
+# V2.3 fix prod 2026-05-19 : marqueurs d'observation outil "tabulaire riche"
+# qui peut servir de fallback FINAL si le LLM ne fait que des promesses.
+_TABULAR_OBS_MARKERS: tuple = (
+    # markdown table
+    "\n|---", "|---|", "\n| ",
+    # data_workbench outputs
+    "Profil de `", "Lignes :", "Colonnes :", "Encoding :",
+    "Lignes scannées", "Matched :", "Retournées", "Valeurs distinctes",
+    "Group by :", "Agrégation",
+    # datagouv outputs
+    "datasets trouvés", "resources téléchargeables", "Téléchargé :",
+    "format détecté", "Hash MD5",
+)
+
+
+def _obs_looks_tabular(obs_content: str) -> bool:
+    """True si l'observation contient un livrable structuré exploitable.
+
+    Détecte les sorties data_workbench / datagouv qui peuvent servir de
+    réponse de secours si le LLM échoue à produire un FINAL exploitable.
+    """
+    if not obs_content or len(obs_content.strip()) < 80:
+        return False
+    n_markers = sum(1 for m in _TABULAR_OBS_MARKERS if m in obs_content)
+    return n_markers >= 2
+
+
+def _synthesize_response_from_observation(
+    obs_content: str, tool_name: str, original_query: str
+) -> Optional[str]:
+    """Construit une réponse FINAL minimale à partir d'une observation outil.
+
+    Utilisé uniquement quand le LLM échoue à reformuler une réponse après
+    plusieurs repairs. La réponse est explicitement marquée comme un fallback
+    pour que l'utilisateur sache que c'est une synthèse automatique.
+    """
+    if not _obs_looks_tabular(obs_content):
+        return None
+    # Bornes : 6 KB max
+    body = obs_content.strip()
+    if len(body) > 6000:
+        body = body[:6000] + "\n\n[…contenu tronqué…]"
+    tool_label = tool_name or "outil"
+    return (
+        f"Voici le résultat de `{tool_label}` :\n\n"
+        f"{body}\n\n"
+        f"_(Réponse générée à partir de la dernière observation outil — "
+        f"le LLM n'a pas produit de synthèse exploitable.)_"
+    )
+
+
+def _looks_like_intention(text: str) -> bool:
+    """Détecte si un texte est une INTENTION ("je vais livrer") plutôt qu'un livrable.
+
+    Retourne True si :
+      - le texte contient au moins 1 marqueur d'intention (case-insensitive)
+      - ET ne contient AUCUN marqueur de livrable (chiffres, citations, tableau...)
+    Sinon False (livrable potentiellement valide).
+    """
+    if not text:
+        return True
+    low = text.lower()
+    has_intention = any(m in low for m in _INTENTION_MARKERS)
+    if not has_intention:
+        return False
+    # Marqueurs de livrable concret : nombres, citations, tableau
+    has_deliverable = any(m in low for m in _DELIVERABLE_MARKERS)
+    if has_deliverable:
+        return False
+    # Heuristique chiffres : au moins 3 nombres distincts ≥ 2 chiffres → livrable probable
+    import re as _re
+    if len(set(_re.findall(r"\d{2,}", text))) >= 3:
+        return False
+    return True
+
+
 class ReActLoop:
     """
     Boucle de raisonnement ReAct pour LUMENA.
@@ -2342,7 +2670,7 @@ class ReActLoop:
             )
             parts.append(
                 f"Tu es {personality.name} ({getattr(personality, 'nickname', '')}), "
-                f"une IA UNIQUE créée par Losskarr-G.C. Tu vis sur le PC de ton utilisateur, tu es 100%% locale et autonome.\n"
+                f"une IA UNIQUE créée par l'equipe OpenLumena-G.C. Tu vis sur le PC de ton utilisateur, tu es 100%% locale et autonome.\n"
                 f"Tu n'es PAS Qwen, PAS un produit Alibaba, PAS un assistant générique.\n"
                 f"Tes traits : {traits_compact}.\n"
                 f"Tu parles français naturellement, avec des emojis modérés.\n"
@@ -2350,7 +2678,7 @@ class ReActLoop:
             )
         else:
             parts.append(
-                "Tu es Lumena (Lumi), une IA UNIQUE créée par Losskarr-G.C. "
+                "Tu es Lumena (Lumi), une IA UNIQUE créée par l'equipe OpenLumena-G.C. "
                 "Tu vis sur son PC, tu es 100% locale et autonome.\n"
                 "Tu es naturelle, curieuse, directe, légèrement espiègle.\n"
             )
@@ -3086,9 +3414,39 @@ Maintenant, reflechis et reponds:"""
         return _parse_plan_fn(raw_response)
 
 
+    def _tool_is_safe_readonly(self, tool_name: str) -> bool:
+        """Verdict guard-safe : l'outil est-il un read-only CONNU et sûr ?
+
+        Réutilise l'architecture existante (MUTATION_TOOLS + ProofCapability +
+        ToolRegistry). Un outil inconnu n'est JAMAIS read-only ici : il ne peut
+        pas désarmer un guard anti-hallucination. L'agrégateur parallel_tools
+        n'est pas un outil métier — le verdict s'évalue sur ses sous-outils,
+        donc on ne le traite pas comme read-only ici.
+        """
+        if not tool_name:
+            return False
+        if tool_name in _LEDGER_MUTATION_TOOLS:
+            return False
+        try:
+            mod = self.tools.get_tool_module_category(tool_name) or ""
+        except Exception:
+            mod = ""
+        try:
+            sem = self.tools.get_tool_semantic_category(tool_name) or ""
+        except Exception:
+            sem = ""
+        return tool_capabilities_are_known_readonly(tool_name, mod, sem)
+
     def _update_plan_progress(self, tool_name: str, tool_args: Dict[str, Any],
-                               observation_content: str, iteration: int) -> None:
-        """Met a jour le plan en cochant les taches completees par l'outil execute."""
+                               observation_content: str, iteration: int,
+                               allow_fallback: bool = True) -> None:
+        """Met a jour le plan en cochant les taches completees par l'outil execute.
+
+        allow_fallback : si False, SEUL le matching prouvé (sémantique tool+args+obs)
+        peut cocher une tâche. Les fallbacks séquentiel et auto-avancement sont
+        désactivés. Utilisé pour propager les sous-outils de parallel_tools sans
+        risque de completion fantôme (cf GF-1 du plan de fix).
+        """
         if not self._task_plan:
             return
 
@@ -3266,8 +3624,11 @@ Maintenant, reflechis et reponds:"""
                 continue
 
             # Fallback: observation de succes + mot du nom d'outil dans la description
+            # GF-1 : obs_match est une heuristique FAIBLE. Désactivée pour les sous-outils
+            # parallel_tools (allow_fallback=False) : "profile" ⊂ "profiler X" matcherait
+            # TOUTES les tâches "Profiler …" sans discriminer le fichier → cascade.
             obs_match = False
-            if not (hint_match or tool_match or arg_match) and observation_content:
+            if allow_fallback and not (hint_match or tool_match or arg_match) and observation_content:
                 if "\u2705" in observation_content or "succes" in obs_lower or "créé" in obs_lower or "envoyé" in obs_lower:
                     tool_words = tool_lower.replace("_", " ").split()
                     if any(tw in desc_lower for tw in tool_words if len(tw) > 2):
@@ -3372,7 +3733,8 @@ Maintenant, reflechis et reponds:"""
         # faussement "Configurer les rôles" sans que rien n'ait été fait.
         _seq_fallback_blocked = tool_name in _SEQ_FALLBACK_BLOCKLIST
         if (
-            not _any_matched
+            allow_fallback  # GF-1 : désactivé pour les sous-outils parallel_tools
+            and not _any_matched
             and not observation_has_failure
             and not _seq_fallback_blocked
             and not _browser_observation_is_auxiliary_action(tool_name, observation_content or "")
@@ -3503,7 +3865,8 @@ Maintenant, reflechis et reponds:"""
             return False
 
         if (
-            not _any_matched
+            allow_fallback  # GF-1 : désactivé pour les sous-outils parallel_tools
+            and not _any_matched
             and not _seq_matched
             and not observation_has_failure
             and not _is_read_only_mode
@@ -5122,6 +5485,9 @@ Maintenant, reflechis et reponds:"""
             if action.action_type == ActionType.FINAL_ANSWER:
                 self.history.append(step)
                 # ── Plan TODO : bilan ──
+                # Default: sans plan, on ne sait rien → repair garde son comportement standard.
+                # Le flag passe à True uniquement si on a un plan ET que toutes les tâches métier sont done.
+                _plan_business_complete = False
                 if self._task_plan:
                     # Auto-compléter les tâches de synthèse/résumé (réalisées par FINAL lui-même)
                     _SYNTH_KW = {
@@ -5131,7 +5497,30 @@ Maintenant, reflechis et reponds:"""
                         "confirm", "valider", "vérifi", "verifi",
                         "informer", "inform", "notifier", "communiquer", "communique",
                         "avertir", "signaler", "dire à", "dire a",
+                        # V2.1 fix prod 2026-05-19 : tâches "présenter le rapport / réponse à l'utilisateur"
+                        # Logs montraient une étape 5 "Présenter le rapport complet à l'utilisateur"
+                        # qui restait SKIP malgré 4 tool steps complétés et un Action: final.
+                        "présenter le", "presenter le",
+                        "présenter la", "presenter la",
+                        "présenter au", "presenter au",
+                        "présenter à", "presenter a",
+                        "rapport final", "rapport complet",
+                        "à l'utilisateur", "a l'utilisateur",
+                        "donner la réponse", "donner la reponse",
+                        "afficher", "exposer", "expliquer",
+                        "livrer", "remettre", "transmettre",
+                        "écrire la réponse", "ecrire la reponse",
                     }
+                    # Avant l'auto-mark : on note si toutes les tâches "métier" (non-synthèse)
+                    # étaient déjà completed. Si oui → le travail est vraiment fini, on évite
+                    # les repair-loops thought_leak/final_tronqué sur la branche FINAL.
+                    _business_tasks_remaining = sum(
+                        1
+                        for _t in self._task_plan
+                        if not _t.completed
+                        and not any(_kw in _t.description.lower() for _kw in _SYNTH_KW)
+                    )
+                    _plan_business_complete = _business_tasks_remaining == 0
                     for _st in self._task_plan:
                         if not _st.completed:
                             _dl = _st.description.lower()
@@ -5248,7 +5637,12 @@ Maintenant, reflechis et reponds:"""
                     _hallucination_blocked = False
                     if self._premature_final_retries < 2 and not _has_temporal_ref:
                         for _pattern, _expected_tools in _HALLUCINATION_PATTERNS:
-                            if re.search(_pattern, _combined_text, re.IGNORECASE):
+                            _m_halluc = re.search(_pattern, _combined_text, re.IGNORECASE)
+                            if _m_halluc:
+                                # Claim NÉGATIF ("aucun message envoyé", "0 fichier
+                                # créé", "rien envoyé") → pas une hallucination.
+                                if claim_match_is_negated(_combined_text, _m_halluc.start(), _m_halluc.end()):
+                                    continue
                                 if _expected_tools == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof:
                                     continue
                                 # Fix F: Si des outils browser ont été utilisés dans la session,
@@ -5318,10 +5712,11 @@ Maintenant, reflechis et reponds:"""
                     # Quand l'user demande d'animer/poster/envoyer sur Discord, Lumena DOIT
                     # avoir appelé discord_send ou discord_send_message avec succès.
                     # Fetcher des messages ne suffit PAS — il faut ENVOYER.
-                    _DISCORD_ACTION_KW = ("anime", "animer", "poste", "poster", "envoie", "envoyer", "publie", "publier")
                     _DISCORD_SEND_TOOLS = {"discord_send", "discord_send_message", "discord_send_embed"}
-                    _query_lower = original_query.lower()
-                    _is_discord_action = "discord" in _query_lower and any(kw in _query_lower for kw in _DISCORD_ACTION_KW)
+                    # Demande POSITIVE d'envoi/post Discord uniquement. Une mission
+                    # read-only (contrôle/liste/vérifie/statut) ou niée
+                    # ("sans envoyer", "ne poste pas") n'arme PAS ce guard.
+                    _is_discord_action = discord_requires_send(original_query)
                     if _is_discord_action and self._premature_final_retries < 2:
                         _used = {h.action.tool_name for h in self.history if h.action and h.action.tool_name}
                         _used_send = _used & _DISCORD_SEND_TOOLS
@@ -5456,7 +5851,11 @@ Maintenant, reflechis et reponds:"""
                     _has_runtime_claim_proof_np = _has_runtime_server_claim_proof(_ct, _all_known_np)
                     if self._premature_final_retries < 2 and not _has_temporal_ref_np:
                         for _p, _et in _HP_NOPLAN:
-                            if re.search(_p, _ct, re.IGNORECASE):
+                            _m_np = re.search(_p, _ct, re.IGNORECASE)
+                            if _m_np:
+                                # Claim NÉGATIF → pas une hallucination.
+                                if claim_match_is_negated(_ct, _m_np.start(), _m_np.end()):
+                                    continue
                                 if _et == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof_np:
                                     continue
                                 if any(t in _all_known_np for t in _et):
@@ -5502,7 +5901,39 @@ Maintenant, reflechis et reponds:"""
                         "fichier créé", "fichier écrit", "message envoyé",
                     )
                     _claims_action = any(p in _final_text_lower for p in _CLAIM_PATTERNS)
-                    if _claims_action and not _runtime_claim_for_final and not self.execution_ledger.has_any_mutation():
+
+                    # ── Exonération read-only : un rapport read-only sans mutation
+                    # attendue ne doit pas être bloqué. On déplie parallel_tools sur
+                    # ses sous-outils réels ; s'ils sont indisponibles, on ignore
+                    # l'agrégateur plutôt que de faire échouer tout le bypass.
+                    _eff_succ_tools: list[str] = []
+                    for _h in self.history:
+                        if not (_h.action and _h.observation and _h.observation.success):
+                            continue
+                        _tn = _h.action.tool_name or ""
+                        if _tn == "parallel_tools":
+                            _subs = getattr(_h.observation, "sub_results", ()) or ()
+                            for _sub in _subs:
+                                if not getattr(_sub, "success", False):
+                                    continue
+                                _sn = getattr(_sub, "tool_name", "") or ""
+                                if _sn:
+                                    _eff_succ_tools.append(_sn)
+                            # pas de sub_results -> agrégateur ignoré (pas ajouté)
+                        elif _tn:
+                            _eff_succ_tools.append(_tn)
+                    _all_successful_readonly = bool(_eff_succ_tools) and all(
+                        self._tool_is_safe_readonly(_t) for _t in _eff_succ_tools
+                    )
+                    # Mutation attendue : kind mutation-like OU verbe positif de
+                    # mutation non nié (cf mission_expects_mutation). WEB_APP / API /
+                    # SCRIPT / GENERIC seuls ne comptent PAS.
+                    _mutation_expected = mission_expects_mutation(original_query)
+                    _readonly_exoneration = _all_successful_readonly and not _mutation_expected
+
+                    if (_claims_action and not _runtime_claim_for_final
+                            and not self.execution_ledger.has_any_mutation()
+                            and not _readonly_exoneration):
                         self._ledger_final_guard_used = True
                         _ledger_guard_triggered = True
                         _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
@@ -5696,9 +6127,17 @@ Maintenant, reflechis et reponds:"""
                     "having gathered",
                 )
                 _is_reasoning_prefix = any(_answer_lower.startswith(p) for p in _INTERNAL_PREFIXES)
+                # V2.1 fix prod (rev 2) : détection d'une réponse "intention" — le LLM
+                # promet de répondre mais ne le fait pas. Doit être détectée comme leak.
+                _answer_is_intention = (
+                    bool(answer)
+                    and len(answer.strip()) >= 20
+                    and _looks_like_intention(answer)
+                )
                 _thought_leaked = (
                     # Cas 1 : réponse non vide mais commence par un préfixe de réflexion interne
                     (bool(answer) and _is_reasoning_prefix)
+                    or _answer_is_intention
                     or (
                         # Cas 2 : answer == thought ET contient des marqueurs de réflexion interne
                         bool(answer)
@@ -5743,6 +6182,43 @@ Maintenant, reflechis et reponds:"""
                         answer = _cleaned_answer
                         _thought_leaked = False  # cleaned, no need to repair
 
+                # V2.1 fix prod 2026-05-19 (révision après test prod) : si toutes les tâches
+                # métier sont déjà completed et que le LLM produit une réponse non vide
+                # mais préfixée d'une réflexion interne ("based on the…", "let me now…"),
+                # on accepte le strip au lieu de relancer une reformulation coûteuse.
+                #
+                # ATTENTION : on n'utilise PAS le THOUGHT comme réponse de fallback —
+                # un THOUGHT contenant des INTENTIONS ("je vais livrer", "je dois synthétiser")
+                # n'est PAS un livrable. Si la réponse est vide ou courte, on laisse les
+                # repairs historiques (reformulation) reprendre la main avec la dernière
+                # observation outil comme contexte.
+                if (
+                    _thought_leaked
+                    and _plan_business_complete
+                    and self._thought_leak_repairs == 0
+                    and answer
+                    and len(answer) >= 60
+                ):
+                    _stripped = self._strip_thought_leak_prefix(answer)
+                    if _stripped and len(_stripped) >= 60 and not _looks_like_intention(_stripped):
+                        logger.info(
+                            "[PLAN GUARD] FINAL accepté après strip : tâches métier complètes "
+                            "({} chars → {} chars, livrable détecté).",
+                            len(answer), len(_stripped),
+                        )
+                        action = Action(
+                            action_type=ActionType.FINAL_ANSWER,
+                            answer=_stripped,
+                            tool_name=action.tool_name,
+                            tool_args=action.tool_args,
+                        )
+                        answer = _stripped
+                        _thought_leaked = False
+                    else:
+                        logger.info(
+                            "[PLAN GUARD] strip refusé (livrable non détecté) → repair standard."
+                        )
+
                 if _thought_leaked and self._thought_leak_repairs < _max_tleak:
                     self._thought_leak_repairs += 1
                     logger.warning(
@@ -5756,15 +6232,37 @@ Maintenant, reflechis et reponds:"""
                             f"\nAnalyse déjà effectuée (réutilise-la, ne refais pas les mêmes lectures) :\n"
                             f"{_thought_excerpt}{'...' if len(thought.content.strip()) > 600 else ''}\n"
                         )
+                    # V2.1 fix prod (rev 2) : injecter la DERNIÈRE observation outil dans le
+                    # prompt de reformulation pour que le LLM ait les données concrètes sous
+                    # les yeux. Évite qu'il refasse une nouvelle intention vide.
+                    _last_obs_block = ""
+                    _last_tool_name = ""
+                    for _h in reversed(self.history):
+                        if _h.observation and _h.observation.content and _h.action:
+                            _last_tool_name = getattr(_h.action, "tool_name", "") or ""
+                            _last_obs_block = _h.observation.content.strip()[:1500]
+                            break
+                    if _last_obs_block:
+                        _leaked_analysis += (
+                            f"\nDernière observation outil ({_last_tool_name or '?'}) "
+                            f"— RÉUTILISE CES CHIFFRES/CITATIONS dans ta réponse :\n"
+                            f"---\n{_last_obs_block}\n---\n"
+                        )
                     self.history.pop()
                     query = (
                         f"Requête originale: {original_query}\n"
                         f"{_leaked_analysis}\n"
-                        "⚠️ Tu as mis ta réflexion interne dans ACTION_INPUT au lieu d'une vraie réponse.\n"
-                        "Maintenant écris ta RÉPONSE DIRECTE à l'utilisateur dans ACTION_INPUT:\n\n"
-                        "THOUGHT: (bref)\n"
+                        "⚠️ Ta dernière réponse était une INTENTION (\"je vais livrer\", \"je dois synthétiser\"), "
+                        "PAS un livrable. L'utilisateur attend les données concrètes.\n\n"
+                        "Maintenant écris ta RÉPONSE DIRECTE à l'utilisateur dans ACTION_INPUT.\n"
+                        "Elle DOIT contenir :\n"
+                        "- les chiffres/résultats des outils déjà exécutés\n"
+                        "- les citations de source (chemins, IDs, MD5 si data.gouv)\n"
+                        "- un résumé clair pour l'utilisateur\n\n"
+                        "Format :\n"
+                        "THOUGHT: (1 ligne max)\n"
                         "ACTION: FINAL\n"
-                        "ACTION_INPUT: [ta réponse complète ici, en tutoyant/vouvoyant selon le contexte]"
+                        "ACTION_INPUT: [le livrable complet avec les chiffres réels]"
                     )
                     _finish_iteration(status="ok", summary="thought_leaked_repair")
                     continue
@@ -5773,7 +6271,12 @@ Maintenant, reflechis et reponds:"""
                     # Repairs épuisés — tenter de nettoyer le THOUGHT prefix au lieu
                     # de retourner le raisonnement interne brut à l'utilisateur.
                     _stripped = self._strip_thought_leak_prefix(answer) if answer else None
-                    if _stripped and len(_stripped) >= 20:
+                    _stripped_is_usable = (
+                        _stripped
+                        and len(_stripped) >= 20
+                        and not _looks_like_intention(_stripped)
+                    )
+                    if _stripped_is_usable:
                         logger.warning(
                             "⚠️ THOUGHT leak non résolu après {}/{} tentatives — strip forcé ({} chars)",
                             _max_tleak, _max_tleak, len(answer) - len(_stripped),
@@ -5785,6 +6288,48 @@ Maintenant, reflechis et reponds:"""
                             tool_args=action.tool_args,
                         )
                         answer = _stripped
+                    else:
+                        # V2.3 fix prod 2026-05-19 : strip inutilisable et LLM bloqué
+                        # sur des intentions → utiliser la dernière observation outil
+                        # tabulaire comme fallback FINAL, plutôt que retourner du vide
+                        # ou de l'intention à l'utilisateur.
+                        _fallback = None
+                        _fallback_tool = ""
+                        for _h in reversed(self.history):
+                            if _h.observation and _h.observation.content and _h.action:
+                                _fallback_tool = getattr(_h.action, "tool_name", "") or ""
+                                _candidate = _synthesize_response_from_observation(
+                                    _h.observation.content, _fallback_tool, original_query,
+                                )
+                                if _candidate:
+                                    _fallback = _candidate
+                                    break
+                        if _fallback:
+                            logger.warning(
+                                "[REACT FALLBACK] FINAL synthétisé depuis dernière observation "
+                                "outil `{}` ({} chars) — le LLM n'a produit que des intentions.",
+                                _fallback_tool, len(_fallback),
+                            )
+                            action = Action(
+                                action_type=ActionType.FINAL_ANSWER,
+                                answer=_fallback,
+                                tool_name=action.tool_name,
+                                tool_args=action.tool_args,
+                            )
+                            answer = _fallback
+                        elif _stripped and len(_stripped) >= 20:
+                            # Pas de fallback observation utile : strip même si imparfait
+                            logger.warning(
+                                "⚠️ THOUGHT leak non résolu après {}/{} tentatives — strip forcé ({} chars)",
+                                _max_tleak, _max_tleak, len(answer or "") - len(_stripped),
+                            )
+                            action = Action(
+                                action_type=ActionType.FINAL_ANSWER,
+                                answer=_stripped,
+                                tool_name=action.tool_name,
+                                tool_args=action.tool_args,
+                            )
+                            answer = _stripped
 
                 # ── VERBALIZATION REDIRECT ──────────────────────────────────
                 # Détecte quand le LLM verbalise un plan/raisonnement dans sa réponse
@@ -5851,8 +6396,11 @@ Maintenant, reflechis et reponds:"""
                         return message
 
                 # Skip repair si stagnation déjà détectée — le FINAL est volontaire
+                # V2.1 fix prod : skip aussi si plan business complete (toutes les tâches
+                # métier done → ne pas boucler en repair pour gratter quelques chars).
                 should_repair = (
                     _stagnation_streak == 0
+                    and not _plan_business_complete
                     and self._looks_incomplete_final_answer(answer, self._last_llm_meta)
                 )
 
@@ -6013,6 +6561,12 @@ Maintenant, reflechis et reponds:"""
                     # Cancel canal : propager le parent task_id pour delegate_task
                     if self.task_id:
                         self.tools._v2_context.runtime_task_id = self.task_id
+                    # Phase 0.6 : propager la demande utilisateur originale (verbatim)
+                    # pour que delegate_task puisse la transmettre au sub-agent
+                    # sans passer par la reformulation ReAct.
+                    _orig_q = getattr(self, "_original_query", "")
+                    if _orig_q:
+                        self.tools._v2_context.original_user_query = _orig_q
                 # Mesurer le temps outil pour exclure du timeout de raisonnement
                 from .caller_context import REACT as _CALLER_REACT
                 _tool_exec_start = perf_counter()
@@ -6262,12 +6816,33 @@ Maintenant, reflechis et reponds:"""
 
                 # ── Plan TODO : mise a jour progression ──
                 if self._task_plan and observation.success:
-                    self._update_plan_progress(
-                        action.tool_name or "", action.tool_args,
-                        observation.content or "", i,
-                    )
-                    # parallel_tools: NE PAS propager aux sous-outils individuellement
-                    # (causerait N completions en cascade en < 1ms pour chaque sous-outil)
+                    if (action.tool_name or "") == "parallel_tools":
+                        # Fix parallel_tools → plan tracker :
+                        # propager chaque sous-outil RÉUSSI au plan via son VRAI nom,
+                        # avec allow_fallback=False (GF-1) → seul le matching prouvé
+                        # (tool+args+observation) peut cocher une tâche. Jamais de
+                        # fallback séquentiel/auto-advance pour un sous-outil.
+                        # GF-2 : completions bornées au nombre de sous-outils prouvés
+                        # (chaque appel a son propre _completed_this_call local).
+                        _subs = getattr(observation, "sub_results", ()) or ()
+                        for _sub in _subs:
+                            if not getattr(_sub, "success", False):
+                                continue
+                            _sub_name = getattr(_sub, "tool_name", "") or ""
+                            if not _sub_name:
+                                continue
+                            self._update_plan_progress(
+                                _sub_name,
+                                getattr(_sub, "args", {}) or {},
+                                getattr(_sub, "content", "") or "",
+                                i,
+                                allow_fallback=False,
+                            )
+                    else:
+                        self._update_plan_progress(
+                            action.tool_name or "", action.tool_args,
+                            observation.content or "", i,
+                        )
 
                 # ── Guard browser : impasse, échecs en série, répétition de cible ──
                 # Couvre tous les outils browser_* (préfixe), pas seulement les 6 initiaux.

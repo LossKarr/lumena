@@ -6,11 +6,11 @@ Raisonne, agit, apprend, s'améliore seul.
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 ![Tests](https://img.shields.io/badge/tests-9264%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Commercial-blue)
-![Version](https://img.shields.io/badge/version-v1.0.39-orange)
+![Version](https://img.shields.io/badge/version-v1.0.40-orange)
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.39**
+> **⚠️ Version Bêta — v1.0.40**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 > **👤 Projet solo**

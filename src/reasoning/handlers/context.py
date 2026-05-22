@@ -59,6 +59,16 @@ class HandlerContext:
     # Permet aux handlers (ex: delegate_task) de surveiller le cancel parent.
     runtime_task_id: Optional[str] = None
 
+    # --- Phase 0.6 : Demande utilisateur originale (verbatim) ---
+    # Mise à jour par react.py avant chaque appel outil (même pattern que
+    # runtime_task_id). Permet aux handlers (notamment delegate_task) de
+    # transmettre la phrase exacte de l'utilisateur au sub-agent, sans
+    # passer par la reformulation du LLM ReAct.
+    # Cf. DIAGNOSTIC_PROD.md §14 — session 15:55 du 16/05 où ReAct avait
+    # reformulé "corriger le site et CASSER à toi de trouver" en
+    # "Corriger les problèmes du site Lumena landing page" → perte d'intent.
+    original_user_query: str = ""
+
     # --- Hub instances (lazy, optionnels) ---
     _mail_hub: Any = field(default=None, repr=False)
     _critical_alert_hub: Any = field(default=None, repr=False)
