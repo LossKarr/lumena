@@ -122,7 +122,9 @@ Génère un composant qui utilise <Sequence> pour enchaîner les scènes:
 
 ```tsx
 import {{ Sequence }} from 'remotion';
-// import de chaque scène
+import IntroScene from './scenes/IntroScene';
+import UniverseScene from './scenes/UniverseScene';
+// ... un import DEFAULT par scène (PAS d'accolades)
 
 export default function Video() {{
   return (
@@ -139,7 +141,8 @@ export default function Video() {{
 CONTRAINTES:
 - Chaque <Sequence> a un `from` = somme des duration_frames précédentes
 - Chaque <Sequence> a un `durationInFrames` = duration_frames de la scène
-- Import chaque scène depuis './scenes/{{ComponentName}}'
+- IMPORT OBLIGATOIRE en DEFAULT (les scènes utilisent `export default`) :
+  `import {{ComponentName}} from './scenes/{{ComponentName}}'` — JAMAIS `import {{ {{ComponentName}} }}` (accolades = erreur, composant undefined → React #130)
 - Export default du composant Video
 """
 

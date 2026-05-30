@@ -216,12 +216,22 @@ class TestNoDuplicates:
 
     def test_total_handler_count(self):
         """
-        Nombre total de handlers attendu : 244.
+        Nombre total de handlers attendu : 250.
         Si ce nombre change, il faut mettre à jour ce test
         (et comprendre pourquoi).
+        +1 (Étape 2 IONOS) : ionos_test_site_database.
+        +2 (Étape 2.5 IONOS) : ionos_set_site_database, ionos_clear_site_database.
+        +3 (Étape 3E IONOS) : ionos_db_list_tables, ionos_db_describe_table, ionos_db_select.
+        +1 (Étape 4.5A IONOS) : ionos_db_propose_write (propose-only INSERT/UPDATE, pas d'exécution).
+        +1 (Étape 4.5B IONOS) : ionos_db_propose_delete (propose-only DELETE, OFF par défaut).
+        +18 (Exposition ReAct IONOS) : get_config, bridge_status, get/set des configs
+            write/delete/sandbox/restore/react_write/react_delete, list_snapshots,
+            list_pending_actions, install_bridge, create_sandbox_table.
+        +3 (Étape 4.6 IONOS) : get/set sandbox_drop_config, propose_drop_sandbox_table.
+        +3 (Étape 4.7 IONOS) : get/set sandbox_clear_config, propose_clear_sandbox_table.
         """
-        assert len(ALL_HDEFS) == 247, (
-            f"Attendu 247 handlers, trouvé {len(ALL_HDEFS)}. "
+        assert len(ALL_HDEFS) == 279, (
+            f"Attendu 279 handlers, trouvé {len(ALL_HDEFS)}. "
             f"Mettre à jour ce test si ajout/suppression intentionnel."
         )
 

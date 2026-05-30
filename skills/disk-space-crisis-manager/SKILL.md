@@ -6,70 +6,59 @@ keywords: [disque plein, disk full, espace disque, stockage plein, liberer espac
 
 # Disk Space Crisis Manager
 
-Gère les situations d'urgence où le disque système est presque plein (>90% utilisé) avec une procédure priorisée pour libérer de l'espace rapidement.
+Diagnostique un disque presque plein et **propose** un plan de libération — sans rien
+supprimer automatiquement.
 
-## Quand l'utiliser
-1. **Alerte disque critique** : Lorsque le système rapporte >90% d'utilisation du disque C: (Windows) ou de la partition principale
-2. **Problèmes de performance** : Quand les applications plantent, les sauvegardes échouent ou le système devient lent à cause du manque d'espace
+## ⛔ Règles de sécurité (NON négociables)
 
-## Instructions
-### Phase 1 : Diagnostic rapide (2 minutes)
-1. Vérifier l'espace disque avec `run_command("wmic logicaldisk get size,freespace,caption")`
-2. Identifier les dossiers les plus volumineux avec `run_command("powershell Get-ChildItem -Path C:\\ -Recurse -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 10 FullName, Length | Format-Table -AutoSize")`
-3. Vérifier la corbeille : `run_command("powershell (Get-ChildItem -Path $env:TEMP -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1GB")`
+- **Aucune suppression automatique.** Toute suppression exige une **confirmation
+  explicite de l'utilisateur** sur une liste de candidats précise.
+- **INTERDIT en action automatique** : `del /q/f/s`, `rmdir /S /Q`,
+  `Clear-RecycleBin -Force`, `docker system prune -f`, `cleanmgr /sagerun`, ou toute
+  suppression récursive globale (`C:\`, `%TEMP%`…).
+- **Par défaut, uniquement des commandes de DIAGNOSTIC en lecture seule.**
+- Jamais de suppression **hors workspace** sans validation explicite, nominale, par
+  l'utilisateur.
 
-### Phase 2 : Nettoyage prioritaire (5-10 minutes)
-1. **Nettoyer les fichiers temporaires** :
-   - `run_command("cleanmgr /sageset:1")` puis `run_command("cleanmgr /sagerun:1")`
-   - `run_command("del /q/f/s %TEMP%\\*" )`
+## Workflow obligatoire
 
-2. **Vider la corbeille** : `run_command("powershell Clear-RecycleBin -Force")`
+### 1. Diagnostic (lecture seule)
+- Espace disque : `run_command("wmic logicaldisk get size,freespace,caption")`
+- Gros dossiers (LISTER, ne pas toucher) :
+  `run_command("powershell Get-ChildItem -Path C:\\ -Recurse -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 15 FullName, Length | Format-Table -AutoSize")`
+- Taille du TEMP (mesure seule) :
+  `run_command("powershell (Get-ChildItem -Path $env:TEMP -Recurse -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1GB")`
 
-3. **Analyser les logs volumineux** :
-   - Chercher les fichiers *.log, *.tmp > 100MB
-   - `run_command("powershell Get-ChildItem -Path C:\\ -Include *.log,*.tmp -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.Length -gt 100MB} | Select-Object FullName, Length | Sort-Object Length -Descending")`
+### 2. Rapport des candidats
+- Présenter une **liste claire** : chemin, taille, âge, type (temp / cache / rendu / backup).
+- Trier par espace récupérable décroissant.
+- Marquer ce qui est **sûr** (temp, cache, rendus intermédiaires) vs **sensible** (données utilisateur).
 
-### Phase 3 : Libération ciblée (selon les résultats)
-1. **Backups anciens** : Supprimer les backups de plus de 30 jours dans les dossiers de projet
-2. **Cache Docker/Node** : `run_command("docker system prune -f")` et `run_command("npm cache clean --force")`
-3. **Fichiers de téléchargement** : Vérifier Downloads/ pour les gros fichiers inutiles
-4. **Vidéos/images temporaires** : Chercher dans workspace/ les rendus vidéo intermédiaires
+### 3. Dry-run
+- Annoncer **exactement** ce qui serait supprimé et **combien** d'espace serait libéré.
+- Ne **rien** exécuter à cette étape.
 
-### Phase 4 : Surveillance post-nettoyage
-1. Re-vérifier l'espace libre : `run_command("wmic logicaldisk get caption,freespace,size")`
-2. Calculer le pourcentage libéré
-3. Noter dans le journal les actions effectuées et l'espace récupéré
-4. Planifier un nettoyage régulier si le problème est récurrent
+### 4. Confirmation explicite
+- Demander à l'utilisateur de valider la liste (ou un sous-ensemble).
+- Sans « oui » explicite → **ne rien supprimer**.
 
-## Exemples
+### 5. Suppression bornée (après confirmation seulement)
+- Supprimer **uniquement les éléments confirmés**, un par un, via les outils fichier natifs
+  (`delete_file`) ou une commande **ciblée sur un chemin précis** — jamais un wildcard récursif global.
+- Préférer **vider la corbeille / déplacer vers archive** plutôt que suppression définitive
+  quand c'est possible.
 
-### Input (situation critique) :
-```
-Disque C: : 97.6% utilisé (11.4 GB libre sur 500 GB)
-Alerte système : "Espace disque insuffisant"
-```
+### 6. Vérification & journal
+- Re-mesurer l'espace libre.
+- Journaliser les actions (`write_journal`) : quoi, où, combien libéré.
 
-### Output attendu :
-```
-1. Diagnostic : Dossier workspace/2026-04-11 contient 8.2GB de vidéos rendues
-2. Actions : 
-   - Supprimé les fichiers .mp4 intermédiaires (3.1GB libérés)
-   - Nettoyé TEMP (1.2GB libérés)
-   - Vider corbeille (0.8GB libérés)
-3. Résultat : 85.3% utilisé (35.5 GB libre)
-4. Recommandation : Configurer auto-nettoyage hebdomadaire des rendus > 7 jours
-```
+## Priorités de libération (du plus sûr au plus sensible)
+1. Fichiers temporaires / caches (`%TEMP%`, `__pycache__`, `.pytest_cache`)
+2. Rendus vidéo/images intermédiaires dans `workspace/`
+3. Téléchargements volumineux inutiles (après confirmation)
+4. Backups anciens (après confirmation — vérifier qu'une copie existe)
 
-### Cas réel (d'après mémoire 2026-04-11) :
-**Problème** : Disque critique à 97.6% utilisé, seulement 11.4GB libre
-**Application du skill** :
-1. Diagnostic rapide → workspace/ contient beaucoup de projets vidéo
-2. Nettoyage prioritaire → fichiers temporaires et corbeille
-3. Libération ciblée → suppression des rendus vidéo intermédiaires conservés inutilement
-4. Surveillance → espace augmenté à 15+ GB libre, alerte résolue
-
-## Notes importantes
-- Toujours vérifier avant suppression qu'un fichier n'est pas critique
-- Prioriser la suppression des fichiers temporaires avant les données utilisateur
-- Documenter chaque suppression importante pour pouvoir restaurer si besoin
-- Si le problème persiste, envisager l'extension du stockage ou l'archivage externe
+## Notes
+- Toujours vérifier qu'un fichier n'est pas critique avant de le proposer.
+- En cas de doute, **proposer** et laisser l'utilisateur trancher.
+- Si le problème persiste, suggérer extension de stockage ou archivage externe.

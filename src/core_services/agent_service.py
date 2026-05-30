@@ -242,7 +242,7 @@ class AgentService:
             "gpt4": "gpt-4o",
             "gpt-4": "gpt-4o",
             "claude": "claude-sonnet-4.6",
-            "opus": "claude-opus-4.7",
+            "opus": "claude-opus-4.8",
             "gemini": "gemini-2.5-flash",
             "kimi": "kimi-k2.5",
             "grok": "grok-4.3",

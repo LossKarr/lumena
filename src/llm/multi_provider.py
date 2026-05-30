@@ -1458,7 +1458,7 @@ class MultiProviderLLM:
         }
         # Opus 4.7+ (adaptive thinking models) refuse le paramètre temperature
         _model_id = payload["model"] or ""
-        if "opus-4-7" in _model_id:
+        if "opus-4-7" in _model_id or "opus-4-8" in _model_id:
             payload.pop("temperature", None)
         if stop:
             payload["stop_sequences"] = stop
@@ -2748,7 +2748,7 @@ class MultiProviderLLM:
             "stream": True,
         }
         # Opus 4.7+ (adaptive thinking models) refuse le paramètre temperature
-        if "opus-4-7" in (self.model or ""):
+        if "opus-4-7" in (self.model or "") or "opus-4-8" in (self.model or ""):
             payload.pop("temperature", None)
         if system:
             payload["system"] = system
@@ -3105,7 +3105,7 @@ class MultiProviderLLM:
                 "messages": claude_messages
             }
             # Opus 4.7+ (adaptive thinking models) refuse le paramètre temperature
-            if "opus-4-7" in (self.model or ""):
+            if "opus-4-7" in (self.model or "") or "opus-4-8" in (self.model or ""):
                 payload.pop("temperature", None)
             
             if system_content:

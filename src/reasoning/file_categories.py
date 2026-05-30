@@ -116,6 +116,58 @@ def requires_codeagent(path: str | Path) -> bool:
     return False
 
 
+# ─── Détection de tâche "création de document" (langage naturel) ─────
+#
+# Sert à empêcher qu'une tâche de création de document (PDF, DOCX, rapport…)
+# soit déléguée au CodeAgent, qui est réservé au développement.
+# La création de documents passe par les outils directs ReAct
+# (create_pdf / create_docx / write_file).
+
+# Signaux indiquant une création/édition de document bureautique ou texte.
+_DOCUMENT_SIGNALS: frozenset[str] = frozenset({
+    "pdf", "docx", "xlsx", "pptx", "odt", "ods", "odp",
+    "document", "rapport", "lettre", "facture", "devis", "contrat",
+    "présentation", "presentation", "diaporama", "tableur", "feuille de calcul",
+    "compte rendu", "compte-rendu", "courrier", "attestation", "fiche",
+    "en pdf", "en word", "en excel", "en powerpoint",
+})
+
+# Signaux indiquant une vraie tâche de développement (annule la détection doc).
+_CODE_SIGNALS: frozenset[str] = frozenset({
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".java", ".go",
+    ".rs", ".rb", ".php", ".c", ".cpp", ".sql", ".sh",
+    "script", "fonction", "function", "classe", "class", "méthode", "methode",
+    "bug", "traceback", "erreur", "exception", "refactor", "refacto",
+    "test", "tests", "api", "endpoint", "compile", "build", "déploie", "deploy",
+    "site web", "page web", "composant", "component", "module", "package",
+    "repo", "dépôt", "depot", "import", "librairie", "library", "framework",
+    "backend", "frontend", "serveur", "server", "base de données", "database",
+})
+
+
+def looks_like_document_creation(description: str) -> bool:
+    """True si la description ressemble à une création/édition de document
+    bureautique ou texte (PDF/DOCX/rapport…) plutôt qu'à du développement.
+
+    Heuristique conservatrice : exige au moins un signal document ET aucun
+    signal code. Ainsi "crée un script Python qui génère un PDF" n'est PAS
+    détecté comme tâche document (le signal code l'emporte).
+
+    Args:
+        description: la description de la tâche déléguée.
+
+    Returns:
+        True = tâche de document (à garder en ReAct, pas CodeAgent).
+    """
+    if not description:
+        return False
+    text = description.lower()
+    has_code_signal = any(sig in text for sig in _CODE_SIGNALS)
+    if has_code_signal:
+        return False
+    return any(sig in text for sig in _DOCUMENT_SIGNALS)
+
+
 def categorize(path: str | Path) -> str:
     """Retourne la catégorie d'un fichier : 'code', 'config', 'doc', 'binary',
     'asset' ou 'unknown'."""

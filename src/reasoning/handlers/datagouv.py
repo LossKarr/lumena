@@ -705,7 +705,7 @@ def get_datagouv_handler_defs() -> list[HandlerDef]:
                 "required": ["query"],
             },
             handler=datagouv_search_handler,
-            category="web",
+            category="data",
             source_module="handlers.datagouv",
         ),
         HandlerDef(
@@ -740,7 +740,7 @@ def get_datagouv_handler_defs() -> list[HandlerDef]:
                 "required": ["slug_or_id"],
             },
             handler=datagouv_get_dataset_handler,
-            category="web",
+            category="data",
             source_module="handlers.datagouv",
         ),
         HandlerDef(
@@ -779,7 +779,7 @@ def get_datagouv_handler_defs() -> list[HandlerDef]:
                 "required": ["resource_url"],
             },
             handler=datagouv_download_resource_handler,
-            category="web",
+            category="data",
             source_module="handlers.datagouv",
         ),
     ]

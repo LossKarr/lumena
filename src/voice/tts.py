@@ -227,13 +227,35 @@ class LumenaTTS:
             if _ok or self._stop_speaking:
                 return None  # lecture terminée ou interrompue volontairement
 
+        # ── V2 : synthèse seule (cascade providers, SANS playback) ──
+        audio_file = await self._synthesize(text)
+        if audio_file is None:
+            return None
+        # Jouer l'audio
+        if wait and audio_file and audio_file.exists():
+            await self._play_audio(audio_file)
+        elif audio_file and audio_file.exists():
+            asyncio.create_task(self._play_audio(audio_file))
+        return audio_file
+
+    async def _synthesize(self, text: str, *, local_only: bool = False) -> Optional[Path]:
+        """Phase SYNTHÈSE seule (V2) — cascade de providers → fichier audio, SANS playback.
+
+        Ne prend JAMAIS le chemin `_speak_sentences` (réservé à `speak()`).
+        `local_only=True` interdit Edge-TTS (cloud) — utilisé quand le cloud n'est pas autorisé.
+        Retourne le `Path` du fichier généré, ou None si aucun provider n'a réussi.
+        """
+        if not text or not text.strip():
+            return None
+        text = self._clean_text(text)
         import hashlib
         text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-        
+
         start_time = time.time()
         success = False
         audio_file = None
-        
+        provider = None  # provider effectivement utilisé (pour statut V2 : pyttsx3 -> degraded)
+
         # 0. XTTS v2 — ultra-naturel local (prioritaire si mode premium/offline)
         if not success and self._tts_mode in ("premium", "offline") and self.xtts is not None and self.xtts.is_available():
             provider = "xtts"
@@ -271,7 +293,8 @@ class LumenaTTS:
                 self.metrics.record_failure(provider, str(e))
         
         # 2. Edge-TTS (cloud, VivienneMultilingualNeural, ~200ms — pas disponible si mode offline)
-        if not success and EDGE_TTS_AVAILABLE and self._tts_mode != "offline":
+        #    V2 : interdit si local_only (cloud non autorisé).
+        if not success and EDGE_TTS_AVAILABLE and self._tts_mode != "offline" and not local_only:
             provider = "edge-tts"
             audio_file = self.cache_dir / f"lumena_{text_hash}.mp3"
             try:
@@ -354,13 +377,8 @@ class LumenaTTS:
         if not success:
             logger.error(f"❌ TTS: Aucun provider disponible pour le texte: {text[:50]}...")
             return None
-        
-        # Jouer l'audio
-        if wait and audio_file and audio_file.exists():
-            await self._play_audio(audio_file)
-        elif audio_file and audio_file.exists():
-            asyncio.create_task(self._play_audio(audio_file))
-        
+
+        self._last_provider = provider  # exposé pour le statut V2 (LocalTTSAdapter)
         return audio_file
 
     async def speak_async(self, text: str) -> Optional[Path]:

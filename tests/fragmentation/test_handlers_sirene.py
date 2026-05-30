@@ -191,9 +191,9 @@ def test_handler_defs_returns_2_entries():
     assert names == {"sirene_search_company", "sirene_get_by_siret"}
 
 
-def test_handler_defs_all_web_category():
+def test_handler_defs_all_data_category():
     for d in get_sirene_handler_defs():
-        assert d.category == "web"
+        assert d.category == "data"
         assert d.source_module == "handlers.sirene"
 
 

@@ -4,13 +4,13 @@
 Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-9264%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-10678%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Commercial-blue)
-![Version](https://img.shields.io/badge/version-v1.0.40-orange)
+![Version](https://img.shields.io/badge/version-v1.0.41-orange)
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.40**
+> **⚠️ Version Bêta — v1.0.41**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 > **👤 Projet solo**
@@ -24,16 +24,16 @@ Lumena est un **assistant personnel IA autonome** — pas un chatbot, pas un wra
 
 Concrètement : vous lui dites *"crée-moi un site vitrine pour mon restaurant et envoie-le moi par mail"*, il le fait. Pas en vous donnant du code à copier — en l'exécutant lui-même, fichier par fichier, jusqu'à confirmation que ça marche.
 
-Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** répartis en 18 packs, **mémoire vectorielle** persistante (ChromaDB), et **contrôle complet du PC** (clavier, souris, navigateur, apps).
+Sous le capot : boucle **ReAct** (Think → Act → Observe), **560 outils** organisés en **32 catégories** (1 contrat de sécurité par catégorie) et **26 packs** de routage par mots-clés, **mémoire vectorielle** persistante (ChromaDB), et **contrôle complet du PC** (clavier, souris, navigateur, apps).
 
 ### Points forts
 
 | Domaine | Détail |
 |---|---|
-| **LLM** | 11 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Mistral, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — fallback chaîné automatique |
-| **Raisonnement** | Boucle ReAct 30 iter, CodeAgent pleinement opérationnel — agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) en intégration active |
-| **Outils** | 511 handlers V2 dans 18 packs : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use |
-| **Documents** | 36 handlers, 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
+| **LLM** | 11 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Mistral, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — **Claude Opus 4.8** (top Opus, adaptive thinking) intégré, modèles obsolètes nettoyés — fallback chaîné automatique, réserve premium |
+| **Raisonnement** | Boucle ReAct 30 iter, CodeAgent **dev only** (refuse les créations de documents → routées vers les outils natifs), agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) en intégration active |
+| **Outils** | **560 handlers V2** dans **32 catégories** (1 contrat de gouvernance par catégorie) : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use, **`data` (data.gouv + SIRENE + géo + workbench)** |
+| **Documents** | **46 handlers** (PDF/DOCX/XLSX/PPTX/HTML/CSV), 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
 | **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 39 modèles, 15 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image) |
 | **Vidéo** | Remotion 4.x (React TSX → MP4/WebM), 5 templates (presentation, social_short, explainer, square_social, custom), rendu local Node.js ou Docker, auto-fix sur erreur de rendu, assets locaux via `staticFile()` |
 | **Mémoire** | 4 niveaux : session, ChromaDB vectorielle, Knowledge Graph, BM25 — embedding cache, file watcher |
@@ -42,10 +42,11 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **511 outils** ré
 | **Fine-tuning** | Pipeline local LoRA→GGUF→Ollama automatique, 30 modèles, détection GPU nvidia-smi |
 | **Voix** | STT (Whisper) + TTS (Piper / Coqui XTTS provider) — *pipeline de base opérationnel, intégration avancée en cours* |
 | **Web** | FastAPI + interface admin complète, chat temps réel (SSE), WebSocket IDE bridge, panel workspaces CodeAgent |
+| **Hébergement IONOS** | Déploiement SFTP multi-sites (credentials chiffrés Fernet) + **bridge BDD sécurisé** : les BDD MySQL mutualisées IONOS (`*.hosting-data.io`), injoignables de l'extérieur, sont pilotées via un bridge PHP signé HMAC + AES-256-GCM déployé sur le site. Lecture read-only, write INSERT/UPDATE, CREATE / CLEAR / DROP de tables sandbox, snapshots chiffrés + restauration, DELETE de lignes — **chaque capacité OFF par défaut, confirmation humaine**. L'assistant ne fait que **proposer** (l'humain approuve dans le panel) ; jamais de mysql/php/node en direct, zéro secret/valeur en clair |
 | **Multi-Lumena LAN** | Jumelage sécurisé par code court (6 cars, TTL 5 min), peer tokens révocables stockés hashés, délégation de tâches inter-instances, découverte LAN + mDNS/Zeroconf optionnel (`_lumena._tcp.local`) |
 | **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard RFC1918 strict, rate limiter, path traversal guard, peer tokens liés à l'instance (anti-usurpation) |
 | **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, TaskProofDecision annotation (evidence + confidence par tâche complétée) |
-| **Tests** | 9 264 tests, 0 failed, ~150s suite complète |
+| **Tests** | **10 678 tests**, 0 failed, ~4 min suite complète |
 
 ---
 
@@ -179,6 +180,12 @@ docker-compose up -d
 # Autonomie
 "Surveille le dossier /projets et résume les nouveaux fichiers chaque matin à 9h"
 "Lance le serveur Node.js du projet SynthVault et dis-moi s'il démarre correctement"
+
+# Hébergement & BDD IONOS (via bridge sécurisé, l'IA propose / tu valides)
+"Déploie le dossier ./monsite sur openlumena.com"
+"Liste les tables de la BDD de openlumena.com et montre le schéma de la table commandes"
+"Rajoute une table test à la bdd de openlumena.com"      # → propose une table sandbox
+"Vide la table lumena_sandbox_test sur openlumena.com"   # → propose un CLEAR (snapshot avant)
 ```
 
 ---
@@ -191,13 +198,14 @@ src/
 ├── reasoning/
 │   ├── react.py            # Boucle ReAct (4 953L)
 │   ├── react_config.py     # Config, enums, constantes (400L)
-│   ├── tool_registry.py    # ToolRegistry — 18 packs contextuels (1 763L)
+│   ├── tool_registry.py    # ToolRegistry — 32 catégories, 26 packs contextuels
 │   ├── intent_router.py    # Router LLM-first + fallback regex
 │   ├── response_parser.py  # Parsing ReAct (312L)
 │   ├── prompt_builder.py   # Heuristiques statiques (258L)
-│   └── handlers/           # 18 packs, 511 outils V2
+│   └── handlers/           # 32 catégories, 560 outils V2
 │       ├── browser.py      # Playwright stealth v2 (68 handlers)
-│       ├── documents.py    # 36 handlers PDF/DOCX (factures, contrats…)
+│       ├── documents.py    # 46 handlers PDF/DOCX/XLSX/PPTX (factures, contrats…)
+│       ├── datagouv.py + sirene.py + geo_gouv.py + data_workbench.py  # cat. `data` (14 outils)
 │       ├── image_gen.py    # 15 handlers génération d'images (12 providers, 39 modèles)
 │       ├── ide.py          # 36 handlers IDE bridge
 │       ├── stripe_api.py   # 33 handlers Stripe
@@ -246,7 +254,7 @@ web/
 
 assets/templates/           # 13 templates Jinja2 (documents pro)
 models/                     # Modèles TTS Piper + pipeline fine-tuning
-tests/                      # 9 264 tests pytest
+tests/                      # 10 678 tests pytest
 ```
 
 ---
@@ -436,7 +444,7 @@ Oui — recherche web, scraping, APIs REST, téléchargement de fichiers.
 Oui. C'est l'un de ses points forts — elle lit, écrit, exécute. C'est aussi pourquoi le mode sandbox (`LUMENA_SANDBOX_MODE=auto`) est recommandé au départ.
 
 **Quel modèle LLM faut-il pour que ça marche bien ?**
-DeepSeek V3 (API peu coûteuse, très performante pour les tâches de code et d'orchestration), Claude Sonnet 4, ou GPT-4o. Les modèles locaux Ollama fonctionnent mais sont moins fiables sur les tâches complexes.
+Pour les tâches critiques (raisonnement, création) : **Claude Opus 4.8** (top Opus) ou **GPT-5.x**. Pour le quotidien moins exigeant : DeepSeek V3 (API peu coûteuse) ou Claude Sonnet 4.6 (équilibré vitesse/intelligence). Les modèles locaux Ollama fonctionnent mais sont moins fiables sur les tâches complexes.
 
 **Est-ce que mes données restent chez moi ?**
 Oui si vous utilisez Ollama (modèles locaux). Avec les providers cloud (OpenAI, Anthropic, etc.), les conversations transitent par leurs APIs selon leurs CGU respectives.

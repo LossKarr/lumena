@@ -18,7 +18,7 @@ Usage :
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, FrozenSet, List, Optional
 
 
@@ -97,6 +97,23 @@ _CONTRACTS: Dict[str, ToolCategoryContract] = {
         allowed_effects=["lecture URL externe", "requête HTTP"],
         refusal_reasons=["URL interne ou privée", "bande passante excessive"],
         autonomy_allowed=True,
+        requires_workspace=False,
+        delegate_code_threshold=0,
+    ),
+
+    "data": ToolCategoryContract(
+        name="data",
+        role="Données publiques (data.gouv, SIRENE, géo) : recherche, téléchargement, analyse de jeux de données.",
+        preconditions=["accès réseau disponible"],
+        allowed_effects=[
+            "recherche dataset", "téléchargement ressource", "lecture/analyse fichier de données",
+        ],
+        refusal_reasons=["URL interne ou privée", "volume excessif"],
+        autonomy_allowed=True,
+        # Pas de workspace imposé au niveau contrat : datagouv_search/sirene/geo n'en
+        # ont pas besoin. Les outils qui écrivent/lisent des fichiers
+        # (datagouv_download_resource, data_profile_file, data_export, data_join)
+        # conservent leurs propres checks workspace/path internes.
         requires_workspace=False,
         delegate_code_threshold=0,
     ),
@@ -333,6 +350,7 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "files":         "files",
     "system":        "system",
     "web":           "web",
+    "data":          "data",
     "memory":        "memory",
     "browser":       "browser",
     "computer_use":  "computer_use",
@@ -374,6 +392,46 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "code":               "codebase",
     "security_offensive": "security",
 }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 2 — Mono-catégorie (1 catégorie = 1 contrat)
+# ──────────────────────────────────────────────────────────────────────────────
+# Ces 15 catégories étaient regroupées sous un contrat parent (communication /
+# media / platform / system / files). On leur donne leur propre contrat, par
+# CLONAGE iso du parent (mêmes preconditions/effets/autonomy/workspace) afin de
+# ne rien changer au comportement. Les ajustements de gouvernance (lsp, skills)
+# sont faits séparément en Phase 3 — PAS ici.
+_MONO_FROM_PARENT: Dict[str, str] = {
+    "mail": "communication", "discord": "communication", "social": "communication",
+    "image": "media", "spotify": "media", "video": "media",
+    "ionos": "platform", "ide": "platform", "stripe": "platform",
+    "automation": "platform", "notion": "platform", "lsp": "platform",
+    "skills": "system", "custom": "system",
+    "website": "files",
+}
+
+for _child, _parent in _MONO_FROM_PARENT.items():
+    # 1) contrat mono cloné du parent (iso)
+    if _child not in _CONTRACTS and _parent in _CONTRACTS:
+        _CONTRACTS[_child] = replace(_CONTRACTS[_parent], name=_child)
+    # 2) mapping en identité : la catégorie pointe vers son propre contrat
+    _MODULE_TO_SEMANTIC[_child] = _child
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 3 — Ajustements de gouvernance (les 2 SEULS changements de comportement)
+# ──────────────────────────────────────────────────────────────────────────────
+# lsp : diagnostics / goto / references / hover = lecture de code pure. Sûr en
+# autonome, mais nécessite un workspace résolu pour cibler le bon projet.
+_CONTRACTS["lsp"] = replace(
+    _CONTRACTS["lsp"], autonomy_allowed=True, requires_workspace=True
+)
+# skills : contient edit_own_code / rollback / sync_skills_main (auto-modification
+# du code de Lumena). NE doit JAMAIS tourner sans interaction → non-autonome.
+_CONTRACTS["skills"] = replace(
+    _CONTRACTS["skills"], autonomy_allowed=False
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -117,7 +117,7 @@ _JSON_CONTRACT_CAPABLE_MODELS = frozenset([
     "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
     "gpt-5", "gpt-5-mini",
     "deepseek-v3", "deepseek-chat",
-    "claude-3.5", "claude-3-opus", "claude-4", "claude-sonnet-4",
+    "claude-4", "claude-opus-4", "claude-sonnet-4",
     "o3", "o4-mini",
     "qwen3-235b-a22b",
 ])

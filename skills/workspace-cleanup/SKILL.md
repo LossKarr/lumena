@@ -4,90 +4,68 @@ description: Nettoie, archive et organise le workspace Lumena. Utilise ce skill 
 keywords: [workspace, nettoyer, archiver, cleanup, vieux fichiers, old files, ranger, organiser, supprimer projet, archiver projet, trier fichiers, nettoyer dossier, menage]
 ---
 
-# Skill: Workspace Cleanup
+# Workspace Cleanup
 
-## Description
-Skill pour nettoyer automatiquement le workspace de Lumena : supprime les dossiers de projets anciens, les fichiers temporaires, et libère de l'espace disque. Optimise la maintenance du système de fichiers local.
+Inventorie et **propose** un nettoyage du `workspace/` — sans rien supprimer
+automatiquement, et **jamais** hors du workspace.
 
-## Quand l'utiliser
-1. **Avant un gros projet** : pour libérer de l'espace et éviter la confusion avec d'anciens fichiers
-2. **Maintenance hebdomadaire** : planifier une tâche automatique qui nettoie les projets datant de plus de 7 jours
-3. **Après des tests intensifs** : quand tu as créé de nombreux projets temporaires et que tu veux un workspace propre
+## ⛔ Règles de sécurité (NON négociables)
 
-## Instructions
-1. **Analyser le workspace** :
-   - Lister tous les dossiers dans `workspace/`
-   - Identifier les dossiers avec des dates dans le nom (format YYYY-MM-DD)
-   - Calculer l'âge de chaque dossier
+- **Aucune suppression automatique.** Toute suppression exige une **confirmation
+  explicite de l'utilisateur** sur une liste de candidats précise.
+- **INTERDIT** : `rmdir /S /Q`, `del` récursif, `shutil.rmtree`, ou toute suppression
+  récursive de dossier en action automatique.
+- **Suppression UNIQUEMENT à l'intérieur de `workspace/`.** Jamais ailleurs sur le disque,
+  même si l'utilisateur pointe un autre chemin, sans validation explicite et nominale.
+- Toujours **conserver** les dossiers marqués `keep.txt` ou contenant `.git`.
 
-2. **Configurer les règles de nettoyage** :
-   - Dossiers de plus de 7 jours → suppression
-   - Fichiers `.log`, `.tmp`, `.cache` dans tout workspace → suppression
-   - Dossiers `__pycache__`, `.pytest_cache`, `node_modules` → suppression
-   - Conserver les dossiers avec `keep.txt` ou `.git` (projets importants)
+## Workflow obligatoire
 
-3. **Exécuter le nettoyage** :
-   - Utiliser `list_directory` pour parcourir
-   - Utiliser `delete_file` pour les fichiers
-   - Utiliser `run_command` avec `rmdir /S /Q` (Windows) pour les dossiers
-   - Journaliser les actions dans `data/cleanup_log.txt`
+### 1. Inventaire (lecture seule)
+- Lister les dossiers de `workspace/` avec `list_directory`.
+- Repérer les dossiers datés (`YYYY-MM-DD`), calculer leur âge.
+- Repérer `.log`/`.tmp`/`.cache`, `__pycache__`, `.pytest_cache`, `node_modules`.
 
-4. **Vérifier l'espace libéré** :
-   - Comparer l'espace disque avant/après avec `run_command('dir /s workspace')`
-   - Afficher un résumé
+### 2. Liste des candidats
+- Présenter un tableau : chemin (relatif au workspace), âge, taille estimée, raison.
+- Exclure d'office tout dossier avec `keep.txt` ou `.git`.
+
+### 3. Dry-run
+- Annoncer **exactement** ce qui serait supprimé/archivé et l'espace estimé libéré.
+- Ne **rien** exécuter à cette étape.
+
+### 4. Confirmation explicite
+- Demander validation de la liste (ou d'un sous-ensemble).
+- Sans « oui » explicite → **ne rien supprimer**.
+- Si > 5 éléments : reconfirmer le périmètre.
+
+### 5. Suppression bornée (après confirmation seulement)
+- Supprimer **uniquement les éléments confirmés**, via les outils fichier natifs
+  (`delete_file`), chemin par chemin, **dans `workspace/`** exclusivement.
+- Préférer **archiver** (`create_zip` / déplacer vers un dossier `archive/`) plutôt que
+  supprimer définitivement quand c'est possible.
+
+### 6. Journal
+- Journaliser chaque action (`write_journal` ou `data/cleanup_log.txt`) : quoi, où, quand.
 
 ## Exemples
-**Input**: "Nettoie le workspace des projets de plus de 3 jours"
-**Output**: 
+
+**Input** : « Nettoie le workspace des projets de plus de 3 jours »
+**Comportement attendu** :
 ```
-[INFO] Analyse du workspace...
-[INFO] 15 dossiers trouvés
-[INFO] Suppression de workspace/2026-03-25/projet-test (7 jours)
-[INFO] Suppression de workspace/2026-03-26/demo (6 jours)
-[INFO] Nettoyage des fichiers .log : 3 fichiers supprimés
-[INFO] Espace libéré : ~250 Mo
+[1] Inventaire (lecture seule) → 15 dossiers
+[2] Candidats (> 3 jours, hors keep.txt/.git) :
+    - workspace/2026-03-25/projet-test   (7 j, ~120 Mo)
+    - workspace/2026-03-26/demo          (6 j, ~80 Mo)
+[3] Dry-run : 2 dossiers, ~200 Mo récupérables
+[4] → Demande de confirmation à l'utilisateur AVANT toute suppression
 ```
 
-**Input**: "Planifie un nettoyage automatique tous les lundis à 8h"
-**Output**: 
-```
-[INFO] Tâche planifiée avec schedule_task:
-- Action: execute_skill workspace-cleanup
-- Cron: 0 8 * * 1
-- Nom: "Nettoyage hebdomadaire workspace"
-```
+**Input** : « Planifie un nettoyage automatique tous les lundis »
+**Comportement attendu** : planifier via `schedule_task` une **session d'inventaire +
+proposition** (jamais une suppression auto sans confirmation).
 
-## Code de base (optionnel)
-```python
-# Exemple de script Python pour le skill
-import os
-import shutil
-from datetime import datetime, timedelta
-
-def cleanup_workspace(max_days=7):
-    workspace_path = "workspace"
-    if not os.path.exists(workspace_path):
-        return "Workspace non trouvé"
-    
-    deleted = []
-    for item in os.listdir(workspace_path):
-        item_path = os.path.join(workspace_path, item)
-        # Vérifier si c'est un dossier avec format date
-        if os.path.isdir(item_path) and len(item) == 10:
-            try:
-                folder_date = datetime.strptime(item, "%Y-%m-%d")
-                age = (datetime.now() - folder_date).days
-                if age > max_days:
-                    shutil.rmtree(item_path)
-                    deleted.append(f"{item} ({age} jours)")
-            except ValueError:
-                pass
-    
-    return f"Dossiers supprimés: {', '.join(deleted) if deleted else 'Aucun'}"
-```
-
-## Notes de sécurité
-- Toujours demander confirmation avant suppression si plus de 5 dossiers
-- Ne jamais supprimer en dehors du dossier workspace/
-- Vérifier les permissions d'écriture
-- Garder un journal des suppressions pour audit
+## Notes
+- Le nettoyage planifié **propose** ; il ne supprime pas sans validation.
+- Vérifier les permissions avant toute action.
+- En cas de doute sur un dossier, le **garder** et le signaler.

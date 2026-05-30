@@ -616,10 +616,10 @@ def test_handler_defs_exposes_v2_1_to_v3_4():
     assert names == expected, f"Attendu {expected}, trouvé {names}"
 
 
-def test_handler_defs_category_documents():
+def test_handler_defs_category_data():
     defs = get_data_workbench_handler_defs()
     for d in defs:
-        assert d.category == "documents"
+        assert d.category == "data"
         assert d.source_module == "handlers.data_workbench"
 
 

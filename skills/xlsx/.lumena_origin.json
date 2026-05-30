@@ -1,5 +1,6 @@
 {
-  "origin": "skills-main",
+  "origin": "lumena-custom",
   "source_path": "",
-  "synced_at": "2026-02-06T23:18:39.169827+00:00"
+  "synced_at": "2026-02-06T23:18:39.169827+00:00",
+  "note": "Réécrit pour router vers les outils natifs document_*/data_* (create_xlsx, data_aggregate…) au lieu de coder en Python. Ne pas re-synchroniser depuis skills-main (écraserait la customisation)."
 }

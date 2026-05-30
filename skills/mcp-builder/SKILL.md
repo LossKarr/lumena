@@ -1,11 +1,18 @@
 ---
 name: mcp-builder
-description: Guide for creating high-quality MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. Use when building MCP servers to integrate external APIs or services, whether in Python (FastMCP) or Node/TypeScript (MCP SDK).
+description: "[DÉPRÉCIÉ — usage rare] Guide pour créer des serveurs MCP (Model Context Protocol). À n'utiliser QUE si l'utilisateur demande explicitement de construire un serveur MCP. ⚠️ Les scripts requièrent `pip install anthropic mcp` (NON installés par défaut dans Lumena) — sans cette installation, ils ne s'exécutent pas. Pour intégrer un service externe à Lumena, préférer les outils/handlers natifs existants."
 keywords: [mcp, model context protocol, serveur mcp, construire mcp, fastmcp, mcp sdk, creer serveur, api integration, tools llm, mcp server, node typescript mcp, python mcp]
-license: Complete terms in LICENSE.txt
+license: Lumena - usage interne
 ---
 
 # MCP Server Development Guide
+
+> ⚠️ **DÉPRÉCIÉ / usage rare.** Ce skill n'est pertinent que pour **construire un serveur
+> MCP** sur demande explicite. Ses scripts (`scripts/evaluation.py`, `connections.py`)
+> dépendent de `anthropic>=0.39.0` et `mcp>=1.1.0` qui **ne sont PAS installés** dans
+> l'environnement Lumena → exécuter `pip install anthropic mcp` au préalable, sinon échec
+> à l'import. Pour intégrer un service externe à Lumena, **préférer les outils/handlers
+> natifs** plutôt qu'un serveur MCP.
 
 ## Overview
 

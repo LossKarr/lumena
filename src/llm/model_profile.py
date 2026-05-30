@@ -231,6 +231,19 @@ _PROVIDER_DEFAULTS: Dict[str, ModelBehaviorProfile] = {
 
 _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
     # ── Anthropic flagship (très stable) ────────────────────────────────────
+    "claude-opus-4.8": ModelBehaviorProfile(
+        parser_severity="strict",
+        thought_leak_risk="low",
+        action_inline_risk="low",
+        loop_risk="low",
+        tool_call_quality="excellent",
+        react_stability="stable",
+        sub_agent_stability="stable",
+        empty_response_risk="rare",
+        retry_on_empty=False,
+        timeout_multiplier=1.0,
+        compact_ctx_threshold=0.80,
+    ),
     "claude-opus-4.7": ModelBehaviorProfile(
         parser_severity="strict",
         thought_leak_risk="low",

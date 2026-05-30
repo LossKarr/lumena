@@ -92,7 +92,8 @@ class GracefulDegradation:
         
         # Hosting
         "paramiko": "ionos",
-        
+        "pymysql": "ionos_db",
+
         # Utilities
         "psutil": "system_monitoring",
         "filelock": "file_locking",

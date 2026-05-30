@@ -432,11 +432,11 @@ def test_all_handlers_have_required_fields():
         assert d.source_module == "handlers.datagouv"
 
 
-def test_all_handlers_use_web_category():
-    """V1 : tous les handlers sont catégorie 'web' (cf décision plan §10)."""
+def test_all_handlers_use_data_category():
+    """Réorg Phase 1 : tous les handlers datagouv sont catégorie 'data'."""
     for d in get_datagouv_handler_defs():
-        assert d.category == "web", (
-            f"{d.name} devrait être 'web', trouvé '{d.category}'"
+        assert d.category == "data", (
+            f"{d.name} devrait être 'data', trouvé '{d.category}'"
         )
 
 

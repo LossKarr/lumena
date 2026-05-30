@@ -1,75 +1,34 @@
 ---
 name: web-artifacts-builder
-description: Suite of tools for creating elaborate, multi-component claude.ai HTML artifacts using modern frontend web technologies (React, Tailwind CSS, shadcn/ui). Use for complex artifacts requiring state management, routing, or shadcn/ui components - not for simple single-file HTML/JSX artifacts.
+description: "À utiliser pour créer ou modifier un site / une app web / un artefact web. RÈGLE LUMENA PRIORITAIRE : Lumena a des outils natifs (generate_website, edit_website, serve_website). Utilise-les TOUJOURS pour produire un site. Ne force PAS une stack React/Tailwind/shadcn/Vite ni de scripts de bundling — réserve le code complexe au CodeAgent, et seulement si l'utilisateur le demande explicitement."
 keywords: [react, tailwind, shadcn, composant react, artifact, widget, interface react, component, multi-component, state management, routing, shadcn ui, creer composant, app react]
-license: Complete terms in LICENSE.txt
+license: Lumena - usage interne
 ---
 
-# Web Artifacts Builder
+# Artefacts / sites web — Utilise les outils natifs, pas une stack lourde
 
-To build powerful frontend claude.ai artifacts, follow these steps:
-1. Initialize the frontend repo using `scripts/init-artifact.sh`
-2. Develop your artifact by editing the generated code
-3. Bundle all code into a single HTML file using `scripts/bundle-artifact.sh`
-4. Display artifact to user
-5. (Optional) Test the artifact
+⛔ **NE FORCE PAS React/Tailwind/shadcn/Vite ni de scripts de bundling** pour produire
+un site ou un artefact web. Lumena génère des sites complets nativement, en un appel.
+Le code framework n'est justifié QUE si l'utilisateur le demande explicitement.
 
-**Stack**: React 18 + TypeScript + Vite + Parcel (bundling) + Tailwind CSS + shadcn/ui
+## Table de routage : besoin → outil natif
 
-## Design & Style Guidelines
+| Tu veux… | Utilise | Au lieu de |
+|---|---|---|
+| **Créer un site / app complet** | `generate_website` (frontend + backend + API si besoin) | ~~init-artifact.sh + React~~ |
+| **Modifier** un site existant | `edit_website` | ~~éditer le code à la main~~ |
+| **Prévisualiser** localement | `serve_website` (puis `stop_website_server`) | ~~bundle-artifact.sh~~ |
+| **Exporter** en ZIP | `export_website_zip` | — |
+| **Vérifier** le projet web | `check_web_project` | — |
+| Une **image / logo / SVG** dans le site | outils `image` (`generate_image`, `generate_logo`, `generate_svg`) | — |
+| **Code framework complexe** (React/state/routing) **explicitement demandé** | `delegate_task` (CodeAgent) | — |
 
-VERY IMPORTANT: To avoid what is often referred to as "AI slop", avoid using excessive centered layouts, purple gradients, uniform rounded corners, and Inter font.
+## Règles de décision
 
-## Quick Start
+1. **Par défaut → `generate_website`** : c'est le bon outil pour « fais-moi un site / une landing / un dashboard ».
+2. **Site déjà existant → `edit_website`** (ne régénère pas tout).
+3. **Prévisualiser → `serve_website`**, puis `browser_*` pour vérifier (cf skill `webapp-testing`).
+4. **React/Tailwind/shadcn UNIQUEMENT** si l'utilisateur le demande nommément → alors `delegate_task` (CodeAgent), pas un script de scaffolding ici.
+5. `website-generator` reste le skill principal pour toute création de site — ce skill ne doit pas le contourner.
 
-### Step 1: Initialize Project
-
-Run the initialization script to create a new React project:
-```bash
-bash scripts/init-artifact.sh <project-name>
-cd <project-name>
-```
-
-This creates a fully configured project with:
-- ✅ React + TypeScript (via Vite)
-- ✅ Tailwind CSS 3.4.1 with shadcn/ui theming system
-- ✅ Path aliases (`@/`) configured
-- ✅ 40+ shadcn/ui components pre-installed
-- ✅ All Radix UI dependencies included
-- ✅ Parcel configured for bundling (via .parcelrc)
-- ✅ Node 18+ compatibility (auto-detects and pins Vite version)
-
-### Step 2: Develop Your Artifact
-
-To build the artifact, edit the generated files. See **Common Development Tasks** below for guidance.
-
-### Step 3: Bundle to Single HTML File
-
-To bundle the React app into a single HTML artifact:
-```bash
-bash scripts/bundle-artifact.sh
-```
-
-This creates `bundle.html` - a self-contained artifact with all JavaScript, CSS, and dependencies inlined. This file can be directly shared in Claude conversations as an artifact.
-
-**Requirements**: Your project must have an `index.html` in the root directory.
-
-**What the script does**:
-- Installs bundling dependencies (parcel, @parcel/config-default, parcel-resolver-tspaths, html-inline)
-- Creates `.parcelrc` config with path alias support
-- Builds with Parcel (no source maps)
-- Inlines all assets into single HTML using html-inline
-
-### Step 4: Share Artifact with User
-
-Finally, share the bundled HTML file in conversation with the user so they can view it as an artifact.
-
-### Step 5: Testing/Visualizing the Artifact (Optional)
-
-Note: This is a completely optional step. Only perform if necessary or requested.
-
-To test/visualize the artifact, use available tools (including other Skills or built-in tools like Playwright or Puppeteer). In general, avoid testing the artifact upfront as it adds latency between the request and when the finished artifact can be seen. Test later, after presenting the artifact, if requested or if issues arise.
-
-## Reference
-
-- **shadcn/ui components**: https://ui.shadcn.com/docs/components
+> Les scripts de scaffolding (`init-artifact.sh`, `bundle-artifact.sh`) restent dans le dossier en dernier recours, mais ne sont PAS le chemin par défaut.

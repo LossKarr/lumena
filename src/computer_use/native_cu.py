@@ -184,7 +184,7 @@ async def _exec_action(action_name: str, params: Dict[str, Any]) -> str:
 # ANTHROPIC NATIVE CU — computer_20251124
 # ═══════════════════════════════════════════════════════════════════════════
 
-_ANTHROPIC_CU_MODEL = os.getenv("LUMENA_ANTHROPIC_CU_MODEL", "claude-sonnet-4-20250514")
+_ANTHROPIC_CU_MODEL = os.getenv("LUMENA_ANTHROPIC_CU_MODEL", "claude-sonnet-4-6")
 
 _ANTHROPIC_CU_SYSTEM = """Tu es un assistant qui contrôle un ordinateur Windows pour accomplir des tâches.
 Tu as accès à un outil 'computer' qui te permet d'interagir avec l'écran.

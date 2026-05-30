@@ -123,6 +123,7 @@ pygame==2.6.1
 PyGetWindow==0.0.9
 Pygments==2.20.0
 PyMsgBox==2.0.1
+PyMySQL==1.1.1
 PyNaCl==1.6.2
 pypdf==6.10.2
 pyperclip==1.11.0

@@ -380,6 +380,22 @@ async def generate_video_handler(
             temperature=0.5, max_tokens=_sequencer_tokens, model=_code_model,
         )
         video_tsx_code = _strip_markdown_fences(video_tsx)
+
+    # Filet déterministe : les scènes utilisent `export default` (cf prompt),
+    # donc Video.tsx DOIT les importer en default. Un import named `{ X }`
+    # résout à `undefined` → React error #130 au rendu. On normalise chaque
+    # import de scène vers la forme default, quel que soit ce que le LLM a généré.
+    import re as _re_imp
+    for _sc in scenes:
+        _cn = _sc.get("component_name", "")
+        if not _cn:
+            continue
+        video_tsx_code = _re_imp.sub(
+            r"import\s*\{\s*" + _re_imp.escape(_cn) + r"\s*\}\s*from\s*"
+            r"(['\"])([^'\"]*scenes/" + _re_imp.escape(_cn) + r")\1",
+            r"import " + _cn + r" from \1\2\1",
+            video_tsx_code,
+        )
     scenes_code["src/Video.tsx"] = video_tsx_code
 
     telemetry.tsx_generation_duration_s = time.time() - _t_tsx

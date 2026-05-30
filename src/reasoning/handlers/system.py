@@ -96,6 +96,26 @@ async def run_command_handler(
     """Execute une commande shell de manière asynchrone (non-bloquante)."""
     try:
         ide_runtime = ctx.is_ide_runtime()
+
+        # Guard BDD IONOS (prioritaire) : interdire mysql/mariadb/php/node visant une base
+        # IONOS (*.hosting-data.io, injoignable de l'extérieur). Rediriger vers le bridge
+        # sécurisé (outils ionos_db_*) plutôt que lire config.php + lancer un client.
+        import re as _re_ionos
+        _cmd_low = command.lower()
+        _ionos_db_tool = _re_ionos.search(r'\b(mysql|mysqldump|mariadb|php|node)\b', _cmd_low)
+        _ionos_db_host = ("hosting-data.io" in _cmd_low) or bool(
+            _re_ionos.search(r'\bdbs?\d{6,}\b', _cmd_low)  # bases IONOS type dbs15704993
+        )
+        if _ionos_db_tool and _ionos_db_host:
+            return HandlerResult.ok(
+                "⛔ Accès direct à une base IONOS interdit : ces BDD (*.hosting-data.io) ne "
+                "sont pas joignables ainsi. Utilise le **bridge IONOS sécurisé** via les outils "
+                "`ionos_db_*` (ex: `ionos_db_install_bridge`, `ionos_db_list_tables`, "
+                "`ionos_db_create_sandbox_table`, `ionos_db_propose_write`). "
+                "N'utilise pas mysql/php/node ni config.php en direct.",
+                handler_name="run_command",
+            )
+
         from ...utils.command_sanitizer import sanitize_chained_command
         extra = ctx._discovered_executables if ctx._discovered_executables else None
         allowed, reason = sanitize_chained_command(command, extra_allowed=extra)

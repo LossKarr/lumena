@@ -1,0 +1,4 @@
+{
+  "origin": "lumena-custom",
+  "note": "Skill maison créé pour router vers les outils natifs de la catégorie 'data' (datagouv_*/sirene_*/geo_*/data_*). Ne pas re-synchroniser depuis skills-main."
+}

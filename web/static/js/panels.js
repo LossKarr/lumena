@@ -1544,19 +1544,60 @@ function _renderIonosSites() {
   let html = '';
   for (const s of _ionosSites) {
     const lastDeploy = s.last_deploy ? new Date(s.last_deploy).toLocaleString('fr-FR') : 'Jamais';
-    html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:rgba(255,255,255,.02)">
-      <div style="flex:1;min-width:0">
-        <div style="font-size:14px;font-weight:600;color:var(--text)">${esc(s.label || s.domain)}</div>
-        <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:2px">${esc(s.host)}:${s.port} &mdash; ${esc(s.user)} &mdash; root: ${esc(s.root)}</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px">Dernier déploiement: ${lastDeploy} &bull; ${s.deploy_count || 0} déploiement(s)</div>
+    const dom = esc(s.domain);
+    html += `<div style="padding:12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:rgba(255,255,255,.02)">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:14px;font-weight:600;color:var(--text)">${esc(s.label || s.domain)}</div>
+          <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:2px">${esc(s.host)}:${s.port} &mdash; ${esc(s.user)} &mdash; root: ${esc(s.root)}</div>
+          <div style="font-size:10px;color:var(--muted);margin-top:2px">Dernier déploiement: ${lastDeploy} &bull; ${s.deploy_count || 0} déploiement(s)</div>
+        </div>
+        <button class="btn" style="font-size:11px;padding:4px 10px;color:var(--danger);border-color:var(--danger)" onclick="removeIonosSite('${dom}')">
+          <i data-lucide="trash-2" style="width:13px;height:13px"></i> Supprimer
+        </button>
       </div>
-      <button class="btn" style="font-size:11px;padding:4px 10px;color:var(--danger);border-color:var(--danger)" onclick="removeIonosSite('${esc(s.domain)}')">
-        <i data-lucide="trash-2" style="width:13px;height:13px"></i> Supprimer
-      </button>
+      ${_renderIonosDbBlock(s)}
     </div>`;
   }
   box.innerHTML = html;
   if (typeof lucide !== 'undefined') lucide.createIcons();
+  // Rafraîchit le statut bridge (async, par site configuré).
+  for (const s of _ionosSites) { if (s.database_configured) refreshIonosBridgeStatus(s.domain); }
+}
+
+function _renderIonosDbBlock(s) {
+  const dom = esc(s.domain);
+  let status, actions;
+  if (s.database_configured) {
+    let badge;
+    if (s.database_last_check_ok === true) badge = '<span style="color:var(--ok)">● Connexion OK</span>';
+    else if (s.database_last_check_ok === false) badge = '<span style="color:var(--danger)">● Erreur connexion</span>';
+    else badge = '<span style="color:var(--muted)">● Non testée</span>';
+    status = `<span style="font-size:11px">BDD associée &mdash; ${badge}</span>`;
+    actions = `
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosDbModal('${dom}')"><i data-lucide="settings" style="width:12px;height:12px"></i> Modifier</button>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="testIonosDb('${dom}')"><i data-lucide="plug" style="width:12px;height:12px"></i> Tester</button>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosDbExplorer('${dom}')"><i data-lucide="table" style="width:12px;height:12px"></i> Explorer la BDD</button>
+      <button class="btn" style="font-size:10px;padding:3px 8px;color:var(--danger);border-color:var(--danger)" onclick="clearIonosDb('${dom}')"><i data-lucide="x" style="width:12px;height:12px"></i> Retirer</button>`;
+  } else {
+    status = '<span style="font-size:11px;color:var(--muted)">Aucune BDD associée</span>';
+    actions = `<button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosDbModal('${dom}')"><i data-lucide="database" style="width:12px;height:12px"></i> Associer BDD</button>`;
+  }
+  const bridgeRow = s.database_configured ? `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px">
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px"><i data-lucide="shield" style="width:13px;height:13px;color:var(--muted)"></i>
+        <span id="ionos-bridge-status-${dom}" style="color:var(--muted)">Accès sécurisé : …</span></div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="ionos-bridge-actions-${dom}">
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="installIonosBridge('${dom}')"><i data-lucide="shield-check" style="width:12px;height:12px"></i> <span id="ionos-bridge-btn-${dom}">Activer l'accès BDD sécurisé</span></button>
+        <button class="btn" style="font-size:10px;padding:3px 8px;color:var(--danger);border-color:var(--danger);display:none" id="ionos-bridge-rm-${dom}" onclick="removeIonosBridge('${dom}')"><i data-lucide="shield-off" style="width:12px;height:12px"></i> Supprimer le bridge</button>
+      </div>
+    </div>` : '';
+  return `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+      <div style="display:flex;align-items:center;gap:6px"><i data-lucide="database" style="width:13px;height:13px;color:var(--muted)"></i> ${status}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="ionos-db-status-${dom}">${actions}</div>
+    </div>${bridgeRow}
+  </div>`;
 }
 
 export async function addIonosSite() {
@@ -1611,6 +1652,832 @@ export async function removeIonosSite(domain) {
       alert(`Erreur: ${d.detail || 'Échec suppression'}`);
     }
   } catch (e) { alert(`Erreur: ${e.message}`); }
+}
+
+/* ============================================================
+   IONOS — Base de données par site (Étape 2.5)
+   Mot de passe jamais réaffiché : champ vide = conserver l'existant.
+   ============================================================ */
+
+const _ionosAuthHeaders = (json) => {
+  const h = { 'Authorization': `Bearer ${ADMIN_TOKEN}` };
+  if (json) h['Content-Type'] = 'application/json';
+  return h;
+};
+
+export async function openIonosDbModal(domain) {
+  // Récupère la config non sensible existante (sans mot de passe).
+  let cfg = { configured: false };
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database`, { headers: _ionosAuthHeaders(false) });
+    if (r.ok) cfg = await r.json();
+  } catch (e) { /* affiche un formulaire vide */ }
+
+  const v = (x) => esc(x || '');
+  const existing = cfg.configured;
+  const inS = 'width:100%;height:32px;font-size:12px;padding:0 8px;box-sizing:border-box';
+  const lbl = (t) => `<label style="font-size:11px;color:var(--muted);display:block;margin-bottom:3px">${t}</label>`;
+  document.querySelectorAll('#ionos-db-modal').forEach(n => n.remove());
+  const modal = document.createElement('div');
+  modal.id = 'ionos-db-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML = `
+    <div class="card" style="width:min(460px,92vw);max-height:88vh;overflow-y:auto;overflow-x:hidden;margin:0">
+      <div class="card-title"><i data-lucide="database"></i> ${existing ? 'Modifier' : 'Associer'} la BDD — ${esc(domain)}</div>
+      <div class="card-content">
+        <p style="color:var(--muted);font-size:12px;margin-top:0">Le mot de passe n'est jamais réaffiché.${existing ? ' Laisse-le vide pour conserver l\'actuel.' : ''}</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div style="grid-column:span 2">${lbl('Hôte *')}<input id="db-f-host" class="input" placeholder="dbXXXX.hosting-data.io" value="${v(cfg.host)}" style="${inS}"></div>
+          <div>${lbl('Nom de la base *')}<input id="db-f-name" class="input" placeholder="dbsXXXXX" value="${v(cfg.name)}" style="${inS}"></div>
+          <div>${lbl('Port')}<input id="db-f-port" class="input" type="number" value="${cfg.port || 3306}" style="${inS}"></div>
+          <div>${lbl('Utilisateur *')}<input id="db-f-user" class="input" placeholder="dbuXXXXX" value="${v(cfg.user)}" style="${inS}"></div>
+          <div>${lbl('Mot de passe' + (existing ? ' (vide = inchangé)' : ' *'))}<input id="db-f-password" class="input" type="password" placeholder="••••••••" value="" style="${inS}"></div>
+          <div>${lbl('Moteur')}<input id="db-f-engine" class="input" placeholder="mariadb" value="${v(cfg.engine) || 'mariadb'}" style="${inS}"></div>
+          <div>${lbl('Version (optionnel)')}<input id="db-f-version" class="input" placeholder="10.11" value="${v(cfg.version)}" style="${inS}"></div>
+          <div style="grid-column:span 2">${lbl('Libellé (optionnel)')}<input id="db-f-label" class="input" placeholder="BDD principale" value="${v(cfg.label)}" style="${inS}"></div>
+        </div>
+        <div id="ionos-db-modal-msg" style="display:none;margin-top:10px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+          <button class="btn" style="font-size:12px;padding:6px 16px" onclick="closeIonosDbModal()">Annuler</button>
+          <button class="btn primary" style="font-size:12px;padding:6px 18px" onclick="saveIonosDb('${esc(domain)}')"><i data-lucide="save"></i> Enregistrer</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeIonosDbModal(); });
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export function closeIonosDbModal() {
+  document.querySelectorAll('#ionos-db-modal').forEach(n => n.remove());
+}
+
+export async function saveIonosDb(domain) {
+  const get = id => (document.getElementById(id) || {}).value?.trim() || '';
+  const msg = document.getElementById('ionos-db-modal-msg');
+  const body = {
+    host: get('db-f-host'), name: get('db-f-name'), user: get('db-f-user'),
+    password: (document.getElementById('db-f-password') || {}).value || '',
+    port: parseInt(get('db-f-port') || '3306', 10),
+    engine: get('db-f-engine') || 'mariadb', version: get('db-f-version'),
+    label: get('db-f-label'), description: '',
+  };
+  if (!body.host || !body.name || !body.user) {
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Hôte, nom de base et utilisateur sont obligatoires.'; }
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (r.ok) { closeIonosDbModal(); loadIonosSites(); }
+    else if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = `Erreur: ${d.detail || 'échec'}`; }
+  } catch (e) {
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = `Erreur: ${e.message}`; }
+  }
+}
+
+export async function testIonosDb(domain) {
+  const slot = document.getElementById(`ionos-db-status-${domain}`);
+  if (slot) slot.insertAdjacentHTML('afterbegin', '<span id="db-testing" style="font-size:10px;color:var(--muted)">Test…</span>');
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/test`, {
+      method: 'POST', headers: _ionosAuthHeaders(false),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) alert(`Connexion BDD OK (${d.latency_ms} ms).`);
+    else alert(`Connexion BDD échouée.\n\n${d.message || 'Vérifie les identifiants et l\'hôte.'}`);
+  } catch (e) { alert(`Erreur: ${e.message}`); }
+  finally { loadIonosSites(); }
+}
+
+export async function clearIonosDb(domain) {
+  if (!confirm(`Retirer la BDD du site ${domain} ? (le site SFTP reste intact)`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database`, {
+      method: 'DELETE', headers: _ionosAuthHeaders(false),
+    });
+    if (r.ok) loadIonosSites();
+    else { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); }
+  } catch (e) { alert(`Erreur: ${e.message}`); }
+}
+
+/* ============================================================
+   IONOS — Bridge BDD sécurisé : statut / install / suppression
+   ============================================================ */
+
+export async function refreshIonosBridgeStatus(domain) {
+  const statusEl = document.getElementById(`ionos-bridge-status-${domain}`);
+  const btnEl = document.getElementById(`ionos-bridge-btn-${domain}`);
+  const rmEl = document.getElementById(`ionos-bridge-rm-${domain}`);
+  if (!statusEl) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/bridge`, { headers: _ionosAuthHeaders(false) });
+    const d = await r.json();
+    if (!r.ok) { statusEl.textContent = 'Accès sécurisé : statut indisponible'; return; }
+    if (d.installed) {
+      const lc = d.last_check;
+      const chk = lc && lc.ok ? ' · testé OK' : (lc && lc.ok === false ? ' · dernier test KO' : ' · non testé');
+      const orph = d.orphan ? ` ⚠️ ${d.orphan}` : '';
+      statusEl.innerHTML = `Accès sécurisé : <span style="color:var(--ok)">installé</span> (v${esc(String(d.version||'?'))})${esc(chk)}${esc(orph)}`;
+      if (btnEl) btnEl.textContent = "Réinstaller l'accès";
+      if (rmEl) rmEl.style.display = '';
+    } else {
+      statusEl.innerHTML = 'Accès sécurisé : <span style="color:var(--muted)">non installé</span>';
+      if (btnEl) btnEl.textContent = "Activer l'accès BDD sécurisé";
+      if (rmEl) rmEl.style.display = 'none';
+    }
+  } catch (e) { statusEl.textContent = 'Accès sécurisé : statut indisponible'; }
+}
+
+export async function installIonosBridge(domain) {
+  const btn = document.getElementById(`ionos-bridge-btn-${domain}`);
+  const label = btn ? btn.textContent : '';
+  if (btn) btn.textContent = 'Installation…';
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/bridge`, {
+      method: 'POST', headers: _ionosAuthHeaders(false),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) { alert("Accès BDD sécurisé installé."); }
+    else { alert(`Installation impossible.\n\n${d.error || d.detail || 'échec'}`); }  // message neutre
+  } catch (e) { alert('Erreur réseau.'); }
+  finally { if (btn) btn.textContent = label; refreshIonosBridgeStatus(domain); }
+}
+
+export async function removeIonosBridge(domain) {
+  if (!confirm(`Supprimer le bridge BDD de ${domain} ? (la config BDD et le site SFTP restent intacts)`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/bridge`, {
+      method: 'DELETE', headers: _ionosAuthHeaders(false),
+    });
+    const d = await r.json();
+    if (!r.ok) alert(`Suppression impossible.\n\n${d.detail || 'échec'}`);
+  } catch (e) { alert('Erreur réseau.'); }
+  finally { refreshIonosBridgeStatus(domain); }
+}
+
+/* ============================================================
+   IONOS — Explorateur BDD read-only (Étape 3E)
+   Lecture seule : tables / schéma / aperçu borné. Aucune écriture.
+   Tables sensibles : avertissement + confirmation avant aperçu.
+   ============================================================ */
+
+const _IONOS_SENSITIVE = new Set(['users', 'sessions', 'verification_codes']);
+
+function _ionosDbModalShell(title, inner) {
+  document.querySelectorAll('#ionos-dbx-modal').forEach(n => n.remove());
+  const m = document.createElement('div');
+  m.id = 'ionos-dbx-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  m.innerHTML = `<div class="card" style="width:min(720px,94vw);max-height:88vh;overflow:auto;margin:0">
+    <div class="card-title"><i data-lucide="table"></i> ${esc(title)}
+      <button class="btn" style="margin-left:auto;font-size:11px;padding:3px 8px" onclick="closeIonosDbExplorer()">Fermer</button>
+    </div>
+    <div class="card-content" id="ionos-dbx-body">${inner}</div>
+  </div>`;
+  m.addEventListener('click', e => { if (e.target === m) closeIonosDbExplorer(); });
+  document.body.appendChild(m);
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export function closeIonosDbExplorer() {
+  document.querySelectorAll('#ionos-dbx-modal').forEach(n => n.remove());
+}
+
+// Cache de session de l'explorateur (tables + config écriture).
+let _ionosDbx = { domain: null, tables: [], write: { enabled: false, tables: [] } };
+
+export async function openIonosDbExplorer(domain) {
+  _ionosDbModalShell(`Explorateur BDD — ${domain}`, '<div style="color:var(--muted);font-size:12px">Chargement des tables…</div>');
+  try {
+    const [rt, rw, rs, rd] = await Promise.all([
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/write-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/delete-config`, { headers: _ionosAuthHeaders(false) }),
+    ]);
+    const d = await rt.json();
+    const body = document.getElementById('ionos-dbx-body');
+    if (!rt.ok || !d.ok) {
+      body.innerHTML = `<div style="color:var(--danger);font-size:12px">${esc(d.message || 'Lecture impossible.')}</div>`;
+      return;
+    }
+    const tables = d.tables || [];
+    let wc = { enabled: false, tables: [] };
+    try { if (rw.ok) wc = await rw.json(); } catch (e) {}
+    let sc = { enabled: false };
+    try { if (rs.ok) sc = await rs.json(); } catch (e) {}
+    let dc = { enabled: false, tables: [] };
+    try { if (rd.ok) dc = await rd.json(); } catch (e) {}
+    _ionosDbx = { domain, tables, write: wc, sandbox: sc, delete: dc };
+    if (!tables.length && !sc.enabled) { body.innerHTML = '<div style="color:var(--muted);font-size:12px">Aucune table.</div>'; return; }
+
+    const writeBadge = wc.enabled
+      ? `<span style="color:var(--warn,#e0a030)">écriture ACTIVE</span> (${(wc.tables||[]).length} table(s))`
+      : '<span style="color:var(--muted)">écriture désactivée</span>';
+    const sbBadge = sc.enabled
+      ? `<button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosSandboxCreate('${esc(domain)}')"><i data-lucide="plus-square" style="width:12px;height:12px"></i> Créer table sandbox</button>`
+      : '';
+    let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:11px;gap:8px;flex-wrap:wrap">
+      <span><i data-lucide="pencil" style="width:12px;height:12px"></i> ${writeBadge}</span>
+      <span style="display:flex;gap:6px;flex-wrap:wrap">
+        ${sbBadge}
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="toggleIonosSandbox('${esc(domain)}', ${sc.enabled ? 'false' : 'true'})">${sc.enabled ? 'Désactiver' : 'Activer'} sandbox</button>
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosWriteConfig('${esc(domain)}')">Configurer l'écriture</button>
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosDeleteConfig('${esc(domain)}')">Configurer la suppression</button>
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosSnapshots('${esc(domain)}')"><i data-lucide="history" style="width:12px;height:12px"></i> Snapshots</button>
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosPendingActions('${esc(domain)}')"><i data-lucide="bot" style="width:12px;height:12px"></i> Actions IA</button>
+      </span>
+    </div><div style="display:grid;gap:6px">`;
+    const allow = new Set(wc.tables || []);
+    const delAllow = new Set(dc.tables || []);
+    for (const t of tables) {
+      const sens = _IONOS_SENSITIVE.has(t.toLowerCase());
+      const warn = sens ? '<span style="color:var(--warn,#e0a030);font-size:10px"> ⚠️ sensible</span>' : '';
+      const canWrite = wc.enabled && allow.has(t);
+      const canDelete = dc.enabled && delAllow.has(t);
+      const writeBtns = (canWrite ? `
+          <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosDbWriteModal('${esc(domain)}','${esc(t)}','insert')"><i data-lucide="plus" style="width:11px;height:11px"></i> Ajouter</button>
+          <button class="btn" style="font-size:10px;padding:3px 8px" onclick="openIonosDbWriteModal('${esc(domain)}','${esc(t)}','update')"><i data-lucide="pencil" style="width:11px;height:11px"></i> Modifier</button>` : '')
+        + (canDelete ? `
+          <button class="btn" style="font-size:10px;padding:3px 8px;color:var(--danger)" onclick="openIonosDbDeleteModal('${esc(domain)}','${esc(t)}')"><i data-lucide="trash-2" style="width:11px;height:11px"></i> Supprimer</button>` : '');
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+        <span style="font-family:var(--mono);font-size:12px">${esc(t)}${warn}</span>
+        <span style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn" style="font-size:10px;padding:3px 8px" onclick="ionosDbSchema('${esc(domain)}','${esc(t)}')">Schéma</button>
+          <button class="btn" style="font-size:10px;padding:3px 8px" onclick="ionosDbPreview('${esc(domain)}','${esc(t)}',${sens})">Aperçu</button>${writeBtns}
+        </span></div>`;
+    }
+    html += '</div><div id="ionos-dbx-detail" style="margin-top:12px"></div>';
+    body.innerHTML = html;
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+  } catch (e) {
+    const body = document.getElementById('ionos-dbx-body');
+    if (body) body.innerHTML = `<div style="color:var(--danger);font-size:12px">Erreur réseau.</div>`;
+  }
+}
+
+// ── Config écriture (toggle + allowlist) ──
+export function openIonosWriteConfig(domain) {
+  const tables = _ionosDbx.tables || [];
+  const wc = _ionosDbx.write || { enabled: false, tables: [] };
+  const allow = new Set(wc.tables || []);
+  let rows = tables.map(t => {
+    const sens = _IONOS_SENSITIVE.has(t.toLowerCase());
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono)">
+      <input type="checkbox" class="ionos-wt" value="${esc(t)}" ${allow.has(t) ? 'checked' : ''}> ${esc(t)}${sens ? ' <span style="color:var(--warn,#e0a030);font-size:10px">⚠️ sensible</span>' : ''}</label>`;
+  }).join('');
+  const inner = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">L'écriture (INSERT/UPDATE) est désactivée par défaut. Active-la et coche uniquement les tables autorisées. DELETE n'est pas disponible.</div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px">
+      <input type="checkbox" id="ionos-write-enabled" ${wc.enabled ? 'checked' : ''}> Activer l'écriture pour ce site</label>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Tables autorisées :</div>
+    <div style="display:grid;gap:4px;max-height:240px;overflow:auto">${rows}</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Annuler</button>
+      <button class="btn primary" style="font-size:12px;padding:6px 18px" onclick="saveIonosWriteConfig('${esc(domain)}')">Enregistrer</button>
+    </div>`;
+  _ionosDbModalShell(`Écriture BDD — ${domain}`, inner);
+}
+
+export async function saveIonosWriteConfig(domain) {
+  const enabled = !!document.getElementById('ionos-write-enabled')?.checked;
+  const tables = Array.from(document.querySelectorAll('.ionos-wt')).filter(c => c.checked).map(c => c.value);
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/write-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled, tables }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosDbExplorer(domain);
+}
+
+// ── Modale write INSERT/UPDATE (confirm obligatoire) ──
+export async function openIonosDbWriteModal(domain, table, op) {
+  _ionosDbModalShell(`${op === 'insert' ? 'Ajouter une ligne' : 'Modifier des lignes'} — ${table}`, '<div style="color:var(--muted);font-size:12px">Chargement du schéma…</div>');
+  let cols = [];
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables/${encodeURIComponent(table)}/schema`, { headers: _ionosAuthHeaders(false) });
+    const d = await r.json();
+    if (r.ok && d.ok) cols = (d.columns || []).map(c => c.field);
+  } catch (e) {}
+  const body = document.getElementById('ionos-dbx-body');
+  if (!cols.length) { body.innerHTML = '<div style="color:var(--danger);font-size:12px">Schéma indisponible.</div>'; return; }
+  const valInputs = cols.map(c => `<div><label style="font-size:11px;color:var(--muted)">${esc(c)}</label><input class="input ionos-wv" data-col="${esc(c)}" style="width:100%;height:30px;font-size:12px;padding:0 8px;box-sizing:border-box" placeholder="(laisser vide = ignorer)"></div>`).join('');
+  const whereBlock = op === 'update' ? `
+    <div style="font-size:11px;color:var(--muted);margin:10px 0 4px">WHERE (égalité simple — obligatoire) :</div>
+    <div style="display:flex;gap:8px"><select id="ionos-ww-col" class="input" style="flex:1;height:30px;font-size:12px">${cols.map(c => `<option>${esc(c)}</option>`).join('')}</select>
+      <input id="ionos-ww-val" class="input" style="flex:2;height:30px;font-size:12px;padding:0 8px;box-sizing:border-box" placeholder="valeur"></div>` : '';
+  body.innerHTML = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">${op === 'insert' ? 'Renseigne les colonnes à insérer.' : 'Renseigne les colonnes à modifier + le filtre WHERE.'} Confirmation obligatoire avant exécution.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${valInputs}</div>
+    ${whereBlock}
+    <div id="ionos-write-msg" style="display:none;margin-top:10px;font-size:12px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Annuler</button>
+      <button class="btn primary" style="font-size:12px;padding:6px 18px" onclick="submitIonosDbWrite('${esc(domain)}','${esc(table)}','${esc(op)}')"><i data-lucide="save"></i> Vérifier & exécuter</button>
+    </div>`;
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export async function submitIonosDbWrite(domain, table, op) {
+  const msg = document.getElementById('ionos-write-msg');
+  const values = {};
+  document.querySelectorAll('.ionos-wv').forEach(i => { const v = i.value; if (v !== '') values[i.dataset.col] = v; });
+  if (Object.keys(values).length === 0) { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Renseigne au moins une colonne.'; } return; }
+  let where = null;
+  if (op === 'update') {
+    const wc = document.getElementById('ionos-ww-col')?.value;
+    const wv = document.getElementById('ionos-ww-val')?.value;
+    if (!wc || wv === undefined || wv === '') { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'WHERE obligatoire pour un UPDATE.'; } return; }
+    where = { [wc]: wv };
+  }
+  // Récap + confirmation explicite.
+  const recap = `${op.toUpperCase()} sur "${table}"\nColonnes: ${Object.keys(values).join(', ')}` + (where ? `\nWHERE: ${Object.keys(where)[0]} = ${Object.values(where)[0]}` : '');
+  if (!confirm(`Confirmer cette écriture ?\n\n${recap}\n\n(transaction + rollback automatique, max 50 lignes)`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables/${encodeURIComponent(table)}/write`, {
+      method: 'POST', headers: _ionosAuthHeaders(true),
+      body: JSON.stringify({ op, values, where, confirm: true }),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      const warn = d.warning === 'no_rows_modified' ? ' (aucune ligne modifiée)' : '';
+      alert(`Écriture OK — ${d.affected} ligne(s) affectée(s)${warn}.`);
+      openIonosDbExplorer(domain);
+    } else {
+      if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = d.message || d.detail || 'Écriture refusée.'; }
+    }
+  } catch (e) { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Erreur réseau.'; } }
+}
+
+// ── Sandbox : activer/désactiver + créer une table sandbox (4.2) ──
+const _IONOS_SANDBOX_PREFIX = 'lumena_sandbox_';
+const _IONOS_SANDBOX_TYPES = ['INT', 'BIGINT', 'VARCHAR', 'TEXT', 'DATETIME', 'DATE', 'BOOLEAN'];
+
+export async function toggleIonosSandbox(domain, enable) {
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled: !!enable }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosDbExplorer(domain);
+}
+
+function _ionosSandboxColRow() {
+  return `<div class="ionos-sb-col" style="display:flex;gap:6px;margin-bottom:4px">
+    <input class="input sb-name" placeholder="colonne" style="flex:2;height:28px;font-size:11px;padding:0 6px;box-sizing:border-box">
+    <select class="input sb-type" style="flex:1;height:28px;font-size:11px">${_IONOS_SANDBOX_TYPES.map(t => `<option>${t}</option>`).join('')}</select>
+    <input class="input sb-len" placeholder="len" style="width:54px;height:28px;font-size:11px;padding:0 6px;box-sizing:border-box">
+    <label style="font-size:10px;display:flex;align-items:center;gap:3px"><input type="checkbox" class="sb-null" checked> null</label>
+  </div>`;
+}
+
+export function openIonosSandboxCreate(domain) {
+  const inner = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Crée une table <b>sandbox</b> (préfixe imposé). Types : ${_IONOS_SANDBOX_TYPES.join(', ')}. Une colonne <code>id</code> (PK auto) est ajoutée. Max 30 colonnes. Aucun DROP/ALTER.</div>
+    <div style="display:flex;align-items:center;gap:4px;margin-bottom:10px">
+      <span style="font-family:var(--mono);font-size:12px;color:var(--muted)">${_IONOS_SANDBOX_PREFIX}</span>
+      <input id="ionos-sb-suffix" class="input" placeholder="ma_table" style="flex:1;height:30px;font-size:12px;padding:0 8px;box-sizing:border-box">
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Colonnes (VARCHAR exige une longueur 1..255) :</div>
+    <div id="ionos-sb-cols">${_ionosSandboxColRow()}</div>
+    <button class="btn" style="font-size:10px;padding:3px 8px;margin-top:4px" onclick="document.getElementById('ionos-sb-cols').insertAdjacentHTML('beforeend', window.__ionosSbRow())">+ colonne</button>
+    <div id="ionos-sb-msg" style="display:none;margin-top:10px;font-size:12px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Annuler</button>
+      <button class="btn primary" style="font-size:12px;padding:6px 18px" onclick="submitIonosSandboxCreate('${esc(domain)}')"><i data-lucide="plus-square"></i> Créer</button>
+    </div>`;
+  _ionosDbModalShell(`Créer une table sandbox — ${domain}`, inner);
+  window.__ionosSbRow = _ionosSandboxColRow;  // pour le bouton "+ colonne"
+}
+
+export async function submitIonosSandboxCreate(domain) {
+  const msg = document.getElementById('ionos-sb-msg');
+  const suffix = (document.getElementById('ionos-sb-suffix')?.value || '').trim();
+  const name = _IONOS_SANDBOX_PREFIX + suffix;
+  if (!suffix || !/^[a-z0-9_]+$/.test(suffix)) {
+    if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Suffixe invalide (a-z, 0-9, _).'; } return;
+  }
+  const columns = [];
+  document.querySelectorAll('.ionos-sb-col').forEach(row => {
+    const nm = row.querySelector('.sb-name').value.trim();
+    if (!nm) return;
+    const col = { name: nm, type: row.querySelector('.sb-type').value, nullable: row.querySelector('.sb-null').checked };
+    const len = row.querySelector('.sb-len').value.trim();
+    if (col.type === 'VARCHAR') col.length = parseInt(len || '0', 10);
+    columns.push(col);
+  });
+  if (!columns.length) { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Ajoute au moins une colonne.'; } return; }
+  if (!confirm(`Créer la table "${name}" avec ${columns.length} colonne(s) ?`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-tables`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ name, columns, confirm: true }),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      alert(d.created ? `Table "${name}" créée.` : `Table "${name}" déjà existante.`);
+      openIonosDbExplorer(domain);
+    } else {
+      if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = d.message || d.detail || 'Création refusée.'; }
+    }
+  } catch (e) { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = 'Erreur réseau.'; } }
+}
+
+// ── Snapshots chiffrés / rollback (4.3) ──
+// Aucune valeur en clair n'est jamais affichée : seules les métadonnées
+// (table, noms de colonnes, compteurs, horodatages) sont rendues.
+export async function openIonosSnapshots(domain) {
+  _ionosDbModalShell(`Snapshots BDD — ${domain}`, '<div style="color:var(--muted);font-size:12px">Chargement…</div>');
+  let rc = { enabled: false };
+  let snaps = [];
+  try {
+    const [rr, rs] = await Promise.all([
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/restore-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/snapshots`, { headers: _ionosAuthHeaders(false) }),
+    ]);
+    try { if (rr.ok) rc = await rr.json(); } catch (e) {}
+    const ds = await rs.json();
+    if (rs.ok && ds.ok) snaps = ds.snapshots || [];
+  } catch (e) {
+    const body = document.getElementById('ionos-dbx-body');
+    if (body) body.innerHTML = '<div style="color:var(--danger);font-size:12px">Erreur réseau.</div>';
+    return;
+  }
+  const rbadge = rc.enabled
+    ? '<span style="color:var(--warn,#e0a030)">restauration ACTIVE</span>'
+    : '<span style="color:var(--muted)">restauration désactivée</span>';
+  let rows = snaps.map(s => `
+    <div style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+      <span style="font-size:11px">
+        <span style="font-family:var(--mono)">${esc(s.table || '?')}</span>
+        · ${s.row_count || 0} ligne(s) · ${(s.columns || []).length} col.
+        <span style="color:var(--muted)"> · ${esc(s.created_at || '')} · exp. ${esc(s.expires_at || '')}</span>
+      </span>
+      <span style="display:flex;gap:6px">
+        ${rc.enabled ? `<button class="btn" style="font-size:10px;padding:3px 8px" onclick="restoreIonosSnapshot('${esc(domain)}','${esc(s.id)}')"><i data-lucide="rotate-ccw" style="width:11px;height:11px"></i> Restaurer</button>` : ''}
+        <button class="btn" style="font-size:10px;padding:3px 8px" onclick="deleteIonosSnapshot('${esc(domain)}','${esc(s.id)}')"><i data-lucide="trash-2" style="width:11px;height:11px"></i></button>
+      </span></div>`).join('');
+  if (!snaps.length) rows = '<div style="color:var(--muted);font-size:12px">Aucun snapshot.</div>';
+  const inner = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">Un snapshot (image-avant chiffrée) est capturé automatiquement avant chaque UPDATE. La restauration ré-applique les valeurs via les garde-fous d'écriture (transaction, confirmation). Aucune valeur n'est jamais affichée ici.</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-size:11px">
+      <span><i data-lucide="shield" style="width:12px;height:12px"></i> ${rbadge}</span>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="toggleIonosRestore('${esc(domain)}', ${rc.enabled ? 'false' : 'true'})">${rc.enabled ? 'Désactiver' : 'Activer'} la restauration</button>
+    </div>
+    <div style="display:grid;gap:6px;max-height:340px;overflow:auto">${rows}</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Retour</button>
+    </div>`;
+  const body = document.getElementById('ionos-dbx-body');
+  if (body) body.innerHTML = inner;
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export async function toggleIonosRestore(domain, enable) {
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/restore-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled: !!enable }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosSnapshots(domain);
+}
+
+export async function restoreIonosSnapshot(domain, snapshotId) {
+  if (!confirm('Restaurer ce snapshot ?\n\nLes valeurs-avant seront ré-appliquées via les garde-fous d\'écriture (transaction + rollback). Action irréversible.')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/snapshots/${encodeURIComponent(snapshotId)}/restore`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ confirm: true }),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      alert(`Restauration OK — ${d.restored} ligne(s)${d.errors ? `, ${d.errors} erreur(s)` : ''}.`);
+    } else {
+      alert(d.message || d.detail || 'Restauration refusée.');
+    }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosSnapshots(domain);
+}
+
+export async function deleteIonosSnapshot(domain, snapshotId) {
+  if (!confirm('Supprimer ce snapshot ? (le fichier chiffré sera effacé)')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/snapshots/${encodeURIComponent(snapshotId)}`, {
+      method: 'DELETE', headers: _ionosAuthHeaders(true),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosSnapshots(domain);
+}
+
+// ── DELETE contrôlé (4.4) : config + modale suppression ──
+// Flag + allowlist DÉDIÉS (séparés du write). WHERE obligatoire ;
+// double confirmation : retaper le nom exact de la table.
+export function openIonosDeleteConfig(domain) {
+  const tables = _ionosDbx.tables || [];
+  const dc = _ionosDbx.delete || { enabled: false, tables: [] };
+  const allow = new Set(dc.tables || []);
+  const rows = tables.map(t => {
+    const sens = _IONOS_SENSITIVE.has(t.toLowerCase());
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-family:var(--mono)">
+      <input type="checkbox" class="ionos-dt" value="${esc(t)}" ${allow.has(t) ? 'checked' : ''}> ${esc(t)}${sens ? ' <span style="color:var(--warn,#e0a030);font-size:10px">⚠️ sensible</span>' : ''}</label>`;
+  }).join('');
+  const inner = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">La suppression (DELETE) est désactivée par défaut et possède une <b>allowlist séparée</b> de l'écriture. WHERE obligatoire (pas de suppression totale). Un snapshot chiffré est capturé avant chaque suppression ; la ligne reste restaurable.</div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px">
+      <input type="checkbox" id="ionos-delete-enabled" ${dc.enabled ? 'checked' : ''}> Activer la suppression pour ce site</label>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Tables supprimables :</div>
+    <div style="display:grid;gap:4px;max-height:240px;overflow:auto">${rows}</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Annuler</button>
+      <button class="btn primary" style="font-size:12px;padding:6px 18px" onclick="saveIonosDeleteConfig('${esc(domain)}')">Enregistrer</button>
+    </div>`;
+  _ionosDbModalShell(`Suppression BDD — ${domain}`, inner);
+}
+
+export async function saveIonosDeleteConfig(domain) {
+  const enabled = !!document.getElementById('ionos-delete-enabled')?.checked;
+  const tables = Array.from(document.querySelectorAll('.ionos-dt')).filter(c => c.checked).map(c => c.value);
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/delete-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled, tables }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosDbExplorer(domain);
+}
+
+export async function openIonosDbDeleteModal(domain, table) {
+  _ionosDbModalShell(`Supprimer des lignes — ${table}`, '<div style="color:var(--muted);font-size:12px">Chargement du schéma…</div>');
+  let cols = [];
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables/${encodeURIComponent(table)}/schema`, { headers: _ionosAuthHeaders(false) });
+    const d = await r.json();
+    if (r.ok && d.ok) cols = (d.columns || []).map(c => c.field);
+  } catch (e) {}
+  const body = document.getElementById('ionos-dbx-body');
+  if (!cols.length) { body.innerHTML = '<div style="color:var(--danger);font-size:12px">Schéma indisponible.</div>'; return; }
+  body.innerHTML = `
+    <div style="font-size:12px;color:var(--danger);margin-bottom:8px">⚠️ Suppression définitive de lignes. WHERE obligatoire (pas de suppression totale). Un snapshot chiffré est capturé avant ; restauration possible ensuite.</div>
+    <div style="font-size:11px;color:var(--muted);margin:0 0 4px">WHERE (égalité simple — obligatoire) :</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px"><select id="ionos-dw-col" class="input" style="flex:1;height:30px;font-size:12px">${cols.map(c => `<option>${esc(c)}</option>`).join('')}</select>
+      <input id="ionos-dw-val" class="input" style="flex:2;height:30px;font-size:12px;padding:0 8px;box-sizing:border-box" placeholder="valeur"></div>
+    <div style="font-size:11px;color:var(--muted);margin:0 0 4px">Pour confirmer, retape le nom exact de la table :</div>
+    <input id="ionos-dw-confirm" class="input" style="width:100%;height:30px;font-size:12px;padding:0 8px;box-sizing:border-box;font-family:var(--mono)" placeholder="${esc(table)}">
+    <div id="ionos-delete-msg" style="display:none;margin-top:10px;font-size:12px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Annuler</button>
+      <button class="btn" style="font-size:12px;padding:6px 18px;color:var(--danger)" onclick="submitIonosDbDelete('${esc(domain)}','${esc(table)}')"><i data-lucide="trash-2"></i> Vérifier & supprimer</button>
+    </div>`;
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export async function submitIonosDbDelete(domain, table) {
+  const msg = document.getElementById('ionos-delete-msg');
+  const showErr = (m) => { if (msg) { msg.style.display = 'block'; msg.style.color = 'var(--danger)'; msg.textContent = m; } };
+  const wc = document.getElementById('ionos-dw-col')?.value;
+  const wv = document.getElementById('ionos-dw-val')?.value;
+  const ct = (document.getElementById('ionos-dw-confirm')?.value || '').trim();
+  if (!wc || wv === undefined || wv === '') { showErr('WHERE obligatoire.'); return; }
+  if (ct !== table) { showErr('Le nom de table retapé ne correspond pas.'); return; }
+  const where = { [wc]: wv };
+  if (!confirm(`Supprimer définitivement les lignes de "${table}" où ${wc} = ${wv} ?\n\n(snapshot capturé avant, max 25 lignes, transaction + rollback)`)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables/${encodeURIComponent(table)}/delete`, {
+      method: 'POST', headers: _ionosAuthHeaders(true),
+      body: JSON.stringify({ where, confirm: true, confirm_table: ct }),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      const warn = d.warning === 'no_rows_deleted' ? ' (aucune ligne supprimée)' : '';
+      alert(`Suppression OK — ${d.affected} ligne(s)${warn}. Snapshot: ${d.snapshot_id ? 'oui' : 'non'}.`);
+      openIonosDbExplorer(domain);
+    } else {
+      showErr(d.message || d.detail || 'Suppression refusée.');
+    }
+  } catch (e) { showErr('Erreur réseau.'); }
+}
+
+// ── Propositions ReAct INSERT/UPDATE (4.5A) : revue + approbation humaine ──
+// L'agent PROPOSE, l'humain EXÉCUTE. Aucune valeur n'est affichée (clés seulement).
+export async function openIonosPendingActions(domain) {
+  _ionosDbModalShell(`Actions IA en attente — ${domain}`, '<div style="color:var(--muted);font-size:12px">Chargement…</div>');
+  let rc = { enabled: false };
+  let rdc = { enabled: false };
+  let sdc = { enabled: false };
+  let scc = { enabled: false };
+  let actions = [];
+  try {
+    const [rr, rrd, rsd, rsc, ra] = await Promise.all([
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/react-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/react-delete-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-drop-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-clear-config`, { headers: _ionosAuthHeaders(false) }),
+      fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/pending-actions`, { headers: _ionosAuthHeaders(false) }),
+    ]);
+    try { if (rr.ok) rc = await rr.json(); } catch (e) {}
+    try { if (rrd.ok) rdc = await rrd.json(); } catch (e) {}
+    try { if (rsd.ok) sdc = await rsd.json(); } catch (e) {}
+    try { if (rsc.ok) scc = await rsc.json(); } catch (e) {}
+    const da = await ra.json();
+    if (ra.ok && da.ok) actions = da.actions || [];
+  } catch (e) {
+    const b = document.getElementById('ionos-dbx-body');
+    if (b) b.innerHTML = '<div style="color:var(--danger);font-size:12px">Erreur réseau.</div>';
+    return;
+  }
+  const rbadge = rc.enabled
+    ? '<span style="color:var(--warn,#e0a030)">propositions ReAct ACTIVES</span>'
+    : '<span style="color:var(--muted)">propositions ReAct désactivées</span>';
+  const rdbadge = rdc.enabled
+    ? '<span style="color:var(--danger)">DELETE IA ACTIF</span>'
+    : '<span style="color:var(--muted)">DELETE IA désactivé</span>';
+  const sdbadge = sdc.enabled
+    ? '<span style="color:var(--danger)">DROP sandbox IA ACTIF</span>'
+    : '<span style="color:var(--muted)">DROP sandbox IA désactivé</span>';
+  const scbadge = scc.enabled
+    ? '<span style="color:var(--warn,#e0a030)">VIDAGE sandbox IA ACTIF</span>'
+    : '<span style="color:var(--muted)">VIDAGE sandbox IA désactivé</span>';
+  let rows = actions.map(a => {
+    const est = (a.estimated_count !== null && a.estimated_count !== undefined) ? ` · ~${a.estimated_count} ligne(s)` : '';
+    const wk = (a.where_keys || []).join(', ') || '—';
+    const vk = (a.value_keys || []).join(', ');
+    return `<div style="border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+      <div style="font-size:11px"><b>${esc((a.op || '').toUpperCase())}</b> sur <span style="font-family:var(--mono)">${esc(a.table || '?')}</span>${est}
+        <span style="color:var(--muted)"> · ${esc(a.created_at || '')}</span></div>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">Colonnes : ${esc(vk)} · WHERE : ${esc(wk)}</div>
+      <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">
+        <button class="btn primary" style="font-size:10px;padding:3px 10px" onclick="approveIonosAction('${esc(domain)}','${esc(a.id)}','${esc(a.op || '')}','${esc(a.table || '')}')"><i data-lucide="check" style="width:11px;height:11px"></i> Approuver & exécuter</button>
+        <button class="btn" style="font-size:10px;padding:3px 10px" onclick="rejectIonosAction('${esc(domain)}','${esc(a.id)}')"><i data-lucide="x" style="width:11px;height:11px"></i> Rejeter</button>
+      </div></div>`;
+  }).join('');
+  if (!actions.length) rows = '<div style="color:var(--muted);font-size:12px">Aucune action en attente.</div>';
+  const inner = `
+    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">L'assistant peut <b>proposer</b> des écritures INSERT/UPDATE, mais ne peut jamais les exécuter seul. Vous validez ou rejetez ici. L'exécution passe par les garde-fous d'écriture (allowlist, transaction, snapshot). Aucune valeur n'est affichée — seulement les colonnes ciblées.</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:11px">
+      <span><i data-lucide="bot" style="width:12px;height:12px"></i> ${rbadge} (INSERT/UPDATE)</span>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="toggleIonosReact('${esc(domain)}', ${rc.enabled ? 'false' : 'true'})">${rc.enabled ? 'Désactiver' : 'Activer'} les propositions IA</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-size:11px">
+      <span><i data-lucide="trash-2" style="width:12px;height:12px"></i> ${rdbadge}</span>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="toggleIonosReactDelete('${esc(domain)}', ${rdc.enabled ? 'false' : 'true'})">${rdc.enabled ? 'Désactiver' : 'Activer'} les propositions DELETE IA</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:11px">
+      <span><i data-lucide="trash" style="width:12px;height:12px"></i> ${sdbadge}</span>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="toggleIonosSandboxDrop('${esc(domain)}', ${sdc.enabled ? 'false' : 'true'})">${sdc.enabled ? 'Désactiver' : 'Activer'} le DROP sandbox IA</button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:11px">
+      <span><i data-lucide="eraser" style="width:12px;height:12px"></i> ${scbadge}</span>
+      <button class="btn" style="font-size:10px;padding:3px 8px" onclick="toggleIonosSandboxClear('${esc(domain)}', ${scc.enabled ? 'false' : 'true'})">${scc.enabled ? 'Désactiver' : 'Activer'} le VIDAGE sandbox IA</button>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-bottom:8px">DELETE et DROP exigent aussi leur kill-switch global (Configuration → IONOS : <code>LUMENA_IONOS_REACT_DELETE_ENABLED=1</code> / <code>LUMENA_IONOS_SANDBOX_DROP_ENABLED=1</code>). Le DROP ne vise que les tables <code>lumena_sandbox_*</code> VIDES et exige de retaper le nom.</div>
+    <div style="display:grid;gap:6px;max-height:340px;overflow:auto">${rows}</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="openIonosDbExplorer('${esc(domain)}')">Retour</button>
+    </div>`;
+  const b = document.getElementById('ionos-dbx-body');
+  if (b) b.innerHTML = inner;
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+export async function toggleIonosReact(domain, enable) {
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/react-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled: !!enable }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosPendingActions(domain);
+}
+
+export async function toggleIonosReactDelete(domain, enable) {
+  if (enable && !confirm('Activer les propositions DELETE par l\'IA pour ce site ?\n\nL\'assistant pourra PROPOSER des suppressions (jamais les exécuter). Nécessite aussi le kill-switch global et la suppression activée pour la table.')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/react-delete-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled: !!enable }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosPendingActions(domain);
+}
+
+export async function toggleIonosSandboxDrop(domain, enable) {
+  if (enable && !confirm('Activer le DROP de tables sandbox par l\'IA pour ce site ?\n\nL\'assistant pourra PROPOSER la suppression de tables lumena_sandbox_* VIDES (jamais les exécuter). Nécessite aussi le kill-switch global.')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-drop-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled: !!enable }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosPendingActions(domain);
+}
+
+export async function toggleIonosSandboxClear(domain, enable) {
+  if (enable && !confirm('Activer le VIDAGE de tables sandbox par l\'IA pour ce site ?\n\nL\'assistant pourra PROPOSER de vider des tables lumena_sandbox_* (jamais les exécuter). Un snapshot est capturé avant chaque vidage (restaurable).')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/sandbox-clear-config`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ enabled: !!enable }),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosPendingActions(domain);
+}
+
+export async function approveIonosAction(domain, proposalId, op, table) {
+  // DROP/CLEAR sandbox : double confirmation — retaper le nom exact de la table.
+  if (op === 'drop_sandbox' || op === 'clear_sandbox') {
+    const what = op === 'drop_sandbox'
+      ? `Suppression DÉFINITIVE de la table sandbox "${table}" (doit être vide).`
+      : `VIDAGE (toutes les lignes) de la table sandbox "${table}" — un snapshot sera capturé avant.`;
+    const typed = prompt(`${what}\n\nRetape le nom EXACT de la table pour confirmer :`);
+    if (typed === null) return;
+    if (typed.trim() !== table) { alert('Le nom retapé ne correspond pas — annulé.'); return; }
+  } else if (!confirm('Approuver et exécuter cette proposition ?\n\nL\'écriture passera par les garde-fous (allowlist, transaction, snapshot pour UPDATE).')) {
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/pending-actions/${encodeURIComponent(proposalId)}/approve`, {
+      method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ confirm: true }),
+    });
+    const d = await r.json();
+    if (r.ok && d.ok) {
+      if (d.op === 'drop_sandbox' || op === 'drop_sandbox') {
+        alert(`Table sandbox \`${d.table || table}\` supprimée.`);
+      } else if (d.op === 'clear_sandbox' || op === 'clear_sandbox') {
+        alert(`Table sandbox \`${d.table || table}\` vidée — ${d.affected ?? 0} ligne(s) supprimée(s) (snapshot capturé).`);
+      } else {
+        const warn = d.warning === 'no_rows_modified' ? ' (aucune ligne modifiée)' : '';
+        alert(`Exécution OK — ${d.affected} ligne(s)${warn}.`);
+      }
+    } else {
+      alert(d.message || d.detail || 'Exécution refusée.');
+    }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosPendingActions(domain);
+}
+
+export async function rejectIonosAction(domain, proposalId) {
+  if (!confirm('Rejeter cette proposition ? Elle ne sera pas exécutée.')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/pending-actions/${encodeURIComponent(proposalId)}/reject`, {
+      method: 'POST', headers: _ionosAuthHeaders(true),
+    });
+    if (!r.ok) { const d = await r.json(); alert(`Erreur: ${d.detail || 'échec'}`); return; }
+  } catch (e) { alert('Erreur réseau.'); return; }
+  openIonosPendingActions(domain);
+}
+
+async function _ionosDbDetail(domain, table, url, opts, render) {
+  const slot = document.getElementById('ionos-dbx-detail');
+  if (slot) slot.innerHTML = '<div style="color:var(--muted);font-size:12px">Chargement…</div>';
+  try {
+    const r = await fetch(url, opts);
+    const d = await r.json();
+    if (!r.ok || !d.ok) { if (slot) slot.innerHTML = `<div style="color:var(--danger);font-size:12px">${esc(d.message || 'Indisponible.')}</div>`; return; }
+    if (slot) slot.innerHTML = render(d);
+    if (typeof lucide !== 'undefined') lucide.createIcons();
+  } catch (e) {
+    if (slot) slot.innerHTML = '<div style="color:var(--danger);font-size:12px">Erreur réseau.</div>';
+  }
+}
+
+export async function ionosDbSchema(domain, table) {
+  await _ionosDbDetail(domain, table,
+    `${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables/${encodeURIComponent(table)}/schema`,
+    { headers: _ionosAuthHeaders(false) },
+    (d) => {
+      let h = `<div style="font-size:12px;font-weight:600;margin-bottom:6px">Schéma de ${esc(table)}</div>`;
+      h += '<table style="width:100%;border-collapse:collapse;font-size:11px"><tr style="color:var(--muted)"><th style="text-align:left;padding:3px">Colonne</th><th style="text-align:left;padding:3px">Type</th><th style="text-align:left;padding:3px">Null</th><th style="text-align:left;padding:3px">Clé</th></tr>';
+      for (const c of (d.columns || [])) {
+        h += `<tr><td style="padding:3px;font-family:var(--mono)">${esc(c.field)}</td><td style="padding:3px">${esc(c.type)}</td><td style="padding:3px">${esc(c.null)}</td><td style="padding:3px">${esc(c.key)}</td></tr>`;
+      }
+      return h + '</table>';
+    });
+}
+
+export async function ionosDbPreview(domain, table, sensitive) {
+  if (sensitive && !confirm(`La table « ${table} » est marquée sensible. Afficher un aperçu (lecture seule, limité) ?`)) return;
+  await _ionosDbDetail(domain, table,
+    `${API_BASE}/api/ionos/sites/${encodeURIComponent(domain)}/database/tables/${encodeURIComponent(table)}/preview`,
+    { method: 'POST', headers: _ionosAuthHeaders(true), body: JSON.stringify({ limit: 20 }) },
+    (d) => {
+      const cols = d.columns || [], rows = d.rows || [];
+      let h = `<div style="font-size:12px;font-weight:600;margin-bottom:6px">Aperçu ${esc(table)} — ${d.count || 0} ligne(s)${d.truncated ? ' (tronqué)' : ''}</div>`;
+      if (!cols.length) return h + '<div style="color:var(--muted);font-size:12px">Aucune colonne.</div>';
+      h += '<div style="overflow:auto;max-height:300px"><table style="border-collapse:collapse;font-size:11px"><tr style="color:var(--muted)">';
+      for (const c of cols) h += `<th style="text-align:left;padding:3px 8px;border-bottom:1px solid var(--border)">${esc(c)}</th>`;
+      h += '</tr>';
+      for (const row of rows) {
+        h += '<tr>';
+        for (const v of row) h += `<td style="padding:3px 8px;border-bottom:1px solid var(--border);max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${v === null ? '<span style="color:var(--muted)">NULL</span>' : esc(String(v))}</td>`;
+        h += '</tr>';
+      }
+      return h + '</table></div>';
+    });
 }
 
 /* ============================================================

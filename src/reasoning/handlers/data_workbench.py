@@ -697,7 +697,7 @@ def get_data_workbench_handler_defs() -> list[HandlerDef]:
                 "required": ["left_path", "right_path", "on_left"],
             },
             handler=data_join_handler,
-            category="documents",
+            category="data",
             source_module="handlers.data_workbench",
         ),
         HandlerDef(
@@ -763,7 +763,7 @@ def get_data_workbench_handler_defs() -> list[HandlerDef]:
                 "required": ["path", "output_format"],
             },
             handler=data_export_handler,
-            category="documents",
+            category="data",
             source_module="handlers.data_workbench",
         ),
         HandlerDef(
@@ -819,7 +819,7 @@ def get_data_workbench_handler_defs() -> list[HandlerDef]:
                 "required": ["path", "group_by", "agg"],
             },
             handler=data_aggregate_handler,
-            category="documents",
+            category="data",
             source_module="handlers.data_workbench",
         ),
         HandlerDef(
@@ -854,7 +854,7 @@ def get_data_workbench_handler_defs() -> list[HandlerDef]:
                 "required": ["path", "column"],
             },
             handler=data_unique_values_handler,
-            category="documents",
+            category="data",
             source_module="handlers.data_workbench",
         ),
         HandlerDef(
@@ -912,7 +912,7 @@ def get_data_workbench_handler_defs() -> list[HandlerDef]:
                 "required": ["path"],
             },
             handler=data_filter_rows_handler,
-            category="documents",
+            category="data",
             source_module="handlers.data_workbench",
         ),
         HandlerDef(
@@ -942,7 +942,7 @@ def get_data_workbench_handler_defs() -> list[HandlerDef]:
                 "required": ["path"],
             },
             handler=data_profile_file_handler,
-            category="documents",
+            category="data",
             source_module="handlers.data_workbench",
         ),
     ]

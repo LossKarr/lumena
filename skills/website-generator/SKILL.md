@@ -2,7 +2,7 @@
 name: website-generator
 description: Génère des sites web COMPLETS et professionnels (frontend + backend + API + BDD) à partir d'une simple description. Crée des projets multi-fichiers avec HTML, CSS, JS, backend PHP, base de données, authentification JWT, dashboard admin, export ZIP.
 keywords: [créer site, faire site, generer site, construire site, creer website, landing page, portfolio, ecommerce, boutique en ligne, dashboard admin, saas, application web, fullstack, generer page web, fabriquer site, deployer site, coder site]
-license: Complete terms in LICENSE.txt
+license: Lumena - usage interne
 ---
 
 # Website Generator — Création de sites web complets niveau agence

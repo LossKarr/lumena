@@ -358,13 +358,49 @@ def _after_snapshot(resolved: Path) -> Optional[str]:
 
 # ─── Handlers ──────────────────────────────────────────────────────────────
 
+# Clés sensibles dont la VALEUR doit être masquée dans toute sortie read_file
+# (config.php, .env, ini, json…). On garde la clé, on remplace la valeur.
+_SECRET_KEY_ALT = (
+    r"db_?pass(?:word)?|password|passwd|pwd|secret|secret_key|"
+    r"client_secret|api_?key|access_?token|auth_?token|token|"
+    r"admin_setup_token|private_key|webhook_secret|aws_secret\w*"
+)
+_REDACTED = "***REDACTED***"
+
+# PHP define('KEY', 'value') / define("KEY","value")
+_RE_PHP_DEFINE = re.compile(
+    r"(define\(\s*['\"]\w*(?:" + _SECRET_KEY_ALT + r")\w*['\"]\s*,\s*['\"])([^'\"]*)(['\"])",
+    re.IGNORECASE,
+)
+# Affectations / mappings : KEY='value' | KEY: "value" | 'KEY' => "value" | KEY=value | $key='value'
+_RE_ASSIGN = re.compile(
+    r"([\$'\"]?\w*(?:" + _SECRET_KEY_ALT + r")\w*['\"]?\s*(?:=>|[:=])\s*['\"]?)"
+    r"([^'\"\r\n,;}]+?)"
+    r"(['\"]?\s*[,;)\r\n]|['\"]?$)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Masque les valeurs des clés sensibles (PHP define/assign, env, json, ini).
+
+    Ne modifie jamais les noms de clés — seulement les valeurs — pour rester lisible
+    sans jamais exposer de secret en observation/logs/conversation.
+    """
+    if not text:
+        return text
+    out = _RE_PHP_DEFINE.sub(lambda m: m.group(1) + _REDACTED + m.group(3), text)
+    out = _RE_ASSIGN.sub(lambda m: m.group(1) + _REDACTED + m.group(3), out)
+    return out
+
+
 async def read_file_handler(
     ctx: HandlerContext,
     path: str,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
 ) -> HandlerResult:
-    """Lit un fichier avec pagination lignes."""
+    """Lit un fichier avec pagination lignes. Les valeurs de secrets sont masquées."""
     try:
         resolved = ctx.resolve_path(path)
         # P0.2: block reads to secrets / private data
@@ -412,7 +448,7 @@ async def read_file_handler(
         start = min(start, total_lines)
         end = min(end, total_lines)
         selected = lines[start - 1:end]
-        body = "\n".join(selected)
+        body = _redact_secrets("\n".join(selected))  # masque toute valeur de secret
 
         header = f"📄 {path} (lignes {start}-{end}/{total_lines})"
         if end < total_lines:

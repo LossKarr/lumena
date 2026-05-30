@@ -93,4 +93,5 @@ nul
 installer/
 /.tmp
 /lumi-ide
+#/REPO
 /REPO

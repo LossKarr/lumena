@@ -364,6 +364,13 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Clé API n8n. Générer dans n8n > Settings > API > Create API Key. Requise pour piloter les workflows."},
     {"key": "N8N_AUTO_START", "label": "Auto-start n8n (Docker)", "group": "Automation (n8n)", "type": "text", "default": "1",
      "hint": "1 = Lumena démarre automatiquement n8n via Docker au boot. 0 = désactivé."},
+    # ── IONOS (Hébergement) ──────────────────────────────────────────────────
+    {"key": "LUMENA_IONOS_REACT_DELETE_ENABLED", "label": "ReAct : propositions DELETE BDD IONOS", "group": "IONOS (Hébergement)", "type": "bool", "default": "0",
+     "hint": "Kill-switch GLOBAL (4.5B). 0 = l'assistant ne peut PAS proposer de suppression de lignes BDD (recommandé). 1 = autorise UNIQUEMENT la création de propositions DELETE (jamais l'exécution, qui reste manuelle via le panel). Cumulatif avec les flags par site (delete_enabled + allowlist)."},
+    {"key": "LUMENA_IONOS_AUTO_SANDBOX_CREATE_ENABLED", "label": "Auto-création tables sandbox IONOS", "group": "IONOS (Hébergement)", "type": "bool", "default": "0",
+     "hint": "0 = si la sandbox BDD d'un site est désactivée, Lumena demande d'abord l'activation. 1 = pour une demande explicite de création de table sandbox/test, Lumena peut activer temporairement la sandbox, créer la table via le bridge sécurisé, puis restaurer l'état précédent."},
+    {"key": "LUMENA_IONOS_SANDBOX_DROP_ENABLED", "label": "ReAct : propositions DROP table sandbox", "group": "IONOS (Hébergement)", "type": "bool", "default": "0",
+     "hint": "Kill-switch GLOBAL (4.6). 0 = l'assistant ne peut PAS proposer de DROP de table sandbox (recommandé). 1 = autorise UNIQUEMENT la création de propositions DROP sur tables lumena_sandbox_* VIDES (jamais l'exécution, manuelle via le panel avec nom à retaper). Cumulatif avec le flag par site sandbox_drop_enabled."},
     # ── Serveur Web ──────────────────────────────────────────────────────────
     {"key": "LUMENA_PORT", "label": "Port du serveur web", "group": "Serveur", "type": "number", "default": "8080", "min": 1024, "max": 65535,
      "restart": True,

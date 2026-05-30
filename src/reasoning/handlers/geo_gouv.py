@@ -203,7 +203,7 @@ def get_geo_gouv_handler_defs() -> list[HandlerDef]:
                 "required": ["query"],
             },
             handler=geo_search_address_handler,
-            category="web",
+            category="data",
             source_module="handlers.geo_gouv",
         ),
         HandlerDef(
@@ -227,7 +227,7 @@ def get_geo_gouv_handler_defs() -> list[HandlerDef]:
                 "required": ["lon", "lat"],
             },
             handler=geo_reverse_handler,
-            category="web",
+            category="data",
             source_module="handlers.geo_gouv",
         ),
         HandlerDef(
@@ -250,7 +250,7 @@ def get_geo_gouv_handler_defs() -> list[HandlerDef]:
                 "required": ["code_insee"],
             },
             handler=geo_commune_info_handler,
-            category="web",
+            category="data",
             source_module="handlers.geo_gouv",
         ),
     ]

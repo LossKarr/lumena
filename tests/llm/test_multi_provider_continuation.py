@@ -16,7 +16,7 @@ from src.llm.providers import ProviderType
         ("gpt-4o", "_chat_openai_result", "length", "stop"),
         ("kimi-k2.5", "_chat_moonshot_result", "length", "stop"),
         ("deepseek-v3", "_chat_deepseek_result", "length", "stop"),
-        ("claude-sonnet-4", "_chat_anthropic_result", "max_tokens", "end_turn"),
+        ("claude-sonnet-4.6", "_chat_anthropic_result", "max_tokens", "end_turn"),
         ("gemini-2.5-flash", "_chat_google_result", "MAX_TOKENS", "STOP"),
     ],
 )

@@ -71,6 +71,172 @@ _PEER_RAW_NETWORK_TOOLS: frozenset[str] = frozenset({
     "browser_open_tab", "run_command",
 })
 
+_IONOS_DB_BYPASS_TOOLS: frozenset[str] = frozenset({
+    "find_files", "list_directory", "list_files", "list_dir",
+    "read_file", "read_files_batch", "grep_search", "search_files", "search_code",
+    "write_file", "create_file", "edit_file", "multi_edit_file", "apply_patch",
+    "apply_patches", "insert_at_anchor", "edit_by_lines", "str_replace",
+    "delete_file", "delete_directory", "create_directory",
+    "run_command", "run_shell", "exec_command",
+    "delegate_task", "delegate_task_bg", "delegate_to_codeagent",
+})
+
+_IONOS_DB_ALLOWED_NON_DB_TOOLS: frozenset[str] = frozenset({
+    "final_answer", "ask_user",
+})
+
+
+def _strip_accents(text: str) -> str:
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(ch)
+    )
+
+
+def _has_db_word(low: str, terms: tuple[str, ...]) -> bool:
+    """True si l'un des termes apparait comme MOT ENTIER (pluriel toléré).
+
+    Évite les faux positifs en sous-chaîne : « table » ne doit pas matcher
+    « tableau » ni « comptable ». `low` est supposé déjà sans accents.
+    """
+    for term in terms:
+        if re.search(r"(?<![a-z0-9])" + re.escape(term) + r"s?(?![a-z0-9])", low):
+            return True
+    return False
+
+
+# Extensions de fichiers (code/web/doc) signalant une édition de fichier plutôt
+# qu'une opération BDD. Les TLD de domaines (.com/.fr/.io) en sont volontairement
+# absents pour ne pas confondre un nom de site avec un fichier.
+_FILE_EXT_SIGNAL = re.compile(
+    r"\.(?:html?|css|scss|sass|less|js|mjs|cjs|ts|tsx|jsx|vue|svelte|astro|"
+    r"php|py|rb|go|rs|java|json|md|mdx|txt|xml|yml|yaml|toml|ini|svg)"
+    r"(?![a-z0-9])"
+)
+
+
+def _configured_ionos_site_terms() -> tuple[str, ...]:
+    """Return configured IONOS site names without exposing credentials."""
+    terms: set[str] = set()
+    default_site = (os.getenv("LUMENA_IONOS_DEFAULT_SITE", "") or "").strip().lower()
+    if default_site:
+        terms.add(default_site)
+
+    try:
+        sites_path = Path("data/ionos_sites.json")
+        if sites_path.exists():
+            raw = json.loads(sites_path.read_text(encoding="utf-8"))
+            sites = raw.get("sites", {}) if isinstance(raw, dict) else {}
+            if isinstance(sites, dict):
+                for domain in sites.keys():
+                    if domain:
+                        terms.add(str(domain).strip().lower())
+    except Exception:
+        # Detection is best-effort; never block normal tooling because config
+        # metadata cannot be read.
+        pass
+
+    return tuple(sorted(t for t in terms if t))
+
+
+def _mentions_configured_ionos_site(low: str, configured_sites: tuple[str, ...] | None = None) -> bool:
+    sites = configured_sites if configured_sites is not None else _configured_ionos_site_terms()
+    if not sites:
+        return False
+
+    tokens = re.findall(r"[a-z0-9][a-z0-9.-]{3,}", low)
+    for site in sites:
+        site_low = _strip_accents(site.lower())
+        label = site_low.split(".", 1)[0]
+        if site_low and site_low in low:
+            return True
+        if label and len(label) >= 5 and label in low:
+            return True
+        for token in tokens:
+            token_label = token.split(".", 1)[0]
+            if len(token_label) >= 5 and len(label) >= 5:
+                if difflib.SequenceMatcher(None, token_label, label).ratio() >= 0.86:
+                    return True
+    return False
+
+
+def _ionos_reference_is_exclusion_only(low: str) -> bool:
+    """True when IONOS is mentioned only as an explicit boundary to avoid."""
+    if "ionos" not in low and not _mentions_configured_ionos_site(low):
+        return False
+
+    exclusion_patterns = (
+        r"\bne\s+(?:touche|touches|lis|lire|utilise|utiliser|connecte|deploie|deploye|publie)"
+        r"[^.\n!?]{0,100}\bionos\b",
+        r"\bne\s+touche\s+pas\s+aux?\s+bdd\s+ionos\b",
+        r"\bsans\s+(?:rien\s+)?(?:faire\s+sur\s+)?ionos\b",
+        r"\bpas\s+(?:de\s+)?(?:bdd\s+)?ionos\b",
+        r"\bhors\s+ionos\b",
+    )
+    if not any(re.search(pattern, low) for pattern in exclusion_patterns):
+        return False
+
+    positive_patterns = (
+        r"\b(?:sur|via|chez|dans|depuis)\s+ionos\b",
+        r"\bhosting-data\.io\b",
+        r"\bwebspace-host\.com\b",
+    )
+    return not any(re.search(pattern, low) for pattern in positive_patterns)
+
+
+def _looks_like_ionos_db_intent(text: str, configured_sites: tuple[str, ...] | None = None) -> bool:
+    """Detecte une demande BDD IONOS explicite pour forcer le bridge securise."""
+    if not text:
+        return False
+    low = _strip_accents(str(text).lower())
+    if _ionos_reference_is_exclusion_only(low):
+        return False
+    db_terms = (
+        "bdd", "base de donnees", "base de donner", "database",
+        "mysql", "mariadb", "schema", "table",
+    )
+    ionos_terms = ("ionos", "hosting-data.io", "webspace-host.com")
+    strong_db_terms = (
+        "bdd", "base de donnees", "base de donner", "database", "mysql", "mariadb",
+    )
+    table_mutation_terms = (
+        "cree", "creer", "ajoute", "ajouter", "rajoute", "rajouter",
+        "nouvelle table", "create table", "supprime", "modifier", "modifie",
+    )
+    # Matching par MOT ENTIER : « table » ne doit pas matcher « tableau » /
+    # « comptable » (faux positifs qui bloquaient l'édition web du site).
+    has_db = _has_db_word(low, db_terms)
+    has_ionos = any(term in low for term in ionos_terms)
+    has_configured_site = _mentions_configured_ionos_site(low, configured_sites)
+    has_strong_db = _has_db_word(low, strong_db_terms)
+    has_table_mutation = _has_db_word(low, ("table",)) and _has_db_word(low, table_mutation_terms)
+
+    # Un fichier explicitement nommé (.html/.css/.php/.py…) signale une édition
+    # de fichier, pas une opération BDD — sauf si un terme BDD FORT est présent
+    # (« table mysql dans index.html » reste une intention BDD). L'accès aux
+    # fichiers de config sensibles (config.php/.env) reste couvert séparément
+    # par _looks_like_ionos_config_access.
+    if _FILE_EXT_SIGNAL.search(low) and not has_strong_db:
+        return False
+
+    return (has_db or has_strong_db or has_table_mutation) and (has_ionos or has_configured_site)
+
+
+def _looks_like_ionos_config_access(text: str, configured_sites: tuple[str, ...] | None = None) -> bool:
+    """Detecte un acces fichier/shell visant la config d'un site IONOS configure."""
+    if not text:
+        return False
+    low = _strip_accents(str(text).lower().replace("\\", "/"))
+    if not _mentions_configured_ionos_site(low, configured_sites):
+        return False
+    config_terms = (
+        ".env", "config.php", "config.local.php", "config.local", "bootstrap.php",
+        "db_host", "db_name", "db_user", "db_pass", "mysql", "mariadb",
+        "hosting-data.io", "database", "bdd",
+    )
+    return any(term in low for term in config_terms)
+
+
 def _is_peer_team_query(query_lower: str) -> bool:
     """Détecte les demandes naturelles de collaboration entre Lumena."""
     if not query_lower:
@@ -268,6 +434,11 @@ class ToolRegistry:
         self._allowed_tools: Optional[set] = None
         # True quand _allowed_tools a été défini par l'appelant (pas le filtre contextuel)
         self._caller_set_allowed: bool = False
+        # Contexte issu du filtre: une demande BDD IONOS doit rester sur ionos_db_*.
+        self._ionos_db_context: bool = False
+        self._ionos_db_context_query: str = ""
+        # Compteur de hard-blocks IONOS pour escalader le message (anti-boucle de contournement).
+        self._ionos_db_block_count: int = 0
         # P0: Modules handlers dont l'import ou l'exécution du getter a échoué
         self._failed_modules: List[str] = []
 
@@ -328,10 +499,10 @@ class ToolRegistry:
             (".handlers.peer_knowledge", "get_peer_knowledge_handler_defs",  "peers"),
             (".handlers.peer_tasks",    "get_peer_tasks_handler_defs",      "peers"),
             (".handlers.peer_orchestrator","get_peer_orchestrator_handler_defs","peers"),
-            (".handlers.datagouv",      "get_datagouv_handler_defs",      "web"),
-            (".handlers.data_workbench","get_data_workbench_handler_defs","documents"),
-            (".handlers.sirene",        "get_sirene_handler_defs",        "web"),
-            (".handlers.geo_gouv",      "get_geo_gouv_handler_defs",      "web"),
+            (".handlers.datagouv",      "get_datagouv_handler_defs",      "data"),
+            (".handlers.data_workbench","get_data_workbench_handler_defs","data"),
+            (".handlers.sirene",        "get_sirene_handler_defs",        "data"),
+            (".handlers.geo_gouv",      "get_geo_gouv_handler_defs",      "data"),
         ]
 
         import importlib
@@ -756,7 +927,7 @@ class ToolRegistry:
     _FALLBACK_CATEGORIES: set = {"files", "system", "web", "memory"}
 
     # Mots-clés français + anglais → catégories pertinentes
-    # v2 — 18 packs sémantiques, BROWSER/SEARCH séparés, CODE isolé
+    # v2 — 26 packs sémantiques, BROWSER/SEARCH séparés, CODE isolé, DATA dédié
     _CONTEXT_RULES: list = [
 
         # ═══ PACK 01 — SEARCH (SANS navigation Chrome) ═══
@@ -768,6 +939,18 @@ class ToolRegistry:
              "explique-moi", "qu'est-ce que", "quoi de neuf",
              "rapport sur", "synthèse de", "synthese de"},
             {"web"},
+        ),
+
+        # ═══ PACK 01b — DATA (data.gouv / SIRENE / géo — mots-clés SPÉCIFIQUES) ═══
+        # Volontairement resserré : pas de termes larges seuls (entreprise/csv/
+        # statistiques) qui ajouteraient du bruit. Variantes avec/sans accent car
+        # le filtre matche sur query.lower() sans normalisation d'accents.
+        (
+            {"data.gouv", "datagouv", "data gouv", "open data", "opendata",
+             "dataset", "jeu de données", "jeu de donnees", "jeux de données",
+             "jeux de donnees", "siret", "siren", "sirene", "insee",
+             "code insee", "code commune", "géocodage", "geocodage", "commune"},
+            {"data"},
         ),
 
         # ═══ PACK 02 — BROWSER (Chrome profil utilisateur, SANS web_search) ═══
@@ -1037,6 +1220,7 @@ class ToolRegistry:
             return
 
         query_lower = query.lower()
+        ionos_db_context = _looks_like_ionos_db_intent(query_lower)
         peer_team_query = _is_peer_team_query(query_lower)
         matched_categories: set = set()
 
@@ -1045,6 +1229,25 @@ class ToolRegistry:
                 if kw in query_lower:
                     matched_categories |= categories
                     break  # un match suffit pour cette règle
+
+        # ── BDD d'un site IONOS → catégorie ionos ──────────────────────────
+        # On expose les outils ionos_db_* dès qu'une intention BDD est claire, pour
+        # éviter que le modèle ne lise config.php / lance mysql/php/node en direct.
+        _db_kw = ("bdd", "base de données", "base de donnees", "base de donner",
+                  "database", "mysql", "mariadb", "table", "schema", "schéma")
+        _site_kw = ("site", "site web", "openlumena", "ionos", "héberg", "heberg")
+        # Termes BDD non ambigus (suffisent seuls : "à la bdd", "dans la base de données").
+        _db_strong = ("bdd", "base de données", "base de donnees", "base de donner",
+                      "database", "mysql", "mariadb")
+        # Verbes de mutation de table (couvre "crée/rajoute une table test").
+        _table_verb = ("crée", "creer", "créer", "cree", "ajoute", "ajouter",
+                       "rajoute", "rajouter", "nouvelle table", "create table",
+                       "supprime", "modifie")
+        if (ionos_db_context
+                or (any(k in query_lower for k in _db_kw) and any(k in query_lower for k in _site_kw))
+                or any(k in query_lower for k in _db_strong)
+                or ("table" in query_lower and any(v in query_lower for v in _table_verb))):
+            matched_categories |= {"ionos"}
 
         # Toujours inclure les catégories obligatoires
         matched_categories |= self._ALWAYS_INCLUDE_CATEGORIES
@@ -1088,6 +1291,9 @@ class ToolRegistry:
         # Appliquer le filtre et invalider le cache
         old_allowed = self._allowed_tools
         self._allowed_tools = allowed
+        self._ionos_db_context = ionos_db_context
+        self._ionos_db_context_query = query_lower if ionos_db_context else ""
+        self._ionos_db_block_count = 0  # nouveau contexte → compteur de blocage réinitialisé
         if old_allowed != allowed:
             self._tools_desc_cache = None
 
@@ -1096,6 +1302,9 @@ class ToolRegistry:
         if self._allowed_tools is not None:
             self._allowed_tools = None
             self._tools_desc_cache = None
+        self._ionos_db_context = False
+        self._ionos_db_context_query = ""
+        self._ionos_db_block_count = 0
 
     def register(
         self, 
@@ -1134,6 +1343,21 @@ class ToolRegistry:
                     for p in params
                 )
                 descriptions.append(f"- {name}({param_list}): {tool['description']}")
+        # Directive contextuelle BDD IONOS : injectée UNIQUEMENT quand le filtre a
+        # détecté une intention BDD IONOS (coût nul sinon). Évite que le modèle
+        # raisonne à lire config.php / lancer mysql-php-node avant d'être bloqué.
+        if getattr(self, "_ionos_db_context", False):
+            descriptions.insert(0,
+                "⛔ RÈGLE BDD IONOS : pour toute action sur une base IONOS, n'ouvre JAMAIS "
+                "config.php/.env, ne lance ni mysql/php/node ni delegate_task/CodeAgent. "
+                "Utilise directement les outils `ionos_db_*` (le bridge gère secrets, audit, "
+                "snapshots). Recopie EXACTEMENT les valeurs des observations, y compris les "
+                "champs masqués (ex. `db50****...`, `dbu****776`) — ne les reconstitue/complète "
+                "JAMAIS. N'invente AUCUNE table : ne cite que celles renvoyées par "
+                "`ionos_db_list_tables` dans ce tour. AVANT un DROP/CLEAR, vérifie l'état RÉEL "
+                "(table vide ?) via `ionos_db_select` — NE déduis JAMAIS le contenu depuis "
+                "`ionos_db_describe_table` (schéma seulement) ni depuis la mémoire/le contexte. "
+                "Si aucune info BDD n'est requise, réponds avec final_answer.")
         self._tools_desc_cache = "\n".join(descriptions)
         return self._tools_desc_cache
     
@@ -1501,6 +1725,69 @@ class ToolRegistry:
             )
         return None
 
+    def _ionos_db_context_refusal(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        caller: CallerContext,
+    ) -> Optional[Observation]:
+        """Force les demandes BDD IONOS a passer par le bridge ionos_db_*.
+
+        Le filtre contextuel reste souple pour les autres domaines, mais une BDD
+        IONOS ne doit jamais etre traitee via config.php, shell, scripts PHP/Node
+        ou CodeAgent. Le bridge gere les secrets, l'audit, les snapshots et les
+        confirmations.
+        """
+        if caller.kind != "react":
+            return None
+        if tool_name.startswith("ionos_db_"):
+            return None
+        if tool_name in _IONOS_DB_ALLOWED_NON_DB_TOOLS or tool_name.startswith("plan_"):
+            return None
+
+        try:
+            raw_args = json.dumps(args or {}, ensure_ascii=False)
+        except Exception:
+            raw_args = str(args or {})
+        in_ionos_db_context = bool(getattr(self, "_ionos_db_context", False))
+        if (
+            not in_ionos_db_context
+            and not _looks_like_ionos_db_intent(raw_args)
+            and not _looks_like_ionos_config_access(raw_args)
+        ):
+            return None
+        if tool_name not in _IONOS_DB_BYPASS_TOOLS:
+            return None
+
+        # Escalade : à partir du 2e blocage du même intent, on ordonne de cesser
+        # de retenter et de conclure (anti-boucle de contournement observée).
+        self._ionos_db_block_count = int(getattr(self, "_ionos_db_block_count", 0)) + 1
+        if self._ionos_db_block_count >= 2:
+            msg = (
+                "⛔ Action BDD IONOS bloquée (2e tentative). ARRÊTE de contourner : "
+                "n'essaie PAS un autre outil fichier/shell/PHP/Node/MySQL/CodeAgent. "
+                "Soit tu utilises un outil `ionos_db_*` (ex: `ionos_db_get_config`, "
+                "`ionos_db_test`/`ionos_test_site_database`, `ionos_db_create_sandbox_table`), "
+                "soit tu réponds immédiatement avec `final_answer` en expliquant que "
+                "l'accès BDD IONOS passe uniquement par le bridge sécurisé."
+            )
+        else:
+            msg = (
+                "Action BDD IONOS détectée : utilise le bridge sécurisé via les outils "
+                "`ionos_db_*` (ex: `ionos_db_get_config`, `ionos_db_bridge_status`, "
+                "`ionos_db_create_sandbox_table`, `ionos_db_propose_write`). "
+                "N'utilise PAS les fichiers config, le shell, PHP/Node/MySQL ni le "
+                "CodeAgent pour cette action, et ne retente pas avec un autre outil "
+                "fichier/shell — si aucune info BDD n'est nécessaire, conclus avec `final_answer`."
+            )
+        logger.warning(
+            "[policy] IONOS DB hard-block (#{}) : tool={} context_query={}",
+            self._ionos_db_block_count,
+            tool_name,
+            getattr(self, "_ionos_db_context_query", ""),
+        )
+        return Observation(content=msg, success=False)
+
     async def execute(
         self,
         name: str,
@@ -1534,6 +1821,10 @@ class ToolRegistry:
         _peer_refusal = self._peer_raw_network_refusal(name, args or {})
         if _peer_refusal is not None:
             return _peer_refusal
+
+        _ionos_db_refusal = self._ionos_db_context_refusal(name, args or {}, caller)
+        if _ionos_db_refusal is not None:
+            return _ionos_db_refusal
 
         if name not in self.tools:
             # Auto-fix: normalisation + fuzzy strict (cutoff=0.75) avant d'échouer

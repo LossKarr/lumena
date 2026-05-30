@@ -234,6 +234,19 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
 
     # === ANTHROPIC ===
+    "claude-opus-4.8": ModelConfig(
+        name="claude-opus-4.8",
+        display_name="Claude Opus 4.8 (Anthropic)",
+        provider=ProviderType.ANTHROPIC,
+        model_id="claude-opus-4-8",
+        context_window=1000000,  # 1M tokens
+        max_output_tokens=128000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=5.0,
+        description="Claude Opus 4.8 — modèle le plus capable (raisonnement, code agentique, haute autonomie), 1M context, 128K output, adaptive thinking",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist"}),
+    ),
     "claude-opus-4.7": ModelConfig(
         name="claude-opus-4.7",
         display_name="Claude Opus 4.7 (Anthropic)",
@@ -264,7 +277,7 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         name="claude-opus-4.5",
         display_name="Claude Opus 4.5 (Anthropic)",
         provider=ProviderType.ANTHROPIC,
-        model_id="claude-opus-4-5-20250514",
+        model_id="claude-opus-4-5-20251101",
         context_window=1000000,  # 1M tokens
         max_output_tokens=64000,
         supports_vision=True,
@@ -272,19 +285,6 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=4.0,
         description="Claude Opus 4.5 — intelligence Opus, 1M context, 64K output",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist"}),
-    ),
-    "claude-opus-4": ModelConfig(
-        name="claude-opus-4",
-        display_name="Claude Opus 4 (Anthropic)",
-        provider=ProviderType.ANTHROPIC,
-        model_id="claude-opus-4-20250514",
-        context_window=200000,  # 200K tokens
-        max_output_tokens=32000,
-        supports_vision=True,
-        supports_tools=True,
-        cost_per_million_tokens=5.0,
-        description="Claude Opus 4 — contexte standard 200K, plus accessible",
-        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use"}),
     ),
     "claude-sonnet-4.6": ModelConfig(
         name="claude-sonnet-4.6",
@@ -312,24 +312,11 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="Claude Sonnet 4.5 — extended thinking, 1M context, 64K output",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use"}),
     ),
-    "claude-sonnet-4": ModelConfig(
-        name="claude-sonnet-4",
-        display_name="Claude Sonnet 4 (Anthropic)",
-        provider=ProviderType.ANTHROPIC,
-        model_id="claude-sonnet-4-20250514",
-        context_window=200000,  # 200K tokens
-        max_output_tokens=16000,
-        supports_vision=True,
-        supports_tools=True,
-        cost_per_million_tokens=3.0,
-        description="Claude Sonnet 4 — contexte standard 200K, bon rapport qualité/prix",
-        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling"}),
-    ),
     "claude-haiku-4.5": ModelConfig(
         name="claude-haiku-4.5",
         display_name="Claude Haiku 4.5 (Anthropic)",
         provider=ProviderType.ANTHROPIC,
-        model_id="claude-haiku-4-5-20250307",
+        model_id="claude-haiku-4-5-20251001",
         context_window=200000,  # 200K tokens
         max_output_tokens=16000,
         supports_vision=True,
@@ -338,47 +325,22 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="Claude Haiku 4.5 — ultra-rapide et peu coûteux, 200K context",
         capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text"}),
     ),
-    "claude-3-7-sonnet": ModelConfig(
-        name="claude-3-7-sonnet",
-        display_name="Claude Sonnet 3.7 (Anthropic)",
-        provider=ProviderType.ANTHROPIC,
-        model_id="claude-3-7-sonnet-20250219",
-        context_window=200000,  # 200K tokens
-        max_output_tokens=64000,
-        supports_vision=True,
-        supports_tools=True,
-        cost_per_million_tokens=3.0,
-        description="Claude Sonnet 3.7 — extended thinking natif, 200K context",
-        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use"}),
-    ),
-    "claude-3-5-sonnet": ModelConfig(
-        name="claude-3-5-sonnet",
-        display_name="Claude Sonnet 3.5 (Anthropic)",
-        provider=ProviderType.ANTHROPIC,
-        model_id="claude-3-5-sonnet-20241022",
-        context_window=200000,  # 200K tokens
-        max_output_tokens=8192,
-        supports_vision=True,
-        supports_tools=True,
-        cost_per_million_tokens=3.0,
-        description="Claude Sonnet 3.5 — excellent g\u00e9n\u00e9raliste \u00e9prouv\u00e9, 200K context",
-        capabilities=frozenset({"vision_describe", "tool_calling"}),
-    ),
-    "claude-3-5-haiku": ModelConfig(
-        name="claude-3-5-haiku",
-        display_name="Claude Haiku 3.5 (Anthropic)",
-        provider=ProviderType.ANTHROPIC,
-        model_id="claude-3-5-haiku-20241022",
-        context_window=200000,  # 200K tokens
-        max_output_tokens=8192,
-        supports_vision=False,
-        supports_tools=True,
-        cost_per_million_tokens=0.8,
-        description="Claude Haiku 3.5 — tr\u00e8s rapide et bon march\u00e9, 200K context",
-        capabilities=frozenset({"tool_calling", "cheap_text"}),
-    ),
     
     # === GOOGLE ===
+    "gemini-3.5-flash": ModelConfig(
+        name="gemini-3.5-flash",
+        display_name="Gemini 3.5 Flash (Google)",
+        provider=ProviderType.GOOGLE,
+        model_id="gemini-3.5-flash",
+        context_window=1000000,         # 1M tokens
+        max_output_tokens=65536,        # 65k sortie max
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.30,   # approx (input) — pricing 3.5 != preview Flash, à ajuster
+        description="Gemini 3.5 Flash — rapide + thinking configurable (défaut medium), 1M context. Pas de Computer Use.",
+        # NB: pas de 'computer_use' (non disponible sur 3.5 Flash). thinking géré par défaut côté API.
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "cheap_text"}),
+    ),
     "gemini-3.1-pro": ModelConfig(
         name="gemini-3.1-pro",
         display_name="Gemini 3.1 Pro (Google)",
@@ -1435,17 +1397,13 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     #         vision (analyse image via API), web (recherche/analyse web)
     # vision=0 => le modèle n'a PAS d'API vision
     # ── Anthropic ──────────────────────────────────────────────────────────
+    "claude-opus-4.8":             {"code": 94, "speed": 45, "reasoning": 98, "creative": 97, "research": 95, "vision": 96, "web": 92},
     "claude-opus-4.7":             {"code": 92, "speed": 45, "reasoning": 96, "creative": 97, "research": 94, "vision": 96, "web": 91},
     "claude-opus-4.6":             {"code": 90, "speed": 45, "reasoning": 94, "creative": 96, "research": 92, "vision": 95, "web": 90},
     "claude-opus-4.5":             {"code": 88, "speed": 50, "reasoning": 91, "creative": 93, "research": 89, "vision": 92, "web": 87},
-    "claude-opus-4":               {"code": 87, "speed": 52, "reasoning": 90, "creative": 92, "research": 87, "vision": 90, "web": 85},
     "claude-sonnet-4.6":           {"code": 89, "speed": 68, "reasoning": 88, "creative": 95, "research": 87, "vision": 93, "web": 92},
     "claude-sonnet-4.5":           {"code": 85, "speed": 72, "reasoning": 86, "creative": 90, "research": 82, "vision": 88, "web": 88},
-    "claude-sonnet-4":             {"code": 84, "speed": 75, "reasoning": 84, "creative": 88, "research": 80, "vision": 85, "web": 83},
     "claude-haiku-4.5":            {"code": 74, "speed": 94, "reasoning": 72, "creative": 78, "research": 68, "vision": 72, "web": 70},
-    "claude-3-7-sonnet":           {"code": 84, "speed": 65, "reasoning": 89, "creative": 88, "research": 85, "vision": 85, "web": 84},
-    "claude-3-5-sonnet":           {"code": 82, "speed": 70, "reasoning": 84, "creative": 86, "research": 80, "vision": 82, "web": 80},
-    "claude-3-5-haiku":            {"code": 68, "speed": 96, "reasoning": 66, "creative": 72, "research": 62, "vision": 68, "web": 65},
     # ── xAI / Grok ─────────────────────────────────────────────────────────
     "grok-4.3":                    {"code": 80, "speed": 85, "reasoning": 82, "creative": 75, "research": 80, "vision": 80, "web": 82},
     "grok-4-1-fast-reasoning":     {"code": 75, "speed": 80, "reasoning": 90, "creative": 60, "research": 78, "vision": 75, "web": 82},
@@ -1459,6 +1417,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "deepseek-reasoner":           {"code": 82, "speed": 50, "reasoning": 92, "creative": 60, "research": 80, "vision":  0, "web": 72},
     "deepseek-v3":                 {"code": 84, "speed": 72, "reasoning": 82, "creative": 68, "research": 78, "vision":  0, "web": 75},
     # ── Google ─────────────────────────────────────────────────────────────
+    "gemini-3.5-flash":            {"code": 82, "speed": 92, "reasoning": 84, "creative": 78, "research": 88, "vision": 92, "web": 90},
     "gemini-3.1-pro":              {"code": 86, "speed": 70, "reasoning": 90, "creative": 85, "research": 92, "vision": 95, "web": 92},
     "gemini-2.5-pro":              {"code": 84, "speed": 65, "reasoning": 88, "creative": 78, "research": 88, "vision": 92, "web": 88},
     "gemini-2.5-flash":            {"code": 78, "speed": 94, "reasoning": 74, "creative": 74, "research": 86, "vision": 88, "web": 89},
@@ -1516,8 +1475,8 @@ def best_model_for(
         Nom du modèle (clé AVAILABLE_MODELS) ou None si aucun disponible.
     """
     # Modèles réservés aux tâches vraiment complexes : sélectionnés seulement
-    # si leur avantage de score > _PRE7", "claude-opus-4.MIUM_THRESHOLD sur le meilleur standard.
-    _PREMIUM_MODELS = {"claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5"}
+    # si leur avantage de score > _PREMIUM_THRESHOLD sur le meilleur standard.
+    _PREMIUM_MODELS = {"claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5"}
     _PREMIUM_THRESHOLD = 10
 
     candidates = preferred_models or list(MODEL_SKILLS.keys())

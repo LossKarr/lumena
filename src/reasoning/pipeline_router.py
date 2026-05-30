@@ -110,6 +110,27 @@ _DESTRUCTIVE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Intent BDD / lecture base de données : NE DOIT PAS router vers un pipeline deploy.
+_DB_INTENT_RE = re.compile(
+    r"\b(bdd|base\s+de\s+donn\w*|base\s+du\s+site|donn[eé]es\s+du\s+site|database|"
+    r"mysql|mariadb|tables?|sch[eé]mas?|connexion\s+bdd)\b",
+    re.IGNORECASE,
+)
+
+# Vrai VERBE/action de déploiement (≠ simple cible "ionos"/"sftp"/"héberg").
+_DEPLOY_VERB_RE = re.compile(
+    r"\b(d[eé]ploi(?:e[rsz]?|er|ons|ez|ent)?|deploy(?:s|ed|ing)?|"
+    r"publi[eé]\w*|met[sz]?\s+en\s+ligne|mettre\s+en\s+ligne|upload\w*|"
+    r"envoi\w*\s+(?:le\s+)?site)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_db_intent(query: str) -> bool:
+    """True si la requête vise la BDD/lecture (pas un déploiement de site)."""
+    return bool(_DB_INTENT_RE.search(query))
+
+
 # Détecte si les mots-clés deploy apparaissent uniquement dans un contexte
 # nominal (nom de section, guillemets, etc.) et pas comme un verbe d'action.
 _DEPLOY_AS_NOUN_RE = re.compile(
@@ -149,6 +170,9 @@ def _match_edit_and_deploy(query: str) -> bool:
     """Détecte 'modifie/améliore/complète un site web ET déploie/upload'."""
     q = query.lower()
     if _has_destructive_intent(q):
+        return False
+    # Intent BDD/lecture → ce n'est pas un déploiement.
+    if _has_db_intent(q):
         return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"
@@ -195,21 +219,26 @@ def _match_edit_website_only(query: str) -> bool:
 
 
 def _match_deploy_only(query: str) -> bool:
-    """Détecte 'déploie/upload le site' sans demande de modification."""
+    """Détecte 'déploie/upload le site' sans demande de modification.
+
+    Exige un VRAI verbe de déploiement (déploie/publie/mets en ligne/upload).
+    'ionos'/'sftp'/'héberg' seuls ne suffisent PAS (sinon une requête BDD IONOS
+    serait routée à tort vers deploy_to_ionos).
+    """
     q = query.lower()
     # Intent destructif → jamais un pipeline direct
     if _has_destructive_intent(q):
+        return False
+    # Intent BDD/lecture → ce n'est pas un déploiement.
+    if _has_db_intent(q):
         return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"
         r"corrig\w*|r[eé]par\w*|refond\w*|redesign\w*|update\w*|edit\w*|improv\w*|upgrad\w*)\b",
         q,
     ))
-    has_deploy = bool(re.search(
-        r"\b(deploy\w*|d[eé]ploi\w*|upload\w*|publi[eé]\w*|met[sz]?\s+en\s+ligne|"
-        r"ionos|h[eé]berg\w*|sftp)\b",
-        q,
-    ))
+    # VRAI verbe de déploiement requis (pas seulement la cible 'ionos').
+    has_deploy = bool(_DEPLOY_VERB_RE.search(q))
     # Deploy contextuel (nom de section) → pas de vrai intent deploy
     if has_deploy and _deploy_is_contextual(query):
         return False

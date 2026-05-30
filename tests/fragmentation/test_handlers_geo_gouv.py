@@ -220,9 +220,9 @@ def test_handler_defs_returns_3_entries():
     assert names == {"geo_search_address", "geo_reverse", "geo_commune_info"}
 
 
-def test_handler_defs_all_web_category():
+def test_handler_defs_all_data_category():
     for d in get_geo_gouv_handler_defs():
-        assert d.category == "web"
+        assert d.category == "data"
         assert d.source_module == "handlers.geo_gouv"
 
 

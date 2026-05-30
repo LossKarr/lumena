@@ -178,6 +178,7 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "files":         frozenset({ProofCapability.FILE_WRITE}),
     "system":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     "web":           frozenset({ProofCapability.HTTP_PROBE}),
+    "data":          frozenset({ProofCapability.GENERIC_READONLY}),  # data.gouv/SIRENE/géo/analyse : readonly par défaut ; seuls download/export prouvent (overrides)
     "memory":        frozenset({ProofCapability.GENERIC_READONLY}),
     "browser":       frozenset({ProofCapability.BROWSER_PROBE}),
     "computer_use":  frozenset({ProofCapability.GENERIC_MUTATION}),
@@ -194,6 +195,23 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "network":       frozenset({ProofCapability.HTTP_PROBE}),
     "platform":      frozenset({ProofCapability.GENERIC_MUTATION}),
     "codebase":      frozenset({ProofCapability.GENERIC_READONLY}),
+    # ── Phase 2 mono-catégorie : catégories sorties des contrats fourre-tout ──
+    # Héritent de la capability du parent (communication/media/platform/system/
+    # files) — iso, SAUF spotify (lecture/contrôle audio → mutation, pas un doc).
+    # stripe/ionos restent couverts par _MODULE_CAPABILITIES (PAYMENT/DEPLOY).
+    "mail":          frozenset({ProofCapability.MESSAGE_SEND}),
+    "discord":       frozenset({ProofCapability.MESSAGE_SEND}),
+    "social":        frozenset({ProofCapability.MESSAGE_SEND}),
+    "image":         frozenset({ProofCapability.DOC_ARTIFACT}),
+    "video":         frozenset({ProofCapability.DOC_ARTIFACT}),
+    "spotify":       frozenset({ProofCapability.GENERIC_MUTATION}),
+    "ide":           frozenset({ProofCapability.GENERIC_MUTATION}),
+    "automation":    frozenset({ProofCapability.GENERIC_MUTATION}),
+    "notion":        frozenset({ProofCapability.GENERIC_MUTATION}),
+    "lsp":           frozenset({ProofCapability.GENERIC_MUTATION}),  # iso platform (Phase 3 ajustera)
+    "skills":        frozenset({ProofCapability.PROCESS_LAUNCH}),    # iso system (Phase 3 ajustera)
+    "custom":        frozenset({ProofCapability.PROCESS_LAUNCH}),
+    "website":       frozenset({ProofCapability.FILE_WRITE}),
 }
 
 
@@ -242,6 +260,41 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "read_skill_reference":  frozenset({ProofCapability.GENERIC_READONLY}),
     "pip_check":             frozenset({ProofCapability.GENERIC_READONLY}),
     "search_in_code":        frozenset({ProofCapability.GENERIC_READONLY}),
+    # ── IONOS BDD read-only : le module ionos défaut DEPLOY_MUTATION, mais ces
+    # outils sont strictement en lecture (config non sensible, statut, listes,
+    # ping). Ils ne doivent PAS exiger une mutation pour conclure un FINAL.
+    "ionos_db_get_config":            frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_bridge_status":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_get_write_config":      frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_get_delete_config":     frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_get_sandbox_config":    frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_get_restore_config":    frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_get_react_write_config":  frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_get_react_delete_config": frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_list_tables":           frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_describe_table":        frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_select":                frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_list_snapshots":        frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_db_list_pending_actions":  frozenset({ProofCapability.GENERIC_READONLY}),
+    "ionos_test_site_database":       frozenset({ProofCapability.GENERIC_READONLY}),
+    # ── catégorie data (data.gouv / SIRENE / géo / workbench) ──────────────
+    # Défaut catégorie = GENERIC_READONLY. Seuls les outils qui PRODUISENT un
+    # fichier vérifiable sur disque comptent comme preuve (FILE_WRITE).
+    "datagouv_download_resource":  frozenset({ProofCapability.FILE_WRITE}),
+    "data_export":                 frozenset({ProofCapability.FILE_WRITE}),
+    # explicitement read-only (recherche / lecture / analyse en mémoire) :
+    "datagouv_search":             frozenset({ProofCapability.GENERIC_READONLY}),
+    "datagouv_get_dataset":        frozenset({ProofCapability.GENERIC_READONLY}),
+    "sirene_search_company":       frozenset({ProofCapability.GENERIC_READONLY}),
+    "sirene_get_by_siret":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "geo_search_address":          frozenset({ProofCapability.GENERIC_READONLY}),
+    "geo_reverse":                 frozenset({ProofCapability.GENERIC_READONLY}),
+    "geo_commune_info":            frozenset({ProofCapability.GENERIC_READONLY}),
+    "data_profile_file":           frozenset({ProofCapability.GENERIC_READONLY}),
+    "data_filter_rows":            frozenset({ProofCapability.GENERIC_READONLY}),
+    "data_aggregate":              frozenset({ProofCapability.GENERIC_READONLY}),
+    "data_unique_values":          frozenset({ProofCapability.GENERIC_READONLY}),
+    "data_join":                   frozenset({ProofCapability.GENERIC_READONLY}),
 }
 
 

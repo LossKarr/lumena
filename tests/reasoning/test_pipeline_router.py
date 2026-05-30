@@ -278,3 +278,34 @@ class TestDeployAsNounGuard:
 
     def test_edit_only_still_works(self):
         assert _match_edit_website_only("améliore mon site web")
+
+
+class TestDbIntentNotDeploy3EFix:
+    """Fix routage 3E : une requête BDD IONOS ne doit PAS router vers un deploy."""
+
+    def test_bdd_query_not_deploy_only(self):
+        q = "non la base de donner de ton site web openlumena.com sur ionos"
+        assert not _match_deploy_only(q)
+        assert not _match_edit_and_deploy(q)
+
+    def test_bdd_query_no_deploy_pipeline(self):
+        # Aucun pipeline deploy ne doit matcher cette requête BDD.
+        p = match_pipeline("non la base de donner de ton site web openlumena.com sur ionos")
+        assert p is None or "deploy" not in p.name
+
+    def test_list_tables_not_deploy(self):
+        q = "liste les tables de openlumena.com sur ionos"
+        assert not _match_deploy_only(q)
+        assert not _match_edit_and_deploy(q)
+        p = match_pipeline(q)
+        assert p is None or "deploy" not in p.name
+
+    def test_ionos_alone_not_deploy(self):
+        # 'ionos' seul (sans verbe de déploiement) ne déclenche plus deploy_only.
+        assert not _match_deploy_only("montre mon site openlumena.com sur ionos")
+
+    def test_real_deploy_verbs_still_match(self):
+        assert _match_deploy_only("déploie openlumena.com sur ionos")
+        assert _match_deploy_only("publie le site sur ionos")
+        assert _match_deploy_only("mets en ligne le site sur ionos")
+        assert _match_deploy_only("upload le site sur ionos")

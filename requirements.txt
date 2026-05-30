@@ -108,6 +108,8 @@ pywebview>=4.0.0
 
 # Hosting / Deploy
 paramiko>=3.0.0
+# BDD associée aux sites IONOS (MariaDB/MySQL) — pur Python
+pymysql>=1.1.0
 
 # Twitter/X integration
 tweepy>=4.14.0

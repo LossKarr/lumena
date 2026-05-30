@@ -1,97 +1,48 @@
 ---
 name: webapp-testing
-description: Toolkit for interacting with and testing local web applications using Playwright. Supports verifying frontend functionality, debugging UI behavior, capturing browser screenshots, and viewing browser logs.
+description: "À utiliser pour tester/vérifier une application web locale : ouvrir une page, cliquer, remplir, screenshot, lire les logs/erreurs. RÈGLE LUMENA PRIORITAIRE : Lumena possède 68 outils natifs `browser_*` (Playwright intégré). Utilise TOUJOURS ces outils. N'écris JAMAIS de script Python Playwright sauf si l'utilisateur demande explicitement un test automatisé durable/réutilisable."
 keywords: [test, playwright, tester application, tester site, verifier, navigateur, browser, screenshot, debug ui, test fonctionnel, test frontend, test automatise, e2e, end to end]
-license: Complete terms in LICENSE.txt
+license: Lumena - usage interne
 ---
 
-# Web Application Testing
+# Tester une web app — Utilise les outils natifs `browser_*`
 
-To test local web applications, write native Python Playwright scripts.
+⛔ **NE CODE PAS de script Python Playwright** pour tester une page. Lumena pilote
+déjà un navigateur via 68 outils `browser_*`. Le script Python n'est justifié QUE si
+l'utilisateur demande explicitement un **test automatisé durable** (suite e2e réutilisable).
 
-**Helper Scripts Available**:
-- `scripts/with_server.py` - Manages server lifecycle (supports multiple servers)
+## Table de routage : tâche → outil natif
 
-**Always run scripts with `--help` first** to see usage. DO NOT read the source until you try running the script first and find that a customized solution is abslutely necessary. These scripts can be very large and thus pollute your context window. They exist to be called directly as black-box scripts rather than ingested into your context window.
+| Tu veux… | Outil natif |
+|---|---|
+| Démarrer le navigateur | `browser_start` |
+| Lancer le serveur du site local | `serve_website` (puis `stop_website_server`) |
+| Ouvrir une page / URL | `browser_navigate` |
+| Attendre le chargement | `browser_wait_for` |
+| Lire le contenu / texte | `browser_get_content`, `browser_get_text` |
+| Voir la structure (sélecteurs) | `browser_dom_state` |
+| Cliquer | `browser_click`, `browser_click_smart`, `browser_click_index` |
+| Saisir du texte | `browser_type`, `browser_type_index` |
+| Screenshot (preuve visuelle) | `browser_screenshot`, `browser_screenshot_labels` |
+| Voir les requêtes réseau | `browser_network_requests` |
+| Voir les dialogues / erreurs JS | `browser_dialog_log`, `browser_handle_dialog` |
+| Gérer les onglets | `browser_new_tab`, `browser_switch_tab`, `browser_tabs` |
 
-## Decision Tree: Choosing Your Approach
+## Workflow recommandé
 
 ```
-User task → Is it static HTML?
-    ├─ Yes → Read HTML file directly to identify selectors
-    │         ├─ Success → Write Playwright script using selectors
-    │         └─ Fails/Incomplete → Treat as dynamic (below)
-    │
-    └─ No (dynamic webapp) → Is the server already running?
-        ├─ No → Run: python scripts/with_server.py --help
-        │        Then use the helper + write simplified Playwright script
-        │
-        └─ Yes → Reconnaissance-then-action:
-            1. Navigate and wait for networkidle
-            2. Take screenshot or inspect DOM
-            3. Identify selectors from rendered state
-            4. Execute actions with discovered selectors
+1. serve_website            → lancer le site local (si pas déjà servi)
+2. browser_start            → ouvrir le navigateur
+3. browser_navigate         → aller sur la page
+4. browser_dom_state        → repérer les éléments
+5. browser_click / type     → reproduire le parcours
+6. browser_screenshot       → capturer le résultat (preuve)
+7. browser_network_requests / browser_dialog_log → vérifier erreurs
 ```
 
-## Example: Using with_server.py
+## Règles
 
-To start a server, run `--help` first, then use the helper:
-
-**Single server:**
-```bash
-python scripts/with_server.py --server "npm run dev" --port 5173 -- python your_automation.py
-```
-
-**Multiple servers (e.g., backend + frontend):**
-```bash
-python scripts/with_server.py \
-  --server "cd backend && python server.py" --port 3000 \
-  --server "cd frontend && npm run dev" --port 5173 \
-  -- python your_automation.py
-```
-
-To create an automation script, include only Playwright logic (servers are managed automatically):
-```python
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True) # Always launch chromium in headless mode
-    page = browser.new_page()
-    page.goto('http://localhost:5173') # Server already running and ready
-    page.wait_for_load_state('networkidle') # CRITICAL: Wait for JS to execute
-    # ... your automation logic
-    browser.close()
-```
-
-## Reconnaissance-Then-Action Pattern
-
-1. **Inspect rendered DOM**:
-   ```python
-   page.screenshot(path='/tmp/inspect.png', full_page=True)
-   content = page.content()
-   page.locator('button').all()
-   ```
-
-2. **Identify selectors** from inspection results
-
-3. **Execute actions** using discovered selectors
-
-## Common Pitfall
-
-❌ **Don't** inspect the DOM before waiting for `networkidle` on dynamic apps
-✅ **Do** wait for `page.wait_for_load_state('networkidle')` before inspection
-
-## Best Practices
-
-- **Use bundled scripts as black boxes** - To accomplish a task, consider whether one of the scripts available in `scripts/` can help. These scripts handle common, complex workflows reliably without cluttering the context window. Use `--help` to see usage, then invoke directly. 
-- Use `sync_playwright()` for synchronous scripts
-- Always close the browser when done
-- Use descriptive selectors: `text=`, `role=`, CSS selectors, or IDs
-- Add appropriate waits: `page.wait_for_selector()` or `page.wait_for_timeout()`
-
-## Reference Files
-
-- **examples/** - Examples showing common patterns:
-  - `element_discovery.py` - Discovering buttons, links, and inputs on a page
-  - `static_html_automation.py` - Using file:// URLs for local HTML
-  - `console_logging.py` - Capturing console logs during automation
+1. Reconnaissance d'abord (`browser_dom_state`/`browser_get_content`) puis action.
+2. Toujours un `browser_screenshot` à la fin = preuve visuelle du test.
+3. Script Python Playwright **uniquement** si l'utilisateur veut une suite de tests
+   automatisée pérenne — sinon, les outils natifs suffisent et sont plus rapides.

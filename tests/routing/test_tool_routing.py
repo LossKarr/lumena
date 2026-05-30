@@ -253,3 +253,269 @@ class TestNoCollisions:
         keys = list(tool_hints.keys())
         count = keys.count("delegate_task")
         assert count == 1, f"delegate_task apparaît {count} fois dans _TOOL_COMPLETION_HINTS"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Tests CATÉGORIE BDD IONOS (fix routage 3E) : apply_context_filter réel
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.fixture(scope="module")
+def _registry():
+    from src.reasoning.tool_registry import ToolRegistry
+    return ToolRegistry()
+
+
+def _allowed_for(reg, query):
+    reg.clear_context_filter()
+    reg.apply_context_filter(query, intent="react")
+    return reg._allowed_tools or set()
+
+
+def test_bdd_du_site_inclut_ionos(_registry):
+    """'la bdd de ton site web' (sans 'ionos' littéral) inclut la catégorie ionos."""
+    allowed = _allowed_for(_registry, "lumena vois tu la bdd de ton site web ?")
+    assert "ionos_db_list_tables" in allowed
+
+
+def test_list_tables_ionos_inclut_ionos(_registry):
+    allowed = _allowed_for(_registry, "liste les tables de openlumena.com sur ionos")
+    assert "ionos_db_list_tables" in allowed
+    assert "ionos_db_select" in allowed
+
+
+def test_creer_table_bdd_expose_ionos_create(_registry):
+    """'rajoute une table test à la bdd' expose l'outil ionos de création (pas seulement fichiers/shell)."""
+    allowed = _allowed_for(_registry, "rajoute une table test à la bdd")
+    assert "ionos_db_create_sandbox_table" in allowed
+    assert "ionos_db_set_sandbox_config" in allowed
+
+
+def test_cree_une_table_test_expose_ionos(_registry):
+    allowed = _allowed_for(_registry, "crée une table test")
+    assert "ionos_db_create_sandbox_table" in allowed
+
+
+def test_table_dans_bdd_openlumena_expose_ionos(_registry):
+    allowed = _allowed_for(_registry, "crée une table dans la bdd openlumena")
+    assert "ionos_db_create_sandbox_table" in allowed
+    assert "ionos_db_set_sandbox_config" in allowed
+
+
+def test_opelumena_typo_table_bdd_expose_ionos(_registry):
+    allowed = _allowed_for(_registry, "rajoute une table test a la bdd sur ionos du site opelumena")
+    assert "ionos_db_create_sandbox_table" in allowed
+    assert "ionos_db_set_sandbox_config" in allowed
+
+
+def test_ionos_hard_context_is_multi_site_not_openlumena_hardcoded():
+    from src.reasoning.tool_registry import _looks_like_ionos_config_access, _looks_like_ionos_db_intent
+
+    sites = ("client-a.fr", "formation-pro.com")
+    assert _looks_like_ionos_db_intent(
+        "rajoute une table test a la bdd du site client-a.fr",
+        configured_sites=sites,
+    )
+    assert _looks_like_ionos_db_intent(
+        "liste les tables de formationpro",
+        configured_sites=sites,
+    )
+    assert not _looks_like_ionos_db_intent(
+        "sans rien publier hors workspace cree un site complet avec backend bdd multi page",
+        configured_sites=sites,
+    )
+    assert not _looks_like_ionos_db_intent(
+        "cree un site complet avec BDD locale. ne touche pas a IONOS, ne touche pas aux BDD IONOS",
+        configured_sites=sites,
+    )
+    assert _looks_like_ionos_config_access(
+        r"C:\Users\charl\Desktop\lumena\workspace\formation-pro\api\config.local.php",
+        configured_sites=sites,
+    )
+    assert not _looks_like_ionos_config_access(
+        r"C:\Users\charl\Desktop\lumena\workspace\site-formation\api\config.local.php",
+        configured_sites=sites,
+    )
+
+
+def test_data_category_groups_datagouv_sirene_geo_workbench(_registry):
+    """Phase 1 : datagouv/sirene/geo/data_* sont dans la MÊME catégorie runtime `data`."""
+    tm = getattr(_registry, "_tool_modules", {}) or {}
+    for tool in ("datagouv_search", "datagouv_get_dataset", "datagouv_download_resource",
+                 "sirene_search_company", "sirene_get_by_siret",
+                 "geo_search_address", "geo_reverse", "geo_commune_info",
+                 "data_profile_file", "data_aggregate", "data_filter_rows",
+                 "data_unique_values", "data_join", "data_export"):
+        assert tm.get(tool) == "data", f"{tool} devrait être catégorie 'data', a {tm.get(tool)}"
+
+
+def test_data_contract_autonomy_no_workspace():
+    """Phase 1 : contrat data = autonomy_allowed=True, requires_workspace=False."""
+    from src.reasoning import tool_categories as tc
+    ct = tc.get_category_contract("data")
+    assert ct is not None and ct.name == "data"
+    assert ct.autonomy_allowed is True
+    assert ct.requires_workspace is False
+
+
+def test_lsp_contract_autonomous_with_workspace():
+    """Phase 3 : lsp (lecture code) devient autonome ET exige un workspace."""
+    from src.reasoning import tool_categories as tc
+    ct = tc.get_category_contract("lsp")
+    assert ct is not None and ct.name == "lsp"
+    assert ct.autonomy_allowed is True
+    assert ct.requires_workspace is True
+
+
+def test_skills_contract_not_autonomous():
+    """Phase 3 : skills (edit_own_code/rollback) protégé → NON-autonome."""
+    from src.reasoning import tool_categories as tc
+    ct = tc.get_category_contract("skills")
+    assert ct is not None and ct.name == "skills"
+    assert ct.autonomy_allowed is False
+
+
+def test_data_pack_loads_data_category(_registry):
+    """Phase 1 : requêtes data.gouv / SIRET / SIREN / code INSEE chargent la catégorie data."""
+    for q in [
+        "recherche le dataset accidents sur data.gouv",
+        "trouve l'entreprise avec le siret 12345678900012",
+        "donne-moi le siren de cette société",
+        "quel est le code insee de Nantes",
+        "télécharge ce jeu de données open data",
+    ]:
+        allowed = _allowed_for(_registry, q)
+        assert "datagouv_search" in allowed, f"data non chargé pour: {q}"
+        # le pipeline complet (récupération + analyse) doit être visible ensemble
+        assert "data_aggregate" in allowed, f"data_aggregate non chargé pour: {q}"
+
+
+def test_data_tools_visible_via_data_pack(_registry):
+    """Phase 1 : les 4 familles d'outils data sont visibles quand le PACK DATA matche."""
+    allowed = _allowed_for(_registry, "cherche un dataset insee et analyse le fichier")
+    for tool in ("datagouv_search", "sirene_search_company", "geo_search_address", "data_profile_file"):
+        assert tool in allowed, f"{tool} devrait être visible via PACK DATA"
+
+
+def test_simple_web_search_does_not_load_data(_registry):
+    """Phase 1 (anti-bruit) : une recherche web simple ne charge PAS la catégorie data."""
+    for q in ["cherche des infos sur le chat", "c'est quoi la photosynthèse",
+              "actualités du jour"]:
+        allowed = _allowed_for(_registry, q)
+        assert "datagouv_search" not in allowed, f"data chargé à tort pour: {q}"
+
+
+def test_ionos_db_intent_no_false_positive_on_web_edit():
+    """Régression : éditer le SITE web d'un site IONOS configuré ne doit PAS
+    être routé vers le bridge BDD.
+
+    Avant le fix : « table » matchait « tableau »/« comptable » en sous-chaîne,
+    et le simple nom du site configuré armait le hard-block — verrouillant
+    fichier/shell/CodeAgent dès qu'on éditait le site openlumena.
+    """
+    from src.reasoning.tool_registry import _looks_like_ionos_db_intent
+
+    sites = ("openlumena.com",)
+
+    # Faux positifs corrigés (édition web / dev → PAS BDD)
+    for q in [
+        "cree un tableau de bord sur openlumena",
+        "ajoute un tableau recapitulatif sur la page openlumena",
+        "corrige le bug comptable sur openlumena",
+        "modifie la table des prix dans index.html de openlumena",
+        "change le fichier style.css de openlumena",
+        "deploie openlumena",
+    ]:
+        assert not _looks_like_ionos_db_intent(q, configured_sites=sites), q
+
+    # Vraies intentions BDD préservées
+    for q in [
+        "ajoute une table mysql sur openlumena",
+        "montre la base de donnees ionos",
+        "cree une nouvelle table dans la bdd openlumena",
+        # terme BDD fort + fichier nommé → reste une intention BDD
+        "mets le resultat de la table mysql dans rapport.html sur openlumena",
+    ]:
+        assert _looks_like_ionos_db_intent(q, configured_sites=sites), q
+
+
+@pytest.mark.asyncio
+async def test_ionos_bdd_context_hard_blocks_file_shell_and_agents(_registry):
+    from src.reasoning.caller_context import REACT
+
+    _registry.clear_context_filter()
+    _registry.apply_context_filter(
+        "rajoute une table test a la bdd sur ionos du site opelumena",
+        intent="react",
+    )
+
+    blocked_calls = [
+        ("find_files", {"pattern": "config*", "path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena"}),
+        ("read_file", {"path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena\api\config.php"}),
+        ("run_command", {"command": "node create_table.js"}),
+        ("delegate_task", {
+            "agent_type": "code",
+            "description": "Créer un script PHP pour ajouter une table test à la BDD IONOS openlumena.",
+            "project_path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena",
+        }),
+    ]
+    for name, args in blocked_calls:
+        obs = await _registry.execute(name, args, caller=REACT)
+        assert not obs.success, name
+        assert "ionos_db_" in obs.content.lower(), name
+        assert "bridge" in obs.content.lower(), name
+
+
+@pytest.mark.asyncio
+async def test_ionos_config_path_hard_blocks_without_context_query(_registry):
+    from src.reasoning.caller_context import REACT
+
+    _registry.clear_context_filter()
+    obs = await _registry.execute(
+        "read_file",
+        {"path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena\api\config.local.php"},
+        caller=REACT,
+    )
+
+    assert not obs.success
+    assert "ionos_db_" in obs.content.lower()
+    assert "bridge" in obs.content.lower()
+
+
+def test_ionos_readonly_tools_are_known_readonly():
+    """Les outils BDD IONOS read-only n'exigent pas de mutation (ledger guard exonéré)."""
+    from src.reasoning.plan_evidence import tool_capabilities_are_known_readonly
+    for tool in ("ionos_db_get_config", "ionos_test_site_database", "ionos_db_bridge_status",
+                 "ionos_db_list_tables", "ionos_db_select", "ionos_db_list_snapshots",
+                 "ionos_db_list_pending_actions", "ionos_db_get_write_config"):
+        assert tool_capabilities_are_known_readonly(tool, "ionos", "") is True, tool
+    # mutations/proposals NE sont PAS read-only
+    for tool in ("ionos_db_create_sandbox_table", "ionos_db_propose_write", "deploy_to_ionos"):
+        assert tool_capabilities_are_known_readonly(tool, "ionos", "") is False, tool
+
+
+def test_ionos_readonly_bridge_tool_not_hardblocked(_registry):
+    """En contexte BDD IONOS, un outil bridge read-only n'est PAS hard-block."""
+    from src.reasoning.caller_context import REACT
+    _registry.clear_context_filter()
+    _registry.apply_context_filter("rajoute une table test a la bdd sur ionos du site opelumena", intent="react")
+    # un outil ionos_db_* passe la policy (refusal None)
+    assert _registry._ionos_db_context_refusal("ionos_db_get_config", {}, REACT) is None
+    assert _registry._ionos_db_context_refusal("ionos_test_site_database", {}, REACT) is None
+    # final_answer toujours autorisé
+    assert _registry._ionos_db_context_refusal("final_answer", {}, REACT) is None
+    # mais un outil fichier reste bloqué
+    assert _registry._ionos_db_context_refusal("read_file", {"path": "config.php"}, REACT) is not None
+
+
+def test_ionos_hardblock_escalates_on_second_attempt(_registry):
+    """Le 2e hard-block du même intent escalade le message (anti-boucle de contournement)."""
+    from src.reasoning.caller_context import REACT
+    _registry.clear_context_filter()
+    _registry.apply_context_filter("lis config.local.php pour la bdd ionos openlumena", intent="react")
+    first = _registry._ionos_db_context_refusal("read_file", {"path": "config.local.php"}, REACT)
+    second = _registry._ionos_db_context_refusal("run_command", {"command": "powershell cat config.local.php"}, REACT)
+    assert first is not None and second is not None
+    assert "final_answer" in second.content.lower()
+    # marqueur d'escalade présent au 2e blocage, absent au 1er
+    assert "2e tentative" in second.content.lower() and "arr" in second.content.lower()
+    assert "2e tentative" not in first.content.lower()

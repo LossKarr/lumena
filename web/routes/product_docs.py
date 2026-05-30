@@ -76,6 +76,12 @@ def _collect_live_stats() -> Dict[str, Any]:
         "project": "project", "security": "security", "skills": "skills",
         "spotify": "spotify", "system": "system", "twitter": "social",
         "web": "web", "website": "website",
+        # Catégorie `data` (data.gouv / SIRENE / géo / workbench) — réorg 2026-05-29
+        "datagouv": "data", "sirene": "data", "geo_gouv": "data",
+        "data_workbench": "data",
+        # Intégrations / médias regroupées sous leur catégorie
+        "image_gen": "image", "stripe_api": "stripe", "n8n": "automation",
+        "ionos": "ionos", "remotion": "video", "batch": "files",
     }
     if not tools_categories:
         # Scan handler files to build categories (and count if runtime unavailable)
@@ -1998,6 +2004,124 @@ Shopify, WooCommerce, Telegram, Discord, Twitter/X, LinkedIn, RSS, webhook, HTTP
   <li>n8n tourne en local (localhost:5678) — pas d'exposition internet par défaut</li>
   <li>Lumena ne crée jamais de workflows avec des credentials — la configuration se fait dans l'interface n8n</li>
 </ul>
+""",
+    },
+    {
+        "id": "ionos",
+        "icon": "server",
+        "title": "IONOS — Hébergement & BDD",
+        "content": """
+<p class="doc-lead">Lumena gère vos sites <strong>IONOS</strong> (déploiement SFTP multi-sites) et, depuis le panel,
+accède à leurs <strong>bases de données MySQL</strong> via un <strong>bridge sécurisé</strong> — alors même que ces
+BDD ne sont pas joignables depuis l'extérieur.</p>
+
+<h3>Déploiement SFTP</h3>
+<div class="doc-callout">
+  Ajoutez un compte IONOS (domaine, hôte SFTP, identifiants) dans le panel <strong>IONOS</strong>.
+  La connexion est testée à l'ajout. Les credentials sont <strong>chiffrés (Fernet)</strong> dans
+  <code>data/ionos_sites.json</code>. Lumena peut alors déployer un dossier de projet, lister et supprimer
+  des fichiers distants.
+</div>
+
+<h3>Le problème des BDD IONOS</h3>
+<div class="doc-callout">
+  Les bases MySQL en hébergement mutualisé IONOS (<code>*.hosting-data.io</code>) ne sont
+  <strong>pas accessibles depuis Internet</strong> — impossible de s'y connecter directement depuis Lumena.<br><br>
+  <strong>Solution :</strong> un petit fichier <strong>bridge PHP</strong> est déployé sur votre site (dans
+  <code>.lumena/</code>). Il s'exécute <em>sur</em> IONOS, donc à côté de la BDD, et expose une API HTTPS
+  signée que seul Lumena peut appeler.
+</div>
+
+<h3>Sécurité du bridge</h3>
+<ul>
+  <li><strong>Signature HMAC</strong> sur chaque requête (<code>op|body|ts|nonce</code>) — anti-falsification</li>
+  <li><strong>Nonce anti-rejeu</strong> (verrou fichier) — une requête ne peut pas être rejouée</li>
+  <li><strong>Credentials BDD scellés en AES-256-GCM</strong> par requête (clé dérivée HKDF) — jamais en clair</li>
+  <li><strong>HTTPS strict</strong> + secret du bridge chiffré Fernet au repos côté Lumena</li>
+  <li><strong>Accès réservé admin</strong> (token) — toutes les opérations BDD sont protégées</li>
+  <li>Un fichier <code>index.php</code> renvoie <strong>403</strong> pour empêcher le listing du dossier</li>
+</ul>
+
+<h3>Capacités BDD (activables une par une, désactivées par défaut)</h3>
+<div class="doc-caps-grid">
+
+<div class="doc-cap-card">
+  <h4>Lecture (read-only)</h4>
+  <ul>
+    <li>Lister les tables, voir le schéma d'une table</li>
+    <li>Aperçu borné des lignes (SELECT structuré, limité)</li>
+    <li>Tables sensibles signalées ⚠️ avant affichage</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
+  <h4>Écriture contrôlée</h4>
+  <ul>
+    <li>INSERT / UPDATE seulement (jamais de SQL libre)</li>
+    <li><strong>Désactivée par défaut</strong> + allowlist des tables autorisées</li>
+    <li>Confirmation obligatoire, transaction + rollback, plafond de lignes</li>
+    <li>UPDATE sans filtre WHERE interdit</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
+  <h4>Tables sandbox (créer / vider / supprimer)</h4>
+  <ul>
+    <li>Création de tables préfixées <code>lumena_sandbox_</code> uniquement, types whitelistés</li>
+    <li><strong>Vidage</strong> d'une table sandbox (CLEAR) : DELETE total contrôlé + snapshot avant</li>
+    <li><strong>Suppression</strong> d'une table sandbox (DROP) : uniquement si la table est VIDE</li>
+    <li>Chaque capacité a son propre flag, désactivée par défaut. Aucun ALTER / TRUNCATE / RENAME, aucun DROP générique</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
+  <h4>Snapshot & restauration</h4>
+  <ul>
+    <li>Image-avant chiffrée capturée automatiquement avant chaque UPDATE / DELETE / vidage</li>
+    <li>Stockée chiffrée (Fernet) — aucune valeur en clair</li>
+    <li>Restauration possible (désactivée par défaut, confirmation requise)</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
+  <h4>Suppression de lignes contrôlée</h4>
+  <ul>
+    <li>DELETE avec filtre WHERE <strong>obligatoire</strong> (jamais de suppression totale)</li>
+    <li>Désactivée par défaut + allowlist <strong>séparée</strong> de l'écriture</li>
+    <li>Double confirmation : retaper le nom exact de la table</li>
+    <li>Snapshot obligatoire avant suppression → restauration par ré-insertion</li>
+  </ul>
+</div>
+
+<div class="doc-cap-card">
+  <h4>Assistant : propose, l'humain exécute</h4>
+  <ul>
+    <li>L'IA peut <strong>proposer</strong> écriture / suppression / vidage / DROP — jamais les exécuter seule</li>
+    <li>Chaque proposition apparaît dans <em>Actions IA en attente</em> et exige une approbation humaine</li>
+    <li>DELETE et DROP par l'IA exigent en plus un <strong>kill-switch global</strong> (Configuration → IONOS), OFF par défaut</li>
+    <li>L'assistant n'affiche que des métadonnées (colonnes, compteurs), jamais les valeurs</li>
+  </ul>
+</div>
+
+</div>
+
+<h3>Garanties de confidentialité</h3>
+<ul>
+  <li>Aucune valeur de vos données n'apparaît jamais en clair dans les logs, l'API, l'interface ou l'audit</li>
+  <li>Un journal d'audit (<code>data/ionos_db_audit.jsonl</code>) trace chaque opération avec seulement les
+      noms de colonnes et des compteurs — <strong>jamais</strong> les valeurs ni les secrets</li>
+  <li>Les fichiers de config lus (config.php, .env) sont <strong>masqués</strong> : mots de passe, tokens et secrets
+      ne sont jamais exposés à l'assistant</li>
+  <li>Les snapshots ont une durée de vie limitée (7 jours) et un nombre maximum par site</li>
+</ul>
+
+<div class="doc-callout">
+  <strong>Bridge versionné.</strong> À chaque nouvelle capacité, le bridge change de version
+  (actuelle : <strong>v9</strong>) et demande une réinstallation en un clic depuis le panel.
+  Toutes les capacités d'écriture/suppression/vidage/DROP sont <strong>pilotées depuis l'interface</strong>
+  avec confirmation humaine ; l'assistant ne fait que <em>proposer</em>. Pour toute action BDD IONOS,
+  Lumena passe exclusivement par le bridge sécurisé (jamais mysql/php/node ni config.php en direct).
+</div>
 """,
     },
     {

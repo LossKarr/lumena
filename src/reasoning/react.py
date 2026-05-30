@@ -3414,6 +3414,44 @@ Maintenant, reflechis et reponds:"""
         return _parse_plan_fn(raw_response)
 
 
+    def _remask_observed_masked_values(self, answer: str) -> str:
+        """Anti-hallucination/fuite : ré-impose les valeurs masquées vues en observation.
+
+        Si une observation de la session contient un champ masqué (ex.
+        `db50****.hosting-data.io`, `dbu****776`), la réponse finale ne doit JAMAIS
+        en reconstituer une version concrète (qu'elle soit hallucinée ou réelle).
+        Toute valeur du même préfixe/suffixe est ré-écrite vers la forme masquée.
+        """
+        if not answer or "****" not in "".join(
+            (h.observation.content or "") for h in self.history
+            if getattr(h, "observation", None)
+        ):
+            return answer
+
+        import re as _re_mask
+        # Collecte des tokens masqués observés (préfixe****suffixe).
+        tokens: set[str] = set()
+        _tok_re = _re_mask.compile(r"([A-Za-z0-9_.\-]{3,}\*{2,}[A-Za-z0-9_.\-]*)")
+        for h in self.history:
+            obs = getattr(h, "observation", None)
+            if not obs or not obs.content:
+                continue
+            for m in _tok_re.findall(obs.content):
+                tokens.add(m)
+
+        out = answer
+        for tok in tokens:
+            star_idx = tok.find("*")
+            prefix = tok[:star_idx]
+            suffix = tok[star_idx:].lstrip("*")
+            # Garde-fou anti sur-correction : préfixe ET suffixe assez spécifiques.
+            if len(prefix) < 3 or len(suffix) < 2:
+                continue
+            # Reconstitue toute valeur concrète prefix<chars>suffix → token masqué.
+            pat = _re_mask.escape(prefix) + r"[A-Za-z0-9_\-]+" + _re_mask.escape(suffix)
+            out = _re_mask.sub(pat, tok, out)
+        return out
+
     def _tool_is_safe_readonly(self, tool_name: str) -> bool:
         """Verdict guard-safe : l'outil est-il un read-only CONNU et sûr ?
 
@@ -5483,6 +5521,14 @@ Maintenant, reflechis et reponds:"""
             
             # 4. Si c'est une réponse finale, retourner
             if action.action_type == ActionType.FINAL_ANSWER:
+                # ── Anti-hallucination/fuite : ré-imposer les valeurs masquées vues
+                # en observation (ex. config BDD IONOS) avant tout traitement du FINAL.
+                if action.answer:
+                    _remasked = self._remask_observed_masked_values(action.answer)
+                    if _remasked != action.answer:
+                        logger.warning("[MASK GUARD] valeurs masquées reconstituées dans le FINAL — ré-masquées")
+                        action.answer = _remasked
+                        step.action.answer = _remasked
                 self.history.append(step)
                 # ── Plan TODO : bilan ──
                 # Default: sans plan, on ne sait rien → repair garde son comportement standard.

@@ -64,6 +64,29 @@ async def delegate_task_handler(
 ) -> HandlerResult:
     """Délègue une tâche à un sub-agent."""
     try:
+        # ── Garde-fou : CodeAgent = développement uniquement ──────────────
+        # Le CodeAgent (et ses variantes debug/refactor) ne doit PAS créer de
+        # documents (PDF, DOCX, rapport texte…). Ces tâches passent par les
+        # outils directs ReAct (create_pdf / create_docx / write_file).
+        # Sans ce garde-fou, le modèle délègue "Crée un PDF" au CodeAgent qui
+        # interprète la tâche comme une recherche de code et échoue en silence.
+        from ..file_categories import looks_like_document_creation
+        _dev_agents = {"code", "debug", "refactor"}
+        if (agent_type or "").strip().lower() in _dev_agents and looks_like_document_creation(description):
+            logger.warning(
+                "delegate_task refusé : tâche document déléguée à '{}'Agent (desc: {})",
+                agent_type, (description or "")[:120],
+            )
+            return HandlerResult.fail(
+                "⛔ Le CodeAgent est réservé au développement (code source), "
+                "pas à la création de documents. "
+                "Pour produire un PDF / DOCX / rapport, utilise directement les "
+                "outils ReAct : `create_pdf`, `create_docx` ou `write_file`. "
+                "N'utilise `delegate_task` que pour écrire ou modifier du code.",
+                handler_name="delegate_task",
+            )
+        # ──────────────────────────────────────────────────────────────────
+
         from ...agents.task_context import TaskContext
         from ...utils.project_registry import resolve_workspace
         from ...agents.sub_agent import delegate_to_agent_full

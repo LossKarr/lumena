@@ -187,7 +187,7 @@ def get_sirene_handler_defs() -> list[HandlerDef]:
                 "required": ["query"],
             },
             handler=sirene_search_company_handler,
-            category="web",
+            category="data",
             source_module="handlers.sirene",
         ),
         HandlerDef(
@@ -209,7 +209,7 @@ def get_sirene_handler_defs() -> list[HandlerDef]:
                 "required": ["siret"],
             },
             handler=sirene_get_by_siret_handler,
-            category="web",
+            category="data",
             source_module="handlers.sirene",
         ),
     ]

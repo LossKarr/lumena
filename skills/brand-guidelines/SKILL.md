@@ -1,74 +1,54 @@
 ---
 name: brand-guidelines
-description: Applies Anthropic's official brand colors and typography to any sort of artifact that may benefit from having Anthropic's look-and-feel. Use it when brand colors or style guidelines, visual formatting, or company design standards apply.
-keywords: [charte graphique, brand, marque, couleurs marque, typographie, anthropic, brand guideline, design system, identite visuelle, logo, couleurs officielles]
-license: Complete terms in LICENSE.txt
+description: "Charte graphique OFFICIELLE de Lumena : couleurs, typographie, ton visuel, règles UI. À utiliser dès qu'un artefact doit porter l'identité Lumena (site, document, image, slides). RÈGLE : appliquer la charte via les outils natifs (edit_website, create_docx/pptx/pdf, outils image). Ne jamais réintroduire un branding générique ou tiers."
+keywords: [charte graphique, brand, marque, couleurs marque, typographie, Lumena, brand guideline, design system, identite visuelle, logo, couleurs officielles]
+license: Lumena - usage interne
 ---
 
-# Anthropic Brand Styling
+# Charte graphique officielle — Lumena
 
-## Overview
+Identité : **IA locale & autonome — chaleureuse, technique, sérieuse mais vivante.**
+Ambiance « atelier IA local » : sobre, dense, premium. **Pas** cartoon, **pas** SaaS
+générique, **pas** de branding tiers.
 
-To access Anthropic's official brand identity and style resources, use this skill.
+## Palette officielle
 
-**Keywords**: branding, corporate identity, visual identity, post-processing, styling, brand colors, typography, Anthropic brand, visual formatting, visual design
+| Rôle | Hex |
+|---|---|
+| Orange sombre **principal** | `#C85A1E` |
+| Orange lumineux **accent** | `#FF8A3D` |
+| Ambre doux | `#F2B35D` |
+| Fond nuit chaud | `#15110E` |
+| Surface sombre | `#211A16` |
+| Texte clair | `#F7EFE7` |
+| Texte secondaire | `#B9A89A` |
+| Ligne / bordure | `#3A2A22` |
 
-## Brand Guidelines
+Couleur dominante = **orange sombre `#C85A1E`** sur fonds nuit chauds. L'accent
+`#FF8A3D` et l'ambre `#F2B35D` servent aux points d'attention (boutons, liens, états).
 
-### Colors
+## Style & UI
+- **Sobre, dense, premium.** Contrastes propres, lisibilité d'abord.
+- Cartes **peu arrondies** (rayon faible), bordures discrètes `#3A2A22`.
+- Icônes **utiles**, pas décoratives. Hiérarchie typographique nette.
+- Mode **sombre** par défaut (fond nuit, texte clair).
 
-**Main Colors:**
+## À ÉVITER (strict)
+- ❌ Dégradés violets / bleus dominants.
+- ❌ Branding Claude / Anthropic ou tout branding tiers.
+- ❌ Style SaaS générique, grandes pages marketing inutiles.
+- ❌ Esthétique cartoon ou « AI slop » (tout-centré, coins uniformes, police Inter par défaut).
 
-- Dark: `#141413` - Primary text and dark backgrounds
-- Light: `#faf9f5` - Light backgrounds and text on dark
-- Mid Gray: `#b0aea5` - Secondary elements
-- Light Gray: `#e8e6dc` - Subtle backgrounds
+## Appliquer la charte → outil natif
 
-**Accent Colors:**
+| Support | Outil |
+|---|---|
+| Site web | `edit_website` (ou `generate_website` à la création) |
+| Document Word | `create_docx` / `edit_docx` |
+| Présentation | `create_pptx` / `edit_pptx` |
+| PDF | `create_pdf` / `html_to_pdf` |
+| Image / bannière / logo | outils `image` (`generate_image`, `generate_logo`, `compose_image`) |
 
-- Orange: `#d97757` - Primary accent
-- Blue: `#6a9bcc` - Secondary accent
-- Green: `#788c5d` - Tertiary accent
-
-### Typography
-
-- **Headings**: Poppins (with Arial fallback)
-- **Body Text**: Lora (with Georgia fallback)
-- **Note**: Fonts should be pre-installed in your environment for best results
-
-## Features
-
-### Smart Font Application
-
-- Applies Poppins font to headings (24pt and larger)
-- Applies Lora font to body text
-- Automatically falls back to Arial/Georgia if custom fonts unavailable
-- Preserves readability across all systems
-
-### Text Styling
-
-- Headings (24pt+): Poppins font
-- Body text: Lora font
-- Smart color selection based on background
-- Preserves text hierarchy and formatting
-
-### Shape and Accent Colors
-
-- Non-text shapes use accent colors
-- Cycles through orange, blue, and green accents
-- Maintains visual interest while staying on-brand
-
-## Technical Details
-
-### Font Management
-
-- Uses system-installed Poppins and Lora fonts when available
-- Provides automatic fallback to Arial (headings) and Georgia (body)
-- No font installation required - works with existing system fonts
-- For best results, pre-install Poppins and Lora fonts in your environment
-
-### Color Application
-
-- Uses RGB color values for precise brand matching
-- Applied via python-pptx's RGBColor class
-- Maintains color fidelity across different systems
+## Règle
+Appliquer ces valeurs **via les outils natifs** — ne pas styliser un fichier à la main,
+ne pas inventer d'autres couleurs « de marque », ne pas réintroduire de branding tiers.
