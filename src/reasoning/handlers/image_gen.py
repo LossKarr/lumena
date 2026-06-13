@@ -575,22 +575,23 @@ def get_image_gen_handler_defs() -> List[HandlerDef]:
         HandlerDef(
             name="generate_image",
             description=(
-                "Génère une image depuis un texte (prompt). 40+ modèles classés par qualité.\n"
+                "Génère une image depuis un texte (prompt). 40+ modèles en fallback coût-first.\n"
                 "GUIDE DE CHOIX RAPIDE:\n"
-                "• Texte/typographie dans l'image → ideogram-v3-quality ou gpt-image-1.5\n"
+                "• Auto par défaut → local/gratuit, puis cheap, puis premium si nécessaire\n"
+                "• Texte/typographie dans l'image → ideogram-v4 ou gpt-image-1.5\n"
                 "• Logo/icône/vectoriel → recraft-v4 ou recraft-v4-svg\n"
                 "• Photoréalisme haut de gamme → flux-2-max ou imagen-4-ultra\n"
-                "• Bon rapport qualité/prix → flux-2-pro ou gpt-image-1.5\n"
-                "• Gratuit → gemini-3.1-flash-image ou huggingface-sdxl\n"
+                "• Bon rapport qualité/prix → flux-2-pro ou ideogram-v4\n"
+                "• Gratuit/quasi-gratuit → gemini-3.1-flash-image ou huggingface-sdxl\n"
                 "• Édition/variation d'image → flux-kontext-pro ou stable-image-ultra\n"
                 "• Rapide pas cher → flux-schnell ou flux-2-klein-4b\n"
-                "Mode 'auto' = fallback du meilleur au moins bon parmi les providers configurés. "
+                "Mode 'auto' = cascade local/gratuit → cheap → premium parmi les providers configurés. "
                 "Templates: thumbnail, logo, product, portrait, illustration, icon, banner, infographic."
             ),
             parameters={
                 "properties": {
                     "prompt": {"type": "string", "description": "Description détaillée de l'image à générer. Plus le prompt est précis, meilleur sera le résultat."},
-                    "model": {"type": "string", "description": "Modèle à utiliser (auto = meilleur disponible). Exemples: gemini-3.1-flash-image, gpt-image-1.5, flux-2-pro, stable-image-ultra, ideogram-v3-quality.", "default": "auto"},
+                    "model": {"type": "string", "description": "Modèle à utiliser (auto = fallback local/gratuit → cheap → premium). Exemples: gemini-3.1-flash-image, huggingface-sdxl, gpt-image-1-mini, flux-2-pro, ideogram-v4.", "default": "auto"},
                     "size": {"type": "string", "description": "Taille de l'image (ex: 1024x1024, 1792x1024, 512x512).", "default": "1024x1024"},
                     "quality": {"type": "string", "description": "Qualité: 'hd' ou 'standard'.", "default": "hd"},
                     "style": {"type": "string", "description": "Style libre (ex: 'photorealistic', 'watercolor', 'pixel art').", "default": ""},

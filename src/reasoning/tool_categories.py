@@ -101,6 +101,34 @@ _CONTRACTS: Dict[str, ToolCategoryContract] = {
         delegate_code_threshold=0,
     ),
 
+    "mcp": ToolCategoryContract(
+        name="mcp",
+        role="Outils MCP (Model Context Protocol) : serveurs externes actives dynamiquement.",
+        preconditions=[
+            "serveur MCP ACTIVE dans le Catalog Phase 14",
+            "handler dynamique enregistre via Phase 19 activation_service",
+            "policy MCP resolue Phase 15",
+            "trust_score >= seuil applicable selon policy",
+            "runtime non quarantined (Phase 12 watcher)",
+        ],
+        allowed_effects=[
+            "appel JSON-RPC stdio vers serveur MCP isole",
+            "lecture externe (READ_ONLY/EXTERNAL_READ)",
+            "ecriture locale reversible (LOCAL_WRITE/EXTERNAL_WRITE_RECOVERABLE)",
+            "ecriture externe irreversible UNIQUEMENT si approval humain (Phase 10)",
+        ],
+        refusal_reasons=[
+            "serveur non ACTIVE (status DECLARED/INSTALLED/QUARANTINED)",
+            "policy bloquee par PolicyResolver Phase 15",
+            "trust_score insuffisant",
+            "runtime crash_loop ou unhealthy (Phase 12)",
+            "approval en attente (Phase 10)",
+        ],
+        autonomy_allowed=True,
+        requires_workspace=False,
+        delegate_code_threshold=0,
+    ),
+
     "data": ToolCategoryContract(
         name="data",
         role="Données publiques (data.gouv, SIRENE, géo) : recherche, téléchargement, analyse de jeux de données.",
@@ -350,6 +378,11 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "files":         "files",
     "system":        "system",
     "web":           "web",
+    "mcp":           "mcp",
+    # Phase D : `mcp_loop_integration` est fusionne dans le contrat `mcp` unifie.
+    # Les 4 outils Phase 26 (request_mcp_capability, etc.) heritent maintenant
+    # de la categorie sematique "mcp" via _register_phase26_native_handler.
+    "mcp_loop_integration": "mcp",
     "data":          "data",
     "memory":        "memory",
     "browser":       "browser",
@@ -480,3 +513,88 @@ def get_category_summary() -> str:
         ws = " | workspace requis" if c.requires_workspace else ""
         lines.append(f"  [{c.name}] {c.role} — {auto}{ws}")
     return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fonction pure pour audit (Phase 2 drift check)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# Cette fonction est UNIQUEMENT utilisée par l'audit runtime (drift check).
+# Elle reflète la logique de `ToolRegistry._category_contract_check()` mais
+# SANS aucun side effect : pas de logger, pas de TraceBus, pas de metrics,
+# pas de lecture ContextVar ni de ide_context.
+#
+# Garanties :
+#   - Pure : même entrée → même sortie, toujours
+#   - Déterministe : ne lit aucun état global
+#   - Zéro side effect : aucune mutation, aucune télémétrie
+#
+# Couverture (reflète exactement _category_contract_check dans tool_registry.py) :
+#   - requires_workspace s'applique uniquement à :
+#       * caller in {autonomy, scheduler, daemon} pour toutes catégories
+#         requires_workspace=True
+#       * caller=react UNIQUEMENT pour semantic == "agents"
+#       (les fichiers REACT sont contrôlés par WorkspaceFileGuardrails,
+#        pas par cette règle)
+#   - autonomy_allowed=False bloque caller in {autonomy, scheduler, daemon}
+#
+# Hors scope :
+#   - Cas delegate_task description vague (args-dependent, pas testable
+#     en audit sans args réels)
+#   - _policy_check (couche orthogonale, dépend du path concret)
+
+def check_contract_for_audit(
+    semantic_category: str,
+    caller_kind: str,
+    has_workspace: bool,
+) -> Optional[str]:
+    """Évalue si un outil de la catégorie sémantique passe le contrat
+    pour ce couple (caller, état workspace).
+
+    Args:
+        semantic_category: catégorie sémantique (ex: "files", "agents", "web")
+        caller_kind: identité agent ("react", "codeagent", "autonomy",
+                     "scheduler", "daemon", "silent", "unknown")
+        has_workspace: True si un workspace est fourni dans le contexte
+
+    Returns:
+        None si le contrat passe (outil callable).
+        str décrivant la raison du refus sinon.
+
+    Cette fonction est PURE — aucun side effect, aucun log, aucune métrique.
+    Voir docstring du module pour la sémantique exacte.
+    """
+    contract = _CONTRACTS.get(semantic_category)
+    if contract is None:
+        # Catégorie inconnue : aucun contrat ne s'applique, callable par défaut
+        return None
+
+    # ── Règle 1 : requires_workspace ──
+    if contract.requires_workspace:
+        # autonomy/scheduler/daemon : toutes catégories requires_workspace
+        if caller_kind in ("autonomy", "scheduler", "daemon"):
+            if not has_workspace:
+                return (
+                    f"requires_workspace=True for caller={caller_kind} "
+                    f"and category={semantic_category}"
+                )
+        # react : UNIQUEMENT semantic == "agents"
+        elif caller_kind == "react" and semantic_category == "agents":
+            if not has_workspace:
+                return (
+                    f"requires_workspace=True for caller=react "
+                    f"and category=agents"
+                )
+        # codeagent, silent, unknown, react+autres catégories : pas bloqués
+        # par cette règle (fichiers REACT contrôlés par WorkspaceFileGuardrails)
+
+    # ── Règle 2 : autonomy_allowed ──
+    if caller_kind in ("autonomy", "scheduler", "daemon"):
+        if not contract.autonomy_allowed:
+            return (
+                f"autonomy_allowed=False for category={semantic_category} "
+                f"(caller={caller_kind})"
+            )
+
+    # Toutes les règles passent
+    return None

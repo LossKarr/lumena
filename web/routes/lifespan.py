@@ -615,6 +615,480 @@ async def lifespan(app: FastAPI):
                 "Configurez LUMENA_ADMIN_TOKEN dans .env."
             )
 
+        # Phase 20B-1 : singleton ApprovalQueue partagé pour les mutations UI.
+        # Init au startup pour que ApprovalQueue.approve/reject voient le même
+        # état entre requêtes (la queue persiste sur disque ; le singleton évite
+        # les races sur les caches internes). Si le module n'est pas
+        # importable, le singleton reste None : les routes mutatives Phase
+        # 20B-1 répondent {"error_code": "queue_unavailable"}.
+        try:
+            from src.mcp.approval_queue import ApprovalQueue as _MCP_ApprovalQueue
+            deps._MCP_APPROVAL_QUEUE_SINGLETON = _MCP_ApprovalQueue()
+            print("[MCP] ApprovalQueue singleton initialisé (Phase 20B-1)")
+        except Exception as _mcp_aq_err:
+            deps._MCP_APPROVAL_QUEUE_SINGLETON = None
+            logger.debug("[MCP] ApprovalQueue singleton non initialisé: {}", _mcp_aq_err)
+
+        # Phase 20B-2 : singleton MCPServerCatalog SÉPARÉ (source de vérité Phase 14).
+        # Aucun helper ne doit accéder au catalog via un attribut privé d'un
+        # ou autre attribut privé. Le Catalog est sa propre instance partagée.
+        try:
+            from src.mcp.server_catalog import MCPServerCatalog as _MCP_ServerCatalog
+            deps._MCP_SERVER_CATALOG_SINGLETON = _MCP_ServerCatalog()
+            print("[MCP] ServerCatalog singleton initialisé (Phase 20B-2)")
+        except Exception as _mcp_cat_err:
+            deps._MCP_SERVER_CATALOG_SINGLETON = None
+            logger.debug("[MCP] ServerCatalog singleton non initialisé: {}", _mcp_cat_err)
+
+        # Phase 20B-2 : singleton MCPInstallOrchestrator partagé.
+        # Construit via singletons publics catalog + approval_queue uniquement
+        # (aucun accès à des attributs privés). dry_run reflète l'état initial
+        # de LUMENA_MCP_LIVE ; les handlers reconstruisent à la demande si le
+        # mode bascule (le coût d'instanciation est négligeable).
+        try:
+            from src.mcp.install_orchestrator import (
+                MCPInstallOrchestrator as _MCP_InstallOrchestrator,
+            )
+            _mcp_catalog_for_install = deps._MCP_SERVER_CATALOG_SINGLETON
+            _mcp_queue_for_install = deps._MCP_APPROVAL_QUEUE_SINGLETON
+            if (_mcp_catalog_for_install is not None
+                    and _mcp_queue_for_install is not None):
+                _mcp_live_init = os.environ.get(
+                    "LUMENA_MCP_LIVE", ""
+                ).strip().lower() in ("1", "true", "yes", "on")
+                deps._MCP_INSTALL_ORCHESTRATOR_SINGLETON = _MCP_InstallOrchestrator(
+                    catalog=_mcp_catalog_for_install,
+                    approval_queue=_mcp_queue_for_install,
+                    dry_run=not _mcp_live_init,
+                )
+                print(
+                    "[MCP] InstallOrchestrator singleton initialisé "
+                    f"(Phase 20B-2, dry_run={not _mcp_live_init})"
+                )
+            else:
+                deps._MCP_INSTALL_ORCHESTRATOR_SINGLETON = None
+                logger.debug(
+                    "[MCP] InstallOrchestrator non initialisé : "
+                    "catalog ou approval_queue indisponible"
+                )
+        except Exception as _mcp_inst_err:
+            deps._MCP_INSTALL_ORCHESTRATOR_SINGLETON = None
+            logger.debug(
+                "[MCP] InstallOrchestrator singleton non initialisé: {}",
+                _mcp_inst_err,
+            )
+
+        # Phase 20B-3 : singleton RuntimeWatcher (snapshots + runners inter-requêtes).
+        try:
+            from src.mcp.runtime_watcher import RuntimeWatcher as _MCP_RuntimeWatcher
+            deps._MCP_RUNTIME_WATCHER_SINGLETON = _MCP_RuntimeWatcher()
+            print("[MCP] RuntimeWatcher singleton initialisé (Phase 20B-3)")
+        except Exception as _mcp_rw_err:
+            deps._MCP_RUNTIME_WATCHER_SINGLETON = None
+            logger.debug(
+                "[MCP] RuntimeWatcher singleton non initialisé: {}", _mcp_rw_err
+            )
+
+        # ── Phase I-1 : pré-création du sandbox MCP + tool_registry forcé ──
+        # 1) data/mcp/ : sandbox root où les serveurs MCP sont installés isolés.
+        try:
+            _mcp_root_env = os.environ.get("LUMENA_MCP_ROOT", "").strip()
+            from src.utils.paths import DATA_DIR as _DATA_DIR
+            _mcp_root_path = (
+                Path(_mcp_root_env) if _mcp_root_env
+                else _DATA_DIR / "mcp"
+            )
+            _mcp_root_path.mkdir(parents=True, exist_ok=True)
+            print(f"[MCP] Sandbox root prêt: {_mcp_root_path}")
+        except Exception as _mcp_root_err:
+            logger.debug(
+                "[MCP] Sandbox root non créé: {}", _mcp_root_err
+            )
+
+        # 2) lumena._tool_registry forcé au boot pour que _build_activation_service
+        # puisse récupérer le registry_writer. Sans ça, ActivationService=None
+        # jusqu'au premier chat (bug timing Phase 20B-3).
+        try:
+            if (deps.lumena is not None
+                    and getattr(deps.lumena, "_tool_registry", None) is None):
+                from src.reasoning.tool_registry import ToolRegistry as _BootTR
+                _boot_tr = _BootTR(lumena=deps.lumena)
+                deps.lumena._tool_registry = _boot_tr
+                # Lier au tool_system si dispo (cohérence avec agent_service.py).
+                _ts = getattr(deps.lumena, "tool_system", None)
+                if _ts is not None and hasattr(_ts, "bind_tool_registry"):
+                    try:
+                        _ts.bind_tool_registry(_boot_tr)
+                    except Exception:  # noqa: BLE001
+                        pass
+                print(
+                    f"[MCP] tool_registry forcé au boot "
+                    f"({len(_boot_tr.tools)} tools chargés)"
+                )
+        except Exception as _mcp_tr_err:
+            logger.debug(
+                "[MCP] tool_registry boot-init non créé: {}", _mcp_tr_err
+            )
+
+        # Phase 20B-3 : singleton MCPActivationService.
+        # Construit via les dépendances publiques :
+        #   - catalog + approval_queue : singletons 20B-1/20B-2
+        #   - install_orchestrator : pour install_root (cohérence Phase 18)
+        #   - runtime_watcher : singleton 20B-3
+        #   - discovery (require_server_callable=False), adapter, registry_writer
+        #     (runtime Lumena tool_registry), runner_factory, client_factory :
+        #     résolus dans la factory _build_activation_service côté mcp.py.
+        # Au boot, on tente une construction simple via la factory exposée par
+        # le module mcp.py. Si une dépendance manque (ex: lumena.tool_system
+        # pas encore prêt), le singleton reste None et les handlers
+        # reconstruisent à la demande.
+        try:
+            from web.routes.mcp import _build_activation_service as _mcp_build_act
+            _mcp_live_init = os.environ.get(
+                "LUMENA_MCP_LIVE", ""
+            ).strip().lower() in ("1", "true", "yes", "on")
+            if (deps._MCP_SERVER_CATALOG_SINGLETON is not None
+                    and deps._MCP_APPROVAL_QUEUE_SINGLETON is not None
+                    and deps._MCP_INSTALL_ORCHESTRATOR_SINGLETON is not None
+                    and deps._MCP_RUNTIME_WATCHER_SINGLETON is not None):
+                deps._MCP_ACTIVATION_SERVICE_SINGLETON = _mcp_build_act(
+                    catalog=deps._MCP_SERVER_CATALOG_SINGLETON,
+                    queue=deps._MCP_APPROVAL_QUEUE_SINGLETON,
+                    install_orchestrator=deps._MCP_INSTALL_ORCHESTRATOR_SINGLETON,
+                    runtime_watcher=deps._MCP_RUNTIME_WATCHER_SINGLETON,
+                    dry_run=not _mcp_live_init,
+                )
+                if deps._MCP_ACTIVATION_SERVICE_SINGLETON is not None:
+                    print(
+                        "[MCP] ActivationService singleton initialisé "
+                        f"(Phase 20B-3, dry_run={not _mcp_live_init})"
+                    )
+                else:
+                    logger.debug(
+                        "[MCP] ActivationService singleton non initialisé : "
+                        "factory a retourné None (dépendance Lumena tool_registry "
+                        "probablement indisponible — handlers reconstruiront)"
+                    )
+            else:
+                deps._MCP_ACTIVATION_SERVICE_SINGLETON = None
+                logger.debug(
+                    "[MCP] ActivationService singleton non initialisé : "
+                    "singletons amont incomplets"
+                )
+        except Exception as _mcp_act_err:
+            deps._MCP_ACTIVATION_SERVICE_SINGLETON = None
+            logger.debug(
+                "[MCP] ActivationService singleton non initialisé: {}",
+                _mcp_act_err,
+            )
+
+        # Fix Q (Phase I-7) : auto-activate au boot DÉPLACÉ après Phase I-6.
+        # L'ancienne position (juste après création ActivationService) faisait
+        # tourner Fix K avant l'initialisation des credentials/config services
+        # → SLACK_BOT_TOKEN jamais résolu → client_initialize_failed garanti.
+        # Voir bloc auto-activate après "Phase I-6 initialisés" plus bas.
+
+        # Phase 20B-5 : singleton AutoApproveEngine (CRUD patterns Phase 11).
+        # Mutations de policy future — double opt-in obligatoire
+        # (LUMENA_MCP_LIVE=1 ET LUMENA_MCP_AUTOAPPROVE_LIVE=1) au moment des
+        # routes mutatives. L'init reste sans condition pour exposer GET.
+        try:
+            from src.mcp.auto_approve import AutoApproveEngine as _MCP_AutoApproveEngine
+            deps._MCP_AUTO_APPROVE_ENGINE_SINGLETON = _MCP_AutoApproveEngine()
+            print("[MCP] AutoApproveEngine singleton initialisé (Phase 20B-5)")
+        except Exception as _mcp_aa_err:
+            deps._MCP_AUTO_APPROVE_ENGINE_SINGLETON = None
+            logger.debug(
+                "[MCP] AutoApproveEngine singleton non initialisé: {}",
+                _mcp_aa_err,
+            )
+
+        # Phase I-6 : singletons CredentialsService + ConfigService + Resolver
+        # + AutonomyOrchestrator. Tous wired ensemble (chaque service unique).
+        try:
+            from src.services.secrets_service import get_secrets_service
+            from src.mcp.credentials_service import MCPCredentialsService
+            from src.mcp.config_service import MCPConfigService
+            from src.mcp.secrets_resolver_service import MCPSecretsResolverService
+            from src.mcp.autonomy_orchestrator import MCPAutonomyOrchestrator
+            _sec = get_secrets_service()
+            _creds = MCPCredentialsService(_sec)
+            _cfg = MCPConfigService()
+            _resolver = MCPSecretsResolverService(
+                credentials_service=_creds,
+                secrets_service=_sec,
+            )
+            _orch = MCPAutonomyOrchestrator(
+                credentials_service=_creds,
+                config_service=_cfg,
+                secrets_resolver=_resolver,
+            )
+            deps._MCP_CREDENTIALS_SERVICE_SINGLETON = _creds
+            deps._MCP_CONFIG_SERVICE_SINGLETON = _cfg
+            deps._MCP_SECRETS_RESOLVER_SINGLETON = _resolver
+            deps._MCP_AUTONOMY_ORCHESTRATOR_SINGLETON = _orch
+            # Fix Q (Phase I-7) : l'ActivationService a été créé en Phase 20B-3
+            # AVANT cette Phase I-6 — il a donc capturé credentials=None /
+            # config=None au constructeur. On le patche maintenant pour que
+            # activate() puisse résoudre les secrets et les injecter dans
+            # runner.start(runtime_env_secrets=...). Sans ce patch, le
+            # SLACK_BOT_TOKEN reste invisible au child Node →
+            # client_initialize_failed garanti.
+            _act_singleton = getattr(
+                deps, "_MCP_ACTIVATION_SERVICE_SINGLETON", None,
+            )
+            if _act_singleton is not None:
+                try:
+                    _act_singleton._credentials_service = _creds
+                    _act_singleton._config_service = _cfg
+                except Exception:
+                    pass
+            print(
+                "[MCP] CredentialsService + ConfigService + SecretsResolver "
+                "+ AutonomyOrchestrator initialisés (Phase I-6)"
+            )
+
+            # ── Fix K+Q (Phase I-7) : auto-activate au boot ───────────────
+            # Déplacé ici APRÈS la Phase I-6 pour que les credentials/config
+            # soient résolus correctement et injectés dans le runner Node.
+            # Garde-fous :
+            #   - LUMENA_MCP_AUTOACTIVATE_AT_BOOT=0 désactive (default ON)
+            #   - Exception per-server n'arrête pas le scan
+            #   - kill switch LUMENA_MCP_ACTIVATION_DISABLED respecté par
+            #     ActivationService lui-même
+            if _env_flag("LUMENA_MCP_AUTOACTIVATE_AT_BOOT", True):
+                _act = deps._MCP_ACTIVATION_SERVICE_SINGLETON
+                _cat = deps._MCP_SERVER_CATALOG_SINGLETON
+                if _act is not None and _cat is not None:
+                    # ── Fix S (Phase I-7) : réconciliation ACTIVE fantôme ──
+                    # Un MCP activé lors d'une session précédente reste en
+                    # statut ACTIVE dans le catalog persisté, alors que son
+                    # process est mort au reboot. Sans reset, le scan
+                    # INSTALLED ci-dessous l'ignore ET activate() refuse
+                    # (status_not_installed:active) → coincé définitivement.
+                    # On reset ACTIVE→INSTALLED pour tout serveur dont le
+                    # process ne tourne pas dans cette session.
+                    try:
+                        from src.mcp.server_catalog import (
+                            ServerStatus as _SrvStatus,
+                        )
+                        _stale = _cat.list_servers(
+                            status_filter=_SrvStatus.ACTIVE
+                        )
+                        for _stale_entry in _stale:
+                            _stale_sid = getattr(
+                                _stale_entry, "server_id", None,
+                            )
+                            if not isinstance(_stale_sid, str):
+                                continue
+                            try:
+                                if _act.is_running(_stale_sid):
+                                    continue  # vraiment actif, ne pas toucher
+                            except Exception:
+                                pass
+                            try:
+                                _cat.update_status(
+                                    _stale_sid, _SrvStatus.INSTALLED,
+                                )
+                                logger.debug(
+                                    "[MCP] Fix S: statut ACTIVE fantôme "
+                                    "reset → INSTALLED pour '{}'",
+                                    _stale_sid,
+                                )
+                            except Exception:
+                                pass
+                    except Exception as _reconcile_err:
+                        logger.debug(
+                            "[MCP] Fix S reconciliation failed: {}",
+                            _reconcile_err,
+                        )
+                    try:
+                        from src.mcp.server_catalog import ServerStatus
+                        from src.mcp.approval_queue import (
+                            ApprovalResult as _BootApprovalResult,
+                            ApprovalDecision as _BootApprovalDecision,
+                        )
+                        _installed = _cat.list_servers(
+                            status_filter=ServerStatus.INSTALLED
+                        )
+                    except Exception as _list_err:
+                        logger.debug(
+                            "[MCP] auto-activate boot scan failed: {}",
+                            _list_err,
+                        )
+                        _installed = []
+                    _ok, _ko = 0, 0
+                    for _entry in _installed:
+                        _sid = getattr(_entry, "server_id", None)
+                        if not isinstance(_sid, str):
+                            continue
+                        try:
+                            _boot_approval = _BootApprovalResult(
+                                decision=_BootApprovalDecision.APPROVED,
+                                args={
+                                    "action": "activate",
+                                    "server_id": _sid,
+                                    "reason": "boot_auto_activation",
+                                },
+                                reason="boot_auto_activation",
+                            )
+                            _res = _act.activate(
+                                _sid, approval_result=_boot_approval,
+                            )
+                            if bool(getattr(_res, "success", False)):
+                                _ok += 1
+                            else:
+                                _ko += 1
+                                logger.debug(
+                                    "[MCP] auto-activate '{}' failed: {}",
+                                    _sid,
+                                    getattr(_res, "reason", "?"),
+                                )
+                        except Exception as _act_err:
+                            _ko += 1
+                            logger.debug(
+                                "[MCP] auto-activate '{}' exception: {}",
+                                _sid,
+                                _act_err,
+                            )
+                    if _ok or _ko:
+                        print(
+                            f"[MCP] Auto-activate boot: {_ok} actif(s), "
+                            f"{_ko} échec(s) (Fix K+Q)"
+                        )
+        except Exception as _mcp_i6_err:
+            deps._MCP_CREDENTIALS_SERVICE_SINGLETON = None
+            deps._MCP_CONFIG_SERVICE_SINGLETON = None
+            deps._MCP_SECRETS_RESOLVER_SINGLETON = None
+            deps._MCP_AUTONOMY_ORCHESTRATOR_SINGLETON = None
+            logger.debug(
+                "[MCP] Phase I-6 services non initialisés: {}",
+                _mcp_i6_err,
+            )
+
+        # Phase 26 : ReAct <-> MCP loop integration. Disabled by default.
+        try:
+            if _env_flag("LUMENA_MCP_REACT_INTEGRATION_ENABLED", False):
+                from src.mcp.react_integration import (
+                    MCPReActIntegration,
+                    MCPReActIntegrationDeps,
+                )
+                from src.mcp.local_creation_ticket import (
+                    MCPLocalCreationTicketOrchestrator,
+                )
+                from src.mcp.local_creation_executor import (
+                    MCPLocalCreationExecutor,
+                )
+                from src.mcp.catalog_add_orchestrator import (
+                    MCPCatalogAddOrchestrator,
+                )
+
+                _discovery_reports_dir = DATA_DIR / "mcp_discovery_reports"
+                if deps.lumena is None:
+                    raise RuntimeError("lumena_unavailable")
+                _mcp_approval_queue_for_react = (
+                    deps.get_mcp_approval_queue_singleton()
+                )
+                _mcp_catalog_for_react = deps.get_mcp_server_catalog_singleton()
+                _mcp_local_creation_orchestrator = (
+                    MCPLocalCreationTicketOrchestrator(
+                        _mcp_approval_queue_for_react
+                    )
+                    if _mcp_approval_queue_for_react is not None
+                    else None
+                )
+                _mcp_local_creation_executor = (
+                    MCPLocalCreationExecutor(catalog=_mcp_catalog_for_react)
+                    if _mcp_catalog_for_react is not None
+                    else None
+                )
+                _mcp_catalog_add_orchestrator = (
+                    MCPCatalogAddOrchestrator(
+                        catalog=_mcp_catalog_for_react,
+                        approval_queue=_mcp_approval_queue_for_react,
+                    )
+                    if (
+                        _mcp_catalog_for_react is not None
+                        and _mcp_approval_queue_for_react is not None
+                    )
+                    else None
+                )
+                # Phase I-7 : expose le singleton pour la route /approve
+                # afin qu'elle puisse dispatcher mcp_catalog_add:* vers
+                # execute_approved_catalog_add().
+                deps._MCP_CATALOG_ADD_ORCHESTRATOR_SINGLETON = (
+                    _mcp_catalog_add_orchestrator
+                )
+                deps.lumena.mcp_react_integration = MCPReActIntegration(
+                    deps=MCPReActIntegrationDeps(
+                        catalog=_mcp_catalog_for_react,
+                        approval_queue=_mcp_approval_queue_for_react,
+                        catalog_add_orchestrator=_mcp_catalog_add_orchestrator,
+                        install_orchestrator=deps.get_mcp_install_orchestrator_singleton(),
+                        activation_service=deps.get_mcp_activation_service_singleton(),
+                        local_creation_orchestrator=_mcp_local_creation_orchestrator,
+                        local_creation_executor=_mcp_local_creation_executor,
+                        auto_approve_engine=deps.get_mcp_auto_approve_engine_singleton(),
+                        runtime_watcher=deps.get_mcp_runtime_watcher_singleton(),
+                        policy_resolver=None,
+                        policy_attributor=None,
+                        discovery_reports_dir=(
+                            _discovery_reports_dir
+                            if _discovery_reports_dir.exists()
+                            else None
+                        ),
+                    ),
+                    audit_log_path=DATA_DIR / "mcp_react_integration" / "audit.jsonl",
+                )
+                print("[MCP] ReAct integration initialisee (Phase 26)")
+            else:
+                if deps.lumena is not None:
+                    deps.lumena.mcp_react_integration = None
+        except Exception as _mcp_react_err:
+            if deps.lumena is not None:
+                deps.lumena.mcp_react_integration = None
+            logger.debug(
+                "[MCP] ReAct integration non initialisee: {}",
+                _mcp_react_err,
+            )
+
+        # ── Phase I-1 fix : attach immédiat de l'intégration MCP ────────────
+        # Le Phase I-1 force lumena._tool_registry au boot pour résoudre le
+        # bug timing ActivationService. MAIS agent_service.py n'appelle
+        # attach_to_tool_registry QUE quand il crée un nouveau registry —
+        # donc avec un registry pré-créé au boot, l'attach n'a jamais lieu.
+        # Conséquence : add_mcp/request_mcp_capability/... invisibles au LLM.
+        # On force l'attach ici, idempotent (attach_to_tool_registry retourne
+        # already_attached si déjà fait).
+        try:
+            if (deps.lumena is not None
+                    and getattr(deps.lumena, "_tool_registry", None) is not None
+                    and getattr(deps.lumena, "mcp_react_integration", None) is not None):
+                _attach_result = deps.lumena.mcp_react_integration.attach_to_tool_registry(
+                    deps.lumena._tool_registry
+                )
+                if isinstance(_attach_result, tuple) and len(_attach_result) >= 2:
+                    _ok, _reason = _attach_result[0], _attach_result[1]
+                    _tools_dict = getattr(deps.lumena._tool_registry, "tools", {}) or {}
+                    _phase_f = sum(
+                        1 for n in ("add_mcp", "disable_mcp", "remove_mcp",
+                                    "set_mcp_preference", "set_mcp_category")
+                        if n in _tools_dict
+                    )
+                    _phase_26 = sum(
+                        1 for n in ("request_mcp_capability", "request_mcp_ticket",
+                                    "run_mcp_autonomy", "resume_mcp_task")
+                        if n in _tools_dict
+                    )
+                    print(
+                        f"[MCP] ReAct attach au boot: {_reason} — "
+                        f"Phase 26: {_phase_26}/4, Phase F: {_phase_f}/5"
+                    )
+        except Exception as _mcp_attach_err:
+            logger.debug(
+                "[MCP] attach au boot a échoué: {}", _mcp_attach_err,
+            )
+
         await _start_autonomy_daemon_if_enabled()
         autonomy_meta = _get_autonomy_meta()
         if autonomy_meta.get("autonomy_running"):
@@ -1667,6 +2141,58 @@ async def lifespan(app: FastAPI):
                 logger.debug("[REGISTRY] Instance {} dé-enregistrée", _IID)
             except Exception:
                 pass
+
+        # Phase 20B-1 : libération du singleton ApprovalQueue (best-effort).
+        try:
+            deps._MCP_APPROVAL_QUEUE_SINGLETON = None
+        except Exception:
+            pass
+        # Phase I-8 (Fix AW) : arrêt de TOUS les serveurs MCP actifs AVANT
+        # de libérer les singletons. Sans ça, les subprocess (npm/python)
+        # devenaient orphelins à la fermeture de Lumena sur Windows et le
+        # catalogue gardait des statuts ACTIVE fantômes.
+        try:
+            _act_shutdown = getattr(
+                deps, "_MCP_ACTIVATION_SERVICE_SINGLETON", None,
+            )
+            if _act_shutdown is not None and callable(
+                getattr(_act_shutdown, "shutdown_all", None)
+            ):
+                _mcp_stopped = _act_shutdown.shutdown_all()
+                _ok_n = sum(1 for ok in _mcp_stopped.values() if ok)
+                print(
+                    f"[MCP] Shutdown: {_ok_n}/{len(_mcp_stopped)} "
+                    "serveur(s) MCP arrêté(s) proprement"
+                )
+        except Exception as _mcp_shutdown_err:
+            logger.debug(
+                "[MCP] Shutdown des serveurs MCP en échec: {}",
+                _mcp_shutdown_err,
+            )
+        # Phase 20B-2 : libération singletons Catalog + InstallOrchestrator.
+        try:
+            deps._MCP_INSTALL_ORCHESTRATOR_SINGLETON = None
+            deps._MCP_SERVER_CATALOG_SINGLETON = None
+        except Exception:
+            pass
+        # Phase 20B-3 : libération singletons RuntimeWatcher + ActivationService.
+        try:
+            deps._MCP_ACTIVATION_SERVICE_SINGLETON = None
+            deps._MCP_RUNTIME_WATCHER_SINGLETON = None
+        except Exception:
+            pass
+        # Phase 20B-5 : libération singleton AutoApproveEngine.
+        try:
+            deps._MCP_AUTO_APPROVE_ENGINE_SINGLETON = None
+        except Exception:
+            pass
+
+        # Phase 26 : release integration ReAct MCP.
+        try:
+            if deps.lumena is not None:
+                deps.lumena.mcp_react_integration = None
+        except Exception:
+            pass
 
         if deps.instance_lock:
             deps.instance_lock.release()

@@ -350,6 +350,10 @@ def _extract_path_from_args(tool_name: str, args: Dict[str, Any]) -> Optional[st
 
 
 
+class DynamicRegistryError(Exception):
+    """Erreur d'enregistrement dynamique de handler (Phase 8)."""
+
+
 class _FallbackToolSearch:
     """Keyword search fallback si chromadb n'est pas installé."""
 
@@ -444,6 +448,24 @@ class ToolRegistry:
 
         # ── Phase 7: Chargement handlers fragmentés V2 (obligatoire) ─────
         self._load_v2_handlers()
+
+        # ── Phase 8: Snapshot des handlers natifs (post-_load_v2_handlers
+        # donc inclut discover_tools ajouté à la fin de _load_v2_handlers).
+        # Toute entrée dans ce frozenset est PROTÉGÉE contre register/unregister
+        # dynamique. Le snapshot est figé à l'init et jamais modifié ensuite.
+        self._native_handler_names: frozenset = frozenset(self.tools.keys())
+        # Stockage handlers dynamiques (Phase 8 — séparé des natifs)
+        self._dynamic_handlers: Dict[str, Any] = {}
+        self._dynamic_provenance: Dict[str, Dict[str, Any]] = {}
+        # Phase 9: policy MCP par handler dynamique (obligatoire au register)
+        self._dynamic_policies: Dict[str, Any] = {}
+        # Phase E: cohabitation native ↔ MCP — overlap detector pushe ici
+        # apres chaque activation. Cle = nom namespace MCP (mcp__server__tool),
+        # valeur = set des natifs qui font la meme chose.
+        self._mcp_overlaps: Dict[str, frozenset] = {}
+        # Phase E: preference utilisateur lue depuis ServerEntry.prefer_over_native.
+        # Defaut False = on cache le MCP quand un natif equivalent existe.
+        self._mcp_prefer_over_native: Dict[str, bool] = {}
 
     # ── Phase 7 + P0: chargement résilient des handlers V2 ────────────────
     def _load_v2_handlers(self) -> None:
@@ -953,6 +975,22 @@ class ToolRegistry:
             {"data"},
         ),
 
+        # PACK MCP - contexte strict pour la boucle MCP Phase 26.
+        # Phase D : cible "mcp" (contrat unifie, etait "mcp_loop_integration").
+        (
+            {"mcp", "model context protocol", "serveur mcp", "nouveau mcp",
+             "ajouter un mcp", "installer un mcp", "activer un mcp",
+             "install mcp", "outil externe", "outil manquant", "capacite mcp",
+             "external tool", "missing tool", "mcp server", "activate mcp"},
+            {"mcp"},
+        ),
+        (
+            {"outil mcp actif", "serveur mcp actif", "utilise le mcp",
+             "utiliser le mcp", "mcp activé", "mcp active", "outil mcp activé",
+             "outil mcp active", "use mcp tool", "active mcp tool"},
+            {"mcp"},
+        ),
+
         # ═══ PACK 02 — BROWSER (Chrome profil utilisateur, SANS web_search) ═══
         (
             {"chrome", "chromium", "firefox", "navigateur", "browser",
@@ -1307,9 +1345,9 @@ class ToolRegistry:
         self._ionos_db_block_count = 0
 
     def register(
-        self, 
-        name: str, 
-        description: str, 
+        self,
+        name: str,
+        description: str,
         parameters: Dict[str, Any],
         handler: callable
     ):
@@ -1321,7 +1359,318 @@ class ToolRegistry:
             "handler": handler
         }
         self._tools_desc_cache = None  # invalider le cache de description
-    
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 8 — Dynamic Registry Extension
+    #
+    # Permet l'enregistrement de HandlerDef post-boot (typiquement MCP via
+    # adapt_tool en phase d'intégration ultérieure).
+    # Garanties :
+    #   - Refus de collision avec handlers natifs (snapshot _native_handler_names)
+    #   - Refus de collision avec tout outil déjà dans self.tools (legacy/dynamic)
+    #   - HandlerRegistryV2 NON touché (handlers dynamiques uniquement dans
+    #     self.tools, self._dynamic_handlers, self._dynamic_provenance)
+    #   - Cache lazy : invalide _tools_desc_cache et _tool_collection,
+    #     rebuild différé au prochain discover_tools
+    #   - Rollback complet via unregister_dynamic_handler
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _make_dynamic_legacy_entry(self, handler_def: Any) -> Dict[str, Any]:
+        """Convertit HandlerDef V2 → entrée legacy self.tools.
+
+        Reproduit la logique HandlerRegistryV2.to_legacy_tools_dict() :
+          - wrapper async qui capture ctx via default arg
+          - JSON Schema {properties, required} → legacy {params, required}
+          - result.to_legacy_str() pour la sortie
+        """
+        raw_params = handler_def.parameters
+        required: List[Any] = []
+        legacy_params: Any = raw_params
+        if isinstance(raw_params, dict) and "properties" in raw_params:
+            required = raw_params.get("required", [])
+            legacy_params = raw_params["properties"]
+
+        ctx = getattr(self, "_v2_context", None)
+
+        async def _legacy_wrapper(_hdef=handler_def, _ctx=ctx, **kw) -> str:
+            result = await _hdef.handler(_ctx, **kw)
+            return result.to_legacy_str()
+
+        return {
+            "name": handler_def.name,
+            "description": handler_def.description,
+            "parameters": legacy_params,
+            "required": required,
+            "handler": _legacy_wrapper,
+        }
+
+    def register_dynamic_handler(
+        self,
+        handler_def: Any,
+        *,
+        policy: Any,
+        provenance: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Enregistre un HandlerDef V2 dynamiquement (post-boot).
+
+        Args:
+            handler_def: HandlerDef V2 (typiquement issu de MCP adapt_tool)
+            policy: MCPPolicy obligatoire (kwarg only). Sera vérifiée à
+                    chaque execute() via _mcp_policy_check.
+            provenance: dict optionnel (source_kind, server_name, ts, ...)
+
+        Raises:
+            DynamicRegistryError si :
+              - handler_def.name vide ou non-str
+              - name collide avec un handler natif (snapshot boot)
+              - name déjà enregistré comme dynamique
+              - name déjà présent dans self.tools (legacy register post-boot)
+              - policy n'est pas une instance MCPPolicy
+        """
+        # Import direct depuis src.mcp.policy (évite cycles + imports lourds)
+        from src.mcp.policy import MCPPolicy
+
+        name = getattr(handler_def, "name", None)
+        if not name or not isinstance(name, str):
+            raise DynamicRegistryError(f"Invalid handler name: {name!r}")
+        if not isinstance(policy, MCPPolicy):
+            raise DynamicRegistryError(
+                f"policy must be an MCPPolicy instance, got {type(policy).__name__}: {policy!r}"
+            )
+        if name in self._native_handler_names:
+            raise DynamicRegistryError(
+                f"Collision with native handler: {name!r}"
+            )
+        if name in self._dynamic_handlers:
+            raise DynamicRegistryError(
+                f"Dynamic handler already registered: {name!r} "
+                "(call unregister_dynamic_handler first)"
+            )
+        if name in self.tools:
+            raise DynamicRegistryError(
+                f"Tool name already exists: {name!r}"
+            )
+
+        # Conversion legacy
+        legacy_entry = self._make_dynamic_legacy_entry(handler_def)
+
+        # Stockage dynamique séparé
+        self._dynamic_handlers[name] = handler_def
+        self._dynamic_provenance[name] = dict(provenance or {})
+        self._dynamic_policies[name] = policy
+
+        # Intégration dans les maps utilisées par execute() et drift_checker
+        self.tools[name] = legacy_entry
+        self._tool_modules[name] = getattr(handler_def, "category", "") or "unknown"
+        # _sig_cache : accept tout (var_keyword=True, valid_params=None)
+        self._sig_cache[name] = (True, None)
+
+        # Cache invalidation (lazy rebuild au prochain discover_tools)
+        self._tools_desc_cache = None
+        self._tool_collection = None
+
+    def unregister_dynamic_handler(self, name: str) -> bool:
+        """Retire un handler dynamique.
+
+        Returns:
+            True si présent et retiré, False sinon (idempotent, jamais raise).
+            Refuse silencieusement les handlers natifs (protection).
+        """
+        if not isinstance(name, str) or not name:
+            return False
+        if name in self._native_handler_names:
+            # Protection : refuse silencieusement
+            return False
+        if name not in self._dynamic_handlers:
+            return False
+
+        self._dynamic_handlers.pop(name, None)
+        self._dynamic_provenance.pop(name, None)
+        self._dynamic_policies.pop(name, None)  # Phase 9
+        self.tools.pop(name, None)
+        self._tool_modules.pop(name, None)
+        self._sig_cache.pop(name, None)
+        # Phase E : cleanup overlap maps (idempotent).
+        self._mcp_overlaps.pop(name, None)
+        self._mcp_prefer_over_native.pop(name, None)
+
+        self._tools_desc_cache = None
+        self._tool_collection = None
+        return True
+
+    # ── Phase E : cohabitation natifs ↔ MCP ──────────────────────────────
+
+    def set_mcp_overlap(
+        self,
+        mcp_name: str,
+        native_names: List[str],
+        *,
+        prefer_over_native: bool = False,
+    ) -> None:
+        """Enregistre l'overlap d'un outil MCP avec une liste de natifs.
+
+        Appele par activation_service apres detection. Idempotent : reecrit
+        l'etat existant. Invalide les caches de description.
+
+        Args:
+            mcp_name: nom namespace MCP (mcp__server__tool).
+            native_names: liste de noms natifs en overlap (peut etre vide).
+            prefer_over_native: True = MCP prioritaire et natifs caches,
+                False (defaut) = natifs prioritaires et MCP cache.
+
+        Raises:
+            DynamicRegistryError si mcp_name n'est pas un handler dynamique
+            enregistre (protection contre les ecritures fantomes).
+        """
+        if not isinstance(mcp_name, str) or not mcp_name:
+            raise DynamicRegistryError(f"Invalid mcp_name: {mcp_name!r}")
+        if mcp_name not in self._dynamic_handlers:
+            raise DynamicRegistryError(
+                f"set_mcp_overlap requires a registered dynamic handler: "
+                f"{mcp_name!r} not in dynamic registry"
+            )
+        if not isinstance(prefer_over_native, bool):
+            raise DynamicRegistryError(
+                f"prefer_over_native must be bool, got {type(prefer_over_native).__name__}"
+            )
+        clean: set = set()
+        for n in native_names or []:
+            if isinstance(n, str) and n and n in self._native_handler_names:
+                clean.add(n)
+        self._mcp_overlaps[mcp_name] = frozenset(clean)
+        self._mcp_prefer_over_native[mcp_name] = prefer_over_native
+        self._tools_desc_cache = None
+        self._tool_collection = None
+
+    def get_mcp_overlap(self, mcp_name: str) -> frozenset:
+        """Retourne les natifs en overlap avec un MCP (frozenset vide si none)."""
+        return self._mcp_overlaps.get(mcp_name, frozenset())
+
+    def get_mcp_prefer_over_native(self, mcp_name: str) -> bool:
+        """True si l'utilisateur a explicitement priorise ce MCP."""
+        return self._mcp_prefer_over_native.get(mcp_name, False)
+
+    def list_native_handler_names(self) -> List[str]:
+        """Phase E : liste les noms de handlers natifs (snapshot init).
+
+        Utilise par activation_service pour faire tourner overlap_detector
+        contre les natifs sans toucher aux internes prives.
+        """
+        return sorted(self._native_handler_names)
+
+    def get_tool_description(self, name: str) -> str:
+        """Phase E : retourne la description d'un outil enregistre (ou '')."""
+        if not isinstance(name, str):
+            return ""
+        entry = self.tools.get(name)
+        if not isinstance(entry, dict):
+            return ""
+        desc = entry.get("description", "")
+        return desc if isinstance(desc, str) else ""
+
+    def _compute_phase_e_hidden(self) -> set:
+        """Phase E : calcule l'ensemble des outils a CACHER dans la description.
+
+        Doctrine :
+          - MCP avec prefer_over_native=True ET overlap non vide → on cache
+            tous les natifs de l'overlap (le MCP gagne).
+          - MCP avec prefer_over_native=False (defaut) ET overlap non vide
+            → on cache le MCP (le natif gagne).
+          - MCP sans overlap → toujours visible.
+        """
+        hidden: set = set()
+        for mcp_name, overlap in self._mcp_overlaps.items():
+            if not overlap:
+                continue
+            prefer = self._mcp_prefer_over_native.get(mcp_name, False)
+            if prefer:
+                # MCP gagne → cacher tous les natifs en overlap.
+                hidden.update(overlap)
+            else:
+                # Natif gagne → cacher le MCP.
+                hidden.add(mcp_name)
+        return hidden
+
+    def is_dynamic_handler(self, name: str) -> bool:
+        """True si le handler a été enregistré dynamiquement (pas natif)."""
+        return isinstance(name, str) and name in self._dynamic_handlers
+
+    def list_dynamic_handlers(self) -> List[str]:
+        """Liste les noms des handlers enregistrés dynamiquement."""
+        return sorted(self._dynamic_handlers.keys())
+
+    def get_dynamic_handler_provenance(
+        self, name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Retourne la provenance d'un handler dynamique, ou None."""
+        prov = self._dynamic_provenance.get(name)
+        if prov is None:
+            return None
+        return dict(prov)  # copie défensive
+
+    def get_dynamic_handler_policy(self, name: str):
+        """Retourne la MCPPolicy d'un handler dynamique, ou None."""
+        return self._dynamic_policies.get(name)
+
+    def _mcp_policy_check(
+        self,
+        name: str,
+        caller: CallerContext,
+    ) -> Optional[Observation]:
+        """Phase 9 — Vérifie la policy MCP avant exécution d'un handler dynamique.
+
+        Returns :
+          - None si handler natif (non-MCP, skip)
+          - None si policy autorisée Phase 9 (READ_ONLY, EXTERNAL_READ)
+          - Observation de refus si :
+              * handler dynamique sans policy attachée (invariant violé)
+              * policy bloquée Phase 9 (LOCAL_WRITE, RECOVERABLE,
+                IRREVERSIBLE, SECRETS_AUTH)
+
+        Tolère les ToolRegistry construits via object.__new__ sans __init__
+        (pattern legacy de certains tests) via getattr.
+        """
+        # Tolère absence d'init Phase 8/9 (legacy test pattern)
+        dynamic_handlers = getattr(self, "_dynamic_handlers", None)
+        if dynamic_handlers is None or name not in dynamic_handlers:
+            return None  # handler natif ou registry sans init dynamic → skip
+        # Import direct (évite cycle/import lourd)
+        # Fix T (Phase I-7) : is_blocked_effective remplace is_blocked_phase9.
+        # Les policies WRITE sont levables via double opt-in env
+        # (LUMENA_MCP_LIVE=1 + LUMENA_MCP_TRUST_LIVE=1). SECRETS_AUTH reste
+        # toujours bloquée.
+        from src.mcp.policy import is_blocked_effective, MCPPolicy
+        dynamic_policies = getattr(self, "_dynamic_policies", None) or {}
+        policy = dynamic_policies.get(name)
+        if policy is None:
+            return Observation(
+                content=(
+                    f"⛔ MCP handler {name!r} has no policy attached "
+                    "(invariant violated). Refusing execution. "
+                    "Re-register with explicit policy."
+                ),
+                success=False,
+            )
+        if is_blocked_effective(policy):
+            if policy is MCPPolicy.SECRETS_AUTH:
+                hint = (
+                    "SECRETS_AUTH n'est jamais levable automatiquement — "
+                    "approval humain requis."
+                )
+            else:
+                hint = (
+                    "Pour lever : LUMENA_MCP_LIVE=1 ET "
+                    "LUMENA_MCP_TRUST_LIVE=1 (double opt-in)."
+                )
+            return Observation(
+                content=(
+                    f"⛔ MCP policy {policy.value!r} is BLOCKED "
+                    f"for tool {name!r}. {hint}"
+                ),
+                success=False,
+            )
+        return None
+
     def get_tools_description(self) -> str:
         """Retourne une description compacte des outils (1 ligne chacun). Résultat mis en cache."""
         if self._tools_desc_cache is not None:
@@ -1329,9 +1678,16 @@ class ToolRegistry:
         # Certains tests construisent ToolRegistry via object.__new__ sans appeler __init__.
         # On tolère ce mode pour éviter une régression de compatibilité.
         allowed_tools = getattr(self, "_allowed_tools", None)
+        # Phase E : ensemble d'outils caches par la cohabitation natifs↔MCP.
+        # Calcule paresseusement (vide si aucun overlap enregistre).
+        phase_e_hidden = self._compute_phase_e_hidden() if getattr(
+            self, "_mcp_overlaps", None
+        ) else set()
         descriptions = []
         for name, tool in self.tools.items():
             if allowed_tools is not None and name not in allowed_tools:
+                continue
+            if name in phase_e_hidden:
                 continue
             params = tool["parameters"]
             required_params = set(tool.get("required", []))
@@ -1363,21 +1719,28 @@ class ToolRegistry:
     
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """Retourne le schéma des outils pour l'API."""
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": tool["description"],
-                    "parameters": {
-                        "type": "object",
-                        "properties": tool["parameters"],
-                        "required": list(tool["parameters"].keys())
-                    }
+        schemas = []
+        for name, tool in self.tools.items():
+            required = tool.get("required", None)
+            if required is None:
+                required = list(tool["parameters"].keys())
+            else:
+                required = list(required)
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool["description"],
+                        "parameters": {
+                            "type": "object",
+                            "properties": tool["parameters"],
+                            "required": required,
+                        },
+                    },
                 }
-            }
-            for name, tool in self.tools.items()
-        ]
+            )
+        return schemas
 
     # ──────────────────────────────────────────────────────────────
     # Policy middleware : délégation forcée CodeAgent pour mutations
@@ -1826,6 +2189,32 @@ class ToolRegistry:
         if _ionos_db_refusal is not None:
             return _ionos_db_refusal
 
+        # ── Phase 9: MCP policy check pour handlers dynamiques ──
+        # Skip silencieux si name est un handler natif (non-MCP).
+        _mcp_refusal = self._mcp_policy_check(name, caller)
+        if _mcp_refusal is not None:
+            return _mcp_refusal
+
+        if name not in self.tools:
+            # Fix R (Phase I-7) : alias MCP. La convention registre est
+            # `mcp__<server>__<tool>` mais le LLM appelle souvent
+            # `<server>__<tool>` (forme courte historique du skill).
+            # Résolution déterministe SAME-PROVIDER : on préfixe juste
+            # `mcp__` — aucune ambiguïté possible, aucun risque cross-provider
+            # (contrairement au fuzzy, cf garde Fix H).
+            if "__" in name and not name.startswith("mcp__"):
+                _mcp_alias = f"mcp__{name}"
+                if _mcp_alias in self.tools:
+                    logger.info(
+                        f"🔧 Alias MCP: '{name}' → '{_mcp_alias}' (Fix R)"
+                    )
+                    name = _mcp_alias
+                    # Re-vérifie la policy avec le nom canonique : sans ça,
+                    # le check ligne précédente a été fait sur le nom court
+                    # (inconnu des dynamic handlers) → bypass policy.
+                    _mcp_refusal = self._mcp_policy_check(name, caller)
+                    if _mcp_refusal is not None:
+                        return _mcp_refusal
         if name not in self.tools:
             # Auto-fix: normalisation + fuzzy strict (cutoff=0.75) avant d'échouer
             from src.llm.output_normalizer import auto_fix_action_name
@@ -1833,6 +2222,10 @@ class ToolRegistry:
             if _fixed != name and _fixed in self.tools:
                 logger.info(f"🔧 Auto-fix nom d'outil: '{name}' → '{_fixed}'")
                 name = _fixed
+                # Fix R : même garde post-rename que pour l'alias MCP.
+                _mcp_refusal = self._mcp_policy_check(name, caller)
+                if _mcp_refusal is not None:
+                    return _mcp_refusal
             else:
                 # Phase 4.2: Suggestion fuzzy du nom d'outil le plus proche
                 _pool = list(self.tools.keys())  # P1.1: Toujours suggérer depuis le pool complet
@@ -1952,7 +2345,18 @@ class ToolRegistry:
                 for _mp in _missing:
                     _pschema = _props.get(_mp, {}) if isinstance(_props, dict) else {}
                     _ptype = _pschema.get("type", "string") if isinstance(_pschema, dict) else "string"
-                    if _ptype == "array":
+                    # Phase I-8 (Fix AV) : exemple EXACT pour parallel_tools.
+                    # L'exemple générique array (`"tool_calls": ["valeur1"]`)
+                    # est FAUX (liste d'objets {name, args}, pas de strings)
+                    # et entretenait les erreurs de format de DeepSeek
+                    # (observé runtime 2026-06-12 10:54, 2 ratés de suite).
+                    if name == "parallel_tools" and _mp == "tool_calls":
+                        _ex_parts.append(
+                            '"tool_calls": [{"name": "read_file", '
+                            '"args": {"path": "..."}}, '
+                            '{"name": "web_fetch", "args": {"url": "..."}}]'
+                        )
+                    elif _ptype == "array":
                         _ex_parts.append(f'"{_mp}": ["valeur1"]')
                     elif _ptype == "integer":
                         _ex_parts.append(f'"{_mp}": 1')
@@ -2024,7 +2428,36 @@ class ToolRegistry:
                         return Observation(content=self._observation_cache[cache_key], success=True)
             
             try:
-                result = await handler(**args)
+                _phase26_token = None
+                if name in {
+                    # Phase 26 — boucle MCP interne
+                    "request_mcp_capability",
+                    "request_mcp_ticket",
+                    "run_mcp_autonomy",
+                    "resume_mcp_task",
+                    # Phase F — outils MCP user-facing (sinon caller="unknown" → blocked)
+                    "add_mcp",
+                    "disable_mcp",
+                    "remove_mcp",
+                    "set_mcp_preference",
+                    "set_mcp_category",
+                }:
+                    try:
+                        from src.mcp.react_integration import MCPReActIntegration
+
+                        _phase26_token = MCPReActIntegration.set_caller_context(
+                            getattr(caller, "kind", "unknown")
+                        )
+                    except Exception:
+                        _phase26_token = None
+                try:
+                    result = await handler(**args)
+                finally:
+                    if _phase26_token is not None:
+                        try:
+                            MCPReActIntegration.reset_caller_context(_phase26_token)
+                        except Exception:
+                            pass
             except TypeError as _te:
                 # Le LLM a passé des arguments invalides (param inconnu, type incorrect)
                 logger.warning(f"TypeError dans outil {name}: {_te}")
@@ -2049,6 +2482,19 @@ class ToolRegistry:
 
             # Observation structurée directe (ex: parallel_tools avec sub_results)
             if isinstance(result, Observation):
+                raw = (result.content or "").strip()
+                if (
+                    result.success
+                    and cache_key is not None
+                    and len(raw) < 12000
+                    and "SUITE DISPONIBLE" not in raw
+                ):
+                    if len(self._observation_cache) >= self._OBS_CACHE_MAX:
+                        _evicted = next(iter(self._observation_cache))
+                        self._observation_cache.pop(_evicted)
+                        self._observation_cache_hits.pop(_evicted, None)
+                    self._observation_cache[cache_key] = raw
+                    self._observation_cache_hits[cache_key] = 0
                 return result
 
             if isinstance(result, str):

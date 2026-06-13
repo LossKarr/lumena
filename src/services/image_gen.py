@@ -44,6 +44,31 @@ GENERATED_IMAGES_DIR: Path = Path(
 
 _HTTPX_TIMEOUT = float(os.getenv("LUMENA_IMAGE_GEN_TIMEOUT", "180"))
 
+
+def _safe_error_summary(exc: Exception) -> str:
+    """Résumé d'erreur sans URL, bearer token ni clé API."""
+    if httpx is not None and isinstance(exc, httpx.HTTPStatusError):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        reason = getattr(response, "reason_phrase", "") or ""
+        return f"http_status:{status_code}:{reason}".rstrip(":")
+    if httpx is not None and isinstance(exc, httpx.RequestError):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None:
+            return f"http_request_error:{status_code}"
+        return type(exc).__name__
+    text = str(exc) or type(exc).__name__
+    text = re.sub(
+        r"([?&](?:key|api_key|token|access_token|client_secret)=)[^&\s]+",
+        r"\1<redacted>",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(Bearer\s+)[A-Za-z0-9._\-]+", r"\1<redacted>", text, flags=re.IGNORECASE)
+    return text[:240]
+
+
 _IMAGE_EXTS = frozenset({"png", "jpg", "jpeg", "webp", "svg", "gif"})
 
 
@@ -103,6 +128,7 @@ _MODEL_PROVIDER: Dict[str, str] = {
     "gemini-3-pro-image": "gemini",
     "gemini-2.5-flash-image": "gemini",
     # OpenAI
+    "gpt-image-2": "openai",
     "gpt-image-1.5": "openai",
     "gpt-image-1-mini": "openai",
     # BFL FLUX
@@ -130,6 +156,9 @@ _MODEL_PROVIDER: Dict[str, str] = {
     "ideogram-v3-quality": "ideogram",
     "ideogram-v3-balanced": "ideogram",
     "ideogram-v3-turbo": "ideogram",
+    "ideogram-v4-quality": "ideogram",
+    "ideogram-v4": "ideogram",
+    "ideogram-v4-turbo": "ideogram",
     # Recraft
     "recraft-v4": "recraft",
     "recraft-v4-svg": "recraft",
@@ -198,6 +227,15 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
         best_for="Fallback rapide et gratuit",
     ),
     # ── OpenAI GPT-Image ──
+    "gpt-image-2": ModelInfo(
+        name="GPT Image 2", provider="openai", quality=10, speed=5,
+        cost_per_image=0.12, free=False, max_resolution="2048x2048",
+        styles=["photoréaliste", "illustration", "typographie", "graphisme", "3D"],
+        strengths="Dernier modèle OpenAI image, excellente qualité générale et typographie",
+        weaknesses="Payant et à réserver aux rendus finaux quand les modèles gratuits/cheap ne suffisent pas",
+        capabilities=["text-to-image"],
+        best_for="Rendus premium, marketing, visuels finaux avec texte ou consignes complexes",
+    ),
     "gpt-image-1.5": ModelInfo(
         name="GPT Image 1.5", provider="openai", quality=9, speed=6,
         cost_per_image=0.08, free=False, max_resolution="2048x2048",
@@ -382,6 +420,33 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
         best_for="Génération rapide dans l'écosystème Google",
     ),
     # ── Ideogram ──
+    "ideogram-v4-quality": ModelInfo(
+        name="Ideogram V4 Quality", provider="ideogram", quality=10, speed=5,
+        cost_per_image=0.08, free=False, max_resolution="2048x2048",
+        styles=["typographie", "logo", "poster", "graphisme", "illustration"],
+        strengths="Excellent sur la typographie, logos et compositions graphiques",
+        weaknesses="Payant, moins orienté édition photo que FLUX Kontext/Stability",
+        capabilities=["text-to-image"],
+        best_for="Affiches, textes dans l'image, logos et visuels graphiques premium",
+    ),
+    "ideogram-v4": ModelInfo(
+        name="Ideogram V4", provider="ideogram", quality=9, speed=7,
+        cost_per_image=0.05, free=False, max_resolution="2048x2048",
+        styles=["typographie", "logo", "poster", "graphisme"],
+        strengths="Très bon compromis qualité/prix pour images avec texte",
+        weaknesses="Payant, moins rapide que Turbo",
+        capabilities=["text-to-image"],
+        best_for="Visuels avec typographie en production courante",
+    ),
+    "ideogram-v4-turbo": ModelInfo(
+        name="Ideogram V4 Turbo", provider="ideogram", quality=7, speed=9,
+        cost_per_image=0.03, free=False, max_resolution="1536x1536",
+        styles=["typographie", "graphisme", "illustration"],
+        strengths="Rapide pour brouillons typographiques et variations",
+        weaknesses="Qualité inférieure au mode Quality",
+        capabilities=["text-to-image"],
+        best_for="Brouillons rapides avec texte ou logo",
+    ),
     "ideogram-v3-quality": ModelInfo(
         name="Ideogram V3 Quality", provider="ideogram", quality=9, speed=5,
         cost_per_image=0.08, free=False, max_resolution="2048x2048",
@@ -542,52 +607,56 @@ def get_model_catalog_summary() -> str:
     return "\n".join(lines)
 
 
-# Fallback qualité décroissante: du meilleur au moins bon (par qualité, puis vitesse)
+# Fallback auto coût-first: local/gratuit -> cheap -> mid -> premium.
+# Lumena n'a pas encore de générateur d'image local câblé dans ce service;
+# le slot local reste réservé pour une future intégration Stable Diffusion/ComfyUI.
 _PROVIDER_FALLBACK_ORDER: List[str] = [
-    # Tier 1 — Quality 10
-    "flux-2-max",
-    "imagen-4-ultra",
-    "flux-kontext-max",
-    # Tier 2 — Quality 9
-    "gpt-image-1.5",
-    "flux-2-pro",
-    "ideogram-v3-quality",
-    "recraft-v4",
-    "stable-image-ultra",
-    "imagen-4",
-    "recraft-v4-svg",
-    "flux-kontext-pro",
-    # Tier 3 — Quality 8
-    "gemini-3-pro-image",
-    "sd3.5-large",
-    "flux-2-flex",
-    "flux-1.1-pro-ultra",
-    "seedream-5-lite",
-    "hunyuan-image-3",
-    "ideogram-v3-balanced",
-    # Tier 4 — Quality 7
+    # Tier 0 — gratuit / quasi-gratuit.
     "gemini-3.1-flash-image",
-    "gpt-image-1-mini",
-    "stable-image-core",
-    "sd3.5-large-turbo",
+    "gemini-3-pro-image",
+    "gemini-2.5-flash-image",
+    "huggingface-sdxl",
+    # Tier 1 — cheap / brouillon.
+    "flux-schnell",
+    "flux-2-klein-4b",
     "flux-2-klein-9b",
+    "gpt-image-1-mini",
+    "ideogram-v4-turbo",
+    "ideogram-v3-turbo",
+    "stable-image-core",
+    "sd3.5-flash",
+    "sd3.5-large-turbo",
+    "sd3.5-medium",
+    "minimax-image-01",
+    # Tier 2 — production standard.
+    "flux-2-flex",
+    "flux-2-pro",
+    "imagen-4-fast",
+    "imagen-4",
+    "ideogram-v4",
+    "ideogram-v3-balanced",
+    "recraft-v4",
+    "recraft-v4-svg",
     "grok-imagine-image",
     "grok-imagine-image-quality",
-    "grok-imagine-image-pro",
-    "minimax-image-01",
+    "seedream-5-lite",
     "seedream-4.5",
-    "wan-2.7-image-pro",
     "qwen-image",
-    "imagen-4-fast",
-    # Tier 5 — Quality 6 (budget)
-    "gemini-2.5-flash-image",
-    "sd3.5-medium",
-    "flux-2-klein-4b",
-    "ideogram-v3-turbo",
-    "huggingface-sdxl",
-    # Tier 6 — Quality 5 (derniers recours)
-    "sd3.5-flash",
-    "flux-schnell",
+    "wan-2.7-image-pro",
+    "hunyuan-image-3",
+    # Tier 3 — premium / rendu final.
+    "gpt-image-1.5",
+    "gpt-image-2",
+    "ideogram-v4-quality",
+    "ideogram-v3-quality",
+    "stable-image-ultra",
+    "sd3.5-large",
+    "flux-kontext-pro",
+    "flux-kontext-max",
+    "flux-1.1-pro-ultra",
+    "flux-2-max",
+    "imagen-4-ultra",
+    "grok-imagine-image-pro",
 ]
 
 # Provider → env var clé API
@@ -909,7 +978,7 @@ class ImageGenService:
                 size=size, quality=quality, style=style,
             )
         except Exception as e:
-            logger.warning("Échec {} ({}): {} — fallback auto", effective_model, provider, e)
+            logger.warning("Échec {} ({}): {} — fallback auto", effective_model, provider, _safe_error_summary(e))
             return await self._generate_auto(final_prompt, size=size, quality=quality, style=style)
 
     async def _generate_auto(
@@ -927,8 +996,8 @@ class ImageGenService:
                     size=size, quality=quality, style=style,
                 )
             except Exception as e:
-                last_error = e
-                logger.warning(f"ImageGen {model_name} failed: {e}, trying next...")
+                last_error = _safe_error_summary(e)
+                logger.warning("ImageGen {} failed: {}, trying next...", model_name, last_error)
                 continue
         raise ImageGenError(
             f"Aucun provider image disponible. Configurez au moins une clé API. "
@@ -1228,12 +1297,12 @@ class ImageGenService:
         key = self._get_api_key("gemini")
         # Map short names to API model IDs
         model_id_map = {
-            "gemini-3.1-flash-image": "gemini-3.1-flash-image-preview",
-            "gemini-3-pro-image": "gemini-3-pro-image-preview",
+            "gemini-3.1-flash-image": "gemini-3.1-flash-image",
+            "gemini-3-pro-image": "gemini-3-pro-image",
             "gemini-2.5-flash-image": "gemini-2.5-flash-image",
         }
-        api_model = model_id_map.get(model, "gemini-3.1-flash-image-preview")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{api_model}:generateContent?key={key}"
+        api_model = model_id_map.get(model, "gemini-3.1-flash-image")
+        url = f"https://generativelanguage.googleapis.com/v1/models/{api_model}:generateContent"
 
         parts: List[Dict[str, Any]] = []
         if reference_image:
@@ -1253,7 +1322,11 @@ class ImageGenService:
         }
 
         client = await self._get_client()
-        resp = await client.post(url, json=body)
+        resp = await client.post(
+            url,
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json=body,
+        )
         resp.raise_for_status()
         data = resp.json()
 
@@ -1278,7 +1351,12 @@ class ImageGenService:
     ) -> tuple[bytes, str, int, int, float, Optional[int]]:
         """OpenAI Images API."""
         key = self._get_api_key("openai")
-        model_id = "gpt-image-1" if "mini" not in model else "gpt-image-1"
+        model_id_map = {
+            "gpt-image-2": "gpt-image-2",
+            "gpt-image-1.5": "gpt-image-1.5",
+            "gpt-image-1-mini": "gpt-image-1-mini",
+        }
+        model_id = model_id_map.get(model, "gpt-image-1.5")
 
         # OpenAI gpt-image-1 accepte: low/medium/high/auto
         _quality_map = {"hd": "high", "standard": "medium", "sd": "low"}
@@ -1316,7 +1394,7 @@ class ImageGenService:
             raise ImageGenError("OpenAI: ni b64_json ni url dans la réponse")
 
         w, h = _parse_size(size)
-        cost = 0.04 if "mini" not in model else 0.02
+        cost = 0.12 if model == "gpt-image-2" else 0.08 if model == "gpt-image-1.5" else 0.02
         return img_bytes, "png", w, h, cost, None
 
     async def _generate_flux(
@@ -1431,6 +1509,9 @@ class ImageGenService:
         """Ideogram V3 API."""
         key = self._get_api_key("ideogram")
         model_map = {
+            "ideogram-v4-quality": "V_4",
+            "ideogram-v4": "V_4",
+            "ideogram-v4-turbo": "V_4_TURBO",
             "ideogram-v3-quality": "V_3",
             "ideogram-v3-balanced": "V_3",
             "ideogram-v3-turbo": "V_3_TURBO",
@@ -1442,7 +1523,7 @@ class ImageGenService:
                 "magic_prompt_option": "AUTO",
             }
         }
-        rendering = "QUALITY" if "quality" in model else "BALANCED" if "balanced" in model else "SPEED"
+        rendering = "QUALITY" if "quality" in model else "BALANCED" if "balanced" in model or model == "ideogram-v4" else "SPEED"
         body["image_request"]["rendering_speed"] = rendering
 
         client = await self._get_client()
@@ -1462,7 +1543,7 @@ class ImageGenService:
         img_resp = await client.get(img_url)
         img_resp.raise_for_status()
         w, h = _parse_size(size)
-        cost = 0.08 if "quality" in model else 0.05 if "balanced" in model else 0.03
+        cost = 0.08 if "quality" in model else 0.05 if "balanced" in model or model == "ideogram-v4" else 0.03
         seed = images[0].get("seed")
         return img_resp.content, "png", w, h, cost, seed
 
@@ -1746,13 +1827,13 @@ class ImageGenService:
         # Appel Gemini multimodal
         key = self._get_api_key("gemini")
         model_map = {
-            "gemini-3.1-flash-image": "gemini-3.1-flash-image-preview",
-            "gemini-3-pro-image": "gemini-3-pro-image-preview",
+            "gemini-3.1-flash-image": "gemini-3.1-flash-image",
+            "gemini-3-pro-image": "gemini-3-pro-image",
             "gemini-2.5-flash-image": "gemini-2.5-flash-image",
         }
         effective_model = model if model != "auto" else "gemini-3.1-flash-image"
-        api_model = model_map.get(effective_model, "gemini-3.1-flash-image-preview")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{api_model}:generateContent?key={key}"
+        api_model = model_map.get(effective_model, "gemini-3.1-flash-image")
+        url = f"https://generativelanguage.googleapis.com/v1/models/{api_model}:generateContent"
 
         body = {
             "contents": [{"parts": parts}],
@@ -1763,7 +1844,11 @@ class ImageGenService:
 
         client = await self._get_client()
         t0 = time.monotonic()
-        resp = await client.post(url, json=body)
+        resp = await client.post(
+            url,
+            headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+            json=body,
+        )
         resp.raise_for_status()
         data = resp.json()
         elapsed = int((time.monotonic() - t0) * 1000)

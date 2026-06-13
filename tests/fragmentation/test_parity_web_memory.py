@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.reasoning.handlers.context import HandlerContext
 from src.reasoning.handlers.contracts import HandlerResult
+from src.reasoning.react_config import Observation
 from src.reasoning.handlers.registry_v2 import HandlerRegistryV2
 from src.reasoning.handlers.files import get_file_handler_defs
 from src.reasoning.handlers.system import get_system_handler_defs
@@ -170,11 +171,12 @@ class TestLegacyFormatCompatP2:
         assert "web_search" in legacy
 
     @pytest.mark.asyncio
-    async def test_legacy_read_journal_returns_str(self, v2_registry, ctx_with_journal):
+    async def test_legacy_read_journal_returns_observation(self, v2_registry, ctx_with_journal):
         legacy = v2_registry.to_legacy_tools_dict(ctx_with_journal)
         result = await legacy["read_journal"]["handler"](date="2026-03-04")
-        assert isinstance(result, str)
-        assert "Entry parity test" in result
+        assert isinstance(result, Observation)
+        assert result.success is True
+        assert "Entry parity test" in result.content
 
     def test_tools_description_includes_p2(self, v2_registry):
         desc = v2_registry.get_tools_description()

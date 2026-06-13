@@ -78,3 +78,57 @@ def test_directory_skill_wins_over_legacy_file_collision(tmp_path: Path):
     assert loaded is not None
     assert loaded.path.is_dir()
     assert "directory version" in loaded.description
+
+
+def test_real_mcp_skill_loads_as_modern_directory_skill():
+    root = Path(__file__).parents[2]
+    loader = SkillLoader(base_dirs=[root / "skills"])
+    loader.load_all()
+
+    skill = loader.get_skill("mcp-builder")
+    assert skill is not None
+    assert skill.path.is_dir()
+    assert skill.path.name == "mcp-builder"
+    # Phase I-7 : doctrine 3-cas — run_mcp_autonomy pour install/active,
+    # Phase F pour CRUD, add_mcp(live=false) pour dry-run.
+    assert "run_mcp_autonomy" in skill.instructions
+    assert "add_mcp" in skill.instructions
+
+
+def test_real_mcp_skill_matches_missing_external_capability():
+    root = Path(__file__).parents[2]
+    loader = SkillLoader(base_dirs=[root / "skills"])
+    loader.load_all()
+
+    matches = loader.match_skills(
+        "trouve et installe un MCP pour connecter une API externe",
+        max_results=3,
+    )
+
+    assert matches
+    assert matches[0].name == "mcp-builder"
+
+
+def test_real_mcp_skill_context_contains_operating_doctrine():
+    root = Path(__file__).parents[2]
+    loader = SkillLoader(base_dirs=[root / "skills"])
+    loader.load_all()
+
+    context = loader.build_active_skills_context(
+        query="il me manque un outil externe MCP pour analyser une API",
+        max_results=1,
+        max_chars=4000,
+    )
+
+    assert "`mcp-builder`" in context
+    # Phase I-7 : skill réécrit avec doctrine 3 cas.
+    # Cas 1 : run_mcp_autonomy pour install/active/utilise.
+    # Cas 2 : Phase F (add_mcp/disable_mcp/...) pour CRUD.
+    # Confirmation_phrases I-CONFIRM-* restent obligatoires côté live.
+    assert "run_mcp_autonomy" in context
+    assert "add_mcp" in context
+    assert "I-CONFIRM-MCP-AUTONOMY" in context
+    assert "confirmation_phrase" in context
+    # Garde-fou doctrinal : Lumena ne demande JAMAIS la phrase technique
+    # à l'utilisateur.
+    assert "JAMAIS" in context or "Jamais" in context

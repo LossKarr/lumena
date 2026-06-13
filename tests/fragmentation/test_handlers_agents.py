@@ -56,6 +56,32 @@ async def test_delegate_task_success(ctx):
 
 
 @pytest.mark.asyncio
+async def test_delegate_task_refuses_suspicious_noop_success(ctx):
+    from src.agents.sub_agent import AgentResult, StatusCode
+    _mock_result = AgentResult(
+        task_id="t-noop",
+        success=True,
+        output="⏭️ run_tests : test_path requis. Spécifie un chemin.",
+        status_code=StatusCode.SUCCESS,
+        meta={},
+        artifacts=[],
+        duration_ms=0,
+    )
+    mock_mod = MagicMock()
+    mock_mod.delegate_to_agent_full = AsyncMock(return_value=_mock_result)
+    with patch.dict(sys.modules, {"src.agents.sub_agent": mock_mod}):
+        r = await delegate_task_handler(
+            ctx,
+            description="Améliore le projet existant",
+            agent_type="code",
+            project_path=str(ctx.runtime_root),
+        )
+    assert not r.success
+    assert r.status_code == "suspicious_success"
+    assert "Livraison refusée" in r.output
+
+
+@pytest.mark.asyncio
 async def test_delegate_task_import_error(ctx):
     with patch.dict(sys.modules, {"src.agents.sub_agent": None}):
         r = await delegate_task_handler(ctx, description="test")

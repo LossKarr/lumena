@@ -178,6 +178,32 @@ class TestProviderFallback:
         assert status["openai"]["healthy"] is True
 
 
+    @pytest.mark.asyncio
+    async def test_anthropic_model_refusal_does_not_cooldown_provider(self):
+        """Un refus Fable est un refus modele, pas une panne du provider Anthropic."""
+        from src.llm.multi_provider import MultiProviderLLM
+
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}, clear=True):
+            llm = MultiProviderLLM(model_name="claude-fable-5")
+            llm._is_code_heavy_request = MagicMock(return_value=(False, None))
+            llm._continue_if_needed = AsyncMock(side_effect=lambda **kw: kw["initial_result"])
+            llm._chat_provider_result = AsyncMock(side_effect=[
+                ValueError("anthropic_refusal:claude-fable-5"),
+                {
+                    "text": "fallback ok",
+                    "finish_reason": "stop",
+                    "provider_used": "anthropic",
+                    "model_used": "claude-opus-4.8",
+                },
+            ])
+
+            text = await llm.chat([{"role": "user", "content": "test"}], no_upgrade=True)
+
+        assert text == "fallback ok"
+        assert llm.provider_health["anthropic"]["failures"] == 0
+        assert llm.get_last_response_meta()["fallback_used"] is True
+
+
 class TestRemoteProtocolError:
     """Tests pour les erreurs de protocole."""
     

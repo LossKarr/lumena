@@ -189,10 +189,18 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
                 halluc_flag = True
             thought_content = _thought_before
 
-    action_matches = list(re.finditer(r"(?im)^\s*ACTION:\s*([A-Za-z_][A-Za-z0-9_]*)", cleaned_response))
+    # Phase I-8 (Fix AQ) : tirets INTERNES autorisés dans le nom d'action.
+    # Les tools MCP dérivent du server_id qui peut contenir un tiret
+    # (mcp__bitcoin-mcp__get_btc_price) — l'ancien pattern tronquait au
+    # premier tiret → 'mcp__bitcoin' introuvable, boucle 3x, forçage FINAL
+    # (observé runtime 2026-06-12 03:52, 3 conversations de suite).
+    # `(?:-[A-Za-z0-9_]+)*` exige un alphanumérique APRÈS chaque tiret :
+    # un tiret final ou une ponctuation (« — ») ne sont jamais capturés.
+    _ACTION_NAME = r"([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)"
+    action_matches = list(re.finditer(r"(?im)^\s*ACTION:\s*" + _ACTION_NAME, cleaned_response))
     # ── Fallback: détecter ACTION: inline (Kimi écrit parfois THOUGHT + ACTION sur la même ligne)
     if not action_matches:
-        inline_m = re.search(r"(?i)\bACTION:\s*([A-Za-z_][A-Za-z0-9_]*)", cleaned_response)
+        inline_m = re.search(r"(?i)\bACTION:\s*" + _ACTION_NAME, cleaned_response)
         if inline_m:
             action_matches = [inline_m]
             # Compter les occurrences ACTION inline pour le monitoring P4

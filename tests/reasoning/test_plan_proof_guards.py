@@ -20,6 +20,17 @@ from src.reasoning.plan_evidence import (
     has_verify_proof,
     reconcile_delegate_report,
 )
+from src.reasoning.react import _delegate_report_has_real_work
+
+
+def test_delegate_report_has_real_work_accepts_real_codeagent_report():
+    obs = "✅ **codeAgent terminé** (179.8s, 21 itérations)\n\nProjet créé et testé."
+    assert _delegate_report_has_real_work("delegate_task", obs) is True
+
+
+def test_delegate_report_has_real_work_rejects_noop_codeagent_report():
+    obs = "✅ **codeAgent terminé** (0.0s, ? itérations)\n\n⏭️ run_tests : test_path requis."
+    assert _delegate_report_has_real_work("delegate_task", obs) is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -36,6 +47,13 @@ def _make_loop_with_plan(descriptions: list[str]):
     loop._plan_last_emit_state = ""
     # Stubber l'émission d'état
     loop._emit_plan_state = lambda **kw: None
+    return loop
+
+
+def _attach_tool_categories(loop, module: str = "", semantic: str = ""):
+    loop.tools = MagicMock()
+    loop.tools.get_tool_module_category.return_value = module
+    loop.tools.get_tool_semantic_category.return_value = semantic
     return loop
 
 
@@ -175,6 +193,16 @@ class TestVerifyGate:
         self._run_update(loop, "write_file", "✅ Fichier créé")
         assert "Vérifier que l'app est fonctionnelle" in _pending_tasks(loop)
 
+    def test_verify_project_blocked_by_create_directory_files_category(self):
+        """Un dossier créé ne prouve pas que le projet web fonctionne."""
+        loop = _attach_tool_categories(
+            _make_loop_with_plan(["Vérifier le projet créé"]),
+            module="files",
+            semantic="files",
+        )
+        self._run_update(loop, "create_directory", "✅ Répertoire créé: workspace/site-test")
+        assert "Vérifier le projet créé" in _pending_tasks(loop)
+
     def test_verify_task_allowed_by_run_command_with_proof(self):
         """run_command avec preuve réelle (port listening) peut cocher 'vérifier'."""
         loop = _make_loop_with_plan(["Vérifier que tout est fonctionnel"])
@@ -308,6 +336,17 @@ class TestCreationVsVerification:
         # "npm install" n'est pas une preuve fonctionnelle (pas port/listening/200)
         assert any("Vérifier" in d for d in pending)
 
+    def test_run_command_does_not_mark_browser_test_task(self):
+        loop = _make_loop_with_plan(["Lancer un serveur local et tester avec le navigateur"])
+        loop._update_plan_progress(
+            "run_command",
+            {},
+            "⏳ Commande lancée en arrière-plan.\nCommande: python -m http.server 8081",
+            iteration=3,
+        )
+
+        assert "Lancer un serveur local et tester avec le navigateur" in _pending_tasks(loop)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # E. Vérification réelle peut cocher "vérifier"
@@ -340,6 +379,35 @@ class TestRealVerificationAllowed:
             iteration=4,
         )
         assert "Vérifier que le site est opérationnel" in _completed_tasks(loop)
+
+    def test_browser_verify_local_project_marks_verify(self):
+        loop = _attach_tool_categories(
+            _make_loop_with_plan(["Vérifier que le site est opérationnel"]),
+            module="website",
+            semantic="website",
+        )
+        loop._update_plan_progress(
+            "browser_verify_local_project",
+            {"project_path": "workspace/site-test"},
+            "## Runtime web verify: OK\nHTTP 200 OK\nPage loaded\nDOM ready_state: complete\nInteractions: scroll OK",
+            iteration=4,
+        )
+        assert "Vérifier que le site est opérationnel" in _completed_tasks(loop)
+
+    def test_browser_verify_local_project_marks_browser_test_task(self):
+        loop = _attach_tool_categories(
+            _make_loop_with_plan(["Lancer un serveur local et tester avec le navigateur"]),
+            module="website",
+            semantic="website",
+        )
+        loop._update_plan_progress(
+            "browser_verify_local_project",
+            {"project_path": "workspace/site-test"},
+            "## Runtime web verify: OK\nHTTP 200 OK\nPage loaded\nDOM ready_state: complete\nInteractions: scroll OK",
+            iteration=4,
+        )
+
+        assert "Lancer un serveur local et tester avec le navigateur" in _completed_tasks(loop)
 
     def test_run_tests_marks_verify(self):
         loop = _make_loop_with_plan(["Vérifier que les tests passent"])

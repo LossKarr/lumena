@@ -731,6 +731,114 @@ lumena/
 """,
     },
     {
+        "id": "mcp",
+        "icon": "plug",
+        "title": "MCP",
+        "content": """
+<p class="doc-lead">Lumena intègre le Model Context Protocol comme couche d'extension runtime :
+elle peut proposer, installer, activer, catégoriser et utiliser des serveurs MCP depuis la conversation,
+avec sandbox, approval queue, trust score, audit et garde-fous de live mode.</p>
+
+<div class="doc-grid doc-grid-3">
+  <div class="doc-stat-card">
+    <div class="doc-stat-value">40+</div>
+    <div class="doc-stat-label">Modules MCP</div>
+  </div>
+  <div class="doc-stat-card">
+    <div class="doc-stat-value">9</div>
+    <div class="doc-stat-label">Outils conversationnels</div>
+  </div>
+  <div class="doc-stat-card">
+    <div class="doc-stat-value">data/mcp</div>
+    <div class="doc-stat-label">Sandbox install</div>
+  </div>
+</div>
+
+<h3>Ce que Lumena sait faire avec MCP</h3>
+<table class="doc-table">
+<thead><tr><th>Besoin utilisateur</th><th>Comportement Lumena</th><th>Composants</th></tr></thead>
+<tbody>
+<tr><td>“Trouve-moi un outil pour X”</td><td>Résout la capacité, cherche un MCP connu/local/npm/PyPI, propose la meilleure suite</td><td><code>CapabilityResolver</code>, <code>MCPProposalPlanner</code>, <code>network_sources.py</code></td></tr>
+<tr><td>“Installe ce MCP”</td><td>Résout la cible, ajoute au Catalog, crée/consomme le ticket, installe dans <code>data/mcp/&lt;server_id&gt;</code></td><td><code>target_resolver.py</code>, <code>catalog_add_orchestrator.py</code>, <code>install_orchestrator.py</code></td></tr>
+<tr><td>“Active-le et utilise-le”</td><td>Démarre le serveur, initialise le client JSON-RPC, découvre les tools, les enregistre dans le ToolRegistry</td><td><code>activation_service.py</code>, <code>client.py</code>, <code>discovery.py</code>, <code>handler_adapter.py</code></td></tr>
+<tr><td>“Désactive / supprime / préfère ce MCP”</td><td>Applique les mutations contrôlées avec confirmation et audit</td><td><code>react_integration.py</code>, <code>server_catalog.py</code>, <code>overlap_detector.py</code></td></tr>
+<tr><td>“Il manque une clé/config”</td><td>Expose un schéma de configuration et stocke secrets/config chiffrés sans fuite dans l'audit</td><td><code>config_schema.py</code>, <code>credentials_service.py</code>, <code>secrets_resolver_service.py</code></td></tr>
+</tbody>
+</table>
+
+<h3>Outils MCP visibles par le ReAct</h3>
+<p>La catégorie d'outils <code>mcp</code> contient les contrôles conversationnels suivants :</p>
+<div class="doc-code-block">
+<pre>
+request_mcp_capability(intent)
+request_mcp_ticket(...)
+run_mcp_autonomy(intent, live, confirmation_phrase)
+resume_mcp_task(intent)
+add_mcp(target, live, confirmation_phrase)
+disable_mcp(server_id, confirmation_phrase)
+remove_mcp(server_id, confirmation_phrase)
+set_mcp_preference(server_id, prefer_over_native, confirmation_phrase)
+set_mcp_category(server_id, human_phrase, confirmation_phrase)
+</pre>
+</div>
+<p>Une fois un serveur actif, ses tools apparaissent avec le namespace
+<code>mcp__&lt;server_id&gt;__&lt;tool_name&gt;</code>. Le nom exact vient du serveur via <code>tools/list</code> :
+Lumena ne doit pas deviner les noms.</p>
+
+<h3>Flux complet</h3>
+<div class="doc-code-block">
+<pre>
+Message utilisateur
+  ↓
+ReAct détecte une capacité externe ou un MCP explicite
+  ↓
+run_mcp_autonomy / add_mcp
+  ↓
+CapabilityResolver → ProposalPlanner → ExecutionBridge
+  ↓
+CatalogAdd / ApprovalQueue / AutoApprove
+  ↓
+InstallOrchestrator → MCPSandboxRunner.install()
+  ↓
+ActivationService → MCPClient → Discovery → ToolRegistry
+  ↓
+Tool visible : mcp__server__tool
+  ↓
+Lumena reprend la tâche avec le nouvel outil
+</pre>
+</div>
+
+<h3>Sécurité et garde-fous</h3>
+<ul>
+  <li>Installation isolée sous <code>data/mcp/&lt;server_id&gt;/</code> ; jamais d'installation MCP directe dans le repo.</li>
+  <li>ApprovalQueue et confirmations verbales pour les mutations sensibles.</li>
+  <li>Live mode désactivable par <code>LUMENA_MCP_LIVE</code> et kill switches dédiés install/activation/trust/auto-approve.</li>
+  <li>Trust score et policies MCP : <code>READ_ONLY</code>, <code>EXTERNAL_READ</code>, <code>LOCAL_WRITE</code>, <code>EXTERNAL_WRITE_*</code>, <code>SECRETS_AUTH</code>.</li>
+  <li>Audit whitelist : pas de secrets, pas d'arguments raw, pas de descriptions/input_schema raw.</li>
+  <li>RuntimeWatcher surveille crashes, unhealthy, drift et états actifs.</li>
+  <li>CodeAgent ne doit pas installer de MCP à la main : la chaîne MCP est responsable du sandbox, du Catalog et de l'activation.</li>
+</ul>
+
+<h3>Panel MCP</h3>
+<p>Le panel <strong>Infra → MCP</strong> expose :</p>
+<ul>
+  <li><strong>Bibliothèque</strong> : serveurs connus, installés, actifs, curated, état configuration.</li>
+  <li><strong>Approvals</strong> : tickets pending et décisions récentes.</li>
+  <li><strong>Watcher snapshots</strong> : état runtime des serveurs actifs.</li>
+  <li><strong>Audit / Discovery</strong> : événements sanitizés et rapports de découverte.</li>
+  <li><strong>Auto-Approve</strong> : patterns bornés avec double opt-in.</li>
+  <li><strong>Diagnostics</strong> : readiness, observability, keys status, audit integrity, coherence.</li>
+</ul>
+
+<div class="doc-callout doc-callout-warn">
+  <strong>Important :</strong> la documentation historique peut contenir des états intermédiaires.
+  Pour patcher la chaîne MCP, vérifier le code réel puis lire ensemble
+  <code>MCP_PHASES_STATUS.md</code>, <code>MCP_FINAL_PLAN.md</code> et
+  <code>MCP_CATEGORY_UNIFICATION.md</code>.
+</div>
+""",
+    },
+    {
         "id": "tools",
         "icon": "wrench",
         "title": "Catalogue d'outils",
@@ -1250,12 +1358,13 @@ sur l'ensemble des sous-systèmes de Lumena.</p>
 <tr><td>Logs</td><td>Logs daemon en temps réel</td></tr>
 <tr><td>Alertes</td><td>Alertes critiques et notifications</td></tr>
 
-<tr><td rowspan="6"><strong>Infra</strong></td><td>Telegram</td><td>Statut et détails du bot Telegram</td></tr>
+<tr><td rowspan="7"><strong>Infra</strong></td><td>Telegram</td><td>Statut et détails du bot Telegram</td></tr>
 <tr><td>Autonomie</td><td>État du daemon, tâches planifiées</td></tr>
 <tr><td>Réseau Lumena</td><td>Statut réseau, pairs LAN, jumelage par code, découverte mDNS, délégation, pare-feu assisté</td></tr>
+<tr><td>MCP</td><td>Bibliothèque MCP, approvals, install/activation, catalog, auto-approve, trust, diagnostics et audit</td></tr>
 <tr><td>Providers LLM</td><td>Santé de chaque provider, latence, coûts</td></tr>
 <tr><td>Configuration</td><td>Variables d'environnement, clés API (149 entrées, 23 groupes)</td></tr>
-<tr><td>Fichiers</td><td>Éditeur .lumena_rules, README, HEARTBEAT</td></tr>
+<tr><td>Fichiers</td><td>Éditeur .lumena_rules, README, HEARTBEAT et documents MCP opérationnels</td></tr>
 </tbody>
 </table>
 
@@ -2578,7 +2687,7 @@ async def get_product_docs():
         from src.llm.multi_provider import MultiProviderLLM
         mp = MultiProviderLLM.__new__(MultiProviderLLM)
         if hasattr(MultiProviderLLM, "__init__"):
-            fallback_order = ["deepseek", "anthropic", "openai", "google", "moonshot", "xai", "nvidia", "ollama"]
+            fallback_order = ["deepseek", "mistral", "zai", "google", "moonshot", "minimax", "nvidia", "xai", "anthropic", "openai", "ollama"]
     except Exception:
         fallback_order = stats["provider_names"] or list(provider_display.keys())
     if not fallback_order:

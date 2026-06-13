@@ -235,6 +235,11 @@
             <span class="nav-item-label">Instances &amp; Réseau</span>
             <span class="badge" id="badge-network" style="background:var(--muted)">—</span>
           </div>
+          <div class="nav-item" data-panel="mcp">
+            <span class="nav-item-icon"><i data-lucide="plug"></i></span>
+            <span class="nav-item-label">MCP</span>
+            <span class="badge" id="badge-mcp" style="background:var(--muted)">—</span>
+          </div>
           <div class="nav-item" data-panel="providers">
             <span class="nav-item-icon"><i data-lucide="zap"></i></span>
             <span class="nav-item-label">Providers LLM</span>
@@ -1288,6 +1293,10 @@
           <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
             <button class="btn" id="doc-tab-lumena_rules" data-action="switchDoc" data-arg="lumena_rules" style="font-size:11px"><i data-lucide="scroll-text"></i> .lumena_rules</button>
             <button class="btn" id="doc-tab-heartbeat" data-action="switchDoc" data-arg="heartbeat" style="font-size:11px"><i data-lucide="heart-pulse"></i> HEARTBEAT.md</button>
+            <button class="btn" id="doc-tab-mcp_status" data-action="switchDoc" data-arg="mcp_status" style="font-size:11px"><i data-lucide="plug"></i> MCP status</button>
+            <button class="btn" id="doc-tab-mcp_plan" data-action="switchDoc" data-arg="mcp_plan" style="font-size:11px"><i data-lucide="route"></i> MCP plan</button>
+            <button class="btn" id="doc-tab-mcp_category" data-action="switchDoc" data-arg="mcp_category" style="font-size:11px"><i data-lucide="tags"></i> MCP catégories</button>
+            <button class="btn" id="doc-tab-work_method" data-action="switchDoc" data-arg="work_method" style="font-size:11px"><i data-lucide="clipboard-check"></i> Méthode</button>
           </div>
           <div id="doc-save-msg" style="display:none;margin-top:8px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
         </div>
@@ -1374,6 +1383,40 @@
           <div style="margin-top:12px;text-align:right">
             <button class="btn primary" style="font-size:12px;padding:6px 18px" data-action="addIonosSite"><i data-lucide="plus"></i> Ajouter le compte</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======= MCP — Phase G : Bibliothèque user-facing + onglets avancés ======= -->
+    <div class="panel" id="panel-mcp">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <span><i data-lucide="plug"></i> MCP — Bibliothèque & Configuration</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadMcp"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraîchir</button>
+        </div>
+        <div class="card-content" id="mcp-header-stats">
+          <div style="color:var(--muted);font-size:12px">Chargement...</div>
+        </div>
+        <div class="card-content" style="border-top:1px solid var(--border);padding-top:10px">
+          <div style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px"><i data-lucide="message-circle" style="width:11px;height:11px"></i>
+            Pour ajouter, désactiver ou modifier un MCP, parlez à Lumena dans le chat. Cette interface est uniquement informationnelle.
+          </div>
+        </div>
+      </div>
+
+      <div class="tabs" style="margin-top:8px">
+        <button class="tab active" data-action="loadMcpTab" data-arg="library" data-test-id="mcp-tab-library"><i data-lucide="library" style="width:12px;height:12px"></i> Bibliothèque</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="catalog">Serveurs</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="approvals">Approbations</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="watcher">État runtime</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="audit">Audit &amp; découverte</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="auto_approve">Règles auto</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="diagnostics">Santé</button>
+      </div>
+
+      <div id="mcp-tab-content" style="margin-top:8px">
+        <div class="card">
+          <div class="card-content" style="color:var(--muted)">Chargement de la bibliothèque…</div>
         </div>
       </div>
     </div>
@@ -1550,6 +1593,11 @@ document.addEventListener('DOMContentLoaded', () => initSetupWizard());
       <button class="mpicker-close" data-action="closeModelPicker" aria-label="Fermer">
         <i data-lucide="x" style="width:16px;height:16px"></i>
       </button>
+    </div>
+    <div class="mpicker-tabs" id="model-picker-tabs">
+      <button class="mpicker-tab active" data-panel="text" onclick="setModelPanel('text')">Texte</button>
+      <button class="mpicker-tab" data-panel="vision" onclick="setModelPanel('vision')">Vision</button>
+      <button class="mpicker-tab" data-panel="image" onclick="setModelPanel('image')">Image</button>
     </div>
     <!-- Provider filter pills -->
     <div class="mpicker-filters" id="model-picker-filters"></div>

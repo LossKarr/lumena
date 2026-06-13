@@ -40,6 +40,7 @@ class TestMiniMaxProvider:
 
 class TestMiniMaxModels:
     MINIMAX_MODELS = [
+        "minimax-m3",
         "minimax-m2.5",
         "minimax-m2.5-highspeed",
         "minimax-m2.1",
@@ -58,14 +59,30 @@ class TestMiniMaxModels:
         assert name in MODEL_SKILLS, f"{name} missing from MODEL_SKILLS"
 
     def test_minimax_context_window(self):
-        for name in self.MINIMAX_MODELS:
+        expected = {
+            "minimax-m3": 1_000_000,
+            "minimax-m2.5": 204800,
+            "minimax-m2.5-highspeed": 204800,
+            "minimax-m2.1": 204800,
+            "minimax-m2.1-highspeed": 204800,
+            "minimax-m2.7": 204800,
+        }
+        for name, context_window in expected.items():
             cfg = get_model_config(name)
-            assert cfg.context_window == 204800
+            assert cfg.context_window == context_window
 
     def test_minimax_max_output(self):
-        for name in self.MINIMAX_MODELS:
+        expected = {
+            "minimax-m3": 65536,
+            "minimax-m2.5": 32768,
+            "minimax-m2.5-highspeed": 32768,
+            "minimax-m2.1": 32768,
+            "minimax-m2.1-highspeed": 32768,
+            "minimax-m2.7": 32768,
+        }
+        for name, max_output_tokens in expected.items():
             cfg = get_model_config(name)
-            assert cfg.max_output_tokens == 32768
+            assert cfg.max_output_tokens == max_output_tokens
 
     def test_minimax_capabilities(self):
         for name in self.MINIMAX_MODELS:
@@ -76,6 +93,13 @@ class TestMiniMaxModels:
     def test_nvidia_minimax_description_updated(self):
         cfg = get_model_config("nvidia-minimax-m2.7")
         assert "préférer MiniMax natif" in cfg.description
+
+    def test_minimax_m3_fallbacks(self):
+        from src.llm.providers import get_model_fallbacks
+
+        fallbacks = get_model_fallbacks("minimax-m3")
+        assert fallbacks[:2] == ["minimax-m2.7", "nvidia-minimax-m2.7"]
+        assert "nvidia-step-3.7-flash" in fallbacks
 
 
 # ── P2.3: _chat_minimax_result routing ───────────────────────────────────────
@@ -202,6 +226,7 @@ class TestConfigPanelP2:
 
     def test_brain_code_has_minimax(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_CODE")
+        assert "minimax-m3" in entry["options"]
         assert "minimax-m2.5" in entry["options"]
         assert "minimax-m2.7" in entry["options"]
 
@@ -217,6 +242,7 @@ class TestConfigPanelP2:
 
     def test_brain_web_has_minimax(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_WEB")
+        assert "minimax-m3" in entry["options"]
         assert "minimax-m2.5" in entry["options"]
 
 

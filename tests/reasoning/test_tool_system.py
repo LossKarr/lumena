@@ -1,7 +1,7 @@
 """Tests: Tool System
 
 Tous les outils sont dans les handlers V2 (src/reasoning/handlers/).
-Les 7 outils website_builder ont été migrés en V2 dans handlers/website.py (P1.2.7).
+Les outils website_builder ont été migrés en V2 dans handlers/website.py (P1.2.7).
 Le legacy tool_system ne contient plus aucun outil par défaut.
 Ces tests vérifient le bon comportement du shim et la stabilité de l'API.
 """
@@ -47,7 +47,8 @@ class TestToolRegistration:
         assert "generate_website" in names
         assert "write_website_files" in names
         assert "list_website_projects" in names
-        assert len(defs) == 8
+        assert "browser_verify_local_project" in names
+        assert len(defs) == 9
 
     def test_required_tools_known_via_is_known_tool(self):
         """Les outils core sont reconnus via _is_known_tool (legacy ou V2)."""

@@ -592,8 +592,84 @@ async def check_web_project_handler(
     return HandlerResult.ok("\n".join(lines), handler_name="check_web_project")
 
 
+def _resolve_web_project_dir(ctx: HandlerContext, project_dir: str = "", project_path: str = "") -> Path:
+    """Resolve a web project directory from an absolute path or workspace-relative name."""
+    from ...utils.paths import WORKSPACE_DIR
+
+    raw = (project_path or project_dir or "").strip()
+    if raw:
+        candidate = Path(raw)
+        if candidate.is_absolute():
+            return candidate
+        base = Path(ctx.lumena_root) / raw
+        if base.exists():
+            return base
+        ws_candidate = WORKSPACE_DIR / raw
+        if ws_candidate.exists():
+            return ws_candidate
+        return base
+
+    ws = WORKSPACE_DIR
+    candidates = sorted(
+        [d for d in ws.rglob("index.html") if d.is_file()],
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if candidates:
+        return candidates[0].parent
+    return ws
+
+
+async def browser_verify_local_project_handler(
+    ctx: HandlerContext,
+    project_dir: str = "",
+    project_path: str = "",
+    entry: str = "index.html",
+    expect_canvas: bool = False,
+    max_clicks: int = 3,
+    timeout_ms: int = 30000,
+) -> HandlerResult:
+    """Verify a local web project in Playwright and return runtime proof."""
+    try:
+        base = _resolve_web_project_dir(ctx, project_dir=project_dir, project_path=project_path)
+        if not base.exists():
+            return HandlerResult.fail(
+                f"❌ Répertoire non trouvé: {base}",
+                handler_name="browser_verify_local_project",
+                status_code="project_not_found",
+            )
+
+        from ...tools.web_project_runtime_verifier import verify_web_project_runtime
+
+        result = await verify_web_project_runtime(
+            base,
+            entry=entry,
+            expect_canvas=bool(expect_canvas),
+            max_clicks=int(max_clicks or 0),
+            timeout_ms=int(timeout_ms or 30000),
+        )
+        report = result.to_report()
+        if result.passed:
+            return HandlerResult.ok(
+                "✅ Vérification navigateur autonome OK\n\n" + report,
+                handler_name="browser_verify_local_project",
+                status_code="runtime_ok",
+            )
+        return HandlerResult.fail(
+            "❌ Vérification navigateur autonome échouée\n\n" + report,
+            handler_name="browser_verify_local_project",
+            status_code="runtime_failed",
+        )
+    except Exception as e:
+        return HandlerResult.fail(
+            f"❌ Erreur browser_verify_local_project: {e}",
+            handler_name="browser_verify_local_project",
+            status_code="runtime_error",
+        )
+
+
 def get_website_handler_defs() -> List[HandlerDef]:
-    """Retourne les 7 définitions de handlers website."""
+    """Retourne les définitions de handlers website."""
     return [
         HandlerDef(
             name="generate_website",
@@ -721,6 +797,52 @@ def get_website_handler_defs() -> List[HandlerDef]:
                 "required": [],
             },
             handler=check_web_project_handler,
+            category="website",
+            source_module="handlers.website",
+        ),
+        HandlerDef(
+            name="browser_verify_local_project",
+            description=(
+                "Vérifie automatiquement un projet web local dans Playwright après génération/modification : "
+                "serveur local, navigation localhost, erreurs console/page, DOM visible, screenshots, scroll, "
+                "interactions basiques et canvas si attendu. À utiliser avant de dire qu'un site/app/jeu web est terminé."
+            ),
+            parameters={
+                "properties": {
+                    "project_dir": {
+                        "type": "string",
+                        "description": "Chemin ou nom du dossier projet. Optionnel si project_path est fourni.",
+                        "default": "",
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": "Chemin absolu du projet web à vérifier.",
+                        "default": "",
+                    },
+                    "entry": {
+                        "type": "string",
+                        "description": "Fichier d'entrée à ouvrir (défaut index.html).",
+                        "default": "index.html",
+                    },
+                    "expect_canvas": {
+                        "type": "boolean",
+                        "description": "True pour les jeux/canvas/Three.js où un canvas est attendu.",
+                        "default": False,
+                    },
+                    "max_clicks": {
+                        "type": "integer",
+                        "description": "Nombre maximal de clics prudents pendant la vérification.",
+                        "default": 3,
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "Timeout de chargement navigateur.",
+                        "default": 30000,
+                    },
+                },
+                "required": [],
+            },
+            handler=browser_verify_local_project_handler,
             category="website",
             source_module="handlers.website",
         ),

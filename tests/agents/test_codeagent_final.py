@@ -199,6 +199,27 @@ class TestF2SplitMethods:
         assert messages[1]["role"] == "user"
         assert "WORKSPACE ACTIF" in messages[1]["content"]
 
+    def test_build_initial_messages_empty_workspace_uses_creation_hint(self, tmp_path):
+        agent = _make_agent()
+        agent._gather_project_context = MagicMock(return_value="")
+        (tmp_path / "css").mkdir()
+        (tmp_path / "js").mkdir()
+        task = AgentTask(
+            task_id="t1-create",
+            description="Crée un site web complet avec index.html, css/style.css et js/main.js",
+            agent_type=AgentType.CODE,
+            context={"workspace_path": str(tmp_path)},
+        )
+
+        messages, _, project_files = agent._build_initial_messages(task, [], 1)
+        user_message = messages[1]["content"]
+
+        assert project_files is None
+        assert "MODE CREATION" in user_message
+        assert "write_file" in user_message
+        assert "Commence DIRECTEMENT par read_file" not in user_message
+        assert agent._resolved_intent == "create"
+
     def test_build_initial_messages_no_workspace(self):
         agent = _make_agent()
         agent._gather_project_context = MagicMock(return_value="")

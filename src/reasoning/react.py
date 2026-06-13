@@ -27,6 +27,354 @@ from loguru import logger
 # Vérifié entre chaque itération pour stopper la boucle sans ctypes.
 _REACT_CANCEL_EVENTS: Dict[int, Any] = {}
 
+_DELEGATE_NOOP_MARKERS = (
+    "run_tests : test_path requis",
+    "test_path requis pour run_tests",
+    "test_path required",
+    "aucun test runner detecte",
+    "livraison refusee",
+    "livraison refusée",
+)
+
+
+def _fold_react_status_text(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", text or "")
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return folded.lower()
+
+
+def _delegate_report_has_real_work(tool_name: str, obs_text: str) -> bool:
+    """True si un rapport delegate_task peut déclencher le FINAL direct."""
+    folded = _fold_react_status_text(obs_text)
+    if any(marker in folded for marker in _DELEGATE_NOOP_MARKERS):
+        return False
+    if tool_name == "delegate_task":
+        match = re.search(
+            r"\((?:n/a|[0-9]+(?:\.[0-9]+)?s),\s*(\?|\d+)\s+it",
+            folded,
+        )
+        return bool(match and match.group(1) != "?" and int(match.group(1)) > 0)
+    return True
+
+
+_WEB_DELIVERY_MARKERS = (
+    "index.html", ".html", ".css", ".js", "site", "website", "web app",
+    "application web", "jeu", "game", "three.js", "threejs", "canvas",
+    "frontend", "vite", "react", "html/css/js",
+)
+
+_CANVAS_DELIVERY_MARKERS = (
+    "three.js", "threejs", "webgl", "babylon.js", "babylonjs",
+    "pixi.js", "pixijs", "<canvas", "canvas html", "html canvas",
+    "canvas 2d", "2d canvas", "dessin canvas", "drawing canvas",
+    "paint canvas", "canvas drawing", "particle canvas", "particles canvas",
+    "particules canvas", "context 2d", "getcontext",
+)
+
+_CANVAS_NON_TECHNICAL_MARKERS = (
+    "moodboard", "mood board", "zone type canvas", "type canvas",
+    "canvas/moodboard", "canvas de travail", "workspace canvas",
+    "kanban",
+)
+
+
+def _post_delegate_web_verify_enabled() -> bool:
+    raw = os.environ.get("LUMENA_POST_DELEGATE_WEB_VERIFY", "1")
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _looks_like_web_delegate_delivery(original_query: str, tool_args: dict, obs_text: str) -> bool:
+    payload = " ".join(
+        str(part or "") for part in (
+            original_query,
+            obs_text,
+            tool_args.get("description") if isinstance(tool_args, dict) else "",
+            tool_args.get("project_path") if isinstance(tool_args, dict) else "",
+            tool_args.get("output_dir") if isinstance(tool_args, dict) else "",
+            tool_args.get("project_dir") if isinstance(tool_args, dict) else "",
+            tool_args.get("project_name") if isinstance(tool_args, dict) else "",
+            tool_args.get("path") if isinstance(tool_args, dict) else "",
+            json.dumps(tool_args.get("context", {}), ensure_ascii=False, default=str)
+            if isinstance(tool_args, dict) else "",
+        )
+    )
+    folded = _fold_react_status_text(payload)
+    return any(marker in folded for marker in _WEB_DELIVERY_MARKERS)
+
+
+def _delegate_delivery_expects_canvas(original_query: str, tool_args: dict, obs_text: str) -> bool:
+    payload = " ".join(
+        str(part or "") for part in (
+            original_query,
+            obs_text,
+            tool_args.get("description") if isinstance(tool_args, dict) else "",
+        )
+    )
+    folded = _fold_react_status_text(payload)
+    if any(marker in folded for marker in _CANVAS_DELIVERY_MARKERS):
+        return True
+    if bool(
+        re.search(
+            r"\b(?:jeu|game|open world|monde|scene|sc[eè]ne)\b.{0,32}\b3d\b"
+            r"|\b3d\b.{0,32}\b(?:jeu|game|open world|monde|scene|sc[eè]ne)\b",
+            folded,
+        )
+    ):
+        return True
+    if any(marker in folded for marker in _CANVAS_NON_TECHNICAL_MARKERS):
+        return False
+    return False
+
+
+def _is_post_codeagent_synthesis_task(description: str) -> bool:
+    """True for plan tasks that are fulfilled by writing the FINAL response."""
+    text = _fold_react_status_text(description)
+    if any(
+        marker in text
+        for marker in (
+            "email", "mail", "courriel", "telegram", "whatsapp",
+            "discord", "pdf", "docx", "xlsx", "zip", "archive",
+            "upload", "deployer", "deploi", "publier", "poster",
+            "envoyer", "envoie", "envoi", "send", "joindre", "attacher",
+        )
+    ):
+        return False
+    stripped = re.sub(
+        r"^\s*(?:etape|step)\s*\d+\s*[:\-]\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+    if any(
+        stripped.startswith(prefix)
+        for prefix in (
+            "resumer", "recapituler", "synthetiser", "conclure",
+            "repondre a l'utilisateur", "repondre a l utilisateur",
+            "donner le resume", "donner un resume", "donner le recap",
+            "donner le bilan", "faire le resume", "faire un resume",
+        )
+    ):
+        return True
+    if any(
+        marker in stripped
+        for marker in (
+            "resume final", "rapport final", "reponse finale",
+            "compte rendu final", "synthese finale",
+            "donner le resume final", "donner le rapport final",
+        )
+    ):
+        return True
+    return (
+        ("a l'utilisateur" in stripped or "a l utilisateur" in stripped)
+        and any(
+            verb in stripped
+            for verb in (
+                "presenter", "donner", "informer", "communiquer",
+                "signaler", "expliquer", "livrer",
+            )
+        )
+    )
+
+
+def _is_post_codeagent_conditional_correction_task(description: str) -> bool:
+    """True for no-op correction tasks covered when the web runtime verify passed."""
+    text = _fold_react_status_text(description)
+    has_correction = any(
+        marker in text
+        for marker in (
+            "corriger", "correction", "corrige", "reparer",
+            "fix", "debugger", "deboguer",
+        )
+    )
+    has_condition = any(
+        marker in text
+        for marker in (
+            "si necessaire", "si besoin", "au besoin",
+            "si besoin est", "if needed", "if necessary",
+        )
+    )
+    return has_correction and has_condition
+
+
+def _is_post_codeagent_closure_task(description: str) -> bool:
+    return (
+        _is_post_codeagent_synthesis_task(description)
+        or _is_post_codeagent_conditional_correction_task(description)
+    )
+
+
+def _candidate_is_web_project(path: Path) -> bool:
+    try:
+        if path.is_file():
+            path = path.parent
+        return path.is_dir() and (
+            (path / "index.html").is_file()
+            or (path / "package.json").is_file()
+            or any(path.glob("*.html"))
+        )
+    except Exception:
+        return False
+
+
+def _extract_existing_web_project_path(
+    tool_args: dict,
+    obs_text: str,
+    *,
+    base_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Extract an existing web project directory from delegate args/report."""
+    base = Path(base_dir or Path.cwd())
+    candidates: list[str] = []
+
+    def add(value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip().strip("`\"'")
+        if not text:
+            return
+        candidates.append(text)
+
+    if isinstance(tool_args, dict):
+        add(tool_args.get("project_path"))
+        add(tool_args.get("output_dir"))
+        add(tool_args.get("project_dir"))
+        add(tool_args.get("path"))
+        add(tool_args.get("project_name"))
+        context = tool_args.get("context")
+        if isinstance(context, dict):
+            add(context.get("workspace_path"))
+            add(context.get("output_dir"))
+            add(context.get("project_dir"))
+            add(context.get("path"))
+            add(context.get("project_name"))
+        add(tool_args.get("description"))
+
+    text_blob = "\n".join([obs_text or ""] + candidates)
+    for match in re.finditer(
+        r"([A-Za-z]:[\\/][^\n\r`\"<>|]+|\\\\[^\n\r`\"<>|]+|(?:^|[\s`'\"])(workspace[\\/][^\n\r`\"'<>|]+))",
+        text_blob,
+    ):
+        raw = match.group(1) or match.group(2) or ""
+        add(raw)
+
+    seen: set[str] = set()
+    for raw in candidates:
+        cleaned = re.sub(r"^[\s`'\"()]+|[\s`'\"().,;:!?]+$", "", raw)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        probes = [Path(cleaned)]
+        if not Path(cleaned).is_absolute():
+            probes.append(base / cleaned)
+            probes.append(base / "workspace" / cleaned)
+        for probe in probes:
+            try:
+                resolved = probe.resolve()
+            except Exception:
+                resolved = probe
+            if _candidate_is_web_project(resolved):
+                return resolved.parent if resolved.is_file() else resolved
+    try:
+        workspace_root = base / "workspace"
+        if workspace_root.is_dir():
+            latest_indexes = sorted(
+                [p for p in workspace_root.rglob("index.html") if p.is_file()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if latest_indexes:
+                return latest_indexes[0].parent.resolve()
+    except Exception:
+        pass
+    return None
+
+
+def _build_post_delegate_web_verify_success_query(
+    original_query: str,
+    obs_text: str,
+    verify_report: str,
+) -> str:
+    return (
+        f"Requête originale: {original_query}\n\n"
+        f"Le CodeAgent a terminé avec succès :\n{obs_text[:2200]}\n\n"
+        "Vérification navigateur autonome après CodeAgent : OK\n"
+        f"{verify_report[:2200]}\n\n"
+        "INSTRUCTION : Rédige maintenant ta réponse finale à l'utilisateur en résumant "
+        "ce qui a été accompli et vérifié. Utilise OBLIGATOIREMENT :\n"
+        "THOUGHT: (1 ligne)\n"
+        "ACTION: FINAL\n"
+        "ACTION_INPUT: [résumé clair de ce qui a été fait et vérifié]"
+    )
+
+
+def _build_post_delegate_continue_query(
+    original_query: str,
+    obs_text: str,
+    pending_tasks: List[str],
+    verify_report: str = "",
+) -> str:
+    pending = "\n".join(f"- {task}" for task in pending_tasks[:8])
+    verify_block = (
+        "Vérification navigateur autonome après CodeAgent : OK\n"
+        f"{verify_report[:1600]}\n\n"
+        if verify_report
+        else ""
+    )
+    return (
+        f"Requête originale: {original_query}\n\n"
+        f"Le CodeAgent a terminé avec succès :\n{obs_text[:2200]}\n\n"
+        f"{verify_block}"
+        "Ne finalise pas encore : le CodeAgent a terminé sa sous-tâche, "
+        "mais il reste des tâches métier à accomplir.\n"
+        f"Tâches restantes:\n{pending}\n\n"
+        "INSTRUCTION : continue avec la prochaine tâche métier restante. "
+        "Ne produis une reponse finale que quand ces tâches restantes sont réellement faites "
+        "ou impossibles avec explication claire."
+    )
+
+
+def _verify_report_has_preview_server_mime_error(verify_report: str) -> bool:
+    folded = _fold_react_status_text(verify_report)
+    return (
+        "preview_server_mime_error" in folded
+        or (
+            "mime type" in folded
+            and "application/json" in folded
+            and "javascript" in folded
+        )
+    )
+
+
+def _build_post_delegate_web_verify_failure_query(
+    original_query: str,
+    project_path: Path,
+    obs_text: str,
+    verify_report: str,
+) -> str:
+    if _verify_report_has_preview_server_mime_error(verify_report):
+        instruction = (
+            "INSTRUCTION OBLIGATOIRE : ne finalise pas et ne redemande pas au CodeAgent "
+            "de reecrire les fichiers JS uniquement pour ce MIME. Relance d'abord "
+            "`browser_verify_local_project` sur ce dossier : le serveur preview Lumena "
+            "force les MIME JavaScript. Si la verification echoue encore avec une vraie "
+            "erreur applicative distincte, appelle ensuite `delegate_task` pour corriger."
+        )
+    else:
+        instruction = (
+            "INSTRUCTION OBLIGATOIRE : ne finalise pas. Appelle maintenant `delegate_task` "
+            "avec `agent_type=\"code\"`, `project_path` sur ce dossier, et une description "
+            "demandant de corriger les erreurs runtime navigateur ci-dessus. Après correction, "
+            "la vérification navigateur sera relancée."
+        )
+    return (
+        f"Requête originale: {original_query}\n\n"
+        f"Le CodeAgent a livré ce rapport :\n{obs_text[:1800]}\n\n"
+        "VÉRIFICATION NAVIGATEUR AUTONOME ÉCHOUÉE.\n"
+        f"Projet vérifié: {project_path}\n"
+        f"{verify_report[:2600]}\n\n"
+        f"{instruction}"
+    )
+
 # ── Imports depuis react_config (constantes, enums, flags) ─────────
 from .react_config import (
     ActionType, Thought, Action, Observation, ReActStep, TaskItem,
@@ -107,10 +455,15 @@ _HC_TOOLS_RUNTIME = frozenset({
     "process_status", "health_check", "web_fetch",
     "browser_navigate", "browser_get_content", "browser_dom_state",
 })
+# Phase I-8 (Fix AF) : outils MCP comptant comme preuve d'une action
+# d'installation/activation MCP réelle (exonération du guard sans-plan).
+_HC_TOOLS_MCP = frozenset({
+    "run_mcp_autonomy", "add_mcp", "resume_mcp_task", "request_mcp_ticket",
+})
 _HC_TOOLS_ANY_CREATE = (
     _HC_TOOLS_FILE | _HC_TOOLS_DOC | _HC_TOOLS_SITE | _HC_TOOLS_TASK
     | _HC_TOOLS_GITHUB | _HC_TOOLS_STRIPE | _HC_TOOLS_IMAGE | _HC_TOOLS_NOTION
-    | _HC_TOOLS_DISCORD
+    | _HC_TOOLS_DISCORD | _HC_TOOLS_MCP
 )
 _HC_TOOLS_ANY_SEND = _HC_TOOLS_MAIL | _HC_TOOLS_MESSAGING | _HC_TOOLS_DISCORD | _HC_TOOLS_SOCIAL | _HC_TOOLS_GITHUB
 
@@ -1737,6 +2090,180 @@ def _obs_looks_tabular(obs_content: str) -> bool:
     return n_markers >= 2
 
 
+_PHASE27_MCP_LOOP_TOOLS: frozenset = frozenset({
+    "request_mcp_capability",
+    "request_mcp_ticket",
+    "run_mcp_autonomy",
+    "resume_mcp_task",
+    # Phase I-8 (Fix AL) : add_mcp était le SEUL outil du flux sans
+    # guidance — après `mcp_added` le LLM ne savait pas qu'il fallait
+    # enchaîner run_mcp_autonomy (observé runtime 2026-06-11 22:44 :
+    # errance discover_tools/python -c/API au lieu d'install+activate).
+    "add_mcp",
+})
+
+
+def _phase27_mcp_observation_guidance(tool_name: str, observation_content: str) -> Optional[str]:
+    """Return safe conversational guidance after a Phase 26 MCP loop tool.
+
+    The guidance is deterministic and read-only. It never executes approvals,
+    installs, activations, subprocesses, or catalog mutations.
+    """
+    if tool_name not in _PHASE27_MCP_LOOP_TOOLS:
+        return None
+    if not observation_content:
+        return None
+    try:
+        data = json.loads(observation_content)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    decision = str(data.get("decision") or payload.get("mapped_decision") or "").strip()
+    recommendation = str(payload.get("recommendation_code") or "").strip()
+    ticket_id = payload.get("proposed_ticket_action_id")
+    target_server_id = payload.get("target_server_id")
+
+    if recommendation in {
+        "use_existing",
+        "already_applied",
+        "autonomy_ready_to_use",
+        "resume_ready_to_use",
+    }:
+        return (
+            "MCP_LOOP_GUIDANCE: La capacite MCP semble deja disponible. "
+            "Continue la tache avec les outils visibles, sans creer de ticket. "
+            "Si un target_tool_name est fourni, appelle cet outil pour finir."
+        )
+    if recommendation == "mcp_github_no_package":
+        # Phase I-8 (Fix AS) : repo GitHub sans package npm/PyPI dans le
+        # README — Lumena n'installe jamais depuis les sources.
+        return (
+            "MCP_LOOP_GUIDANCE: Le README de ce repo GitHub ne mentionne "
+            "aucun package npm/PyPI installable. Lumena n'installe PAS "
+            "depuis les sources (registres uniquement, securite). Demande "
+            "a l'utilisateur le nom EXACT du package (npm:<nom> ou "
+            "pypi:<nom>) — n'invente JAMAIS un nom de package, et ne tente "
+            "JAMAIS git clone / pip / npm en shell."
+        )
+    if recommendation in {"mcp_added", "mcp_target_resolved"}:
+        # Phase I-8 (Fix AL) : add_mcp ne fait QUE cataloguer/resoudre.
+        # L'install + l'activation passent par run_mcp_autonomy.
+        if recommendation == "mcp_target_resolved":
+            return (
+                "MCP_LOOP_GUIDANCE: Cible resolue (dry-run, AUCUNE mutation). "
+                "Pour cataloguer reellement: add_mcp avec live=true et "
+                "confirmation_phrase=\"I-CONFIRM-ADD-MCP\" generee TOI-MEME."
+            )
+        next_hint = ""
+        if payload.get("approval_ticket_id"):
+            next_hint = (
+                " Un ticket d'approbation a ete cree: demande a "
+                "l'utilisateur de l'approuver dans MCP > Approbations puis "
+                "de dire 'fait'."
+            )
+        else:
+            next_hint = (
+                " AUCUN ticket a approuver (entree deja au catalogue ou "
+                "auto-acceptee) — ne demande PAS d'approbation a "
+                "l'utilisateur."
+            )
+        return (
+            "MCP_LOOP_GUIDANCE: Le package est au catalogue mais N'EST PAS "
+            "installe ni active — add_mcp ne fait que cataloguer."
+            + next_hint +
+            " Etape suivante OBLIGATOIRE: appelle run_mcp_autonomy("
+            "intent=\"utiliser <nom du package>\", live=true, "
+            "confirmation_phrase=\"I-CONFIRM-MCP-AUTONOMY\") qui enchaine "
+            "install + activation + enregistrement des tools. "
+            "JAMAIS pip/npm install en shell. Ne dis jamais que le MCP est "
+            "installe ou actif avant observation explicite."
+        )
+    if recommendation == "needs_local_creation":
+        return (
+            "MCP_LOOP_GUIDANCE: Une creation locale MCP est necessaire. "
+            "Si un ticket mcp_local_create vient d'etre approuve dans le panel, "
+            "ne cree pas un nouveau ticket: dis a l'utilisateur de cliquer "
+            "`Materialiser local MCP` dans MCP > Approvals/Decisions recentes, "
+            "puis de reprendre la demande. Sinon, appelle request_mcp_ticket "
+            "avec confirmation_phrase=\"I-CONFIRM-MCP-TICKET\" et live=true. "
+            "Ne dis jamais que le MCP est installe ou actif avant observation "
+            "explicite."
+        )
+    if recommendation in {
+        "needs_install_approval",
+        "needs_activation_approval",
+        "needs_catalog_approval",
+    }:
+        # Phase I-8 (Fix AH) : guidance vers run_mcp_autonomy (l'outil que
+        # le LLM A dans sa liste) avec SA phrase. L'ancienne guidance
+        # pointait request_mcp_ticket (hors liste) avec I-CONFIRM-MCP-TICKET
+        # → DeepSeek transposait la mauvaise phrase sur run_mcp_autonomy
+        # (observe runtime 2026-06-11 17:41, boucle confirmation_phrase_invalid).
+        # Phase I-8 (Fix AU.2) : guidance DIRECTIVE. L'ancien « Si
+        # l'utilisateur veut continuer » poussait DeepSeek a redemander
+        # un 'oui' alors que la demande initiale EST le consentement
+        # (observe runtime 2026-06-12 10:36 : install duckduckgo jamais
+        # lancee, l'utilisateur a du re-confirmer pour rien). Le gate
+        # humain reel est le ticket panel — le pipeline le redemandera
+        # lui-meme si necessaire.
+        return (
+            "MCP_LOOP_GUIDANCE: Une action MCP est necessaire et la "
+            "demande de l'utilisateur EST deja son accord. Rappelle "
+            "MAINTENANT run_mcp_autonomy avec le MEME intent, live=true et "
+            "confirmation_phrase=\"I-CONFIRM-MCP-AUTONOMY\" (la phrase "
+            "EXACTE de run_mcp_autonomy — pas une autre). "
+            "GENERE cette phrase TOI-MEME dans l'appel d'outil — ne demande "
+            "JAMAIS a l'utilisateur de la taper, et ne lui redemande PAS "
+            "un 'oui' : si une approbation humaine est requise, le systeme "
+            "creera un ticket et te le dira. Ne dis jamais que "
+            "le MCP est installe ou actif avant observation explicite. "
+            "N'utilise pas plan_create ni CodeAgent pour remplacer "
+            "le flux MCP."
+        )
+    if recommendation in {"ticket_would_be_proposed", "autonomy_would_run"}:
+        return (
+            "MCP_LOOP_GUIDANCE: Un ticket MCP serait cree en mode live. "
+            "Explique a l'utilisateur qu'une confirmation/admin UI est requise. "
+            "Ne tente aucune installation ni activation silencieuse."
+        )
+    if recommendation in {"ticket_proposed", "waiting_approval", "autonomy_ticket_created"}:
+        suffix = ""
+        if isinstance(ticket_id, str) and ticket_id:
+            suffix += f" ticket_id={ticket_id}."
+        if isinstance(target_server_id, str) and target_server_id:
+            suffix += f" server_id={target_server_id}."
+        return (
+            "MCP_LOOP_GUIDANCE: Ticket MCP pending. Dis a l'utilisateur de "
+            "l'approuver dans le panel MCP (MCP > Approbations) puis de te "
+            "dire simplement 'fait'. A ce moment-la, rappelle run_mcp_autonomy "
+            "avec le MEME intent qu'au depart, live=true et "
+            "confirmation_phrase=\"I-CONFIRM-MCP-AUTONOMY\" generee TOI-MEME "
+            "(ne demande JAMAIS a l'utilisateur de taper une phrase). "
+            "L'approbation du catalogue suffit : install et activation "
+            f"s'enchainent ensuite automatiquement.{suffix}"
+        )
+    if recommendation in {
+        "blocked",
+        "no_safe_path",
+        "phase24_unavailable",
+        "phase25_unavailable",
+        "live_requirements_not_met",
+        "confirmation_phrase_invalid",
+        "caller_kind_not_allowed",
+        "code_agent_out_of_scope",
+    } or decision == "blocked":
+        return (
+            "MCP_LOOP_GUIDANCE: Aucun chemin MCP safe n'a ete trouve. "
+            "Reponds honnetement avec le blocage utile, sans inventer de "
+            "capacite ni promettre une installation."
+        )
+    return None
+
+
 def _synthesize_response_from_observation(
     obs_content: str, tool_name: str, original_query: str
 ) -> Optional[str]:
@@ -2835,6 +3362,70 @@ class ReActLoop:
                     f"pour en chercher par description semantique.)"
                 )
 
+        mcp_loop_section = ""
+        if "request_mcp_capability" in tools_desc:
+            _run_line = ""
+            _resume_line = ""
+            if "run_mcp_autonomy" in tools_desc:
+                _run_line = (
+                    "- Pour une demande utilisateur simple du type \"trouve/installe/"
+                    "utilise un MCP pour X\", utilise d'abord `run_mcp_autonomy`. "
+                    "En live, la phrase exacte requise est "
+                    "`I-CONFIRM-MCP-AUTONOMY`; sans cette phrase, reste en dry-run "
+                    "ou demande-la explicitement.\n"
+                )
+            if "resume_mcp_task" in tools_desc:
+                _resume_line = (
+                    "- Apres approbation, materialisation locale, installation ou activation MCP, utilise "
+                    "`resume_mcp_task` avec la demande initiale pour verifier si "
+                    "le nouvel outil est disponible, puis appelle l'outil cible. "
+                    "Si l'utilisateur dit \"c'est bon, reprends\" apres un ticket MCP, "
+                    "appelle `resume_mcp_task`; n'utilise jamais `delegate_task`/CodeAgent "
+                    "pour creer le MCP local.\n"
+                )
+            _ticket_line = ""
+            _ticket_followup_line = ""
+            if "request_mcp_ticket" in tools_desc:
+                _ticket_line = (
+                    "- Si `request_mcp_capability` indique qu'une action admin "
+                    "MCP est necessaire, utilise `request_mcp_ticket` uniquement "
+                    "pour creer un ticket pending. La phrase exacte requise est "
+                    "`I-CONFIRM-MCP-TICKET`. Pour creer reellement le ticket "
+                    "pending, passe `live=true`; `live=false` est un dry-run "
+                    "et ne cree pas de ticket.\n"
+                )
+                _ticket_followup_line = (
+                    "- Si la conversation precedente indique qu'un ticket MCP "
+                    "est la prochaine etape et que l'utilisateur dit \"oui\", "
+                    "\"cree le ticket\", \"vas-y\" ou equivalent : utilise "
+                    "`request_mcp_ticket` si la phrase exacte "
+                    "`I-CONFIRM-MCP-TICKET` est presente, avec `live=true`. "
+                    "Si elle n'est pas presente, demande uniquement cette phrase exacte. "
+                    "N'utilise jamais `plan_create`, CodeAgent, un plan manuel "
+                    "ou une creation de fichier pour remplacer un ticket MCP.\n"
+                )
+            mcp_loop_section = f"""
+## AUTONOMIE MCP (capacites/outils externes)
+- Si l'utilisateur demande un outil externe, un serveur MCP, une capacite absente,
+  ou si tu allais repondre "je ne peux pas" faute d'outil, appelle d'abord
+  `request_mcp_capability`.
+{_run_line}{_resume_line}
+{_ticket_line}- `request_mcp_ticket` ne fait qu'une proposition/ticket pending :
+  il ne valide jamais, n'installe jamais, n'active jamais et n'execute jamais.
+- Ne dis jamais qu'un MCP est installe, active ou utilisable tant que tu n'as pas
+  une observation explicite d'un outil/runtime confirmant cet etat.
+- Si un ticket MCP est cree ou deja pending, reponds clairement a l'utilisateur :
+  "Un ticket MCP est en attente dans le panel MCP ; approuve-le puis relance ou
+  demande-moi de reprendre."
+- Attention : une observation `request_mcp_ticket` avec `dry_run: true`,
+  `recommendation_code: blocked` ou sans `proposed_ticket_action_id` ne prouve
+  pas qu'un ticket a ete cree. Ne dis "ticket cree" que si l'observation indique
+  `ticket_proposed` ou `waiting_approval`.
+{_ticket_followup_line}
+- Pour une tache de code, garde la delegation CodeAgent. La boucle MCP sert aux
+  capacites/outils externes manquants, pas a coder directement.
+"""
+
         query_lower = query.lower()
 
         # --- Formality (vouvoiement / tutoiement) ---
@@ -3208,6 +3799,7 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
 {_recent_failures_section}
 ## Outils disponibles :
 {tools_desc}
+{mcp_loop_section}
 {browser_protocol_section}
 {few_shot_section}
 {model_specific_hints}
@@ -3228,18 +3820,19 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 ## Regles essentielles (tu connais deja le reste) :
 1. ANTI-HALLUCINATION : N'affirme JAMAIS avoir fait une action sans OBSERVATION confirmee. Si tu dis "j'ai cree/envoye/ecrit", tu DOIS avoir l'OBSERVATION correspondante dans l'historique.
 2. Nouveau fichier SIMPLE (1 seul, non-code) -> `write_file`. Fichier existant -> `edit_file`/`apply_patch`.
-3. Projet code (jeu, site, app, script >50 lignes, multi-fichiers) -> TOUJOURS `delegate_task(agent_type="code")`. JAMAIS write_file un par un pour du code.
+3. Projet code multi-fichiers (jeu, site, app, script >50 lignes) -> utilise `create_project` en création from scratch, ou `delegate_task(agent_type="code")` en modification/debug. JAMAIS write_file un par un pour du code.
 4. PLAN = ENGAGEMENT : complete toutes les taches avant FINAL. Si impossible : explique-le dans THOUGHT et passe a la suivante.
-5. Apres delegate_task ✅ → FINAL_ANSWER IMMEDIATEMENT. Ne relance JAMAIS delegate_task pour "verifier". Le CodeAgent a deja tout fait, son rapport est ta verification.
-6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file/create_project pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
+5. Apres delegate_task/create_project ✅ → verifie le runtime si c'est un site/app/jeu web, puis FINAL. Ne relance delegate_task que si la verification navigateur echoue.
+6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `create_project`, `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
 9. Serveur de preview/test (http.server, serve, vite, etc.) -> JAMAIS sur le port 8080 (reserve a Lumena). Utilise 8081 ou superieur (ex: `python -m http.server 8081`).
+10. Verification de projet web local/workspace -> utilise `browser_verify_local_project`. N'utilise pas `browser_navigate` vers localhost/127.0.0.1 : le garde SSRF peut le bloquer.
 
 ## Delegation CodeAgent — OBLIGATOIRE pour le code :
 ⚠️ REGLE ABSOLUE : Tu ne codes JAMAIS toi-meme. Tu DELEGUES au CodeAgent.
-- "code moi un jeu" / "cree un site" / "fais un script" / "programme une app" → `delegate_task(agent_type="code", description="...", context="...")`
-- Le CodeAgent ecrit le code, cree les fichiers, execute, teste, et corrige. Toi tu ne fais que deleguer.
+- "code moi un jeu" / "cree un site" / "fais un script" / "programme une app" neuf → `create_project(...)` ou `delegate_task(agent_type="code", description="...", context="...")`
+- Le CodeAgent ecrit le code, cree les fichiers, execute, teste, et corrige. Toi tu utilises le rail projet/delegation, pas write_file.
 - `delegate_task` : SYNCHRONE — attend le resultat, tu enchaines (deploy, mail, etc.).
 - `delegate_task_bg` : ARRIERE-PLAN — retourne un task_id, la progression s'affiche automatiquement dans le chat.
 - Exception micro-fix borné (typo, import manquant, 1-2 lignes cassées, petit fix CSS/HTML/JS/Python, max 30 lignes, 1 seul fichier) → `str_replace` ou `edit_by_lines` en priorité, `edit_file` si fichier court. Exclus : Dockerfile, package.json, pyproject.toml, requirements.txt, tout fichier de config/build. Incertitude ou chantier plus large → `delegate_task` obligatoire.
@@ -3876,6 +4469,11 @@ Maintenant, reflechis et reponds:"""
         # complétées (via hint/tool/arg match). L'auto-avancement désynchronise le plan
         # et provoque des blocages PLAN GUARD sur des tâches marquées par erreur.
         _is_read_only_mode = False  # v2: mode lecture seule supprimé
+        _next_auto_task = next((t for t in self._task_plan if not t.completed), None)
+        _auto_next_is_closure_task = bool(
+            _next_auto_task
+            and _is_post_codeagent_closure_task(_next_auto_task.description)
+        )
         _TRIVIAL_TOOLS = {
             # Lecture / navigation fichiers
             "wait", "memory_add", "read_file", "list_files", "list_dir",
@@ -3908,6 +4506,7 @@ Maintenant, reflechis et reponds:"""
             and not _seq_matched
             and not observation_has_failure
             and not _is_read_only_mode
+            and not _auto_next_is_closure_task
             and not _browser_observation_is_auxiliary_action(tool_name, observation_content or "")
         ):
             # Garde: max 1 auto-avancement par itération (parallel_tools peut appeler
@@ -4110,6 +4709,87 @@ Maintenant, reflechis et reponds:"""
         marked = reconcile_delegate_report(self._task_plan, obs_text, iteration)
         if marked:
             self._emit_plan_state(context_tool="delegate_task")
+        return marked
+
+    def _pending_delegate_success_business_tasks(self) -> List[TaskItem]:
+        """Return unfinished tasks that CodeAgent/web verify must not close."""
+        if not self._task_plan:
+            return []
+        pending: List[TaskItem] = []
+        for task in self._task_plan:
+            if task.completed:
+                continue
+            desc = task.description or ""
+            if _is_post_codeagent_closure_task(desc):
+                continue
+            if is_verify_task(_fold_react_status_text(desc)):
+                continue
+            pending.append(task)
+        return pending
+
+    def _delegate_success_fallback_message(self) -> str:
+        """Build a useful fallback when post-CodeAgent FINAL has empty ACTION_INPUT."""
+        for item in reversed(self.history):
+            if not item.action or not item.observation or not item.observation.success:
+                continue
+            if item.action.tool_name not in ("delegate_task", "delegate_task_bg", "create_project"):
+                continue
+            content = (item.observation.content or "").strip()
+            if content:
+                return "Le CodeAgent a termine avec succes. Rapport:\n\n" + content[:1600]
+        return "Le CodeAgent a termine avec succes."
+
+    def _mark_web_runtime_plan_verified(self, iteration: int) -> int:
+        """Marque les étapes couvertes par verify_web_project_runtime.
+
+        La vérification runtime démarre déjà un preview, ouvre Playwright, inspecte
+        le DOM/la console et teste les interactions basiques. Elle doit donc clore
+        les tâches navigateur/runtime du plan sans repasser par le LLM, sinon le
+        PLAN GUARD peut bloquer un FINAL pourtant prouvé.
+        """
+        if not self._task_plan:
+            return 0
+
+        action_markers = (
+            "serveur", "server", "navigateur", "browser", "localhost",
+            "127.0.0.1", "preview", "playwright", "port",
+        )
+        runtime_markers = (
+            "console", "interaction", "interactions", "localstorage",
+            "local storage", "dom", "canvas", "bouton", "boutons",
+            "affichage", "afficher", "rendu", "runtime",
+        )
+        verify_markers = (
+            "vérifier", "verifier", "tester", "test", "valider",
+            "confirmer", "s'assurer", "assurer", "lancer", "ouvrir",
+        )
+
+        marked = 0
+        for task in self._task_plan:
+            if task.completed:
+                continue
+            desc = (task.description or "").lower()
+            is_action_task = any(m in desc for m in action_markers) and any(m in desc for m in verify_markers)
+            is_runtime_task = any(m in desc for m in runtime_markers) and (
+                is_verify_task(desc) or any(m in desc for m in verify_markers)
+            )
+            is_conditional_fix_task = _is_post_codeagent_conditional_correction_task(desc)
+            if not (is_action_task or is_runtime_task or is_conditional_fix_task):
+                continue
+            task.completed = True
+            task.completed_at_iteration = iteration
+            task.completed_by_tool = "browser_verify_local_project"
+            task.completion_status = "not_applicable" if is_conditional_fix_task else "verified"
+            task.completion_evidence = (
+                "Correction conditionnelle non necessaire: verification runtime web OK"
+                if is_conditional_fix_task
+                else "Vérification runtime web autonome OK"
+            )
+            task.completion_confidence = "strong"
+            marked += 1
+
+        if marked:
+            self._emit_plan_state(context_tool="browser_verify_local_project")
         return marked
 
     async def run(self, query: str) -> str:
@@ -5551,11 +6231,20 @@ Maintenant, reflechis et reponds:"""
                         "présenter au", "presenter au",
                         "présenter à", "presenter a",
                         "rapport final", "rapport complet",
+                        "résumé final", "resume final",
+                        "donner le résumé", "donner le resume",
                         "à l'utilisateur", "a l'utilisateur",
                         "donner la réponse", "donner la reponse",
                         "afficher", "exposer", "expliquer",
                         "livrer", "remettre", "transmettre",
                         "écrire la réponse", "ecrire la reponse",
+                    }
+                    _SYNTH_SIDE_EFFECT_BLOCK_KW = {
+                        "email", "mail", "courriel", "telegram", "whatsapp",
+                        "discord", "pdf", "docx", "xlsx", "zip", "archive",
+                        "upload", "déployer", "deployer", "déploi", "deploi",
+                        "publier", "poster", "envoyer", "envoie", "envoi", "send", "joindre",
+                        "attacher",
                     }
                     # Avant l'auto-mark : on note si toutes les tâches "métier" (non-synthèse)
                     # étaient déjà completed. Si oui → le travail est vraiment fini, on évite
@@ -5564,13 +6253,19 @@ Maintenant, reflechis et reponds:"""
                         1
                         for _t in self._task_plan
                         if not _t.completed
-                        and not any(_kw in _t.description.lower() for _kw in _SYNTH_KW)
+                        and not (
+                            any(_kw in _t.description.lower() for _kw in _SYNTH_KW)
+                            and not any(_kw in _t.description.lower() for _kw in _SYNTH_SIDE_EFFECT_BLOCK_KW)
+                        )
                     )
                     _plan_business_complete = _business_tasks_remaining == 0
                     for _st in self._task_plan:
                         if not _st.completed:
                             _dl = _st.description.lower()
-                            if any(_kw in _dl for _kw in _SYNTH_KW):
+                            if (
+                                any(_kw in _dl for _kw in _SYNTH_KW)
+                                and not any(_kw in _dl for _kw in _SYNTH_SIDE_EFFECT_BLOCK_KW)
+                            ):
                                 _st.completed = True
                                 _st.completed_by_tool = "FINAL"
                     completed = sum(1 for t in self._task_plan if t.completed)
@@ -5603,7 +6298,7 @@ Maintenant, reflechis et reponds:"""
                     # rédige sa synthèse → ne pas bloquer son FINAL.
                     _is_read_only = False  # v2: mode lecture seule supprimé
                     if (
-                        remaining >= 2
+                        (_business_tasks_remaining > 0 or remaining >= 2)
                         and self._plan_guard_retries < 3
                         and not _is_clarification
                         and not _is_read_only
@@ -5872,6 +6567,14 @@ Maintenant, reflechis et reponds:"""
                         (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", _HC_TOOLS_ANY_CREATE),
                         (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|commit réussi|commit reussi)\b", _HC_TOOLS_GITHUB),
                         (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", _HC_TOOLS_MAIL),
+                        # Phase I-8 (Fix AF) : formes passives + « avec succès » +
+                        # installation/activation. Observé runtime 2026-06-11 04:34 :
+                        # « MCP Météo installé et testé avec succès » / « a été
+                        # installé sur ton système » avec ZÉRO outil appelé —
+                        # aucun pattern ci-dessus ne matchait.
+                        (r"\bj[''`]ai (installé|installe|activé|active|testé|teste|déployé|deploye)\b", _HC_TOOLS_ANY_CREATE),
+                        (r"\b(a|ont) été (installé|installe|créé|cree|configuré|configure|activé|active|testé|teste|envoyé|envoye|généré|genere|déployé|deploye)", _HC_TOOLS_ANY_CREATE),
+                        (r"\b(installé|installe|activé|active|créé|cree|configuré|configure|testé|teste|déployé|deploye)\w*( et \w+)? avec succ[èe]s\b", _HC_TOOLS_ANY_CREATE),
                     ]
                     _all_known_np = _tu
                     _hb_noplan = False
@@ -5937,6 +6640,11 @@ Maintenant, reflechis et reponds:"""
                 _ledger_guard_triggered = False
                 if not getattr(self, '_ledger_final_guard_used', False):
                     _final_text_lower = ((action.answer or "") + " " + (thought.content or "")).lower()
+                    # Phase I-8 (Fix AF) : normalise les apostrophes typographiques
+                    # (DeepSeek écrit souvent « j’ai ») pour que les patterns
+                    # ASCII matchent.
+                    for _apo in ("’", "‘", "ʼ", "´", "`"):
+                        _final_text_lower = _final_text_lower.replace(_apo, "'")
                     _runtime_claim_for_final = _has_runtime_server_claim_proof(_final_text_lower, self._successful_session_tools)
                     _CLAIM_PATTERNS = (
                         "j'ai créé", "j'ai crée", "j'ai envoyé", "j'ai envoye",
@@ -5945,6 +6653,33 @@ Maintenant, reflechis et reponds:"""
                         "c'est fait", "c'est envoyé", "c'est créé",
                         "i created", "i wrote", "i sent", "i saved", "i configured",
                         "fichier créé", "fichier écrit", "message envoyé",
+                        # Phase I-8 (Fix AF) : formes passives + « avec succès » +
+                        # install/activation/test — trous observés runtime
+                        # 2026-06-11 04:34 (« installé et testé avec succès » /
+                        # « a été installé » sans AUCUN outil appelé).
+                        "j'ai installé", "j'ai installe", "j'ai activé",
+                        "j'ai active", "j'ai testé", "j'ai teste",
+                        "j'ai déployé", "j'ai deploye",
+                        "a été installé", "a ete installe",
+                        "a été créé", "a ete cree",
+                        "a été configuré", "a ete configure",
+                        "a été activé", "a ete active",
+                        "a été testé", "a ete teste",
+                        "a été envoyé", "a ete envoye",
+                        "a été généré", "a ete genere",
+                        "a été déployé", "a ete deploye",
+                        "installé avec succès", "installe avec succes",
+                        "activé avec succès", "active avec succes",
+                        "créé avec succès", "cree avec succes",
+                        "configuré avec succès", "configure avec succes",
+                        "testé avec succès", "teste avec succes",
+                        "envoyé avec succès", "envoye avec succes",
+                        "installé et testé", "installe et teste",
+                        "installé et activé", "installe et active",
+                        "test effectué", "test effectue",
+                        "test réussi", "test reussi",
+                        "i installed", "successfully installed",
+                        "installed and tested", "installed successfully",
                     )
                     _claims_action = any(p in _final_text_lower for p in _CLAIM_PATTERNS)
 
@@ -6085,12 +6820,11 @@ Maintenant, reflechis et reponds:"""
                         t for t in self._task_plan
                         if not t.completed and is_verify_task(t.description.lower())
                     ]
-                    if not _pending_verify:
+                    _pending_business = self._pending_delegate_success_business_tasks()
+                    if not _pending_verify and not _pending_business:
                         # Cas nominal : aucune verify-task pendante → bypass autorisé
                         _finish_iteration(status="ok", summary="delegate_task_final_direct")
-                        message = answer if answer.strip() else (
-                            "Le CodeAgent a terminé avec succès. Consulte le workspace pour les fichiers créés."
-                        )
+                        message = answer if answer.strip() else self._delegate_success_fallback_message()
                         self._mark_task_done("delegate_task_final_direct")
                         return message
                     # Verify-tasks non prouvées : traitement FINAL normal ci-dessous
@@ -6099,6 +6833,11 @@ Maintenant, reflechis et reponds:"""
                         "→ traitement FINAL normal (plan reflétera l'état réel)",
                         len(_pending_verify),
                     )
+                    if _pending_business:
+                        logger.info(
+                            "[delegate] Taches metier encore ouvertes apres CodeAgent: {}",
+                            [t.description for t in _pending_business[:5]],
+                        )
 
                 # ── Guard anti-thought-leak : le LLM a mis sa réflexion dans ACTION_INPUT au lieu de la réponse ──
                 # Cela arrive quand ACTION_INPUT est vide → fallback sur thought_content (ligne 1881)
@@ -7432,6 +8171,13 @@ Maintenant, reflechis et reponds:"""
                     logger.debug("⚠️ Guidance anti-boucle injectée dans observation")
                     self._pending_loop_guidance = None
 
+                _mcp_loop_guidance = _phase27_mcp_observation_guidance(
+                    action.tool_name,
+                    observation.content or "",
+                )
+                if _mcp_loop_guidance:
+                    observation.content = (observation.content or "") + "\n\n" + _mcp_loop_guidance
+
                 # FIX: Supprimé le '...' trompeur qui faisait croire au LLM que le contenu était tronqué
                 obs_preview = observation.content[:500]
                 logger.debug(f"Observation: {obs_preview}{'[...log truncated]' if len(observation.content) > 500 else ''}")
@@ -7717,6 +8463,87 @@ Fichiers web créés: {', '.join(created_files) if created_files else 'Aucun'}
 Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{'style.css ' if not has_css else ''}{'script.js' if not has_js else ''}
 """
             
+            # ── Post-succès create_project web : vérification runtime autonome ──
+            _tool_args_for_project = action.tool_args if isinstance(action.tool_args, dict) else {}
+            _is_create_project_web_success = (
+                action.tool_name == "create_project"
+                and observation.success
+                and obs_text
+                and _post_delegate_web_verify_enabled()
+                and _looks_like_web_delegate_delivery(original_query, _tool_args_for_project, obs_text)
+            )
+            if _is_create_project_web_success:
+                _web_project_path = _extract_existing_web_project_path(
+                    _tool_args_for_project,
+                    obs_text,
+                    base_dir=Path.cwd(),
+                )
+                if _web_project_path is None:
+                    query = (
+                        f"Requête originale: {original_query}\n\n"
+                        f"`create_project` a terminé avec succès :\n{obs_text[:2600]}\n\n"
+                        "Le résultat ressemble à un projet web, mais aucun dossier projet existant "
+                        "n'a été retrouvé dans le rapport. Ne finalise pas encore : retrouve le "
+                        "dossier exact du projet, puis appelle `browser_verify_local_project` sur "
+                        "ce dossier. Si la vérification échoue, appelle `delegate_task` pour corriger."
+                    )
+                    self._after_delegate_success = False
+                    _finish_iteration(status="ok", summary="create_project_web_verify_needs_path")
+                    continue
+                try:
+                    from src.tools.web_project_runtime_verifier import verify_web_project_runtime
+
+                    _runtime_result = await verify_web_project_runtime(
+                        _web_project_path,
+                        expect_canvas=_delegate_delivery_expects_canvas(
+                            original_query,
+                            _tool_args_for_project,
+                            obs_text,
+                        ),
+                    )
+                    _runtime_report = _runtime_result.to_report(max_chars=5000)
+                except Exception as _runtime_exc:
+                    _runtime_result = None
+                    _runtime_report = (
+                        "Runtime verifier exception: "
+                        f"{type(_runtime_exc).__name__}: {str(_runtime_exc)[:400]}"
+                    )
+                if not _runtime_result or not _runtime_result.passed:
+                    query = _build_post_delegate_web_verify_failure_query(
+                        original_query,
+                        _web_project_path,
+                        obs_text,
+                        _runtime_report,
+                    )
+                    self._after_delegate_success = False
+                    _finish_iteration(status="ok", summary="create_project_web_verify_failed")
+                    continue
+                self._update_plan_progress(
+                    "browser_verify_local_project",
+                    {"project_path": str(_web_project_path)},
+                    _runtime_report,
+                    i,
+                )
+                self._mark_web_runtime_plan_verified(i)
+                _pending_business = self._pending_delegate_success_business_tasks()
+                if _pending_business:
+                    query = _build_post_delegate_continue_query(
+                        original_query,
+                        obs_text,
+                        [t.description for t in _pending_business],
+                        _runtime_report,
+                    )
+                    self._after_delegate_success = False
+                else:
+                    query = _build_post_delegate_web_verify_success_query(
+                        original_query,
+                        obs_text,
+                        _runtime_report,
+                    )
+                    self._after_delegate_success = True
+                _finish_iteration(status="ok", summary="create_project_web_verify_ok")
+                continue
+
             # ── Post-succès delegate_task : chemin FINAL direct ──
             # Après un delegate_task ✅, le rapport du CodeAgent EST la vérification.
             # On force le chemin FINAL sans repasser par "continue" pour éviter
@@ -7726,11 +8553,99 @@ Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{
                 and observation.success           # preuve structurelle, pas juste le badge ✅
                 and obs_text
                 and (obs_text.lstrip().startswith("✅") or "✅" in obs_text[:60])
+                and _delegate_report_has_real_work(action.tool_name or "", obs_text)
             )
             if _is_delegate_success:
                 # Réconcilier le plan avant le FINAL — contourne _MAX_COMPLETIONS_PER_CALL=2
                 # pour les rapports CodeAgent qui couvrent plusieurs étapes d'un coup
                 self._reconcile_plan_from_delegate_success(obs_text, i)
+                _tool_args_for_delegate = action.tool_args if isinstance(action.tool_args, dict) else {}
+                _web_delivery = (
+                    action.tool_name == "delegate_task"
+                    and _post_delegate_web_verify_enabled()
+                    and _looks_like_web_delegate_delivery(original_query, _tool_args_for_delegate, obs_text)
+                )
+                if _web_delivery:
+                    _web_project_path = _extract_existing_web_project_path(
+                        _tool_args_for_delegate,
+                        obs_text,
+                        base_dir=Path.cwd(),
+                    )
+                    if _web_project_path is None:
+                        query = (
+                            f"Requête originale: {original_query}\n\n"
+                            f"Le CodeAgent a terminé avec succès :\n{obs_text[:2600]}\n\n"
+                            "Le résultat ressemble à un projet web, mais aucun project_path existant "
+                            "n'a été retrouvé dans le rapport. Ne finalise pas encore : lis le rapport, "
+                            "retrouve le dossier exact du projet, puis appelle `browser_verify_local_project` "
+                            "sur ce dossier. Si la vérification échoue, appelle `delegate_task` pour corriger."
+                        )
+                        self._after_delegate_success = False
+                        _finish_iteration(status="ok", summary="delegate_task_web_verify_needs_path")
+                        continue
+                    try:
+                        from src.tools.web_project_runtime_verifier import verify_web_project_runtime
+
+                        _runtime_result = await verify_web_project_runtime(
+                            _web_project_path,
+                            expect_canvas=_delegate_delivery_expects_canvas(
+                                original_query,
+                                _tool_args_for_delegate,
+                                obs_text,
+                            ),
+                        )
+                        _runtime_report = _runtime_result.to_report(max_chars=5000)
+                    except Exception as _runtime_exc:
+                        _runtime_result = None
+                        _runtime_report = (
+                            "Runtime verifier exception: "
+                            f"{type(_runtime_exc).__name__}: {str(_runtime_exc)[:400]}"
+                        )
+                    if not _runtime_result or not _runtime_result.passed:
+                        query = _build_post_delegate_web_verify_failure_query(
+                            original_query,
+                            _web_project_path,
+                            obs_text,
+                            _runtime_report,
+                        )
+                        self._after_delegate_success = False
+                        _finish_iteration(status="ok", summary="delegate_task_web_verify_failed")
+                        continue
+                    self._update_plan_progress(
+                        "browser_verify_local_project",
+                        {"project_path": str(_web_project_path)},
+                        _runtime_report,
+                        i,
+                    )
+                    self._mark_web_runtime_plan_verified(i)
+                    _pending_business = self._pending_delegate_success_business_tasks()
+                    if _pending_business:
+                        query = _build_post_delegate_continue_query(
+                            original_query,
+                            obs_text,
+                            [t.description for t in _pending_business],
+                            _runtime_report,
+                        )
+                        self._after_delegate_success = False
+                    else:
+                        query = _build_post_delegate_web_verify_success_query(
+                            original_query,
+                            obs_text,
+                            _runtime_report,
+                        )
+                        self._after_delegate_success = True
+                    _finish_iteration(status="ok", summary="delegate_task_web_verify_ok")
+                    continue
+                _pending_business = self._pending_delegate_success_business_tasks()
+                if _pending_business:
+                    query = _build_post_delegate_continue_query(
+                        original_query,
+                        obs_text,
+                        [t.description for t in _pending_business],
+                    )
+                    self._after_delegate_success = False
+                    _finish_iteration(status="ok", summary="delegate_task_success_continue_business")
+                    continue
                 query = (
                     f"Requête originale: {original_query}\n\n"
                     f"Le CodeAgent a terminé avec succès :\n{obs_text[:3000]}\n\n"

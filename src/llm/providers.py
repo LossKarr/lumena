@@ -43,6 +43,12 @@ class ProviderType(Enum):
     MINIMAX = "minimax"
     ZAI = "zai"
     MISTRAL = "mistral"
+
+    def __eq__(self, other: object) -> bool:
+        return str(self.value) == str(getattr(other, "value", other))
+
+    def __hash__(self) -> int:
+        return hash(str(self.value))
     # Image generation providers
     STABILITY = "stability"
     FLUX = "flux"
@@ -246,6 +252,34 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=5.0,
         description="Claude Opus 4.8 — modèle le plus capable (raisonnement, code agentique, haute autonomie), 1M context, 128K output, adaptive thinking",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist"}),
+    ),
+    "claude-fable-5": ModelConfig(
+        name="claude-fable-5",
+        display_name="Claude Fable 5 (Anthropic)",
+        provider=ProviderType.ANTHROPIC,
+        model_id="claude-fable-5",
+        context_window=1000000,
+        max_output_tokens=128000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=10.0,
+        description="Claude Fable 5 — frontier Anthropic, 1M context, 128K output, adaptive thinking toujours actif, retention 30 jours",
+        badge="Frontier",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist", "reasoning", "long_context"}),
+    ),
+    "claude-mythos-5": ModelConfig(
+        name="claude-mythos-5",
+        display_name="Claude Mythos 5 (Anthropic — accès limité)",
+        provider=ProviderType.ANTHROPIC,
+        model_id="claude-mythos-5",
+        context_window=1000000,
+        max_output_tokens=128000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=10.0,
+        description="Claude Mythos 5 — modèle Anthropic à accès limité (Project Glasswing / comptes approuvés), à sélectionner explicitement uniquement",
+        badge="Limited",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist", "reasoning", "long_context"}),
     ),
     "claude-opus-4.7": ModelConfig(
         name="claude-opus-4.7",
@@ -543,6 +577,91 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
 
     # === NVIDIA NIM ===
+    "nvidia-deepseek-v4-flash": ModelConfig(
+        name="nvidia-deepseek-v4-flash",
+        display_name="DeepSeek V4-Flash (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="deepseek-ai/deepseek-v4-flash",
+        context_window=1_000_000,
+        max_output_tokens=16384,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="DeepSeek V4 Flash via NVIDIA NIM - free endpoint, fast coding and agent fallback, 1M context.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
+    ),
+    "nvidia-gpt-oss-120b": ModelConfig(
+        name="nvidia-gpt-oss-120b",
+        display_name="GPT-OSS 120B (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="openai/gpt-oss-120b",
+        context_window=131072,
+        max_output_tokens=4096,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="GPT-OSS 120B via NVIDIA NIM - free text-only reasoning fallback.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning"}),
+    ),
+    "nvidia-step-3.7-flash": ModelConfig(
+        name="nvidia-step-3.7-flash",
+        display_name="Step 3.7 Flash (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="stepfun-ai/step-3.7-flash",
+        context_window=262144,
+        max_output_tokens=16384,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="Step 3.7 Flash via NVIDIA NIM - free multimodal model for agentic coding and vision analysis.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "reasoning"}),
+    ),
+    "nvidia-kimi-k2.6": ModelConfig(
+        name="nvidia-kimi-k2.6",
+        display_name="Kimi K2.6 (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="moonshotai/kimi-k2.6",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_image_generation=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="Kimi K2.6 via NVIDIA NIM - free multimodal long-horizon coding and image understanding fallback.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context", "code_generation"}),
+    ),
+    "nvidia-glm-5.1": ModelConfig(
+        name="nvidia-glm-5.1",
+        display_name="GLM-5.1 (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="zai/glm-5.1",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="GLM-5.1 via NVIDIA NIM - free agentic engineering fallback for Z.AI workflows.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "code_generation"}),
+    ),
+    "nvidia-nemotron-3-ultra-550b-a55b": ModelConfig(
+        name="nvidia-nemotron-3-ultra-550b-a55b",
+        display_name="Nemotron 3 Ultra 550B A55B (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="nvidia/nemotron-3-ultra-550b-a55b",
+        context_window=1_000_000,
+        max_output_tokens=16384,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="Nemotron 3 Ultra 550B A55B via NVIDIA NIM - free large agentic reasoning fallback, slower than flash models.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
+    ),
     "nvidia-minimax-m2.7": ModelConfig(
         name="nvidia-minimax-m2.7",
         display_name="MiniMax M2.7 (NVIDIA NIM)",
@@ -555,10 +674,24 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=0.0,
         description="MiniMax M2.7 via NVIDIA NIM — préférer MiniMax natif si MINIMAX_API_KEY configuré. ⚠️ Serveurs souvent saturés : latence élevée possible.",
         badge="Gratuit",
-        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text"}),
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
 
     # === MINIMAX (natif — API OpenAI-compatible) ===
+    "minimax-m3": ModelConfig(
+        name="minimax-m3",
+        display_name="MiniMax M3",
+        provider=ProviderType.MINIMAX,
+        model_id="MiniMax-M3",
+        context_window=1000000,
+        max_output_tokens=65536,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.50,
+        description="MiniMax M3 — dernier modèle M-series, agentic reasoning, tool use, coding, 1M contexte via provider MiniMax natif",
+        badge="Nouveau",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
+    ),
     "minimax-m2.5": ModelConfig(
         name="minimax-m2.5",
         display_name="MiniMax M2.5",
@@ -895,6 +1028,104 @@ def get_available_models() -> List[ModelConfig]:
 def get_model_config(name: str) -> Optional[ModelConfig]:
     """Retourne la configuration d'un modèle par son nom."""
     return AVAILABLE_MODELS.get(name)
+
+
+MODEL_FALLBACKS: Dict[str, List[str]] = {
+    "claude-fable-5": [
+        "claude-opus-4.8",
+        "claude-sonnet-4.6",
+        "nvidia-nemotron-3-ultra-550b-a55b",
+        "nvidia-kimi-k2.6",
+    ],
+    "claude-mythos-5": [
+        "claude-fable-5",
+        "claude-opus-4.8",
+        "claude-sonnet-4.6",
+    ],
+    "deepseek-v4-flash": [
+        "nvidia-deepseek-v4-flash",
+        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "deepseek-v4-pro": [
+        "nvidia-nemotron-3-ultra-550b-a55b",
+        "nvidia-deepseek-v4-flash",
+        "nvidia-gpt-oss-120b",
+    ],
+    "kimi-k2.6": [
+        "nvidia-kimi-k2.6",
+        "nvidia-step-3.7-flash",
+    ],
+    "kimi-k2.5": [
+        "nvidia-kimi-k2.6",
+        "nvidia-step-3.7-flash",
+    ],
+    "glm-5.1": [
+        "nvidia-glm-5.1",
+        "nvidia-step-3.7-flash",
+    ],
+    "minimax-m2.7": [
+        "nvidia-minimax-m2.7",
+        "nvidia-step-3.7-flash",
+    ],
+    "minimax-m3": [
+        "minimax-m2.7",
+        "nvidia-minimax-m2.7",
+        "nvidia-step-3.7-flash",
+        "nvidia-kimi-k2.6",
+    ],
+    "gpt-5.5": [
+        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "gpt-5.4": [
+        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "gpt-5.4-mini": [
+        "nvidia-gpt-oss-120b",
+        "nvidia-deepseek-v4-flash",
+    ],
+    "o3": [
+        "nvidia-nemotron-3-ultra-550b-a55b",
+        "nvidia-gpt-oss-120b",
+    ],
+    "o4-mini": [
+        "nvidia-gpt-oss-120b",
+        "nvidia-deepseek-v4-flash",
+    ],
+    "gemini-3.1-pro": [
+        "nvidia-step-3.7-flash",
+        "nvidia-kimi-k2.6",
+    ],
+    "gemini-2.5-pro": [
+        "nvidia-step-3.7-flash",
+        "nvidia-kimi-k2.6",
+    ],
+    "gemini-2.5-flash": [
+        "nvidia-step-3.7-flash",
+        "nvidia-gpt-oss-120b",
+    ],
+    "mistral-large": [
+        "nvidia-gpt-oss-120b",
+        "nvidia-deepseek-v4-flash",
+    ],
+}
+
+
+def get_model_fallbacks(model_name: str) -> List[str]:
+    """Retourne les fallbacks gratuits rattaches a un modele Lumena."""
+    name = (model_name or "").strip()
+    cfg = AVAILABLE_MODELS.get(name)
+    if not cfg:
+        for candidate_name, candidate_cfg in AVAILABLE_MODELS.items():
+            if candidate_cfg.model_id == name:
+                name = candidate_name
+                cfg = candidate_cfg
+                break
+    if not cfg:
+        return []
+    return [fb for fb in MODEL_FALLBACKS.get(name, []) if fb in AVAILABLE_MODELS]
 
 
 def get_default_model_for_provider(provider_name: str) -> Optional[ModelConfig]:
@@ -1397,6 +1628,8 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     #         vision (analyse image via API), web (recherche/analyse web)
     # vision=0 => le modèle n'a PAS d'API vision
     # ── Anthropic ──────────────────────────────────────────────────────────
+    "claude-fable-5":              {"code": 96, "speed": 42, "reasoning": 99, "creative": 99, "research": 97, "vision": 97, "web": 94},
+    "claude-mythos-5":             {"code": 97, "speed": 38, "reasoning": 99, "creative": 99, "research": 98, "vision": 97, "web": 95},
     "claude-opus-4.8":             {"code": 94, "speed": 45, "reasoning": 98, "creative": 97, "research": 95, "vision": 96, "web": 92},
     "claude-opus-4.7":             {"code": 92, "speed": 45, "reasoning": 96, "creative": 97, "research": 94, "vision": 96, "web": 91},
     "claude-opus-4.6":             {"code": 90, "speed": 45, "reasoning": 94, "creative": 96, "research": 92, "vision": 95, "web": 90},
@@ -1423,14 +1656,22 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "gemini-2.5-flash":            {"code": 78, "speed": 94, "reasoning": 74, "creative": 74, "research": 86, "vision": 88, "web": 89},
     # ── Moonshot (Kimi) ────────────────────────────────────────────────────
     "kimi-k2.5":                   {"code": 74, "speed": 75, "reasoning": 78, "creative": 72, "research": 90, "vision":  0, "web": 82},
+    "kimi-k2.6":                   {"code": 88, "speed": 62, "reasoning": 88, "creative": 78, "research": 92, "vision": 90, "web": 86},
     # ── NVIDIA NIM ─────────────────────────────────────────────────────────
-    "nvidia-minimax-m2.7":         {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision": 52, "web": 70},
+    "nvidia-deepseek-v4-flash":    {"code": 90, "speed": 86, "reasoning": 88, "creative": 72, "research": 82, "vision":  0, "web": 76},
+    "nvidia-gpt-oss-120b":         {"code": 84, "speed": 78, "reasoning": 86, "creative": 76, "research": 80, "vision":  0, "web": 78},
+    "nvidia-step-3.7-flash":       {"code": 84, "speed": 82, "reasoning": 84, "creative": 76, "research": 82, "vision": 86, "web": 80},
+    "nvidia-kimi-k2.6":            {"code": 88, "speed": 60, "reasoning": 88, "creative": 78, "research": 92, "vision": 90, "web": 86},
+    "nvidia-glm-5.1":              {"code": 86, "speed": 68, "reasoning": 88, "creative": 78, "research": 82, "vision":  0, "web": 78},
+    "nvidia-nemotron-3-ultra-550b-a55b": {"code": 92, "speed": 38, "reasoning": 95, "creative": 82, "research": 94, "vision":  0, "web": 84},
+    "nvidia-minimax-m2.7":         {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
     # ── MiniMax (natif) ────────────────────────────────────────────────────
     "minimax-m2.5":                {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
     "minimax-m2.5-highspeed":      {"code": 84, "speed": 95, "reasoning": 78, "creative": 78, "research": 74, "vision":  0, "web": 66},
     "minimax-m2.1":                {"code": 80, "speed": 78, "reasoning": 76, "creative": 76, "research": 72, "vision":  0, "web": 65},
     "minimax-m2.1-highspeed":      {"code": 78, "speed": 94, "reasoning": 72, "creative": 72, "research": 68, "vision":  0, "web": 62},
     "minimax-m2.7":                {"code": 88, "speed": 76, "reasoning": 85, "creative": 84, "research": 80, "vision":  0, "web": 72},
+    "minimax-m3":                  {"code": 90, "speed": 72, "reasoning": 88, "creative": 86, "research": 86, "vision":  0, "web": 78},
     # ── Z.AI (GLM) ────────────────────────────────────────────────────────
     "glm-5.1":                     {"code": 85, "speed": 65, "reasoning": 88, "creative": 80, "research": 82, "vision":  0, "web": 78},
     "glm-4.7-flashx":              {"code": 80, "speed": 88, "reasoning": 76, "creative": 74, "research": 72, "vision":  0, "web": 70},
@@ -1476,7 +1717,7 @@ def best_model_for(
     """
     # Modèles réservés aux tâches vraiment complexes : sélectionnés seulement
     # si leur avantage de score > _PREMIUM_THRESHOLD sur le meilleur standard.
-    _PREMIUM_MODELS = {"claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5"}
+    _PREMIUM_MODELS = {"claude-fable-5", "claude-mythos-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-4.6", "claude-sonnet-4.5"}
     _PREMIUM_THRESHOLD = 10
 
     candidates = preferred_models or list(MODEL_SKILLS.keys())

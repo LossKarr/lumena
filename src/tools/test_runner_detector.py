@@ -17,7 +17,7 @@ from loguru import logger
 
 @dataclass
 class TestRunnerInfo:
-    runner: str              # "pytest" | "npm_test" | "go_test" | "unknown"
+    runner: str              # "pytest" | "npm_test" | "js_check" | "go_test" | "unknown"
     command: str             # Commande complète à exécuter
     relevant_tests: list[str] = field(default_factory=list)  # Chemins relatifs des tests pertinents
     config_file: Optional[str] = None   # Fichier de config détecté
@@ -100,8 +100,12 @@ def _detect_npm(ws: Path) -> Optional[str]:
     try:
         data = json.loads(pkg.read_text(encoding="utf-8", errors="ignore"))
         scripts = data.get("scripts", {})
-        if "test" in scripts:
-            return "npm test"
+        runner = _js_package_runner(ws, data)
+        if _script_is_useful(scripts.get("test")):
+            return f"{runner} test" if runner in ("npm", "pnpm", "yarn", "bun") else f"{runner} run test"
+        for script in ("typecheck", "check", "lint", "build"):
+            if _script_is_useful(scripts.get(script)):
+                return f"{runner} run {script}"
         if "jest" in data.get("devDependencies", {}):
             return "npx jest"
         if "vitest" in data.get("devDependencies", {}):
@@ -109,6 +113,30 @@ def _detect_npm(ws: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _js_package_runner(ws: Path, package_json: dict) -> str:
+    package_manager = str(package_json.get("packageManager", "") or "").lower()
+    if package_manager.startswith("pnpm"):
+        return "pnpm"
+    if package_manager.startswith("yarn"):
+        return "yarn"
+    if package_manager.startswith("bun"):
+        return "bun"
+    if (ws / "pnpm-lock.yaml").exists():
+        return "pnpm"
+    if (ws / "yarn.lock").exists():
+        return "yarn"
+    if (ws / "bun.lockb").exists() or (ws / "bun.lock").exists():
+        return "bun"
+    return "npm"
+
+
+def _script_is_useful(script: object) -> bool:
+    if not isinstance(script, str) or not script.strip():
+        return False
+    lowered = script.lower()
+    return not any(token in lowered for token in ("no test", "no tests", "echo \"error", "exit 1"))
 
 
 def _find_python_tests(ws: Path, modified_files: Sequence[str]) -> list[str]:

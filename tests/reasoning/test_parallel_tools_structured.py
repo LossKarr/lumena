@@ -74,7 +74,11 @@ class TestParallelToolsStructured:
 
         calls = [{"name": "tool_a", "args": {}}, {"name": "tool_b", "args": {}}]
         result = self._run(parallel_tools_handler(self._ctx(), tool_calls=calls, execute_fn=_mixed))
-        assert result.success is False  # partial → False
+        # Fix AV : l'agrégat est un SUCCÈS (l'outil a exécuté et rapporté) ;
+        # les échecs individuels vivent dans sub_results — sinon chaque 403
+        # web comptait comme « échec de parallel_tools » et déclenchait le
+        # forçage FINAL après 3 agrégats (runtime 2026-06-12 10:54).
+        assert result.success is True
         assert result.sub_results[0].success is True
         assert result.sub_results[1].success is False
         assert result.sub_results[1].status_code == "failed"
@@ -83,14 +87,16 @@ class TestParallelToolsStructured:
         from src.reasoning.handlers.system import parallel_tools_handler
         calls = [{"name": "tool_a", "args": {}}, {"name": "tool_b", "args": {}}]
         result = self._run(parallel_tools_handler(self._ctx(), tool_calls=calls, execute_fn=_execute_fn_fail))
-        assert result.success is False
+        # Fix AV : succès d'exécution même à 0/N, mais avertissement explicite.
+        assert result.success is True
         assert all(not s.success for s in result.sub_results)
+        assert "Tous les sous-appels ont échoué" in result.output
 
     def test_exception_sub_result(self):
         from src.reasoning.handlers.system import parallel_tools_handler
         calls = [{"name": "boom", "args": {}}]
         result = self._run(parallel_tools_handler(self._ctx(), tool_calls=calls, execute_fn=_execute_fn_raise))
-        assert result.success is False
+        assert result.success is True  # Fix AV : exécuté, l'échec est dans sub_results
         assert result.sub_results[0].status_code == "exception"
         assert "crash in boom" in result.sub_results[0].content
 

@@ -17,9 +17,12 @@ Ces tests vérifient :
 from __future__ import annotations
 
 import pytest
-from unittest.mock import MagicMock
+import sys
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from src.agents.sub_agent import AgentResult, StatusCode
 from src.reasoning.file_categories import looks_like_document_creation
+from src.reasoning.handlers.context import HandlerContext
 from src.reasoning.handlers.agents import delegate_task_handler
 
 
@@ -88,3 +91,95 @@ class TestDelegateTaskDocumentGuard:
         )
         if result.success is False:
             assert "réservé au développement" not in (result.error or "")
+
+
+class TestDelegateTaskMCPGuard:
+    @pytest.mark.asyncio
+    async def test_blocks_mcp_resume_from_codeagent(self, tmp_path):
+        ctx = HandlerContext.for_testing(
+            lumena_root=tmp_path,
+            runtime_root=tmp_path / "workspace",
+        )
+        ctx.original_user_query = "c'est bon, reprends"
+
+        result = await delegate_task_handler(
+            ctx,
+            description="Crée un serveur MCP local dédié à la surveillance des prix e-commerce",
+            agent_type="code",
+            context={
+                "ticket": "Ticket MCP #abc approuvé",
+                "next": "Utilise resume_mcp_task pour reprendre",
+            },
+        )
+
+        assert result.success is False
+        text = result.error or result.output
+        assert "CodeAgent" in text
+        assert "resume_mcp_task" in text
+
+    @pytest.mark.asyncio
+    async def test_blocks_llm_invented_external_workspace_path(self, tmp_path):
+        runtime_root = tmp_path / "workspace"
+        runtime_root.mkdir()
+        outside_parent = tmp_path / "outside"
+        outside_parent.mkdir()
+        outside_project = outside_parent / "mcp-price-tracker"
+
+        ctx = HandlerContext.for_testing(lumena_root=tmp_path, runtime_root=runtime_root)
+        ctx.original_user_query = "reprends la tâche de code"
+
+        mock_mod = MagicMock()
+        mock_mod.delegate_to_agent_full = AsyncMock(
+            return_value=AgentResult(
+                task_id="t1",
+                success=True,
+                output="should not run",
+                status_code=StatusCode.SUCCESS,
+            )
+        )
+
+        with patch.dict(sys.modules, {"src.agents.sub_agent": mock_mod}):
+            result = await delegate_task_handler(
+                ctx,
+                description=f'Crée le projet dans "{outside_project}"',
+                agent_type="code",
+            )
+
+        assert result.success is False
+        text = result.error or result.output
+        assert "hors scope" in text
+        assert str(outside_project) in text
+        mock_mod.delegate_to_agent_full.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allows_external_workspace_path_when_user_mentioned_it(self, tmp_path):
+        runtime_root = tmp_path / "workspace"
+        runtime_root.mkdir()
+        outside_parent = tmp_path / "outside"
+        outside_parent.mkdir()
+        outside_project = outside_parent / "explicit-project"
+
+        ctx = HandlerContext.for_testing(lumena_root=tmp_path, runtime_root=runtime_root)
+        ctx.original_user_query = f'Travaille dans "{outside_project}"'
+
+        mock_mod = MagicMock()
+        mock_mod.delegate_to_agent_full = AsyncMock(
+            return_value=AgentResult(
+                task_id="t1",
+                success=True,
+                output="Done: created",
+                status_code=StatusCode.SUCCESS,
+                duration_ms=1200,
+                meta={"iterations": 2},
+            )
+        )
+
+        with patch.dict(sys.modules, {"src.agents.sub_agent": mock_mod}):
+            result = await delegate_task_handler(
+                ctx,
+                description=f'Crée le projet dans "{outside_project}"',
+                agent_type="code",
+            )
+
+        assert result.success is True
+        mock_mod.delegate_to_agent_full.assert_called_once()

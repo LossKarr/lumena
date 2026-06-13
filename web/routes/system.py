@@ -662,6 +662,82 @@ async def system_reliability():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@router.get(
+    "/api/runtime/audit",
+    dependencies=[Depends(deps.verify_admin_token)],
+)
+async def runtime_audit(
+    format: str = "summary",
+    tool: Optional[str] = None,
+    drift_only: bool = False,
+):
+    """Audit runtime du ToolRegistry — détection de drift contractuel.
+
+    Lecture seule stricte : aucune mutation, aucun side effect, aucun
+    handler exécuté. Voir src/runtime/drift_checker.py pour les garanties.
+
+    Query params:
+        format: "summary" (défaut) ou "full".
+                summary → réponse sans champ `tools`.
+                full → inclut la liste complète des outils audités.
+        tool: nom d'un outil pour filtrer (uniquement avec format=full).
+        drift_only: si True, ne retourne que les outils en drift (uniquement
+                    avec format=full).
+
+    Returns:
+        JSON conforme à AuditSummary ou AuditFullReport selon format.
+    """
+    from dataclasses import asdict
+    from src.runtime.drift_checker import (
+        audit_registry,
+        filter_by_tool_name,
+        filter_drift_only,
+        to_summary,
+    )
+
+    if format not in ("summary", "full"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"unknown format '{format}', expected 'summary' or 'full'"},
+        )
+
+    # Cascade pour récupérer le ToolRegistry runtime réel :
+    #   1. deps.lumena._tool_registry  (si attaché directement au core)
+    #   2. deps.lumena.tool_system._tool_registry  (via ToolSystem facade)
+    #   3. fallback : nouvelle instance ToolRegistry(lumena=deps.lumena)
+    # L'audit reste read-only sur n'importe lequel (drift_checker garanti).
+    registry = None
+    try:
+        lumena_core = deps.lumena
+        registry = getattr(lumena_core, "_tool_registry", None)
+        if registry is None:
+            tool_system = getattr(lumena_core, "tool_system", None)
+            if tool_system is not None:
+                registry = getattr(tool_system, "_tool_registry", None)
+        if registry is None:
+            from src.reasoning.tool_registry import ToolRegistry
+            registry = ToolRegistry(lumena=lumena_core)
+    except Exception as e:
+        logger.warning("[runtime_audit] resolve registry erreur: {}", e)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"registry resolve failed: {e}"},
+        )
+
+    full = audit_registry(registry)
+
+    if format == "full":
+        if drift_only:
+            full = filter_drift_only(full)
+        if tool:
+            full = filter_by_tool_name(full, tool)
+        return asdict(full)
+
+    # format=summary : pas de champ `tools` dans la réponse
+    summary = to_summary(full)
+    return asdict(summary)
+
+
 @router.get("/api/status", dependencies=[Depends(deps.verify_admin_token)])
 async def get_status():
     """Retourne le status de Lumena."""

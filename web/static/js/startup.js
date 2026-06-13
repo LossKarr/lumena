@@ -14,7 +14,7 @@ export async function loadStartupModels(attempt = 1){
     const res=await fetch(`${API_BASE}/api/models`,{headers:_mh});
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const data=await res.json();
-    allModels=Array.isArray(data.models)?data.models:[];
+    allModels=(Array.isArray(data.models)?data.models:[]).filter(m=>!m.supports_image_generation);
     allModels.sort((a,b)=>{if(a.is_local&&!b.is_local)return-1;if(!a.is_local&&b.is_local)return 1;return a.provider.localeCompare(b.provider)});
     const c=document.getElementById('startup-models');
     c.innerHTML=allModels.map(m=>`
@@ -85,11 +85,20 @@ const _PROVIDER_META = {
   moonshot: { label: 'Moonshot',  color: '#0ea5e9' },
   zai:      { label: 'Z.AI',      color: '#00c8a0' },
   ollama:   { label: 'Ollama',    color: '#f59e0b' },
+  gemini:   { label: 'Gemini',    color: '#ea4335' },
+  imagen:   { label: 'Imagen',    color: '#34a853' },
+  flux:     { label: 'FLUX',      color: '#f97316' },
+  stability:{ label: 'Stability', color: '#38bdf8' },
+  ideogram: { label: 'Ideogram',  color: '#ec4899' },
+  recraft:  { label: 'Recraft',   color: '#14b8a6' },
+  replicate:{ label: 'Replicate', color: '#64748b' },
+  huggingface:{ label: 'HF',      color: '#f59e0b' },
 };
-const _PROVIDER_ORDER = ['deepseek','openai','anthropic','google','nvidia','xai','minimax','moonshot','zai','ollama'];
+const _PROVIDER_ORDER = ['deepseek','openai','anthropic','google','nvidia','xai','minimax','moonshot','zai','ollama','gemini','imagen','flux','stability','ideogram','recraft','replicate','huggingface'];
 
 let _mpFilter = 'all';
 let _mpSearch = '';
+let _mpPanel = 'text';
 
 export function toggleModelDropdown(){
   const m = document.getElementById('model-picker-modal');
@@ -98,7 +107,9 @@ export function toggleModelDropdown(){
     m.classList.add('open');
     document.getElementById('model-picker-search').value = '';
     _mpSearch = '';
+    loadImageModels();
     setTimeout(()=>document.getElementById('model-picker-search').focus(), 50);
+    _renderModelFilters();
     _renderModelPicker();
     if(typeof lucide!=='undefined') lucide.createIcons({el:m});
   }
@@ -111,6 +122,15 @@ export function closeModelPicker(){
 export function setModelFilter(provider){
   _mpFilter = provider;
   document.querySelectorAll('.mpicker-pill').forEach(p=>p.classList.toggle('active', p.dataset.provider===provider));
+  _renderModelPicker();
+}
+
+export function setModelPanel(panel){
+  _mpPanel = ['text','vision','image'].includes(panel) ? panel : 'text';
+  _mpFilter = 'all';
+  document.querySelectorAll('.mpicker-tab').forEach(t=>t.classList.toggle('active', t.dataset.panel===_mpPanel));
+  if(_mpPanel==='image') loadImageModels();
+  _renderModelFilters();
   _renderModelPicker();
 }
 
@@ -168,14 +188,77 @@ function _renderCard(m, color){
   </div>`;
 }
 
+function _renderImageCard(m, color){
+  const tags = [];
+  if(m.free) tags.push('<span class="mpicker-tag tag-local">Gratuit</span>');
+  else tags.push('<span class="mpicker-tag">Payant</span>');
+  if(m.max_resolution) tags.push(`<span class="mpicker-tag">${esc(m.max_resolution)}</span>`);
+  if(m.quality) tags.push(`<span class="mpicker-tag">Q${esc(String(m.quality))}</span>`);
+  if(m.speed) tags.push(`<span class="mpicker-tag">V${esc(String(m.speed))}</span>`);
+  const caps = Array.isArray(m.capabilities) ? m.capabilities.slice(0,3).join(', ') : '';
+  const desc = m.best_for || m.strengths || caps || '';
+  const title = m.display_name || m.name;
+  return `<div class="mpicker-card${!m.available?' is-unavailable':''}" style="--pc:${color}" title="${esc(title)}">
+    <div class="mpicker-card-stripe"></div>
+    <div class="mpicker-card-inner">
+      <div class="mpicker-card-head">
+        <span class="mpicker-card-name">${esc(title)}</span>
+        <div class="mpicker-card-badges">
+          ${!m.available?'<span class="mpicker-badge badge-nokey">Cle manquante</span>':''}
+          <span class="mpicker-badge ${m.free?'badge-free':'badge-default'}">${m.free?'Gratuit':'Image'}</span>
+        </div>
+      </div>
+      <div class="mpicker-card-provider">${esc(m.provider||'image')}</div>
+      <div class="mpicker-card-desc">${esc(desc)}</div>
+      <div class="mpicker-card-tags">${tags.join('')}</div>
+    </div>
+  </div>`;
+}
+
+function _modelPickerItems(){
+  if(_mpPanel==='vision') return allModels.filter(m=>m.supports_vision && !m.supports_image_generation);
+  if(_mpPanel==='image') return allImageModels;
+  return allModels.filter(m=>!m.supports_image_generation);
+}
+
+function _searchModelMatch(m, search){
+  if(!search) return true;
+  const hay = [
+    m.name, m.display_name, m.provider, m.description,
+    m.strengths, m.best_for,
+    Array.isArray(m.capabilities)?m.capabilities.join(' '):''
+  ].join(' ').toLowerCase();
+  return hay.includes(search);
+}
+
+function _renderModelFilters(){
+  const items = _modelPickerItems();
+  const providers=[...new Set(items.map(m=>m.provider||'image'))];
+  const pillsEl=document.getElementById('model-picker-filters');
+  if(!pillsEl) return;
+  const allLabel = _mpPanel==='image' ? 'Tous' : (_mpPanel==='vision' ? 'Vision' : 'Tous');
+  pillsEl.innerHTML=[
+    `<button class="mpicker-pill active" data-provider="all" onclick="setModelFilter('all')">${allLabel} <span>${items.length}</span></button>`,
+    ...[..._PROVIDER_ORDER,...providers.filter(p=>!_PROVIDER_ORDER.includes(p))]
+      .filter(p=>providers.includes(p))
+      .map(p=>{
+        const meta=_PROVIDER_META[p]||{label:p,color:'#888'};
+        const cnt=items.filter(m=>(m.provider||'image')===p).length;
+        return `<button class="mpicker-pill" data-provider="${p}" onclick="setModelFilter('${p}')"
+          style="--pill-color:${meta.color}">${meta.label} <span>${cnt}</span></button>`;
+      })
+  ].join('');
+}
+
 function _renderModelPicker(){
   const search = _mpSearch.trim().toLowerCase();
   const filter = _mpFilter;
   const byProv = {};
-  for(const m of allModels){
-    if(filter!=='all' && m.provider!==filter) continue;
-    if(search && !m.display_name.toLowerCase().includes(search) && !(m.description||'').toLowerCase().includes(search)) continue;
-    (byProv[m.provider]||(byProv[m.provider]=[])).push(m);
+  for(const m of _modelPickerItems()){
+    const provider = m.provider || 'image';
+    if(filter!=='all' && provider!==filter) continue;
+    if(!_searchModelMatch(m, search)) continue;
+    (byProv[provider]||(byProv[provider]=[])).push(m);
   }
   const body = document.getElementById('model-picker-body');
   if(!body) return;
@@ -194,7 +277,7 @@ function _renderModelPicker(){
         <span class="mpicker-section-label">${meta.label}</span>
         <span class="mpicker-section-count">${models.length}</span>
       </div>
-      <div class="mpicker-cards">${models.map(m=>_renderCard(m, meta.color)).join('')}</div>
+      <div class="mpicker-cards">${models.map(m=>_mpPanel==='image'?_renderImageCard(m, meta.color):_renderCard(m, meta.color)).join('')}</div>
     </div>`;
   }).join('');
 }
@@ -208,26 +291,27 @@ export async function loadModels(){
     allModels=Array.isArray(data.models)?data.models:[];
     const cur=allModels.find(m=>m.current);
     if(cur)document.getElementById('current-model-name').textContent=cur.display_name.split(' (')[0];
-    // Build provider pills
-    const providers=[...new Set(allModels.map(m=>m.provider))];
-    const pillsEl=document.getElementById('model-picker-filters');
-    if(pillsEl){
-      pillsEl.innerHTML=[
-        `<button class="mpicker-pill active" data-provider="all" onclick="setModelFilter('all')">Tous <span>${allModels.length}</span></button>`,
-        ...[..._PROVIDER_ORDER,...providers.filter(p=>!_PROVIDER_ORDER.includes(p))]
-          .filter(p=>providers.includes(p))
-          .map(p=>{
-            const meta=_PROVIDER_META[p]||{label:p,color:'#888'};
-            const cnt=allModels.filter(m=>m.provider===p).length;
-            return `<button class="mpicker-pill" data-provider="${p}" onclick="setModelFilter('${p}')"
-              style="--pill-color:${meta.color}">${meta.label} <span>${cnt}</span></button>`;
-          })
-      ].join('');
-    }
+    _renderModelFilters();
     if(document.getElementById('model-picker-modal').classList.contains('open')){
       _renderModelPicker();
     }
   }catch(e){document.getElementById('current-model-name').textContent='Erreur'}
+}
+
+export async function loadImageModels(){
+  try{
+    const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+    const res=await fetch(`${API_BASE}/api/images/models`,{headers:h});
+    if(!res.ok)throw new Error(`HTTP ${res.status}`);
+    const data=await res.json();
+    allImageModels=Array.isArray(data.models)?data.models:[];
+    if(document.getElementById('model-picker-modal').classList.contains('open')){
+      _renderModelFilters();
+      _renderModelPicker();
+    }
+  }catch(e){
+    allImageModels=[];
+  }
 }
 
 export async function switchModel(name){

@@ -32,6 +32,62 @@ logger = logging.getLogger("lumena.agent_service")
 
 _JOURNAL_LOCK = threading.Lock()
 
+
+# ── Phase H diagnostic : log explicite du résultat d'attach MCP ──────────────
+_MCP_PHASE_F_TOOLS = (
+    "add_mcp", "disable_mcp", "remove_mcp",
+    "set_mcp_preference", "set_mcp_category",
+)
+_MCP_PHASE_26_TOOLS = (
+    "request_mcp_capability", "request_mcp_ticket",
+    "run_mcp_autonomy", "resume_mcp_task",
+)
+
+
+def _log_mcp_attach_result(result, tool_registry, call_site: str) -> None:
+    """Imprime en console + log le résultat d'attach_to_tool_registry.
+
+    Sans ça, un échec silencieux (chain_build_failed, etc.) est invisible et
+    l'utilisateur croit que les outils MCP user-facing sont disponibles
+    alors qu'ils ne sont pas attachés au ToolRegistry actif.
+    """
+    try:
+        if isinstance(result, tuple) and len(result) >= 2:
+            attached, reason = result[0], result[1]
+        else:
+            attached, reason = bool(result), "unknown"
+
+        tools_dict = getattr(tool_registry, "tools", {}) or {}
+        present_f = [t for t in _MCP_PHASE_F_TOOLS if t in tools_dict]
+        present_26 = [t for t in _MCP_PHASE_26_TOOLS if t in tools_dict]
+        total_mcp = len(present_f) + len(present_26)
+
+        if attached:
+            msg = (
+                f"[MCP attach] OK ({call_site}) — Phase 26: {len(present_26)}/4, "
+                f"Phase F: {len(present_f)}/5, total MCP tools: {total_mcp}"
+            )
+            print(msg)
+            logger.info(msg)
+        else:
+            if reason == "already_attached":
+                msg = (
+                    f"[MCP attach] DEJA ATTACHE ({call_site}) — "
+                    f"Phase 26: {len(present_26)}/4, Phase F: {len(present_f)}/5"
+                )
+                print(msg)
+                logger.info(msg)
+            else:
+                msg = (
+                    f"[MCP attach] ECHEC ({call_site}) reason={reason!r} — "
+                    f"Phase 26: {len(present_26)}/4, Phase F: {len(present_f)}/5. "
+                    f"Les outils MCP ne sont PAS disponibles pour le LLM."
+                )
+                print(msg)
+                logger.warning(msg)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[MCP attach] log helper crashed: %s", e)
+
 # ── Imports conditionnels (même logique que core.py) ──────────────────────────
 try:
     from src.reasoning.react import ReActLoop
@@ -245,12 +301,23 @@ class AgentService:
             "opus": "claude-opus-4.8",
             "gemini": "gemini-2.5-flash",
             "kimi": "kimi-k2.5",
+            "kimi 2.6": "kimi-k2.6",
+            "kimi k2.6": "kimi-k2.6",
             "grok": "grok-4.3",
             "grok 4.3": "grok-4.3",
             "grok4.3": "grok-4.3",
             "grok fast": "grok-4-1-fast-non-reasoning",
             "grok reasoning": "grok-4-1-fast-reasoning",
             "grok 4": "grok-4-1-fast-reasoning",
+            "nvidia deepseek": "nvidia-deepseek-v4-flash",
+            "nvidia gpt oss": "nvidia-gpt-oss-120b",
+            "gpt oss nvidia": "nvidia-gpt-oss-120b",
+            "nvidia step": "nvidia-step-3.7-flash",
+            "step 3.7": "nvidia-step-3.7-flash",
+            "nvidia kimi": "nvidia-kimi-k2.6",
+            "nvidia kimi 2.6": "nvidia-kimi-k2.6",
+            "nvidia glm": "nvidia-glm-5.1",
+            "nvidia nemotron": "nvidia-nemotron-3-ultra-550b-a55b",
             "nvidia minimax": "nvidia-minimax-m2.7",
             "nvidia minimax m2.7": "nvidia-minimax-m2.7",
             "minimax m2": "nvidia-minimax-m2.7",
@@ -1232,6 +1299,14 @@ Conversations et apprentissages de la journée.
                 _chat_tr = ToolRegistry(lumena=c)
                 c._tool_registry = _chat_tr
                 c.tool_system.bind_tool_registry(_chat_tr)
+                _mcp_react = getattr(c, "mcp_react_integration", None)
+                if _mcp_react is not None:
+                    try:
+                        result = _mcp_react.attach_to_tool_registry(_chat_tr)
+                        _log_mcp_attach_result(result, _chat_tr, "chat")
+                    except Exception as exc:
+                        logger.warning("[MCP attach] EXCEPTION (chat): {}", exc)
+                        print(f"[MCP attach] EXCEPTION (chat): {exc}")
 
         try:
             if c.tool_system and hasattr(c.llm, 'chat_with_tools'):
@@ -1840,6 +1915,14 @@ Conversations et apprentissages de la journée.
             c._tool_registry = tools
             if c.tool_system and hasattr(c.tool_system, "bind_tool_registry"):
                 c.tool_system.bind_tool_registry(tools)
+            _mcp_react = getattr(c, "mcp_react_integration", None)
+            if _mcp_react is not None:
+                try:
+                    result = _mcp_react.attach_to_tool_registry(tools)
+                    _log_mcp_attach_result(result, tools, "agent_1860")
+                except Exception as exc:
+                    logger.warning("[MCP attach] EXCEPTION (agent_1860): {}", exc)
+                    print(f"[MCP attach] EXCEPTION (agent_1860): {exc}")
         tools._allowed_tools = None
         tools._tools_desc_cache = None
         tools._observation_cache.clear()
@@ -2083,6 +2166,14 @@ Conversations et apprentissages de la journée.
         if tools is None:
             tools = ToolRegistry(lumena=c)
             c._tool_registry = tools
+            _mcp_react = getattr(c, "mcp_react_integration", None)
+            if _mcp_react is not None:
+                try:
+                    result = _mcp_react.attach_to_tool_registry(tools)
+                    _log_mcp_attach_result(result, tools, "agent_2109")
+                except Exception as exc:
+                    logger.warning("[MCP attach] EXCEPTION (agent_2109): {}", exc)
+                    print(f"[MCP attach] EXCEPTION (agent_2109): {exc}")
         tools._allowed_tools = None
         tools._tools_desc_cache = None
         tools._observation_cache.clear()

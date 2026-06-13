@@ -14,6 +14,7 @@ from src.reasoning.handlers.contracts import HandlerResult, HandlerTimer
 from src.reasoning.handlers.context import HandlerContext
 from src.reasoning.handlers.registry_v2 import HandlerRegistryV2, HandlerDef, HandlerFunc
 from src.reasoning.handlers.parity_tools import ParityResult, parity_report_markdown
+from src.reasoning.react_config import Observation
 
 
 # ─── Tests contracts.py ───────────────────────────────────────────────────
@@ -128,6 +129,10 @@ async def _dummy_handler(ctx: HandlerContext, **kwargs) -> HandlerResult:
     return HandlerResult.ok(f"dummy called with {kwargs}")
 
 
+async def _handler_result_fail(ctx: HandlerContext, **kwargs) -> HandlerResult:
+    return HandlerResult.fail("explicit failure", handler_name="failing_tool")
+
+
 async def _failing_handler(ctx: HandlerContext, **kwargs) -> HandlerResult:
     raise RuntimeError("boom")
 
@@ -230,6 +235,21 @@ class TestHandlerRegistryV2:
         assert "Lit un fichier" in desc
         assert "path" in desc
         assert "read_file(path)" in desc
+
+    @pytest.mark.asyncio
+    async def test_legacy_wrapper_preserves_failure_success_flag(self):
+        reg = HandlerRegistryV2()
+        reg.register(HandlerDef(
+            name="failing_tool",
+            description="Fails structurally",
+            parameters={"properties": {}, "required": []},
+            handler=_handler_result_fail,
+        ))
+        legacy = reg.to_legacy_tools_dict(HandlerContext())
+        obs = await legacy["failing_tool"]["handler"]()
+        assert isinstance(obs, Observation)
+        assert obs.success is False
+        assert "explicit failure" in obs.content
 
 
 # ─── Tests parity_tools.py ─────────────────────────────────────────────────

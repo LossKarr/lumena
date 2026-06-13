@@ -423,9 +423,10 @@ async def run_tests_handler(
 ) -> HandlerResult:
     """Lance la suite de tests Lumena et retourne le rapport de résultats."""
     if not test_path:
-        return HandlerResult.ok(
-            "⏭️ run_tests : test_path requis. Spécifie un chemin ou utilise run_tests depuis le CodeAgent.",
+        return HandlerResult.fail(
+            "❌ run_tests : test_path requis. Spécifie un chemin explicite ou utilise run_tests depuis le CodeAgent avec un workspace détectable.",
             handler_name="run_tests",
+            status_code="missing_test_path",
         )
     try:
         import asyncio
@@ -626,10 +627,10 @@ def get_skills_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="run_tests",
-            description="Lance la suite de tests Lumena (pytest) et retourne le rapport complet. Utiliser après une auto-modification du code.",
+            description="Lance une suite de tests Lumena (pytest) sur un chemin explicite et retourne le rapport complet. Utiliser après une auto-modification du code.",
             parameters={
                 "properties": {
-                    "test_path": {"type": "string", "description": "Chemin optionnel (ex: tests/test_react.py). Vide = tous les tests.", "default": ""},
+                    "test_path": {"type": "string", "description": "Chemin requis (ex: tests/test_react.py). Ne pas laisser vide.", "default": ""},
                     "timeout": {"type": "integer", "description": "Timeout en secondes", "default": 120},
                 },
                 "required": [],

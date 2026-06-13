@@ -10,7 +10,7 @@ Raisonne, agit, apprend, s'améliore seul.
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.41**
+> **⚠️ Version Bêta — v1.0.42**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 > **👤 Projet solo**
@@ -30,11 +30,11 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **560 outils** org
 
 | Domaine | Détail |
 |---|---|
-| **LLM** | 11 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Mistral, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — **Claude Opus 4.8** (top Opus, adaptive thinking) intégré, modèles obsolètes nettoyés — fallback chaîné automatique, réserve premium |
+| **LLM** | 11 providers : Ollama (local), DeepSeek, OpenAI, Anthropic, Google, Mistral, Moonshot, xAI, NVIDIA, MiniMax, Z.AI — **Claude Fable 5 / Mythos 5**, **Claude Opus 4.8** et **MiniMax M3** intégrés — fallback chaîné automatique, réserve premium |
 | **Raisonnement** | Boucle ReAct 30 iter, CodeAgent **dev only** (refuse les créations de documents → routées vers les outils natifs), agents spécialisés (Debug, Refactor, Research, Browser, File, Planner) en intégration active |
 | **Outils** | **560 handlers V2** dans **32 catégories** (1 contrat de gouvernance par catégorie) : fichiers, web, mail, git, réseau, navigateur (Playwright stealth v2), terminal, vision, images, Stripe, n8n, IDE, computer use, **`data` (data.gouv + SIRENE + géo + workbench)** |
 | **Documents** | **46 handlers** (PDF/DOCX/XLSX/PPTX/HTML/CSV), 13 templates Jinja2 (factures, contrats, devis, NDA, bulletins paie…), export PDF via WeasyPrint |
-| **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 39 modèles, 15 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image) |
+| **Images** | 12 providers (Gemini, OpenAI, Flux, Stability, Imagen, Ideogram, Recraft, Replicate, HuggingFace, xAI, MiniMax, Z.AI), 42 modèles, 15 handlers (generate, edit, compose, thumbnail, upscale, logo, SVG, remove/replace background, sketch-to-image), fallback auto local/gratuit → cheap → premium |
 | **Vidéo** | Remotion 4.x (React TSX → MP4/WebM), 5 templates (presentation, social_short, explainer, square_social, custom), rendu local Node.js ou Docker, auto-fix sur erreur de rendu, assets locaux via `staticFile()` |
 | **Mémoire** | 4 niveaux : session, ChromaDB vectorielle, Knowledge Graph, BM25 — embedding cache, file watcher |
 | **Autonomie** | Scheduler CRON, goals auto-évalués, curiosité, self_improve, cycle quotidien de skills |
@@ -48,6 +48,31 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **560 outils** org
 | **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, TaskProofDecision annotation (evidence + confidence par tâche complétée) |
 | **Tests** | **10 678 tests**, 0 failed, ~4 min suite complète |
 
+### Intégration MCP (Model Context Protocol) — autonomie conversationnelle
+
+Lumena intègre le **Model Context Protocol** via une chaîne complète et sécurisée :
+catalogue de serveurs, scoring de confiance, découverte de tools, installation isolée dans
+`data/mcp/`, activation runtime, policy resolver, approval queue, auto-approve borné,
+watcher runtime, diagnostics, configuration de secrets, classification sémantique et
+intégration ReAct.
+
+Concrètement, Lumena peut :
+
+- détecter qu'une capacité externe manque ;
+- chercher une solution MCP connue, locale, npm ou PyPI ;
+- proposer l'ajout au Catalog ;
+- créer un ticket d'approbation si la sécurité l'exige ;
+- installer le serveur dans le sandbox MCP ;
+- l'activer et enregistrer ses outils dans le `ToolRegistry` ;
+- utiliser ensuite les tools `mcp__<server_id>__<tool>` comme des outils natifs ;
+- désactiver, supprimer, catégoriser ou préférer un MCP depuis la conversation.
+
+Le panel **Infra → MCP** expose la bibliothèque, les approvals, les snapshots runtime,
+l'audit/découverte, l'auto-approve, les diagnostics et les actions admin. Le panel
+**Documentation** expose aussi les documents MCP opérationnels.
+
+**État actuel :** la chaîne MCP est câblée au runtime conversationnel. Les actions dangereuses
+restent protégées par confirmations, opt-in live, politiques, trust score et audit. 
 ---
 
 ## Démarrage rapide
@@ -206,7 +231,7 @@ src/
 │       ├── browser.py      # Playwright stealth v2 (68 handlers)
 │       ├── documents.py    # 46 handlers PDF/DOCX/XLSX/PPTX (factures, contrats…)
 │       ├── datagouv.py + sirene.py + geo_gouv.py + data_workbench.py  # cat. `data` (14 outils)
-│       ├── image_gen.py    # 15 handlers génération d'images (12 providers, 39 modèles)
+│       ├── image_gen.py    # 15 handlers génération d'images (12 providers, 42 modèles)
 │       ├── ide.py          # 36 handlers IDE bridge
 │       ├── stripe_api.py   # 33 handlers Stripe
 │       ├── computer_use.py # 30 handlers CU
@@ -220,6 +245,12 @@ src/
 │   ├── knowledge_graph.py  # Relations entre entités (286L)
 │   ├── bm25_index.py       # Recherche textuelle classique (291L)
 │   └── embedding_cache.py  # Cache embeddings (273L)
+├── mcp/                    # Model Context Protocol : catalog, install, activation, ReAct integration
+│   ├── react_integration.py # Outils conversationnels MCP exposés au ReAct
+│   ├── server_catalog.py    # Catalog des serveurs MCP
+│   ├── install_orchestrator.py / activation_service.py
+│   ├── capability_resolver.py / proposal_planner.py / execution_bridge.py
+│   └── target_resolver.py / category_inference.py / overlap_detector.py
 ├── autonomy/
 │   ├── scheduler.py        # Tâches CRON parallèles (1 617L)
 │   ├── daemon.py           # Boucle autonome 24/7 (785L)

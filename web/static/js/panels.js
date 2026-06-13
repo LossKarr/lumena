@@ -1384,7 +1384,7 @@ export async function loadDocs(){
 export async function switchDoc(key){
   _currentDocKey = key;
   // Highlight onglet actif
-  ['lumena_rules','readme','heartbeat'].forEach(k=>{
+  ['lumena_rules','readme','heartbeat','mcp_status','mcp_plan','mcp_category','work_method'].forEach(k=>{
     const btn=document.getElementById(`doc-tab-${k}`);
     if(btn)btn.classList.toggle('primary', k===key);
   });
@@ -3578,4 +3578,2767 @@ export async function blockSelectedPeer(){
     else{if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${d.detail||'Échec'}.`;}}
     _reloadPeersList();
   }catch(e){if(msgEl){msgEl.style.color='var(--danger)';msgEl.textContent=`Erreur: ${e.message}`;}}
+}
+
+/* ============================================================
+   MCP — Phase 20A read-only
+   ============================================================ */
+
+let _mcpCurrentTab='catalog';
+
+let _mcpLiveMode=false;
+window._mcpLiveMode=false;
+let _mcpTrustLiveMode=false;
+window._mcpTrustLiveMode=false;
+
+export async function loadMcp(){
+  const stats=document.getElementById('mcp-header-stats');
+  if(stats)stats.innerHTML='<div style="color:var(--muted);font-size:12px">Chargement...</div>';
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/health`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    _mcpLiveMode=!!d.live_mode;
+    window._mcpLiveMode=_mcpLiveMode;
+    _mcpTrustLiveMode=!!d.trust_live_mode;
+    window._mcpTrustLiveMode=_mcpTrustLiveMode;
+    if(stats){
+      const comps=d.components||{};
+      const pillFor=(name,info)=>{
+        const ok=info&&info.available;
+        return `<span class="pill ${ok?'ok':'muted'}" style="margin-right:6px">${name}: ${ok?'OK':'OFF'}</span>`;
+      };
+      const liveBanner=_mcpLiveMode
+        ? `<span class="pill ok" style="margin-right:6px">LIVE</span>`
+        : `<span class="pill warn" style="margin-right:6px" title="LUMENA_MCP_LIVE non défini — toutes les actions sont simulées (dry_run forcé)">DRY_RUN forcé</span>`;
+      stats.innerHTML=`
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:12px">
+          ${liveBanner}
+          ${pillFor('catalog',comps.catalog)}
+          ${pillFor('approval_queue',comps.approval_queue)}
+          ${pillFor('watcher',comps.watcher)}
+          ${pillFor('discovery',comps.discovery)}
+        </div>`;
+    }
+    _mcpRenderLiveBanner();
+    _mcpUpdateBadgeFromCatalog();
+  }catch(e){
+    if(stats)stats.innerHTML=`<div style="color:var(--danger);font-size:12px">Erreur: ${esc(e.message)}</div>`;
+  }
+  loadMcpTab(_mcpCurrentTab||'library');
+}
+window.loadMcp=loadMcp;
+
+function _mcpRenderLiveBanner(){
+  const panel=document.getElementById('panel-mcp');
+  if(!panel)return;
+  let banner=document.getElementById('mcp-live-banner');
+  if(_mcpLiveMode){
+    if(banner)banner.remove();
+    return;
+  }
+  const html='<div id="mcp-live-banner" style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);color:var(--text);padding:8px 12px;border-radius:6px;margin:8px 0;font-size:12px;display:flex;align-items:center;gap:8px"><i data-lucide="alert-triangle" style="width:14px;height:14px;color:var(--warn,#e0a23a)"></i><span><strong>Mode dry_run forcé</strong> — LUMENA_MCP_LIVE n\'est pas activé. Les actions sont simulées sans effet réel sur la queue MCP.</span></div>';
+  if(banner){
+    banner.outerHTML=html;
+  }else{
+    const first=panel.firstElementChild;
+    if(first){first.insertAdjacentHTML('beforebegin',html);}
+    else{panel.insertAdjacentHTML('afterbegin',html);}
+  }
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+
+async function _mcpUpdateBadgeFromCatalog(){
+  const badge=document.getElementById('badge-mcp');if(!badge)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)return;
+    const d=await r.json();
+    const servers=d.servers||[];
+    const active=servers.filter(s=>s.status==='active').length;
+    const installed=servers.filter(s=>s.status==='installed').length;
+    // Le badge reflète les MCPs PRÉSENTS (actifs + installés), pas
+    // seulement les actifs — sinon un MCP installé affichait 0.
+    const total=active+installed;
+    badge.textContent=total;
+    badge.style.background=active>0?'var(--ok)':(total>0?'var(--warn,#e0a23a)':'var(--muted)');
+  }catch(_){}
+}
+
+export function loadMcpTab(tabKey){
+  _mcpCurrentTab=tabKey||'library';
+  document.querySelectorAll('#panel-mcp .tab').forEach(t=>{
+    t.classList.toggle('active',t.dataset.arg===_mcpCurrentTab);
+  });
+  switch(_mcpCurrentTab){
+    case'library':_loadMcpLibrary();break;
+    case'catalog':_loadMcpCatalog();break;
+    case'approvals':_loadMcpApprovals();break;
+    case'watcher':_loadMcpWatcher();break;
+    case'audit':_loadMcpAuditDiscovery();break;
+    case'auto_approve':_loadMcpAutoApprove();break;
+    case'diagnostics':_loadMcpDiagnostics();break;
+  }
+}
+window.loadMcpTab=loadMcpTab;
+
+// ── Phase G : Bibliothèque MCP (user-facing, click → chat draft) ─────────────
+let _mcpLibraryFilter='all';
+let _mcpLibrarySearch='';
+
+async function _loadMcpLibrary(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  box.innerHTML='<div class="card"><div class="card-content" style="color:var(--muted)">Chargement de la bibliothèque…</div></div>';
+  let data=null;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/library`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    data=await r.json();
+  }catch(e){
+    box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--danger)">Erreur chargement bibliothèque : ${esc(e.message)}</div></div>`;
+    return;
+  }
+  _mcpRenderLibrary(box,data);
+}
+
+function _mcpRenderLibrary(box,data){
+  const counts=data.counts||{};
+  const installed=Array.isArray(data.installed)?data.installed:[];
+  const curated=Array.isArray(data.curated)?data.curated:[];
+  // Unifie : installed + curated_only (non encore installés)
+  const installedSpecs=new Set(installed.map(i=>i.package_spec));
+  const curatedOnly=curated.filter(c=>!installedSpecs.has(c.package_spec));
+  // Section compteurs
+  const countHtml=`
+    <div class="card" style="margin-bottom:8px">
+      <div class="card-content" style="display:flex;flex-wrap:wrap;gap:10px;justify-content:space-around;font-size:12px">
+        ${_mcpCountPill('Actifs',counts.active||0,'ok')}
+        ${_mcpCountPill('Installés',counts.installed||0,'')}
+        ${_mcpCountPill('Déclarés',counts.declared||0,'muted')}
+        ${_mcpCountPill('Quarantine',counts.quarantined||0,'warn')}
+        ${_mcpCountPill('Catalogue user',counts.curated||0,'muted')}
+      </div>
+    </div>`;
+  // Filtres + recherche
+  const filterHtml=`
+    <div class="card" style="margin-bottom:8px">
+      <div class="card-content" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+        <div style="display:flex;gap:4px;flex-wrap:wrap">
+          ${_mcpFilterChip('all','Tous')}
+          ${_mcpFilterChip('active','Actifs')}
+          ${_mcpFilterChip('installed','Installés')}
+          ${_mcpFilterChip('available','Disponibles')}
+        </div>
+        <input id="mcp-library-search" type="text" placeholder="Rechercher un MCP…" value="${esc(_mcpLibrarySearch)}"
+          style="flex:1;min-width:140px;padding:5px 10px;border-radius:4px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);font-size:12px"
+          oninput="window._mcpLibrarySearchInput(this.value)"/>
+      </div>
+    </div>`;
+  // Cards
+  const cards=[];
+  for(const e of installed){cards.push(_mcpLibraryCard(e,/*curated*/false));}
+  for(const c of curatedOnly){cards.push(_mcpLibraryCard(c,/*curated*/true));}
+  const filtered=cards.filter(c=>_mcpLibraryAccepts(c.entry,c.curated));
+  const cardsHtml=filtered.length>0
+    ? `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">${filtered.map(c=>c.html).join('')}</div>`
+    : `<div class="card"><div class="card-content" style="color:var(--muted);text-align:center;padding:20px">Aucun MCP ne correspond à votre filtre. Demandez à Lumena d'en chercher un sur le web.</div></div>`;
+
+  box.innerHTML=countHtml+filterHtml+cardsHtml;
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+
+function _mcpCountPill(label,n,kind){
+  const cls=kind?`pill ${kind}`:'pill';
+  return `<div style="text-align:center"><div style="font-size:20px;font-weight:700">${n}</div><div style="color:var(--muted);font-size:11px">${esc(label)}</div></div>`;
+}
+
+function _mcpFilterChip(key,label){
+  const active=_mcpLibraryFilter===key;
+  return `<button type="button" class="btn ${active?'primary':''}" style="font-size:11px;padding:4px 10px" onclick="window._mcpLibrarySetFilter('${key}')">${esc(label)}</button>`;
+}
+
+function _mcpLibraryAccepts(entry,curated){
+  const q=_mcpLibrarySearch.trim().toLowerCase();
+  if(q){
+    const hay=(`${entry.display_name||''} ${entry.package_spec||''} ${entry.semantic_category||''} ${entry.server_id||''}`).toLowerCase();
+    if(!hay.includes(q))return false;
+  }
+  switch(_mcpLibraryFilter){
+    case'active':return !curated && entry.status==='active';
+    case'installed':return !curated && (entry.status==='installed'||entry.status==='active');
+    case'available':return curated || entry.status==='declared';
+    case'all':
+    default:return true;
+  }
+}
+
+function _mcpLibraryCard(entry,curated){
+  const isActive=entry.status==='active';
+  const statusPill=curated
+    ? `<span class="pill muted">disponible</span>`
+    : isActive
+      ? `<span class="pill ok">actif</span>`
+      : entry.status==='installed'
+        ? `<span class="pill">installé</span>`
+        : `<span class="pill muted">${esc(entry.status||'?')}</span>`;
+  const cat=entry.semantic_category||'mcp';
+  const preferBadge=entry.prefer_over_native
+    ? `<span class="pill warn" title="L'utilisateur préfère ce MCP au natif">★ prioritaire</span>`
+    : '';
+  const display=entry.display_name||entry.server_id||entry.package_spec||'(sans nom)';
+  const sub=entry.package_spec||'';
+  const chatHint=curated
+    ? `Installer ce MCP : « ajoute ${sub} »`
+    : isActive
+      ? `Désactiver : « désactive le MCP ${entry.server_id||''} »`
+      : `Activer : « active le MCP ${entry.server_id||''} »`;
+  const html=`
+    <div class="card" style="cursor:default">
+      <div class="card-content">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px">
+          <div style="font-weight:600;font-size:13px;line-height:1.2">${esc(display)}</div>
+          ${statusPill}
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:6px;word-break:break-all">${esc(sub)}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
+          <span class="pill muted">${esc(cat)}</span>
+          ${preferBadge}
+        </div>
+        <div style="font-size:11px;color:var(--muted);padding:6px;background:var(--bg);border-radius:4px;margin-bottom:6px">
+          <i data-lucide="message-circle" style="width:11px;height:11px"></i> ${esc(chatHint)}
+        </div>
+        ${(!curated && entry.server_id) ? `<button type="button" class="btn" style="font-size:11px;padding:4px 10px;width:100%;margin-bottom:4px"
+          onclick="window._mcpOpenConfigModal(${JSON.stringify(entry.server_id).replace(/"/g,'&quot;')})">
+          <i data-lucide="key-round" style="width:11px;height:11px"></i> Configurer (clés / config)
+        </button>` : ''}
+        <button type="button" class="btn" style="font-size:11px;padding:4px 10px;width:100%"
+          onclick='window._mcpLibraryPrefillChat(${JSON.stringify(chatHint).replace(/'/g,"&#39;")})'>
+          <i data-lucide="send" style="width:11px;height:11px"></i> Demander à Lumena
+        </button>
+      </div>
+    </div>`;
+  return {entry,curated,html};
+}
+
+window._mcpLibrarySetFilter=function(k){
+  _mcpLibraryFilter=k;
+  _loadMcpLibrary();
+};
+window._mcpLibrarySearchInput=function(v){
+  _mcpLibrarySearch=String(v||'');
+  // Rerender sans refetch
+  const box=document.getElementById('mcp-tab-content');
+  if(!box)return;
+  // On re-render uniquement la grille pour ne pas perdre le focus de l'input.
+  // Simple : on garde l'input affiché et on relance _loadMcpLibrary après debounce.
+  clearTimeout(window._mcpLibrarySearchTimer);
+  window._mcpLibrarySearchTimer=setTimeout(()=>_loadMcpLibrary(),250);
+};
+window._mcpLibraryPrefillChat=function(text){
+  const input=document.getElementById('user-input')||document.querySelector('textarea#chat-input')||document.querySelector('input.chat-input');
+  if(input){
+    input.value=text;
+    input.focus();
+    if(typeof input.dispatchEvent==='function'){
+      input.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+  }else{
+    // Fallback clipboard
+    try{navigator.clipboard.writeText(text);}catch(_){ }
+  }
+};
+
+// ── Phase I-6 : MCPConfigModal dynamique ─────────────────────────────────
+// Composant générique : prend un server_id, fetch schema + status, render
+// un formulaire adapté (text/password/select) selon kind/sensitivity, et
+// sauvegarde via PUT /api/mcp/library/{sid}/secrets|config/{key}.
+
+window._mcpOpenConfigModal=async function(serverId){
+  if(!serverId) return;
+  // Crée l'overlay si absent
+  let host=document.getElementById('mcp-config-modal-host');
+  if(!host){
+    host=document.createElement('div');
+    host.id='mcp-config-modal-host';
+    document.body.appendChild(host);
+  }
+  // Style harmonisé avec les modals Lumena (cf openIonosDbModal) :
+  // card + card-title (icône lucide) + card-content + footer boutons.
+  host.innerHTML=`<div id="mcp-config-modal-backdrop" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px">
+    <div class="card" style="width:min(520px,92vw);max-height:88vh;overflow-y:auto;overflow-x:hidden;margin:0">
+      <div class="card-title"><i data-lucide="key-round"></i> Configuration MCP — ${esc(serverId)}</div>
+      <div class="card-content">
+        <div id="mcp-config-modal-body" style="font-size:12px;color:var(--muted)">Chargement…</div>
+      </div>
+    </div>
+  </div>`;
+  const backdrop=document.getElementById('mcp-config-modal-backdrop');
+  if(backdrop)backdrop.addEventListener('click',(e)=>{if(e.target===backdrop)window._mcpCloseConfigModal();});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  // ESC pour fermer
+  document.addEventListener('keydown',_mcpConfigModalEsc);
+  // Fetch schema + status
+  try{
+    const [sR,statusR]=await Promise.all([
+      fetch(`${API_BASE}/api/mcp/library/${encodeURIComponent(serverId)}/schema`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}}),
+      fetch(`${API_BASE}/api/mcp/library/${encodeURIComponent(serverId)}/config-status`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}}),
+    ]);
+    const sd=await sR.json();
+    const stat=statusR.ok?await statusR.json():{status:{},ready:false,missing:[]};
+    _mcpRenderConfigModal(serverId,sd,stat);
+  }catch(e){
+    const body=document.getElementById('mcp-config-modal-body');
+    if(body)body.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+};
+
+window._mcpCloseConfigModal=function(){
+  const host=document.getElementById('mcp-config-modal-host');
+  if(host)host.innerHTML='';
+  document.removeEventListener('keydown',_mcpConfigModalEsc);
+};
+
+function _mcpConfigModalEsc(ev){
+  if(ev&&ev.key==='Escape')window._mcpCloseConfigModal();
+}
+
+function _mcpRenderConfigModal(serverId,schemaPayload,statusPayload){
+  const body=document.getElementById('mcp-config-modal-body');if(!body)return;
+  const schema=schemaPayload&&schemaPayload.schema;
+  const source=(schemaPayload&&schemaPayload.source)||'none';
+  if(!schema||!Array.isArray(schema.fields)||schema.fields.length===0){
+    body.innerHTML=`<div style="padding:16px;text-align:center">
+      <div style="font-size:28px;margin-bottom:6px">${schema?'✅':'❓'}</div>
+      <div style="font-weight:600;margin-bottom:6px">${schema?'Aucune configuration requise':'Schéma inconnu'}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        ${schema?'Ce MCP fonctionne sans configuration.':"Aucun schéma curated n'est connu pour ce MCP. Tu peux demander à Lumena de l'auto-détecter."}
+      </div>
+      ${!schema?`<button class="btn primary" style="font-size:11px;padding:5px 12px" onclick="window._mcpDetectSchema('${esc(serverId)}')">
+        <i data-lucide="search"></i> Détecter automatiquement
+      </button>`:''}
+    </div>`;
+    if(typeof lucide!=='undefined')lucide.createIcons();
+    return;
+  }
+  const status=(statusPayload&&statusPayload.status)||{};
+  const ready=!!(statusPayload&&statusPayload.ready);
+  // Groupage par 'group' (Authentification / Connexion / Configuration / autres)
+  const groups={};
+  for(const f of schema.fields){
+    const g=f.group||'Configuration';
+    (groups[g]=groups[g]||[]).push(f);
+  }
+  const fieldRows=Object.keys(groups).map(g=>{
+    const rows=groups[g].map(f=>_mcpRenderConfigField(serverId,f,status[f.name]||'missing')).join('');
+    return `<div style="margin-top:12px"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:0.5px;margin-bottom:6px">${esc(g)}</div>${rows}</div>`;
+  }).join('');
+  // Style harmonisé Lumena (cf openIonosDbModal) : intro grise, champs avec
+  // labels simples, footer Annuler/Enregistrer global à droite.
+  body.innerHTML=`
+    <p style="color:var(--muted);font-size:12px;margin-top:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <span class="pill ${ready?'ok':'warn'}">${ready?'Prêt à activer':'Configuration incomplète'}</span>
+      <span class="pill muted">détecté : ${esc(source)}</span>
+    </p>
+    ${fieldRows}
+    <p style="font-size:11px;color:var(--muted);margin-top:14px;margin-bottom:0">Les secrets sont chiffrés (Fernet) côté serveur et ne sont jamais réaffichés. Laisse un champ vide pour conserver la valeur actuelle.</p>
+    <div id="mcp-config-modal-msg" style="display:none;margin-top:10px;padding:6px 12px;border-radius:6px;font-size:12px"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn" style="font-size:12px;padding:6px 16px" onclick="window._mcpCloseConfigModal()">Fermer</button>
+      <button class="btn primary" style="font-size:12px;padding:6px 18px" onclick="window._mcpSaveAllFields('${esc(serverId)}')"><i data-lucide="save"></i> Enregistrer</button>
+    </div>`;
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+
+function _mcpRenderConfigField(serverId,field,statusVal){
+  const isSecret=(field.sensitivity==='secret');
+  const isSet=(statusVal==='set');
+  const inputType=isSecret?'password':'text';
+  const fieldId=`mcp-cfg-${serverId}-${field.name}`;
+  const placeholder=isSet?(isSecret?'••••••••  (définie — vide = inchangée)':(field.placeholder||field.default||'')):(field.placeholder||field.default||'');
+  const help=field.obtained_from?`<div style="font-size:10px;color:var(--muted);margin-top:3px">${esc(field.obtained_from)}</div>`:'';
+  const inS='width:100%;height:32px;font-size:12px;padding:0 8px;box-sizing:border-box';
+  return `<div style="margin-bottom:10px">
+    <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+      <span>${esc(field.label||field.name)}${field.required?' <span style="color:var(--danger)">*</span>':''}</span>
+      <span style="display:flex;align-items:center;gap:6px">
+        <span class="pill ${isSet?'ok':'muted'}" style="font-size:10px">${isSet?'définie':'vide'}</span>
+        ${isSet?`<i data-lucide="trash-2" style="width:13px;height:13px;cursor:pointer;color:var(--muted)" title="Effacer"
+          onclick="window._mcpDeleteField('${esc(serverId)}','${esc(field.name)}','${isSecret?'secrets':'config'}')"></i>`:''}
+      </span>
+    </label>
+    <input id="${esc(fieldId)}" class="input" type="${inputType}" placeholder="${esc(placeholder)}"
+      data-mcp-key="${esc(field.name)}" data-mcp-kind="${isSecret?'secrets':'config'}" style="${inS}"/>
+    <div style="font-size:10px;color:var(--muted);margin-top:3px">${esc(field.description||'')}</div>
+    ${help}
+  </div>`;
+}
+
+// Sauvegarde globale (style modal IONOS) : PUT chaque champ NON VIDE,
+// les champs laissés vides conservent leur valeur actuelle.
+window._mcpSaveAllFields=async function(serverId){
+  const msg=document.getElementById('mcp-config-modal-msg');
+  const inputs=Array.from(document.querySelectorAll(`#mcp-config-modal-body input[data-mcp-key]`));
+  const toSave=inputs.filter(i=>(i.value||'').trim()!=='');
+  if(!toSave.length){
+    if(msg){msg.style.display='block';msg.style.color='var(--muted)';msg.textContent='Aucun champ rempli — rien à enregistrer.';}
+    return;
+  }
+  const errors=[];
+  for(const input of toSave){
+    const key=input.dataset.mcpKey;
+    const kind=input.dataset.mcpKind;
+    try{
+      const r=await fetch(`${API_BASE}/api/mcp/library/${encodeURIComponent(serverId)}/${kind}/${encodeURIComponent(key)}`,{
+        method:'PUT',
+        headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+        body:JSON.stringify({value:input.value}),
+      });
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    }catch(e){errors.push(`${key}: ${e.message}`);}
+  }
+  if(errors.length){
+    if(msg){msg.style.display='block';msg.style.color='var(--danger)';msg.textContent='Erreur — '+errors.join(' · ');}
+    return;
+  }
+  // Re-render : statuts à jour (pills "définie", bandeau Prêt à activer)
+  window._mcpOpenConfigModal(serverId);
+};
+
+window._mcpSaveField=async function(serverId,key,kind,inputId){
+  const input=document.getElementById(inputId);if(!input)return;
+  const value=input.value;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/library/${encodeURIComponent(serverId)}/${kind}/${encodeURIComponent(key)}`,{
+      method:'PUT',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({value}),
+    });
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    // Re-render
+    window._mcpOpenConfigModal(serverId);
+  }catch(e){
+    alert('Erreur sauvegarde : '+e.message);
+  }
+};
+
+window._mcpDeleteField=async function(serverId,key,kind){
+  if(!confirm(`Effacer ${key} ?`))return;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/library/${encodeURIComponent(serverId)}/${kind}/${encodeURIComponent(key)}`,{
+      method:'DELETE',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    window._mcpOpenConfigModal(serverId);
+  }catch(e){
+    alert('Erreur suppression : '+e.message);
+  }
+};
+
+window._mcpDetectSchema=async function(serverId){
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/library/${encodeURIComponent(serverId)}/detect-schema`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({intent:serverId}),
+    });
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    window._mcpOpenConfigModal(serverId);
+  }catch(e){
+    alert('Erreur détection : '+e.message);
+  }
+};
+
+async function _loadMcpCatalog(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  // Phase 20B-4 : purge sessionStorage cohérente avec autres onglets
+  try{ _mcpPurgeExpiredInstallState(); }catch(_){ }
+  box.innerHTML='<div class="card"><div class="card-content" style="color:var(--muted)">Chargement...</div></div>';
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog?include_removed=false`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.available===false){
+      box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--muted)">Module MCP Catalog non chargé (${esc(d.reason||'unknown')}).</div></div>`;
+      return;
+    }
+    const servers=d.servers||[];
+    if(!servers.length){
+      box.innerHTML='<div class="card"><div class="card-content" style="color:var(--muted);padding:30px;text-align:center;font-size:13px">Aucun server MCP enregistré dans le Catalog.</div></div>';
+      return;
+    }
+    const statusPill=(s)=>{
+      const map={active:'ok',installed:'warn',declared:'muted',quarantined:'danger',removed:'muted'};
+      const cls=map[s]||'muted';
+      return `<span class="pill ${cls}">${esc((s||'').toUpperCase())}</span>`;
+    };
+    const drySuffixHdr=window._mcpLiveMode?'':' <span style="color:var(--muted);font-size:10px">(dry_run)</span>';
+    let html=`<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+        <button class="btn" style="font-size:12px;background:var(--ok);color:#fff" onclick="openMcpCatalogAddModal()">+ Ajouter server${drySuffixHdr}</button>
+      </div>`;
+    html+='<div class="list">';
+    for(const s of servers){
+      const trust=(s.trust_score!=null)?s.trust_score:'—';
+      const lastActive=s.last_active_at?esc(s.last_active_at).substring(0,19).replace('T',' '):'jamais';
+      const statusLower=(s.status||'').toLowerCase();
+      const isDeclared=statusLower==='declared';
+      const isInstalled=statusLower==='installed';
+      const isActive=statusLower==='active';
+      const isQuarantined=statusLower==='quarantined';
+      const isRemoved=statusLower==='removed';
+      const drySuffix=window._mcpLiveMode?'':' <span style="color:var(--muted);font-size:10px">(dry_run)</span>';
+      let actionButtons='';
+      // Phase 20B-2/20B-3 : install / activation / deactivation
+      if(isDeclared){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--ok);color:#fff" onclick="event.stopPropagation();openMcpInstallProposeModal('${esc(s.server_id)}')">Proposer install${drySuffix}</button>`;
+      }else if(isInstalled){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--accent);color:#fff" onclick="event.stopPropagation();openMcpActivationProposeModal('${esc(s.server_id)}')">Proposer activation${drySuffix}</button>`;
+      }else if(isActive){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--danger);color:#fff" onclick="event.stopPropagation();openMcpActivationDeactivateModal('${esc(s.server_id)}')">Désactiver${drySuffix}</button>`;
+      }
+      // Phase 20B-4 : catalog mutations
+      if(!isRemoved&&!isQuarantined){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--warn,#e0a23a);color:#fff" onclick="event.stopPropagation();openMcpCatalogQuarantineModal('${esc(s.server_id)}')">Quarantiner${drySuffix}</button>`;
+      }
+      if(isQuarantined){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--accent);color:#fff" onclick="event.stopPropagation();openMcpCatalogRestoreModal('${esc(s.server_id)}')">Restaurer (→INSTALLED)${drySuffix}</button>`;
+      }
+      // Remove : tout sauf REMOVED et ACTIVE (force chemin deactivate→remove)
+      if(!isRemoved&&!isActive){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--danger);color:#fff" onclick="event.stopPropagation();openMcpCatalogRemoveModal('${esc(s.server_id)}')">Supprimer${drySuffix}</button>`;
+      }
+      // Phase 20B-6 : trust_score manual update (tous status sauf REMOVED)
+      if(!isRemoved){
+        actionButtons+=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--accent);color:#fff" onclick="event.stopPropagation();openMcpTrustUpdateModal('${esc(s.server_id)}',${(s.trust_score!=null)?s.trust_score:'null'})">Ajuster trust_score${drySuffix}</button>`;
+      }
+      const installBtn=actionButtons
+        ?`<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;justify-content:flex-end" onclick="event.stopPropagation()">${actionButtons}</div>`
+        :'';
+      html+=`<div class="list-item" style="flex-direction:column;align-items:stretch;cursor:pointer" onclick="openMcpServerDetail('${esc(s.server_id)}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="font-weight:600;font-size:14px">${esc(s.display_name||s.server_id)}</div>
+          ${statusPill(s.status)}
+        </div>
+        <div style="font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:4px">${esc(s.server_id)} · ${esc(s.package_spec||'')}${s.version?` · v${esc(s.version)}`:''}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">owner: ${esc(s.owner_profile||'?')} · trust: ${trust} · last_active: ${lastActive}</div>
+        ${installBtn}
+      </div>`;
+    }
+    html+='</div>';
+    box.innerHTML=html;
+    if(typeof lucide!=='undefined')lucide.createIcons();
+  }catch(e){
+    box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--danger)">Erreur: ${esc(e.message)}</div></div>`;
+  }
+}
+
+export async function openMcpServerDetail(serverId){
+  document.querySelectorAll('#mcp-detail-modal').forEach(n=>n.remove());
+  const modal=document.createElement('div');
+  modal.id='mcp-detail-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML='<div class="card" style="width:min(560px,92vw);max-height:88vh;overflow-y:auto;margin:0"><div class="card-title"><i data-lucide="server"></i> Server MCP</div><div class="card-content" id="mcp-detail-body" style="color:var(--muted)">Chargement...</div></div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)closeMcpDetail()});
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog/${encodeURIComponent(serverId)}`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const s=d.server||{};
+    const body=document.getElementById('mcp-detail-body');
+    if(body){
+      const rows=[
+        ['server_id',s.server_id],
+        ['display_name',s.display_name],
+        ['status',s.status],
+        ['package_spec',s.package_spec],
+        ['version',s.version||'—'],
+        ['owner_profile',s.owner_profile],
+        ['trust_score',(s.trust_score!=null)?s.trust_score:'—'],
+        ['added_at',s.added_at],
+        ['updated_at',s.updated_at],
+        ['last_active_at',s.last_active_at||'jamais'],
+      ];
+      let html='<div style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--text)">';
+      for(const [k,v] of rows){
+        html+=`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);font-size:11px">${esc(k)}</span><span style="font-family:var(--mono);font-size:11px">${esc(String(v||''))}</span></div>`;
+      }
+      html+='</div>';
+      html+='<div style="margin-top:14px;text-align:right"><button class="btn" style="font-size:12px" onclick="closeMcpDetail()">Fermer</button></div>';
+      body.innerHTML=html;
+    }
+  }catch(e){
+    const body=document.getElementById('mcp-detail-body');
+    if(body)body.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+window.openMcpServerDetail=openMcpServerDetail;
+
+export function closeMcpDetail(){document.querySelectorAll('#mcp-detail-modal').forEach(n=>n.remove())}
+window.closeMcpDetail=closeMcpDetail;
+
+/* ──────────────────────────────────────────────────────────────────────
+   Phase 20B-1 — Modals approve / reject ApprovalQueue (UI mutations)
+
+   Garde-fous UI :
+     - Modal explicite avant tout appel POST
+     - Reject : textarea reason obligatoire (min 3, max 500)
+     - Si dry_run forcé (LUMENA_MCP_LIVE off) : bouton suffixé (dry_run)
+       et bandeau d'avertissement en haut du panel
+     - Rollback UI : si erreur backend, toast + état précédent restauré
+     - Pas d'action en chaîne, pas de retry automatique
+     - Marker UUID4 affiché discrètement après approve live (utile 20B-2)
+   ────────────────────────────────────────────────────────────────────── */
+
+function _mcpCloseApprovalModals(){
+  document.querySelectorAll('#mcp-approval-action-modal').forEach(n=>n.remove());
+}
+window._mcpCloseApprovalModals=_mcpCloseApprovalModals;
+
+function _mcpToast(message,kind){
+  const colorMap={ok:'var(--ok)',error:'var(--danger)',info:'var(--accent)'};
+  const color=colorMap[kind]||'var(--accent)';
+  const t=document.createElement('div');
+  t.style.cssText=`position:fixed;bottom:20px;right:20px;background:var(--panel);border:1px solid ${color};color:var(--text);padding:10px 14px;border-radius:6px;font-size:12px;z-index:10000;box-shadow:0 4px 16px rgba(0,0,0,.3);max-width:380px`;
+  t.innerHTML=esc(message);
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(),5500);
+}
+
+export function openMcpApprovalApproveModal(actionId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(0,180,120,.1);border:1px solid var(--ok);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : ApprovalQueue.approve sera appelée pour de vrai. Un marker UUID4 sera émis (TTL 5 min, one-shot).</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_LIVE non actif. Aucune mutation queue, aucun marker.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(480px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="check-circle"></i> Approuver ticket${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">action_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all">${esc(actionId)}</div>
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-approve-confirm-btn" style="font-size:12px;background:var(--ok);color:#fff" onclick="submitMcpApprovalApprove('${esc(actionId)}')">Confirmer l'approbation${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+window.openMcpApprovalApproveModal=openMcpApprovalApproveModal;
+
+export function openMcpApprovalRejectModal(actionId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(220,80,80,.1);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : ApprovalQueue.reject sera appelée pour de vrai avec la raison fournie.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_LIVE non actif. Aucune mutation queue.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(520px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="x-circle"></i> Rejeter ticket${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">action_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(actionId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Raison du rejet (obligatoire, 3-500 caractères) :</label>
+      <textarea id="mcp-reject-reason-input" rows="4" maxlength="500" placeholder="Expliquez pourquoi cette action est refusée..." style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:12px;resize:vertical" oninput="_mcpUpdateRejectButton()"></textarea>
+      <div id="mcp-reject-length-hint" style="font-size:10px;color:var(--muted);margin-top:2px;text-align:right">0 / 500</div>
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-reject-confirm-btn" disabled style="font-size:12px;background:var(--danger);color:#fff;opacity:.5" onclick="submitMcpApprovalReject('${esc(actionId)}')">Confirmer le rejet${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const ta=document.getElementById('mcp-reject-reason-input');if(ta)ta.focus();},50);
+}
+window.openMcpApprovalRejectModal=openMcpApprovalRejectModal;
+
+function _mcpUpdateRejectButton(){
+  const ta=document.getElementById('mcp-reject-reason-input');
+  const btn=document.getElementById('mcp-reject-confirm-btn');
+  const hint=document.getElementById('mcp-reject-length-hint');
+  if(!ta||!btn)return;
+  const trimmed=(ta.value||'').trim();
+  const len=trimmed.length;
+  if(hint)hint.textContent=`${len} / 500`;
+  const valid=len>=3&&len<=500;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateRejectButton=_mcpUpdateRejectButton;
+
+export async function submitMcpApprovalApprove(actionId){
+  const btn=document.getElementById('mcp-approve-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  let localCreateNextServerId='';
+  let localCreateNextTicketId='';
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/approvals/${encodeURIComponent(actionId)}/approve`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode&&d.marker){
+      // Phase 20B-2/20B-3 : capture marker côté UI si mapping ticket→server_id connu.
+      // L'ordre est strict : 1) set marker sous server_id 2) clear ticket mapping.
+      // Le mapping peut être install (mcp_install_ticket_*) OU activation
+      // (mcp_activate_ticket_*) — on essaie les deux dans cet ordre.
+      const ticketId=d.action_id||actionId;
+      let serverId=_mcpGetServerIdForTicket(ticketId);
+      let mappingKind='install';
+      if(!serverId){
+        serverId=_mcpGetServerIdForActivateTicket(ticketId);
+        if(serverId)mappingKind='activate';
+      }
+      if(!serverId){
+        serverId=_mcpGetServerIdForLocalCreateTicket(ticketId);
+        if(serverId)mappingKind='local_create';
+      }
+      if(serverId){
+        _mcpSetMarker(serverId,d.marker,d.marker_ttl_s||300);
+        if(mappingKind==='install'){
+          _mcpClearTicketMapping(ticketId);
+        }else if(mappingKind==='activate'){
+          _mcpClearActivateTicketMapping(ticketId);
+        }else{
+          // Local-create approval is not the final action. Keep this mapping
+          // until /api/mcp/local-create/execute consumes the one-shot marker.
+          localCreateNextServerId=serverId;
+          localCreateNextTicketId=ticketId;
+        }
+      }
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Approuvé. Marker émis : <code style="background:var(--bg);padding:2px 4px;border-radius:3px">${esc(d.marker.substring(0,12))}…</code> (TTL ${esc(String(d.marker_ttl_s||300))}s, one-shot)${serverId?` · stocké pour <code>${esc(serverId)}</code>`:''}</span>`;
+      _mcpToast('Ticket approuvé (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucune mutation queue, aucun marker)</span>`;
+      _mcpToast('Approbation simulée (dry_run)','info');
+    }
+    if(localCreateNextServerId&&out){
+      out.innerHTML+=`<div style="margin-top:10px;display:flex;justify-content:flex-end"><button class="btn" style="font-size:12px;background:var(--accent);color:#fff" onclick="openMcpLocalCreateExecuteModal('${esc(localCreateNextServerId)}','${esc(localCreateNextTicketId)}')">Materialiser local MCP maintenant</button></div>`;
+      _loadMcpApprovals();
+    }else{
+      setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpApprovals();},1200);
+    }
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec approve: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpApprovalApprove=submitMcpApprovalApprove;
+
+/* ──────────────────────────────────────────────────────────────────────
+   Phase 20B-2 — Install lifecycle UI mutations
+   (propose / execute, marker UUID4 consommation one-shot)
+
+   Helpers sessionStorage (JSON + TTL indépendants) :
+     - mcp_install_ticket_<ticket_id> = {server_id, expires_at}  (TTL 30 min)
+     - mcp_marker_<server_id>         = {marker, expires_at}     (TTL 5 min)
+
+   Invariant central : un mapping ticket valide reste en sessionStorage tant
+   que son expires_at n'est pas dépassé, MÊME SI aucun marker n'a encore été
+   émis. Le marker arrive seulement après approve, qui peut survenir
+   longtemps après propose. La purge ne dépend JAMAIS de l'existence d'un
+   marker.
+
+   sessionStorage UNIQUEMENT : tout est purgé à la fermeture du navigateur
+   (jamais persisté entre sessions).
+   ────────────────────────────────────────────────────────────────────── */
+
+const _MCP_TICKET_MAPPING_TTL_S=1800;  // 30 min (> TTL marker pour donner le temps d'approuver)
+const _MCP_INSTALL_TOOL_PREFIX='mcp_install:';
+
+function _mcpSetMarker(serverId,marker,ttlS){
+  const ttl=Number(ttlS)>0?Number(ttlS):300;
+  sessionStorage.setItem(`mcp_marker_${serverId}`,JSON.stringify({
+    marker:marker,
+    expires_at:Date.now()+(ttl*1000),
+  }));
+}
+window._mcpSetMarker=_mcpSetMarker;
+
+function _mcpGetMarker(serverId){
+  const raw=sessionStorage.getItem(`mcp_marker_${serverId}`);
+  if(!raw)return null;
+  try{
+    const d=JSON.parse(raw);
+    if(!d||typeof d.marker!=='string'||typeof d.expires_at!=='number'){
+      sessionStorage.removeItem(`mcp_marker_${serverId}`);
+      return null;
+    }
+    if(Date.now()>d.expires_at){
+      sessionStorage.removeItem(`mcp_marker_${serverId}`);
+      return null;
+    }
+    return d.marker;
+  }catch(_){
+    sessionStorage.removeItem(`mcp_marker_${serverId}`);
+    return null;
+  }
+}
+window._mcpGetMarker=_mcpGetMarker;
+
+function _mcpClearMarker(serverId){
+  sessionStorage.removeItem(`mcp_marker_${serverId}`);
+}
+window._mcpClearMarker=_mcpClearMarker;
+
+function _mcpSetTicketMapping(ticketId,serverId){
+  sessionStorage.setItem(`mcp_install_ticket_${ticketId}`,JSON.stringify({
+    server_id:serverId,
+    expires_at:Date.now()+(_MCP_TICKET_MAPPING_TTL_S*1000),
+  }));
+}
+window._mcpSetTicketMapping=_mcpSetTicketMapping;
+
+function _mcpGetServerIdForTicket(ticketId){
+  // INDEPENDANT du marker : lit le JSON, vérifie expires_at uniquement.
+  // Le marker n'arrive qu'après approve ; le mapping doit survivre dans cette
+  // fenêtre, sinon Lumena ne pourra plus associer marker → server_id.
+  const raw=sessionStorage.getItem(`mcp_install_ticket_${ticketId}`);
+  if(!raw)return null;
+  try{
+    const d=JSON.parse(raw);
+    if(!d||typeof d.server_id!=='string'||typeof d.expires_at!=='number'){
+      sessionStorage.removeItem(`mcp_install_ticket_${ticketId}`);
+      return null;
+    }
+    if(Date.now()>d.expires_at){
+      sessionStorage.removeItem(`mcp_install_ticket_${ticketId}`);
+      return null;
+    }
+    return d.server_id;
+  }catch(_){
+    sessionStorage.removeItem(`mcp_install_ticket_${ticketId}`);
+    return null;
+  }
+}
+window._mcpGetServerIdForTicket=_mcpGetServerIdForTicket;
+
+function _mcpClearTicketMapping(ticketId){
+  sessionStorage.removeItem(`mcp_install_ticket_${ticketId}`);
+}
+window._mcpClearTicketMapping=_mcpClearTicketMapping;
+
+function _mcpPurgeExpiredInstallState(){
+  // Purge UNIQUEMENT les entrées dont expires_at est dépassé OU corrompues.
+  // Ne JAMAIS supprimer un mapping ticket valide sous prétexte qu'aucun
+  // marker n'existe encore : le marker arrive après approve.
+  const now=Date.now();
+  const keysToCheck=[];
+  for(let i=0;i<sessionStorage.length;i++){
+    const k=sessionStorage.key(i);
+    if(k&&(k.startsWith('mcp_install_ticket_')
+           ||k.startsWith('mcp_activate_ticket_')
+           ||k.startsWith('mcp_marker_'))){
+      keysToCheck.push(k);
+    }
+  }
+  for(const k of keysToCheck){
+    const raw=sessionStorage.getItem(k);
+    if(!raw)continue;
+    try{
+      const d=JSON.parse(raw);
+      if(!d||typeof d.expires_at!=='number'){
+        sessionStorage.removeItem(k);
+        continue;
+      }
+      if(now>d.expires_at){
+        sessionStorage.removeItem(k);
+      }
+      // Sinon : entrée VALIDE → on ne touche pas, même si l'autre côté manque.
+    }catch(_){
+      sessionStorage.removeItem(k);
+    }
+  }
+}
+window._mcpPurgeExpiredInstallState=_mcpPurgeExpiredInstallState;
+
+/* ── Modal Proposer install (sur Catalog DECLARED) ───────────────────── */
+
+export function openMcpInstallProposeModal(serverId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(0,180,120,.1);border:1px solid var(--ok);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : un ticket d\'approbation sera créé via MCPInstallOrchestrator.propose_install.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_LIVE non actif. Aucun ticket créé.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(480px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="download"></i> Proposer install${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all">${esc(serverId)}</div>
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-install-propose-confirm-btn" style="font-size:12px;background:var(--ok);color:#fff" onclick="submitMcpInstallPropose('${esc(serverId)}')">Confirmer propose${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+window.openMcpInstallProposeModal=openMcpInstallProposeModal;
+
+export async function submitMcpInstallPropose(serverId){
+  const btn=document.getElementById('mcp-install-propose-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/install/propose`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,server_id:serverId,caller_kind:'admin_ui'}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode&&d.ticket_id&&d.server_id){
+      // Stocker le mapping ticket_id → server_id pour pouvoir associer le
+      // marker reçu après approve à ce server_id.
+      _mcpSetTicketMapping(d.ticket_id,d.server_id);
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Ticket créé : <code style="background:var(--bg);padding:2px 4px;border-radius:3px">${esc(d.ticket_id.substring(0,12))}…</code>. Aller dans Approvals pour valider.</span>`;
+      _mcpToast('Ticket install créé (live)','ok');
+      setTimeout(()=>{_mcpCloseApprovalModals();loadMcpTab('approvals');},1500);
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucun ticket créé)</span>`;
+      _mcpToast('Propose simulé (dry_run)','info');
+      setTimeout(()=>{_mcpCloseApprovalModals();},1200);
+    }
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec propose: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpInstallPropose=submitMcpInstallPropose;
+
+/* ── Modal Exécuter install (niveau 2 : saisie texte) ────────────────── */
+
+export function openMcpInstallExecuteModal(serverId,ticketId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(220,80,80,.1);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : un subprocess réel npm/pip va être lancé via MCPSandboxRunner. Le marker sera consommé (one-shot) AVANT l\'exécution. En cas d\'échec, une nouvelle approbation sera requise.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucun subprocess lancé, aucun marker consommé.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(540px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="play"></i> Exécuter install${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-install-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateInstallExecuteButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-install-execute-confirm-btn" disabled style="font-size:12px;background:var(--danger);color:#fff;opacity:.5" onclick="submitMcpInstallExecute('${esc(serverId)}','${esc(ticketId||'')}')">Exécuter install${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const inp=document.getElementById('mcp-install-phrase-input');if(inp)inp.focus();},50);
+}
+window.openMcpInstallExecuteModal=openMcpInstallExecuteModal;
+
+function _mcpUpdateInstallExecuteButton(expectedServerId){
+  const inp=document.getElementById('mcp-install-phrase-input');
+  const btn=document.getElementById('mcp-install-execute-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedServerId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateInstallExecuteButton=_mcpUpdateInstallExecuteButton;
+
+/* ──────────────────────────────────────────────────────────────────────
+   Phase 20B-3 — Activation lifecycle UI mutations
+   (propose / execute / deactivate)
+
+   Réutilise les helpers sessionStorage 20B-2 (mcp_install_ticket_*, mcp_marker_*).
+   Nouveau préfixe ticket : mcp_activate_ticket_* (TTL 30 min, JSON + expires_at).
+   ────────────────────────────────────────────────────────────────────── */
+
+const _MCP_ACTIVATE_TOOL_PREFIX='mcp_activate:';
+const _MCP_ACTIVATE_TICKET_TTL_S=1800;
+
+function _mcpSetActivateTicketMapping(ticketId,serverId){
+  sessionStorage.setItem(`mcp_activate_ticket_${ticketId}`,JSON.stringify({
+    server_id:serverId,
+    expires_at:Date.now()+(_MCP_ACTIVATE_TICKET_TTL_S*1000),
+  }));
+}
+window._mcpSetActivateTicketMapping=_mcpSetActivateTicketMapping;
+
+function _mcpGetServerIdForActivateTicket(ticketId){
+  const raw=sessionStorage.getItem(`mcp_activate_ticket_${ticketId}`);
+  if(!raw)return null;
+  try{
+    const d=JSON.parse(raw);
+    if(!d||typeof d.server_id!=='string'||typeof d.expires_at!=='number'){
+      sessionStorage.removeItem(`mcp_activate_ticket_${ticketId}`);
+      return null;
+    }
+    if(Date.now()>d.expires_at){
+      sessionStorage.removeItem(`mcp_activate_ticket_${ticketId}`);
+      return null;
+    }
+    return d.server_id;
+  }catch(_){
+    sessionStorage.removeItem(`mcp_activate_ticket_${ticketId}`);
+    return null;
+  }
+}
+window._mcpGetServerIdForActivateTicket=_mcpGetServerIdForActivateTicket;
+
+function _mcpClearActivateTicketMapping(ticketId){
+  sessionStorage.removeItem(`mcp_activate_ticket_${ticketId}`);
+}
+window._mcpClearActivateTicketMapping=_mcpClearActivateTicketMapping;
+
+const _MCP_LOCAL_CREATE_TOOL_PREFIX='mcp_local_create:';
+
+function _mcpLocalCreateExecuteButton(serverId,ticketId,drySuffix){
+  return `<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--accent);color:#fff" onclick="openMcpLocalCreateExecuteModal('${esc(serverId)}','${esc(ticketId||'')}')">Materialiser local MCP${drySuffix||''}</button>`;
+}
+window._mcpLocalCreateExecuteButton=_mcpLocalCreateExecuteButton;
+
+function _mcpSetLocalCreateTicketMapping(ticketId,serverId){
+  sessionStorage.setItem(`mcp_local_create_ticket_${ticketId}`,JSON.stringify({
+    server_id:serverId,
+    expires_at:Date.now()+(_MCP_ACTIVATE_TICKET_TTL_S*1000),
+  }));
+}
+window._mcpSetLocalCreateTicketMapping=_mcpSetLocalCreateTicketMapping;
+
+function _mcpGetServerIdForLocalCreateTicket(ticketId){
+  const raw=sessionStorage.getItem(`mcp_local_create_ticket_${ticketId}`);
+  if(!raw)return null;
+  try{
+    const d=JSON.parse(raw);
+    if(!d||typeof d.server_id!=='string'||typeof d.expires_at!=='number'){
+      sessionStorage.removeItem(`mcp_local_create_ticket_${ticketId}`);
+      return null;
+    }
+    if(Date.now()>d.expires_at){
+      sessionStorage.removeItem(`mcp_local_create_ticket_${ticketId}`);
+      return null;
+    }
+    return d.server_id;
+  }catch(_){
+    sessionStorage.removeItem(`mcp_local_create_ticket_${ticketId}`);
+    return null;
+  }
+}
+window._mcpGetServerIdForLocalCreateTicket=_mcpGetServerIdForLocalCreateTicket;
+
+function _mcpClearLocalCreateTicketMapping(ticketId){
+  sessionStorage.removeItem(`mcp_local_create_ticket_${ticketId}`);
+}
+window._mcpClearLocalCreateTicketMapping=_mcpClearLocalCreateTicketMapping;
+
+/* ── Modal Proposer activation (sur Catalog INSTALLED) ──────────────── */
+
+export function openMcpActivationProposeModal(serverId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(0,180,120,.1);border:1px solid var(--ok);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : un ticket d\'approbation sera créé via MCPActivationService.propose_activation.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_LIVE non actif. Aucun ticket créé.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(480px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="zap"></i> Proposer activation${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all">${esc(serverId)}</div>
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-activation-propose-confirm-btn" style="font-size:12px;background:var(--ok);color:#fff" onclick="submitMcpActivationPropose('${esc(serverId)}')">Confirmer propose${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+window.openMcpActivationProposeModal=openMcpActivationProposeModal;
+
+export async function submitMcpActivationPropose(serverId){
+  const btn=document.getElementById('mcp-activation-propose-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/activation/propose`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,server_id:serverId,caller_kind:'admin_ui'}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode&&d.ticket_id&&d.server_id){
+      _mcpSetActivateTicketMapping(d.ticket_id,d.server_id);
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Ticket créé : <code style="background:var(--bg);padding:2px 4px;border-radius:3px">${esc(d.ticket_id.substring(0,12))}…</code>. Aller dans Approvals pour valider.</span>`;
+      _mcpToast('Ticket activation créé (live)','ok');
+      setTimeout(()=>{_mcpCloseApprovalModals();loadMcpTab('approvals');},1500);
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucun ticket créé)</span>`;
+      _mcpToast('Propose activation simulé (dry_run)','info');
+      setTimeout(()=>{_mcpCloseApprovalModals();},1200);
+    }
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec propose activation: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpActivationPropose=submitMcpActivationPropose;
+
+/* ── Modal Activer (niveau 2 : saisie texte) ───────────────────────── */
+
+export function openMcpActivationExecuteModal(serverId,ticketId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(220,80,80,.1);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : démarrage subprocess + register handlers dans le ToolRegistry runtime. Le marker sera consommé (one-shot) AVANT l\'activation. En cas d\'échec, une nouvelle approbation sera requise.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucun subprocess lancé, aucun marker consommé.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(540px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="play"></i> Activer${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-activate-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateActivateExecuteButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-activate-execute-confirm-btn" disabled style="font-size:12px;background:var(--ok);color:#fff;opacity:.5" onclick="submitMcpActivationExecute('${esc(serverId)}','${esc(ticketId||'')}')">Activer${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const inp=document.getElementById('mcp-activate-phrase-input');if(inp)inp.focus();},50);
+}
+window.openMcpActivationExecuteModal=openMcpActivationExecuteModal;
+
+function _mcpUpdateActivateExecuteButton(expectedServerId){
+  const inp=document.getElementById('mcp-activate-phrase-input');
+  const btn=document.getElementById('mcp-activate-execute-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedServerId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateActivateExecuteButton=_mcpUpdateActivateExecuteButton;
+
+export async function submitMcpActivationExecute(serverId,ticketId){
+  const inp=document.getElementById('mcp-activate-phrase-input');
+  const btn=document.getElementById('mcp-activate-execute-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  const marker=_mcpGetMarker(serverId);
+  if(!marker&&window._mcpLiveMode){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Marker absent ou expiré. Recréer une approbation.</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/activation/execute`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        confirmed:true,
+        confirmation_phrase:phrase,
+        server_id:serverId,
+        marker:marker||'00000000000000000000000000000000',
+      }),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      _mcpClearMarker(serverId);
+      if(ticketId)_mcpClearActivateTicketMapping(ticketId);
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    _mcpClearMarker(serverId);
+    if(ticketId)_mcpClearActivateTicketMapping(ticketId);
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Activé. Status : ${esc(d.status||'?')}</span>`;
+      _mcpToast('Activation exécutée (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucun subprocess, marker non consommé)</span>`;
+      _mcpToast('Activation simulée (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpApprovals();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec activate: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpActivationExecute=submitMcpActivationExecute;
+
+/* ── Modal Désactiver (niveau 2 : saisie texte, action de protection) ─ */
+
+export function openMcpActivationDeactivateModal(serverId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(220,80,80,.1);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : stop subprocess + unregister handlers du ToolRegistry runtime. Les outils MCP de ce server ne seront plus disponibles pour le dispatch.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucune mutation runtime.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(540px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="square"></i> Désactiver${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-deactivate-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateDeactivateButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-deactivate-confirm-btn" disabled style="font-size:12px;background:var(--danger);color:#fff;opacity:.5" onclick="submitMcpActivationDeactivate('${esc(serverId)}')">Désactiver${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const inp=document.getElementById('mcp-deactivate-phrase-input');if(inp)inp.focus();},50);
+}
+window.openMcpActivationDeactivateModal=openMcpActivationDeactivateModal;
+
+function _mcpUpdateDeactivateButton(expectedServerId){
+  const inp=document.getElementById('mcp-deactivate-phrase-input');
+  const btn=document.getElementById('mcp-deactivate-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedServerId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateDeactivateButton=_mcpUpdateDeactivateButton;
+
+export async function submitMcpActivationDeactivate(serverId){
+  const inp=document.getElementById('mcp-deactivate-phrase-input');
+  const btn=document.getElementById('mcp-deactivate-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/activation/deactivate`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        confirmed:true,
+        confirmation_phrase:phrase,
+        server_id:serverId,
+      }),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Désactivé. Status : ${esc(d.status||'?')}</span>`;
+      _mcpToast('Désactivation exécutée (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucune mutation runtime)</span>`;
+      _mcpToast('Désactivation simulée (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpCatalog();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec deactivate: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpActivationDeactivate=submitMcpActivationDeactivate;
+
+/* ──────────────────────────────────────────────────────────────────────
+   Phase 20B-4 — Catalog mutations UI
+   (add / quarantine / restore / remove)
+
+   Add  : modal niveau 1 (formulaire de création, pas de phrase)
+   Quarantine / Restore / Remove : modal niveau 2 (saisie texte = server_id)
+
+   Réutilise singleton MCPServerCatalog Phase 20B-2.
+   Pas de marker, pas d'approval queue.
+   ────────────────────────────────────────────────────────────────────── */
+
+/* ── Modal Ajouter server (niveau 1) ──────────────────────────────── */
+
+export function openMcpCatalogAddModal(){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(0,180,120,.1);border:1px solid var(--ok);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : un nouveau server sera ajouté au Catalog avec status DECLARED.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucune mutation Catalog.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(560px,92vw);max-height:88vh;overflow-y:auto;margin:0">
+    <div class="card-title"><i data-lucide="plus-circle"></i> Ajouter server${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">server_id (lowercase, [a-z0-9][a-z0-9_.-]{0,63})</label>
+      <input type="text" id="mcp-add-server-id" autocomplete="off" spellcheck="false" placeholder="alice-mcp" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">display_name (texte libre, max 200)</label>
+      <input type="text" id="mcp-add-display-name" autocomplete="off" placeholder="Alice MCP" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">package_spec (npm:&lt;pkg&gt; | pypi:&lt;pkg&gt; | local:&lt;slug&gt;)</label>
+      <input type="text" id="mcp-add-package-spec" autocomplete="off" spellcheck="false" placeholder="npm:my-mcp-server" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">owner_profile ([a-z0-9_-]{1,64})</label>
+      <input type="text" id="mcp-add-owner-profile" autocomplete="off" spellcheck="false" placeholder="default" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">version (optionnel)</label>
+      <input type="text" id="mcp-add-version" autocomplete="off" spellcheck="false" placeholder="1.0.0" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">trust_score (0-100, optionnel)</label>
+      <input type="number" id="mcp-add-trust-score" min="0" max="100" placeholder="80" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">notes (optionnel, max 256, [a-zA-Z0-9 _:.-])</label>
+      <textarea id="mcp-add-notes" rows="2" maxlength="256" placeholder="" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;resize:vertical"></textarea>
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-add-confirm-btn" style="font-size:12px;background:var(--ok);color:#fff" onclick="submitMcpCatalogAdd()">Confirmer ajout${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-add-server-id');if(i)i.focus();},50);
+}
+window.openMcpCatalogAddModal=openMcpCatalogAddModal;
+
+export async function submitMcpCatalogAdd(){
+  const btn=document.getElementById('mcp-add-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const sid=(document.getElementById('mcp-add-server-id')||{}).value||'';
+  const displayName=(document.getElementById('mcp-add-display-name')||{}).value||'';
+  const packageSpec=(document.getElementById('mcp-add-package-spec')||{}).value||'';
+  const ownerProfile=(document.getElementById('mcp-add-owner-profile')||{}).value||'';
+  const version=((document.getElementById('mcp-add-version')||{}).value||'').trim();
+  const trustRaw=((document.getElementById('mcp-add-trust-score')||{}).value||'').trim();
+  const notes=((document.getElementById('mcp-add-notes')||{}).value||'');
+  const body={confirmed:true,server_id:sid,display_name:displayName,package_spec:packageSpec,owner_profile:ownerProfile};
+  if(version)body.version=version;
+  if(trustRaw)body.trust_score=parseInt(trustRaw,10);
+  if(notes)body.notes=notes;
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog/add`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify(body),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Server ajouté (status DECLARED).</span>`;
+      _mcpToast('Server ajouté au Catalog (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucune mutation Catalog)</span>`;
+      _mcpToast('Ajout simulé (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpCatalog();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec ajout: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpCatalogAdd=submitMcpCatalogAdd;
+
+/* ── Modal Quarantiner (niveau 2 : saisie texte) ──────────────────── */
+
+export function openMcpCatalogQuarantineModal(serverId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(220,80,80,.1);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : status → QUARANTINED. Le server ne pourra plus être proposé en activation jusqu\'à restore.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucune mutation Catalog.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(540px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="alert-triangle"></i> Quarantiner server${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-quarantine-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateQuarantineButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-quarantine-confirm-btn" disabled style="font-size:12px;background:var(--warn,#e0a23a);color:#fff;opacity:.5" onclick="submitMcpCatalogQuarantine('${esc(serverId)}')">Quarantiner${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-quarantine-phrase-input');if(i)i.focus();},50);
+}
+window.openMcpCatalogQuarantineModal=openMcpCatalogQuarantineModal;
+
+function _mcpUpdateQuarantineButton(expectedServerId){
+  const inp=document.getElementById('mcp-quarantine-phrase-input');
+  const btn=document.getElementById('mcp-quarantine-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedServerId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateQuarantineButton=_mcpUpdateQuarantineButton;
+
+export async function submitMcpCatalogQuarantine(serverId){
+  const inp=document.getElementById('mcp-quarantine-phrase-input');
+  const btn=document.getElementById('mcp-quarantine-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog/${encodeURIComponent(serverId)}/quarantine`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,confirmation_phrase:phrase,server_id:serverId}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Status → QUARANTINED.</span>`;
+      _mcpToast('Quarantine exécutée (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé)</span>`;
+      _mcpToast('Quarantine simulée (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpCatalog();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec quarantine: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpCatalogQuarantine=submitMcpCatalogQuarantine;
+
+/* ── Modal Restaurer (niveau 2 : saisie texte) ────────────────────── */
+
+export function openMcpCatalogRestoreModal(serverId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(0,180,120,.1);border:1px solid var(--ok);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : status QUARANTINED → INSTALLED. Pour revenir ACTIVE, passer ensuite par Activation (20B-3).</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucune mutation Catalog.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(540px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="rotate-ccw"></i> Restaurer server${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-restore-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateRestoreButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-restore-confirm-btn" disabled style="font-size:12px;background:var(--accent);color:#fff;opacity:.5" onclick="submitMcpCatalogRestore('${esc(serverId)}')">Restaurer (→INSTALLED)${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-restore-phrase-input');if(i)i.focus();},50);
+}
+window.openMcpCatalogRestoreModal=openMcpCatalogRestoreModal;
+
+function _mcpUpdateRestoreButton(expectedServerId){
+  const inp=document.getElementById('mcp-restore-phrase-input');
+  const btn=document.getElementById('mcp-restore-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedServerId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateRestoreButton=_mcpUpdateRestoreButton;
+
+export async function submitMcpCatalogRestore(serverId){
+  const inp=document.getElementById('mcp-restore-phrase-input');
+  const btn=document.getElementById('mcp-restore-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog/${encodeURIComponent(serverId)}/restore`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,confirmation_phrase:phrase,server_id:serverId,target_status:'installed'}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Status → INSTALLED.</span>`;
+      _mcpToast('Restore exécuté (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé)</span>`;
+      _mcpToast('Restore simulé (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpCatalog();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec restore: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpCatalogRestore=submitMcpCatalogRestore;
+
+/* ── Modal Supprimer (niveau 2 : saisie texte) ────────────────────── */
+
+export function openMcpCatalogRemoveModal(serverId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(220,80,80,.1);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : soft-delete status → REMOVED. État terminal Phase 14 (irréversible, mais le fichier reste sur disque).</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — aucune mutation Catalog.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(540px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="trash-2"></i> Supprimer server${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-remove-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateRemoveButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-remove-confirm-btn" disabled style="font-size:12px;background:var(--danger);color:#fff;opacity:.5" onclick="submitMcpCatalogRemove('${esc(serverId)}')">Supprimer${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-remove-phrase-input');if(i)i.focus();},50);
+}
+window.openMcpCatalogRemoveModal=openMcpCatalogRemoveModal;
+
+function _mcpUpdateRemoveButton(expectedServerId){
+  const inp=document.getElementById('mcp-remove-phrase-input');
+  const btn=document.getElementById('mcp-remove-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedServerId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateRemoveButton=_mcpUpdateRemoveButton;
+
+export async function submitMcpCatalogRemove(serverId){
+  const inp=document.getElementById('mcp-remove-phrase-input');
+  const btn=document.getElementById('mcp-remove-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog/${encodeURIComponent(serverId)}/remove`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,confirmation_phrase:phrase,server_id:serverId}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Status → REMOVED${d.idempotent?' (idempotent)':''}.</span>`;
+      _mcpToast('Suppression exécutée (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé)</span>`;
+      _mcpToast('Suppression simulée (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpCatalog();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec remove: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpCatalogRemove=submitMcpCatalogRemove;
+
+/* ──────────────────────────────────────────────────────────────────────
+   Phase 20B-5 — AutoApprove patterns CRUD UI
+   (mutations de policy future — double opt-in obligatoire)
+
+   Add  : modal niveau 2 (formulaire + phrase fixe CREATE-AUTOAPPROVE-PATTERN)
+   Remove : modal niveau 2 (saisie texte = pattern_id complet 32 chars)
+
+   Singleton AutoApproveEngine côté backend (lifespan).
+   Double opt-in :
+     LUMENA_MCP_LIVE=1
+     ET
+     LUMENA_MCP_AUTOAPPROVE_LIVE=1
+   Sinon dry-run forcé (0 call add_pattern / remove_pattern côté backend).
+   ────────────────────────────────────────────────────────────────────── */
+
+const _MCP_AUTOAPPROVE_ADD_PHRASE='CREATE-AUTOAPPROVE-PATTERN';
+const _MCP_AUTOAPPROVE_KNOWN_CONSTRAINT_KEYS=[
+  'to_allowlist','channel_allowlist','url_allowlist',
+  'account_allowlist','recipient_allowlist',
+  'subject_max_chars','body_max_chars',
+  'amount_max_eur','amount_max_usd',
+  'attachments_forbidden',
+];
+const _MCP_AUTOAPPROVE_CALLER_KINDS=['react','codeagent','autonomy','scheduler','daemon','silent'];
+const _MCP_AUTOAPPROVE_POLICIES=[
+  'read_only','external_read','external_write_recoverable',
+  'local_write','external_write_irreversible','secrets_auth',
+];
+
+async function _loadMcpAutoApprove(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  box.innerHTML='<div class="card"><div class="card-content" style="color:var(--muted)">Chargement...</div></div>';
+  try{
+    // Récupère état double opt-in via /health (refresh)
+    const hr=await fetch(`${API_BASE}/api/mcp/health`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const hd=hr.ok?await hr.json():{};
+    const liveMode=!!hd.live_mode;
+    const aaLiveMode=!!hd.autoapprove_live_mode;
+    const doubleOptin=liveMode&&aaLiveMode;
+    const r=await fetch(`${API_BASE}/api/mcp/autoapprove/patterns`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.available===false){
+      box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--muted)">Module AutoApproveEngine non chargé (${esc(d.reason||'unknown')}).</div></div>`;
+      return;
+    }
+    const patterns=d.patterns||[];
+    let html='';
+    // Bandeau double opt-in
+    if(!doubleOptin){
+      const missing=[];
+      if(!liveMode)missing.push('LUMENA_MCP_LIVE');
+      if(!aaLiveMode)missing.push('LUMENA_MCP_AUTOAPPROVE_LIVE');
+      html+=`<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);color:var(--text);padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:12px;display:flex;align-items:center;gap:8px">
+        <i data-lucide="alert-triangle" style="width:14px;height:14px;color:var(--warn,#e0a23a)"></i>
+        <span><strong>Dry-run forcé</strong> — double opt-in requis (${esc(missing.join(' + '))} manquant${missing.length>1?'s':''}). Les mutations seront simulées sans persistence.</span>
+      </div>`;
+    }else{
+      html+=`<div style="background:rgba(220,80,80,.10);border:1px solid var(--danger);color:var(--text);padding:8px 12px;border-radius:6px;margin-bottom:8px;font-size:12px;display:flex;align-items:center;gap:8px">
+        <i data-lucide="alert-octagon" style="width:14px;height:14px;color:var(--danger)"></i>
+        <span><strong>Mode LIVE actif</strong> — créer un pattern AutoApprove = créer une autorisation FUTURE qui peut court-circuiter ApprovalQueue. Chaque pattern signé est immédiatement actif.</span>
+      </div>`;
+    }
+    // Bouton "Créer pattern"
+    const drySuffix=doubleOptin?'':' (dry_run)';
+    html+=`<div style="display:flex;justify-content:flex-end;margin-bottom:8px">
+      <button class="btn" style="font-size:12px;background:var(--ok);color:#fff" onclick="openMcpAutoApproveAddModal()">+ Créer pattern${drySuffix}</button>
+    </div>`;
+    // Liste
+    if(!patterns.length){
+      html+='<div class="card"><div class="card-content" style="color:var(--muted);padding:30px;text-align:center;font-size:13px">Aucun pattern AutoApprove enregistré.</div></div>';
+    }else{
+      html+='<div class="list">';
+      for(const p of patterns){
+        html+=`<div class="list-item" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+            <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${esc(p.pattern_id||'')}</span>
+            <span class="pill ${p.policy==='read_only'||p.policy==='external_read'?'ok':'warn'}">${esc((p.policy||'').toUpperCase())}</span>
+          </div>
+          <div style="font-size:12px;margin-top:4px">profile: <code>${esc(p.profile||'?')}</code> · kind: <code>${esc(p.kind||'?')}</code></div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">caller_kinds: ${esc(String(p.caller_kinds_count||0))} · args_constraints_keys: ${esc(String(p.args_constraints_keys_count||0))} · allowlists_entries: ${esc(String(p.args_constraints_allowlists_total_entries||0))} · tool_name_pattern: ${p.tool_name_pattern_present?'<span style="color:var(--ok)">défini</span>':'<span style="color:var(--muted)">non</span>'}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">quota_max_per_day: ${esc(String(p.quota_max_per_day||0))} · expires_at: ${esc((p.expires_at||'').substring(0,19).replace('T',' '))}</div>
+          <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
+            <button class="btn" style="font-size:11px;padding:4px 10px;background:var(--danger);color:#fff" onclick="openMcpAutoApproveRemoveModal('${esc(p.pattern_id)}')">Supprimer${drySuffix}</button>
+          </div>
+        </div>`;
+      }
+      html+='</div>';
+    }
+    box.innerHTML=html;
+    if(typeof lucide!=='undefined')lucide.createIcons();
+  }catch(e){
+    box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--danger)">Erreur: ${esc(e.message)}</div></div>`;
+  }
+}
+window._loadMcpAutoApprove=_loadMcpAutoApprove;
+
+/* ── Modal Créer pattern (niveau 2 : formulaire + phrase fixe) ─────── */
+
+export function openMcpAutoApproveAddModal(){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const callerOptions=_MCP_AUTOAPPROVE_CALLER_KINDS
+    .map(k=>`<label style="display:inline-flex;align-items:center;gap:4px;margin-right:8px;font-size:11px"><input type="checkbox" class="mcp-aa-caller-checkbox" value="${esc(k)}"> ${esc(k)}</label>`)
+    .join('');
+  const policyOptions=_MCP_AUTOAPPROVE_POLICIES
+    .map(p=>`<option value="${esc(p)}">${esc(p)}</option>`)
+    .join('');
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(620px,92vw);max-height:88vh;overflow-y:auto;margin:0">
+    <div class="card-title"><i data-lucide="shield-check"></i> Créer pattern AutoApprove${drySuffix}</div>
+    <div class="card-content">
+      <div style="background:rgba(220,80,80,.10);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">
+        <strong>Attention :</strong> ce pattern peut court-circuiter ApprovalQueue pour des actions futures correspondant aux contraintes. Double opt-in requis pour mode live.
+      </div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">profile (^[a-z0-9_-]{1,64})</label>
+      <input type="text" id="mcp-aa-profile" autocomplete="off" spellcheck="false" placeholder="default" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">kind (non-vide, max 64)</label>
+      <input type="text" id="mcp-aa-kind" autocomplete="off" placeholder="email_send" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">policy</label>
+      <select id="mcp-aa-policy" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">${policyOptions}</select>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">tool_name_pattern (exact mcp__server__tool ou glob mcp__server__* pour read_only/external_read)</label>
+      <input type="text" id="mcp-aa-tool-pattern" autocomplete="off" spellcheck="false" placeholder="mcp__alice__send_email" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">caller_kinds_allowed (au moins 1)</label>
+      <div>${callerOptions}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">args_constraints (JSON, whitelist 10 clés DSL Phase 11)</label>
+      <textarea id="mcp-aa-args-constraints" rows="4" placeholder='{"to_allowlist":["alice@example.com"]}' style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px;resize:vertical"></textarea>
+      <div style="font-size:10px;color:var(--muted);margin-top:2px">Clés autorisées : ${esc(_MCP_AUTOAPPROVE_KNOWN_CONSTRAINT_KEYS.join(', '))}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">quota_max_per_day (int 1-1000000)</label>
+      <input type="number" id="mcp-aa-quota" min="1" max="1000000" value="10" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">expires_at (ISO 8601 futur, ex 2026-12-31T23:59:59+00:00)</label>
+      <input type="text" id="mcp-aa-expires-at" autocomplete="off" spellcheck="false" placeholder="2026-12-31T23:59:59+00:00" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:10px">Pour confirmer, tapez exactement : <code>${esc(_MCP_AUTOAPPROVE_ADD_PHRASE)}</code></label>
+      <input type="text" id="mcp-aa-add-phrase" autocomplete="off" spellcheck="false" placeholder="${esc(_MCP_AUTOAPPROVE_ADD_PHRASE)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateAutoApproveAddButton()">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-aa-add-confirm-btn" disabled style="font-size:12px;background:var(--ok);color:#fff;opacity:.5" onclick="submitMcpAutoApproveAdd()">Créer pattern${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-aa-profile');if(i)i.focus();},50);
+}
+window.openMcpAutoApproveAddModal=openMcpAutoApproveAddModal;
+
+function _mcpUpdateAutoApproveAddButton(){
+  const inp=document.getElementById('mcp-aa-add-phrase');
+  const btn=document.getElementById('mcp-aa-add-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===_MCP_AUTOAPPROVE_ADD_PHRASE;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateAutoApproveAddButton=_mcpUpdateAutoApproveAddButton;
+
+export async function submitMcpAutoApproveAdd(){
+  const btn=document.getElementById('mcp-aa-add-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const profile=(document.getElementById('mcp-aa-profile')||{}).value||'';
+  const kind=(document.getElementById('mcp-aa-kind')||{}).value||'';
+  const policy=(document.getElementById('mcp-aa-policy')||{}).value||'';
+  const toolPattern=(document.getElementById('mcp-aa-tool-pattern')||{}).value||'';
+  const quotaRaw=((document.getElementById('mcp-aa-quota')||{}).value||'').trim();
+  const expiresAt=(document.getElementById('mcp-aa-expires-at')||{}).value||'';
+  const phrase=(document.getElementById('mcp-aa-add-phrase')||{}).value||'';
+  if(phrase!==_MCP_AUTOAPPROVE_ADD_PHRASE){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement ${esc(_MCP_AUTOAPPROVE_ADD_PHRASE)}</span>`;
+    return;
+  }
+  // caller_kinds
+  const callerCheckboxes=document.querySelectorAll('.mcp-aa-caller-checkbox');
+  const callerKinds=[];
+  callerCheckboxes.forEach(cb=>{if(cb.checked)callerKinds.push(cb.value);});
+  // args_constraints JSON parse côté UI
+  const argsRaw=(document.getElementById('mcp-aa-args-constraints')||{}).value||'';
+  let argsConstraints=null;
+  try{argsConstraints=JSON.parse(argsRaw);}
+  catch(_){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">args_constraints doit être un JSON valide</span>`;
+    return;
+  }
+  const body={
+    confirmed:true,
+    confirmation_phrase:phrase,
+    profile,kind,policy,
+    tool_name_pattern:toolPattern,
+    caller_kinds_allowed:callerKinds,
+    args_constraints:argsConstraints,
+    quota_max_per_day:parseInt(quotaRaw,10)||0,
+    expires_at:expiresAt,
+  };
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/autoapprove/add`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify(body),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode&&d.autoapprove_live_mode&&d.pattern_id){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Pattern créé : <code style="background:var(--bg);padding:2px 4px;border-radius:3px">${esc(d.pattern_id.substring(0,12))}…</code></span>`;
+      _mcpToast('Pattern AutoApprove créé (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (double opt-in non actif — aucun pattern créé)</span>`;
+      _mcpToast('Création simulée (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpAutoApprove();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec création: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpAutoApproveAdd=submitMcpAutoApproveAdd;
+
+/* ── Modal Supprimer pattern (niveau 2 : pattern_id complet) ─────── */
+
+export function openMcpAutoApproveRemoveModal(patternId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(560px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="trash-2"></i> Supprimer pattern AutoApprove${drySuffix}</div>
+    <div class="card-content">
+      <div style="background:rgba(220,80,80,.10);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">
+        <strong>Attention :</strong> retire l'autorisation future associée. Idempotent (Phase 11).
+      </div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">pattern_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(patternId)}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Pour confirmer, tapez exactement le pattern_id complet (32 chars hex) :</label>
+      <input type="text" id="mcp-aa-remove-phrase" autocomplete="off" spellcheck="false" placeholder="${esc(patternId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:11px" oninput="_mcpUpdateAutoApproveRemoveButton('${esc(patternId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-aa-remove-confirm-btn" disabled style="font-size:12px;background:var(--danger);color:#fff;opacity:.5" onclick="submitMcpAutoApproveRemove('${esc(patternId)}')">Supprimer pattern${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-aa-remove-phrase');if(i)i.focus();},50);
+}
+window.openMcpAutoApproveRemoveModal=openMcpAutoApproveRemoveModal;
+
+function _mcpUpdateAutoApproveRemoveButton(expectedPatternId){
+  const inp=document.getElementById('mcp-aa-remove-phrase');
+  const btn=document.getElementById('mcp-aa-remove-confirm-btn');
+  if(!inp||!btn)return;
+  const valid=inp.value===expectedPatternId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateAutoApproveRemoveButton=_mcpUpdateAutoApproveRemoveButton;
+
+export async function submitMcpAutoApproveRemove(patternId){
+  const inp=document.getElementById('mcp-aa-remove-phrase');
+  const btn=document.getElementById('mcp-aa-remove-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==patternId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le pattern_id complet</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/autoapprove/${encodeURIComponent(patternId)}/remove`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,confirmation_phrase:phrase,pattern_id:patternId}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode&&d.autoapprove_live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Pattern supprimé${d.idempotent?' (idempotent)':''}.</span>`;
+      _mcpToast('Pattern supprimé (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (double opt-in non actif)</span>`;
+      _mcpToast('Suppression simulée (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpAutoApprove();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec suppression: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpAutoApproveRemove=submitMcpAutoApproveRemove;
+
+/* ──────────────────────────────────────────────────────────────────────
+   Phase 20B-6 — Trust score manual update UI
+   (mutation de seuil de sécurité — double opt-in obligatoire)
+
+   Modal niveau 2 : input number trust_score + textarea justification
+                    (UTF-8 lisible, 10..256 chars trimés) + saisie texte
+                    = server_id exact.
+   Double opt-in : LUMENA_MCP_LIVE=1 ET LUMENA_MCP_TRUST_LIVE=1.
+   Sinon dry-run forcé côté backend (0 call update_trust_score).
+   ────────────────────────────────────────────────────────────────────── */
+
+const _MCP_TRUST_JUSTIFICATION_MIN_LEN=10;
+const _MCP_TRUST_JUSTIFICATION_MAX_LEN=256;
+
+export function openMcpTrustUpdateModal(serverId,currentScore){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const trustLiveMode=!!window._mcpTrustLiveMode;
+  const trustDoubleOptin=liveMode&&trustLiveMode;
+  const drySuffix=trustDoubleOptin?'':' (dry_run)';
+  const currentLabel=(currentScore==null||currentScore===undefined)?'<em style="color:var(--muted)">aucun</em>':`<strong>${esc(String(currentScore))}</strong>`;
+  let modeWarning;
+  if(trustDoubleOptin){
+    modeWarning='<div style="background:rgba(220,80,80,.10);border:1px solid var(--danger);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Mode LIVE actif (double opt-in) :</strong> ajuster trust_score peut indirectement débloquer des chaînes d\'autorisation futures (notamment via patterns AutoApprove). LUMENA_MCP_LIVE=1 ET LUMENA_MCP_TRUST_LIVE=1.</div>';
+  }else if(!liveMode&&!trustLiveMode){
+    modeWarning='<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_LIVE ET LUMENA_MCP_TRUST_LIVE manquants. Aucune mutation Catalog.</div>';
+  }else if(!trustLiveMode){
+    modeWarning='<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_TRUST_LIVE manquant (opt-in trust dédié non actif). Aucune mutation Catalog.</div>';
+  }else{
+    modeWarning='<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcé</strong> — LUMENA_MCP_LIVE manquant (opt-in MCP global non actif). Aucune mutation Catalog.</div>';
+  }
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(560px,92vw);max-height:88vh;overflow-y:auto;margin:0">
+    <div class="card-title"><i data-lucide="shield"></i> Ajuster trust_score (manual update)${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all;margin-bottom:12px">${esc(serverId)}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">trust_score actuel : ${currentLabel}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">Nouveau trust_score (0-100)</label>
+      <input type="number" id="mcp-trust-score-input" min="0" max="100" placeholder="0-100" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">Justification (obligatoire, 10-256 caractères, UTF-8 lisible — accents autorisés)</label>
+      <textarea id="mcp-trust-justification-input" rows="3" maxlength="256" placeholder="Ex: Révision sécurité après audit interne" style="width:100%;padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;resize:vertical" oninput="_mcpUpdateTrustButton('${esc(serverId)}')"></textarea>
+      <div id="mcp-trust-length-hint" style="font-size:10px;color:var(--muted);margin-top:2px;text-align:right">0 / 256</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:6px">Pour confirmer, tapez exactement le server_id : <code>${esc(serverId)}</code></label>
+      <input type="text" id="mcp-trust-phrase-input" autocomplete="off" spellcheck="false" placeholder="${esc(serverId)}" style="width:100%;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);font-size:12px" oninput="_mcpUpdateTrustButton('${esc(serverId)}')">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-trust-confirm-btn" disabled style="font-size:12px;background:var(--accent);color:#fff;opacity:.5" onclick="submitMcpTrustUpdate('${esc(serverId)}')">Confirmer ajustement${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  setTimeout(()=>{const i=document.getElementById('mcp-trust-score-input');if(i)i.focus();},50);
+}
+window.openMcpTrustUpdateModal=openMcpTrustUpdateModal;
+
+function _mcpUpdateTrustButton(expectedServerId){
+  const phraseInp=document.getElementById('mcp-trust-phrase-input');
+  const justifInp=document.getElementById('mcp-trust-justification-input');
+  const lenHint=document.getElementById('mcp-trust-length-hint');
+  const btn=document.getElementById('mcp-trust-confirm-btn');
+  if(!btn)return;
+  const justifTrimmed=((justifInp&&justifInp.value)||'').trim();
+  const justifLen=justifTrimmed.length;
+  if(lenHint)lenHint.textContent=`${justifLen} / 256 (min 10)`;
+  const phraseOk=(phraseInp&&phraseInp.value===expectedServerId);
+  const justifOk=justifLen>=_MCP_TRUST_JUSTIFICATION_MIN_LEN&&justifLen<=_MCP_TRUST_JUSTIFICATION_MAX_LEN;
+  const valid=phraseOk&&justifOk;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateTrustButton=_mcpUpdateTrustButton;
+
+export async function submitMcpTrustUpdate(serverId){
+  const scoreInp=document.getElementById('mcp-trust-score-input');
+  const justifInp=document.getElementById('mcp-trust-justification-input');
+  const phraseInp=document.getElementById('mcp-trust-phrase-input');
+  const btn=document.getElementById('mcp-trust-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const scoreRaw=((scoreInp&&scoreInp.value)||'').trim();
+  const justification=((justifInp&&justifInp.value)||'').trim();
+  const phrase=(phraseInp&&phraseInp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  if(scoreRaw===''){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">trust_score obligatoire (0-100)</span>`;
+    return;
+  }
+  // Number() + Number.isInteger pour refuser "50.5" / "abc" silencieusement
+  // (parseInt convertirait "50.5" en 50, ce qui masquerait une saisie invalide).
+  const trustScore=Number(scoreRaw);
+  if(!Number.isInteger(trustScore)||trustScore<0||trustScore>100){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">trust_score doit être un entier 0-100 (pas de décimal)</span>`;
+    return;
+  }
+  if(justification.length<_MCP_TRUST_JUSTIFICATION_MIN_LEN||justification.length>_MCP_TRUST_JUSTIFICATION_MAX_LEN){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">justification doit faire ${_MCP_TRUST_JUSTIFICATION_MIN_LEN}-${_MCP_TRUST_JUSTIFICATION_MAX_LEN} caractères (trimés)</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/catalog/${encodeURIComponent(serverId)}/trust/update`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        confirmed:true,
+        confirmation_phrase:phrase,
+        server_id:serverId,
+        trust_score:trustScore,
+        justification:justification,
+      }),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode&&d.trust_live_mode){
+      if(d.updated===true){
+        if(out)out.innerHTML=`<span style="color:var(--ok)">trust_score : ${esc(String(d.trust_score_old))} → ${esc(String(d.trust_score_new))}</span>`;
+        _mcpToast('trust_score ajusté (live)','ok');
+      }else if(d.idempotent===true){
+        if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Valeur identique (idempotent no-op) — aucune mutation</span>`;
+        _mcpToast('trust_score inchangé','info');
+      }
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (double opt-in non actif — aucune mutation Catalog)</span>`;
+      _mcpToast('Ajustement simulé (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpCatalog();},1500);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec ajustement: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpTrustUpdate=submitMcpTrustUpdate;
+
+export async function submitMcpInstallExecute(serverId,ticketId){
+  const inp=document.getElementById('mcp-install-phrase-input');
+  const btn=document.getElementById('mcp-install-execute-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(inp&&inp.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">La phrase doit être exactement le server_id</span>`;
+    return;
+  }
+  const marker=_mcpGetMarker(serverId);
+  if(!marker&&window._mcpLiveMode){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Marker absent ou expiré. Recréer une approbation.</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/install/execute`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        confirmed:true,
+        confirmation_phrase:phrase,
+        server_id:serverId,
+        marker:marker||'00000000000000000000000000000000',
+      }),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      // En cas d'échec backend, le marker côté serveur peut être consommé
+      // irrécouvrable. Nettoyer la copie UI dans tous les cas.
+      _mcpClearMarker(serverId);
+      if(ticketId)_mcpClearTicketMapping(ticketId);
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    // Success : clear le marker côté UI (one-shot) + clear ticket mapping si présent
+    _mcpClearMarker(serverId);
+    if(ticketId)_mcpClearTicketMapping(ticketId);
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Install exécutée. Status : ${esc(d.status||'?')}</span>`;
+      _mcpToast('Install exécutée (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucun subprocess, marker non consommé)</span>`;
+      _mcpToast('Execute simulé (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpApprovals();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec execute: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpInstallExecute=submitMcpInstallExecute;
+
+export function openMcpLocalCreateExecuteModal(serverId,ticketId){
+  _mcpCloseApprovalModals();
+  const liveMode=!!window._mcpLiveMode;
+  const drySuffix=liveMode?'':' (dry_run)';
+  const marker=_mcpGetMarker(serverId);
+  const markerState=marker
+    ?'<span style="color:var(--ok)">Marker prÃªt (one-shot)</span>'
+    :'<span style="color:var(--danger)">Marker absent ou expirÃ© : approuvez Ã  nouveau le ticket.</span>';
+  const modeWarning=liveMode
+    ?'<div style="background:rgba(0,180,120,.1);border:1px solid var(--ok);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px">Mode LIVE : une demande locale sera matÃ©rialisÃ©e et dÃ©clarÃ©e dans le Catalog. Le serveur local ne sera pas dÃ©marrÃ© automatiquement.</div>'
+    :'<div style="background:rgba(255,176,46,.12);border:1px solid var(--warn,#e0a23a);padding:8px;border-radius:4px;font-size:11px;margin-bottom:10px"><strong>Dry-run forcÃ©</strong> â€” aucune Ã©criture Catalog, marker non consommÃ©.</div>';
+  const modal=document.createElement('div');
+  modal.id='mcp-approval-action-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div class="card" style="width:min(520px,92vw);margin:0">
+    <div class="card-title"><i data-lucide="box"></i> MatÃ©rialiser MCP local${drySuffix}</div>
+    <div class="card-content">
+      ${modeWarning}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">server_id :</div>
+      <div style="font-family:var(--mono);font-size:12px;background:var(--bg);padding:6px 8px;border-radius:4px;word-break:break-all">${esc(serverId)}</div>
+      <div style="font-size:11px;margin-top:8px">${markerState}</div>
+      <label style="font-size:12px;color:var(--muted);display:block;margin-top:10px;margin-bottom:4px">Confirmation : retapez le server_id exact</label>
+      <input id="mcp-local-create-phrase-input" class="input" style="width:100%;height:34px;font-size:12px" oninput="_mcpUpdateLocalCreateExecuteButton('${esc(serverId)}')" placeholder="${esc(serverId)}">
+      <div id="mcp-approval-modal-result" style="margin-top:10px;font-size:11px;color:var(--muted)"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn" style="font-size:12px" onclick="_mcpCloseApprovalModals()">Annuler</button>
+        <button class="btn" id="mcp-local-create-execute-confirm-btn" disabled style="font-size:12px;background:var(--accent);color:#fff;opacity:.5" onclick="submitMcpLocalCreateExecute('${esc(serverId)}','${esc(ticketId||'')}')">Confirmer${drySuffix}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)_mcpCloseApprovalModals()});
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+window.openMcpLocalCreateExecuteModal=openMcpLocalCreateExecuteModal;
+
+function _mcpUpdateLocalCreateExecuteButton(serverId){
+  const input=document.getElementById('mcp-local-create-phrase-input');
+  const btn=document.getElementById('mcp-local-create-execute-confirm-btn');
+  if(!input||!btn)return;
+  const valid=(input.value||'')===serverId;
+  btn.disabled=!valid;
+  btn.style.opacity=valid?'1':'.5';
+}
+window._mcpUpdateLocalCreateExecuteButton=_mcpUpdateLocalCreateExecuteButton;
+
+export async function submitMcpLocalCreateExecute(serverId,ticketId){
+  const input=document.getElementById('mcp-local-create-phrase-input');
+  const btn=document.getElementById('mcp-local-create-execute-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const phrase=(input&&input.value)||'';
+  if(phrase!==serverId){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Confirmation invalide</span>`;
+    return;
+  }
+  const marker=_mcpGetMarker(serverId);
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/local-create/execute`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({
+        confirmed:true,
+        confirmation_phrase:phrase,
+        server_id:serverId,
+        marker:marker||'00000000000000000000000000000000',
+      }),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      _mcpClearMarker(serverId);
+      if(ticketId)_mcpClearLocalCreateTicketMapping(ticketId);
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    _mcpClearMarker(serverId);
+    if(ticketId)_mcpClearLocalCreateTicketMapping(ticketId);
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Demande locale matÃ©rialisÃ©e. Status : ${esc(d.status||'?')}</span>`;
+      _mcpToast('MCP local dÃ©clarÃ©','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcÃ©)</span>`;
+      _mcpToast('Local-create simulÃ© (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpApprovals();_loadMcpCatalog();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Ã‰chec local-create: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='RÃ©essayer';}
+  }
+}
+window.submitMcpLocalCreateExecute=submitMcpLocalCreateExecute;
+
+export async function submitMcpApprovalReject(actionId){
+  const ta=document.getElementById('mcp-reject-reason-input');
+  const btn=document.getElementById('mcp-reject-confirm-btn');
+  const out=document.getElementById('mcp-approval-modal-result');
+  const reason=((ta&&ta.value)||'').trim();
+  if(reason.length<3||reason.length>500){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Raison invalide (3-500 caractères requis)</span>`;
+    return;
+  }
+  if(btn){btn.disabled=true;btn.style.opacity='.5';btn.textContent='En cours...';}
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/approvals/${encodeURIComponent(actionId)}/reject`,{
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`,'Content-Type':'application/json'},
+      body:JSON.stringify({confirmed:true,reason}),
+    });
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok){
+      const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
+      throw new Error(code);
+    }
+    if(d.live_mode){
+      if(out)out.innerHTML=`<span style="color:var(--ok)">Rejeté (live)</span>`;
+      _mcpToast('Ticket rejeté (live)','ok');
+    }else{
+      if(out)out.innerHTML=`<span style="color:var(--warn,#e0a23a)">Simulation OK (dry_run forcé — aucune mutation queue)</span>`;
+      _mcpToast('Rejet simulé (dry_run)','info');
+    }
+    setTimeout(()=>{_mcpCloseApprovalModals();_loadMcpApprovals();},1200);
+  }catch(e){
+    if(out)out.innerHTML=`<span style="color:var(--danger)">Erreur: ${esc(e.message)}</span>`;
+    _mcpToast(`Échec reject: ${e.message}`,'error');
+    if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Réessayer';}
+  }
+}
+window.submitMcpApprovalReject=submitMcpApprovalReject;
+
+async function _loadMcpApprovals(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  // Phase 20B-2 : purge sessionStorage des entrées expirées AVANT le rendu
+  // (n'enlève jamais un mapping ticket valide en attente d'approbation).
+  try{ _mcpPurgeExpiredInstallState(); }catch(_){ }
+  box.innerHTML='<div class="card"><div class="card-content" style="color:var(--muted)">Chargement...</div></div>';
+  try{
+    const [rp,rd]=await Promise.all([
+      fetch(`${API_BASE}/api/mcp/approvals/pending`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}}),
+      fetch(`${API_BASE}/api/mcp/approvals/decisions`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}}),
+    ]);
+    if(!rp.ok)throw new Error(`pending HTTP ${rp.status}`);
+    if(!rd.ok)throw new Error(`decisions HTTP ${rd.status}`);
+    const dp=await rp.json(),dd=await rd.json();
+    if(dp.available===false){
+      box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--muted)">Module ApprovalQueue non chargé.</div></div>`;
+      return;
+    }
+    const pending=dp.pending||[],decisions=dd.decisions||[];
+    let html='';
+    html+='<div class="card" style="margin-bottom:8px"><div class="card-title"><i data-lucide="clock"></i> Tickets PENDING ('+pending.length+')</div><div class="card-content">';
+    if(!pending.length){html+='<div style="color:var(--muted);font-size:12px">Aucun ticket en attente.</div>';}
+    else{
+      html+='<div class="list">';
+      for(const p of pending){
+        const drySuffix=_mcpLiveMode?'':' <span style="color:var(--muted);font-size:10px">(dry_run)</span>';
+        // Phase 20B-2/20B-3 : détecte tickets install / activate via patterns
+        // réels Phase 18/19 (tool_name = "mcp_install:<sid>" ou "mcp_activate:<sid>").
+        // Si un marker est stocké pour ce server_id, on affiche le bouton correspondant.
+        let installExecuteBtn='';
+        const toolName=p.tool_name||'';
+        if(toolName.startsWith(_MCP_INSTALL_TOOL_PREFIX)){
+          const installServerId=toolName.substring(_MCP_INSTALL_TOOL_PREFIX.length);
+          if(installServerId&&_mcpGetMarker(installServerId)){
+            installExecuteBtn=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--accent);color:#fff" onclick="openMcpInstallExecuteModal('${esc(installServerId)}','${esc(p.id)}')">Exécuter install${drySuffix}</button>`;
+          }
+        }else if(toolName.startsWith(_MCP_ACTIVATE_TOOL_PREFIX)){
+          const activateServerId=toolName.substring(_MCP_ACTIVATE_TOOL_PREFIX.length);
+          if(activateServerId&&_mcpGetMarker(activateServerId)){
+            installExecuteBtn=`<button class="btn" style="font-size:11px;padding:4px 10px;background:var(--ok);color:#fff" onclick="openMcpActivationExecuteModal('${esc(activateServerId)}','${esc(p.id)}')">Activer${drySuffix}</button>`;
+          }
+        }else if(toolName.startsWith(_MCP_LOCAL_CREATE_TOOL_PREFIX)){
+          const localServerId=toolName.substring(_MCP_LOCAL_CREATE_TOOL_PREFIX.length);
+          if(localServerId){
+            _mcpSetLocalCreateTicketMapping(p.id,localServerId);
+            if(_mcpGetMarker(localServerId)){
+              installExecuteBtn=_mcpLocalCreateExecuteButton(localServerId,p.id,drySuffix);
+            }
+          }
+        }
+        html+=`<div class="list-item" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+            <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${esc(p.id)}</span>
+            <span class="pill warn">PENDING</span>
+          </div>
+          <div style="font-size:13px;margin-top:4px;font-weight:500">${esc(p.tool_name||'')}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">policy: ${esc(p.policy||'?')} · caller: ${esc(p.caller_kind||'?')} · proposed: ${esc((p.proposed_at||'').substring(0,19).replace('T',' '))}</div>
+          <div style="font-size:11px;color:var(--accent);margin-top:2px;font-family:var(--mono)">${esc(p.risk_summary||'')}</div>
+          <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">
+            <button class="btn" style="font-size:11px;padding:4px 10px" onclick="openMcpApprovalApproveModal('${esc(p.id)}')">Approuver${drySuffix}</button>
+            <button class="btn" style="font-size:11px;padding:4px 10px;background:var(--danger);color:#fff" onclick="openMcpApprovalRejectModal('${esc(p.id)}')">Rejeter${drySuffix}</button>
+            ${installExecuteBtn}
+          </div>
+        </div>`;
+      }
+      html+='</div>';
+    }
+    html+='</div></div>';
+    html+='<div class="card"><div class="card-title"><i data-lucide="check-square"></i> Décisions récentes ('+decisions.length+')</div><div class="card-content">';
+    if(!decisions.length){html+='<div style="color:var(--muted);font-size:12px">Aucune décision historique.</div>';}
+    else{
+      html+='<div class="list">';
+      for(const d of decisions){
+        const out=String(d.outcome||'').toLowerCase();
+        const outPill=out==='approved'?'ok':(out==='rejected'?'danger':'muted');
+        let decisionActionBtn='';
+        const decisionToolName=d.tool_name||'';
+        const decisionActionId=d.action_id||'';
+        if(out==='approved'&&decisionToolName.startsWith(_MCP_LOCAL_CREATE_TOOL_PREFIX)){
+          const localServerId=decisionToolName.substring(_MCP_LOCAL_CREATE_TOOL_PREFIX.length);
+          if(localServerId&&_mcpGetMarker(localServerId)){
+            _mcpSetLocalCreateTicketMapping(decisionActionId,localServerId);
+            decisionActionBtn=`<div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end">${_mcpLocalCreateExecuteButton(localServerId,decisionActionId,'')}</div>`;
+          }
+        }
+        html+=`<div class="list-item" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+            <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">${esc(d.action_id||'')}</span>
+            <span class="pill ${outPill}">${esc((d.outcome||'?').toUpperCase())}</span>
+          </div>
+          <div style="font-size:12px;margin-top:4px">${esc(d.tool_name||'')}</div>
+          ${decisionActionBtn}
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">policy: ${esc(d.policy||'?')} · caller: ${esc(d.caller_kind||'?')} · ts: ${esc((d.ts||'').substring(0,19).replace('T',' '))}</div>
+        </div>`;
+      }
+      html+='</div>';
+    }
+    html+='</div></div>';
+    box.innerHTML=html;
+    if(typeof lucide!=='undefined')lucide.createIcons();
+  }catch(e){
+    box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--danger)">Erreur: ${esc(e.message)}</div></div>`;
+  }
+}
+
+async function _loadMcpWatcher(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  box.innerHTML='<div class="card"><div class="card-content" style="color:var(--muted)">Chargement...</div></div>';
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/watcher/snapshots`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.available===false){
+      box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--muted)">Module RuntimeWatcher non chargé.</div></div>`;
+      return;
+    }
+    const snaps=d.snapshots||[];
+    let html='<div class="card" style="margin-bottom:8px"><div class="card-content" style="font-size:11px;color:var(--muted)"><i data-lucide="info" style="width:11px;height:11px"></i> Source : snapshots disque persistés (source=persisted, live=false). Le watcher live (mémoire + runners actifs) est reporté à Phase 20B/21.</div></div>';
+    if(!snaps.length){
+      html+='<div class="card"><div class="card-content" style="color:var(--muted);padding:30px;text-align:center;font-size:13px">Aucun snapshot persisté. Le RuntimeWatcher n\'est pas encore branché au runtime.</div></div>';
+    }else{
+      html+='<div class="list">';
+      for(const s of snaps){
+        const healthMap={running:'ok',crashed:'danger',stopped:'muted',init:'muted',unknown:'muted'};
+        const stateCls=healthMap[(s.process_state||'').toLowerCase()]||'muted';
+        const uptime=Math.floor(s.uptime_seconds||0);
+        html+=`<div class="list-item" style="flex-direction:column;align-items:stretch">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="font-weight:600;font-size:13px;font-family:var(--mono)">${esc(s.server_id)}</div>
+            <span class="pill ${stateCls}">${esc((s.process_state||'?').toUpperCase())}</span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-top:4px">uptime: ${uptime}s · restarts: ${s.restart_count||0} · crash_window: ${s.crash_count_window||0}</div>
+          ${s.last_error_code?`<div style="font-size:11px;color:var(--danger);margin-top:2px;font-family:var(--mono)">last_error_code: ${esc(s.last_error_code)}</div>`:''}
+          ${s.last_transition_ts?`<div style="font-size:11px;color:var(--muted);margin-top:2px">last_transition: ${esc((s.last_transition_ts||'').substring(0,19).replace('T',' '))}</div>`:''}
+        </div>`;
+      }
+      html+='</div>';
+    }
+    box.innerHTML=html;
+    if(typeof lucide!=='undefined')lucide.createIcons();
+  }catch(e){
+    box.innerHTML=`<div class="card"><div class="card-content" style="color:var(--danger)">Erreur: ${esc(e.message)}</div></div>`;
+  }
+}
+
+const _MCP_AUDIT_COMPONENTS=[
+  'catalog','approval_queue','runtime_watcher','orchestrator',
+  'discovery','install_orchestrator','activation','policy_resolver','policy_attributor'
+];
+
+async function _loadMcpAuditDiscovery(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  const opts=_MCP_AUDIT_COMPONENTS.map(c=>`<option value="${c}">${esc(c)}</option>`).join('');
+  box.innerHTML=`
+    <div class="card" style="margin-bottom:8px">
+      <div class="card-title"><i data-lucide="scroll-text"></i> Audit log</div>
+      <div class="card-content" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:11px;color:var(--muted)">Composant</label>
+        <select id="mcp-audit-component" class="input" style="width:auto;height:30px;font-size:12px;padding:0 8px">${opts}</select>
+        <label style="font-size:11px;color:var(--muted)">Limit</label>
+        <input id="mcp-audit-limit" class="input" type="number" value="50" min="1" max="500" style="width:80px;height:30px;font-size:12px;padding:0 8px">
+        <button class="btn" style="font-size:11px" onclick="_mcpLoadAudit()"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Charger</button>
+      </div>
+      <div class="card-content" id="mcp-audit-events" style="padding-top:0">
+        <div style="color:var(--muted);font-size:12px">Sélectionnez un composant.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span><i data-lucide="search"></i> Discovery reports persistés</span>
+        <button class="btn" style="font-size:11px" onclick="_mcpLoadDiscoveryReports()"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraîchir</button>
+      </div>
+      <div class="card-content" id="mcp-discovery-reports">
+        <div style="color:var(--muted);font-size:12px">Chargement...</div>
+      </div>
+    </div>`;
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  _mcpLoadAudit();
+  _mcpLoadDiscoveryReports();
+}
+
+async function _mcpLoadAudit(){
+  const comp=document.getElementById('mcp-audit-component')?.value||'catalog';
+  const limit=parseInt(document.getElementById('mcp-audit-limit')?.value||'50',10);
+  const target=document.getElementById('mcp-audit-events');if(!target)return;
+  target.innerHTML='<div style="color:var(--muted);font-size:12px">Chargement...</div>';
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/audit/${encodeURIComponent(comp)}?limit=${limit}`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const events=d.events||[];
+    if(!events.length){
+      target.innerHTML='<div style="color:var(--muted);font-size:12px">Aucun event dans l\'audit log.</div>';
+      return;
+    }
+    const lines=events.map(e=>JSON.stringify(e)).join('\n');
+    target.innerHTML=`<div class="code-block" style="max-height:380px">${esc(lines)}</div>`;
+  }catch(e){
+    target.innerHTML=`<div style="color:var(--danger);font-size:12px">Erreur: ${esc(e.message)}</div>`;
+  }
+}
+window._mcpLoadAudit=_mcpLoadAudit;
+
+async function _mcpLoadDiscoveryReports(){
+  const target=document.getElementById('mcp-discovery-reports');if(!target)return;
+  target.innerHTML='<div style="color:var(--muted);font-size:12px">Chargement...</div>';
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/discovery/reports`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    if(d.available===false){
+      target.innerHTML='<div style="color:var(--muted);font-size:12px">Module Discovery non chargé.</div>';
+      return;
+    }
+    const reports=d.reports||[];
+    if(!reports.length){
+      target.innerHTML='<div style="color:var(--muted);padding:20px;text-align:center;font-size:12px">Aucun rapport Discovery persisté.</div>';
+      return;
+    }
+    let html='<div class="list">';
+    for(const rep of reports){
+      const ts=esc((rep.ts||'').substring(0,19).replace('T',' '));
+      const sid=esc(rep.server_id||'');
+      const fname=esc(rep.filename||'');
+      const tsKey=fname.replace('.json','').replace(sid+'_','');
+      html+=`<div class="list-item" style="flex-direction:column;align-items:stretch;cursor:pointer" onclick="openMcpDiscoveryReport('${sid}','${tsKey}')">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:600;font-size:13px;font-family:var(--mono)">${sid}</span>
+          <span style="font-size:11px;color:var(--muted)">${ts}</span>
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">discovered: ${rep.discovered_count||0} · proposed: ${rep.proposed_count||0} · refused: ${rep.refused_count||0} · invalid: ${rep.invalid_count||0} · errors: ${rep.error_count||0}</div>
+      </div>`;
+    }
+    html+='</div>';
+    target.innerHTML=html;
+  }catch(e){
+    target.innerHTML=`<div style="color:var(--danger);font-size:12px">Erreur: ${esc(e.message)}</div>`;
+  }
+}
+window._mcpLoadDiscoveryReports=_mcpLoadDiscoveryReports;
+
+export async function openMcpDiscoveryReport(serverId,ts){
+  document.querySelectorAll('#mcp-discovery-modal').forEach(n=>n.remove());
+  const modal=document.createElement('div');
+  modal.id='mcp-discovery-modal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML='<div class="card" style="width:min(720px,94vw);max-height:90vh;overflow-y:auto;margin:0"><div class="card-title"><i data-lucide="file-json"></i> Discovery report</div><div class="card-content" id="mcp-disc-body" style="color:var(--muted)">Chargement...</div></div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)closeMcpDiscoveryReport()});
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/discovery/reports/${encodeURIComponent(serverId)}/${encodeURIComponent(ts)}`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const body=document.getElementById('mcp-disc-body');
+    if(body){
+      const raw=JSON.stringify(d.report||{},null,2);
+      body.innerHTML=`<div class="code-block" style="max-height:60vh">${esc(raw)}</div><div style="margin-top:14px;text-align:right"><button class="btn" style="font-size:12px" onclick="closeMcpDiscoveryReport()">Fermer</button></div>`;
+    }
+  }catch(e){
+    const body=document.getElementById('mcp-disc-body');
+    if(body)body.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
+  }
+  if(typeof lucide!=='undefined')lucide.createIcons();
+}
+window.openMcpDiscoveryReport=openMcpDiscoveryReport;
+
+export function closeMcpDiscoveryReport(){document.querySelectorAll('#mcp-discovery-modal').forEach(n=>n.remove())}
+window.closeMcpDiscoveryReport=closeMcpDiscoveryReport;
+
+// ════════════════════════════════════════════════════════════════════════════
+// PHASE 21 — Onglet Diagnostics (lecture seule, refresh manuel, pas de polling)
+// ════════════════════════════════════════════════════════════════════════════
+async function _loadMcpDiagnostics(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  // Phase G/H polish — hero user-facing + dev details collapsible.
+  box.innerHTML=`
+    <div class="card" id="mcp-health-hero" style="margin-bottom:10px">
+      <div class="card-content" style="padding:16px">
+        <div id="mcp-health-status-line" style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+          <div id="mcp-health-emoji" style="font-size:36px;line-height:1">⏳</div>
+          <div style="flex:1;min-width:0">
+            <div id="mcp-health-title" style="font-size:16px;font-weight:600">Diagnostic en cours…</div>
+            <div id="mcp-health-subtitle" style="font-size:12px;color:var(--muted);margin-top:2px">Analyse de l'état de tes MCPs.</div>
+          </div>
+          <button class="btn" style="font-size:11px;padding:5px 12px" data-action="refreshMcpDiagnostics">
+            <i data-lucide="refresh-cw" style="width:11px;height:11px"></i> Rafraîchir
+          </button>
+        </div>
+        <div id="mcp-health-counts" style="display:flex;flex-wrap:wrap;gap:14px;justify-content:space-around;padding-top:10px;border-top:1px solid var(--border)">
+          <div style="text-align:center"><div id="mcp-health-count-active" style="font-size:20px;font-weight:700">—</div><div style="color:var(--muted);font-size:11px">Actifs</div></div>
+          <div style="text-align:center"><div id="mcp-health-count-installed" style="font-size:20px;font-weight:700">—</div><div style="color:var(--muted);font-size:11px">Installés</div></div>
+          <div style="text-align:center"><div id="mcp-health-count-pending" style="font-size:20px;font-weight:700">—</div><div style="color:var(--muted);font-size:11px">En attente</div></div>
+          <div style="text-align:center"><div id="mcp-health-count-issues" style="font-size:20px;font-weight:700;color:var(--warn)">—</div><div style="color:var(--muted);font-size:11px">À surveiller</div></div>
+        </div>
+        <div id="mcp-health-issues" style="margin-top:10px"></div>
+        <div style="margin-top:12px;padding:8px;background:var(--bg);border-radius:4px;display:flex;align-items:center;gap:8px">
+          <i data-lucide="message-circle" style="width:13px;height:13px;color:var(--muted)"></i>
+          <span style="font-size:11px;color:var(--muted);flex:1">Besoin d'un état complet ? Demande à Lumena dans le chat.</span>
+          <button class="btn" style="font-size:11px;padding:4px 10px" onclick="window._mcpLibraryPrefillChat&amp;&amp;window._mcpLibraryPrefillChat('Fais-moi un diagnostic complet de mes MCPs')">
+            <i data-lucide="send" style="width:11px;height:11px"></i> Demander à Lumena
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <details id="mcp-diag-dev-details" style="margin-top:6px">
+      <summary style="cursor:pointer;font-size:12px;color:var(--muted);padding:6px 4px;user-select:none">
+        <i data-lucide="wrench" style="width:11px;height:11px"></i> Détails techniques (développeur)
+      </summary>
+      <div class="card" style="margin-top:6px"><div class="card-content">
+        <div style="color:var(--muted);font-size:11px;margin-bottom:10px">
+          Rapports bruts lecture seule (Phase 21). Aucun auto-fix.
+        </div>
+        <div id="mcp-diag-readiness"          style="margin-bottom:10px">Chargement readiness…</div>
+        <div id="mcp-diag-observability"      style="margin-bottom:10px">Chargement observability…</div>
+        <div id="mcp-diag-keys"               style="margin-bottom:10px">Chargement keys…</div>
+        <div id="mcp-diag-audit-integrity"    style="margin-bottom:10px">Chargement audit integrity…</div>
+        <div id="mcp-diag-coherence"          style="margin-bottom:10px">Chargement coherence…</div>
+      </div></div>
+    </details>`;
+  if(typeof lucide!=='undefined')lucide.createIcons();
+  await _mcpDiagRefreshAll();
+  // Synthèse user-friendly en parallèle (utilise /api/mcp/library + /api/mcp/readiness)
+  _mcpHealthRefreshHero().catch(()=>{});
+}
+
+async function _mcpHealthRefreshHero(){
+  const titleEl=document.getElementById('mcp-health-title');
+  const subEl=document.getElementById('mcp-health-subtitle');
+  const emojiEl=document.getElementById('mcp-health-emoji');
+  const issuesBox=document.getElementById('mcp-health-issues');
+  const setCount=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=String(v);};
+  if(!titleEl||!subEl||!emojiEl)return;
+  let library=null,readiness=null;
+  try{
+    const [r1,r2]=await Promise.all([
+      fetch(`${API_BASE}/api/mcp/library`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}}),
+      fetch(`${API_BASE}/api/mcp/readiness`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}}),
+    ]);
+    library=await r1.json();
+    readiness=await r2.json();
+  }catch(_){ }
+  const counts=(library&&library.counts)||{};
+  const active=counts.active||0;
+  const installed=counts.installed||0;
+  const declared=counts.declared||0;
+  const quarantined=counts.quarantined||0;
+  setCount('mcp-health-count-active',active);
+  setCount('mcp-health-count-installed',installed);
+  setCount('mcp-health-count-pending',declared);
+  setCount('mcp-health-count-issues',quarantined);
+  // Détermination statut user-friendly
+  const overall=(readiness&&readiness.overall)||'unknown';
+  const coh=(readiness&&readiness.coherence_overall)||'unknown';
+  let level='ok';
+  if(overall==='not_ready'||overall==='error'||coh==='fail')level='warn';
+  if(quarantined>0)level='warn';
+  // Affichage
+  if(level==='ok'&&(active>0||installed>0)){
+    emojiEl.textContent='✅';
+    titleEl.textContent='Tout va bien';
+    subEl.textContent=`${active} MCP actif${active>1?'s':''}, ${installed} installé${installed>1?'s':''}. Aucune anomalie détectée.`;
+  }else if(level==='ok'&&active===0&&installed===0){
+    emojiEl.textContent='💤';
+    titleEl.textContent='Aucun MCP installé';
+    subEl.textContent='Tu peux demander à Lumena d\'en trouver un pour une capacité précise.';
+  }else{
+    emojiEl.textContent='⚠️';
+    titleEl.textContent='Quelques points à surveiller';
+    subEl.textContent='Déroule les détails techniques ou demande à Lumena un diagnostic.';
+  }
+  // Issues humanisées
+  const issues=[];
+  if(quarantined>0)issues.push(`${quarantined} MCP en quarantaine`);
+  if(coh==='fail')issues.push('Vérification de cohérence en échec');
+  if(readiness&&readiness.keys_status_ok===false)issues.push('Clés d\'intégrité manquantes ou invalides');
+  if(readiness&&readiness.audit_integrity_ok===false)issues.push('Fichier d\'audit altéré');
+  if(issues.length>0&&issuesBox){
+    issuesBox.innerHTML=`<ul style="margin:8px 0 0 16px;padding:0;font-size:12px;color:var(--text)">${issues.map(i=>`<li>${esc(i)}</li>`).join('')}</ul>`;
+  }else if(issuesBox){
+    issuesBox.innerHTML='';
+  }
+}
+window._mcpHealthRefreshHero=_mcpHealthRefreshHero;
+window._loadMcpDiagnostics=_loadMcpDiagnostics;
+
+export async function refreshMcpDiagnostics(){ await _mcpDiagRefreshAll(); }
+window.refreshMcpDiagnostics=refreshMcpDiagnostics;
+
+async function _mcpDiagRefreshAll(){
+  await Promise.all([
+    _mcpDiagLoadReadiness(),
+    _mcpDiagLoadObservability(),
+    _mcpDiagLoadKeys(),
+    _mcpDiagLoadAuditIntegrity(),
+    _mcpDiagLoadCoherence(),
+  ]);
+}
+
+async function _mcpDiagLoadReadiness(){
+  const slot=document.getElementById('mcp-diag-readiness');if(!slot)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/readiness`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d=await r.json();
+    slot.innerHTML=`<div><b>Readiness</b> — overall: <code>${esc(d.overall||'?')}</code>, coherence: <code>${esc(d.coherence_overall||'?')}</code>, keys: <code>${d.keys_status_ok?'ok':'ko'}</code>, audit: <code>${d.audit_integrity_ok?'ok':'ko'}</code>, singletons: <code>${d.singletons_all_loaded?'ok':'partial'}</code></div>`;
+  }catch(e){ slot.innerHTML=`<div style="color:var(--danger)">Readiness erreur: ${esc(e.message)}</div>`; }
+}
+
+async function _mcpDiagLoadObservability(){
+  const slot=document.getElementById('mcp-diag-observability');if(!slot)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/observability/overview`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d=await r.json();
+    const c=d.catalog_counts||{};
+    slot.innerHTML=`<div><b>Observability</b> — catalog: declared=${c.declared||0}, installed=${c.installed||0}, active=${c.active||0}, quarantined=${c.quarantined||0} | approvals pending: ${d.approvals_pending_count||0} | watcher snapshots: ${d.watcher_persisted_snapshots||0} | live=${d.modes&&d.modes.live_mode?'1':'0'} autoapprove=${d.modes&&d.modes.autoapprove_live_mode?'1':'0'} trust=${d.modes&&d.modes.trust_live_mode?'1':'0'}</div>`;
+  }catch(e){ slot.innerHTML=`<div style="color:var(--danger)">Observability erreur: ${esc(e.message)}</div>`; }
+}
+
+async function _mcpDiagLoadKeys(){
+  const slot=document.getElementById('mcp-diag-keys');if(!slot)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/keys/status`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d=await r.json();
+    const k=d.keys||{};
+    const fmt=(o)=>o?`present=${o.present?'1':'0'} fmt=${o.format_valid?'ok':'ko'}`:'?';
+    slot.innerHTML=`<div><b>Keys</b> — auto_approve fernet: ${fmt(k.auto_approve_fernet)} | auto_approve hmac: ${fmt(k.auto_approve_hmac)} | approval_queue fernet: ${fmt(k.approval_queue_fernet)} | catalog hmac: ${fmt(k.catalog_hmac)}</div>`;
+  }catch(e){ slot.innerHTML=`<div style="color:var(--danger)">Keys erreur: ${esc(e.message)}</div>`; }
+}
+
+async function _mcpDiagLoadAuditIntegrity(){
+  const slot=document.getElementById('mcp-diag-audit-integrity');if(!slot)return;
+  const components=['admin_ui','catalog','approval_queue','runtime_watcher','activation','install_orchestrator','discovery','policy_resolver'];
+  const rows=[];
+  for(const c of components){
+    try{
+      const r=await fetch(`${API_BASE}/api/mcp/audit-integrity/`+encodeURIComponent(c),{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+      const d=await r.json();
+      rows.push(`<tr><td>${esc(c)}</td><td>${d.file_present?'oui':'non'}</td><td>${d.size_bytes||0}</td><td>${d.line_count||0}</td><td>${d.malformed_lines||0}</td><td>${d.size_warning?'⚠':''}</td></tr>`);
+    }catch(_){ rows.push(`<tr><td>${esc(c)}</td><td colspan="5" style="color:var(--danger)">err</td></tr>`); }
+  }
+  slot.innerHTML=`<div><b>Audit integrity</b><table style="width:100%;font-size:12px;margin-top:4px"><thead><tr><th>Component</th><th>Présent</th><th>Bytes</th><th>Lignes</th><th>Malformed</th><th>Warn</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+}
+
+async function _mcpDiagLoadCoherence(){
+  const slot=document.getElementById('mcp-diag-coherence');if(!slot)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/coherence/check`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d=await r.json();
+    const checks=(d.checks||[]).map(c=>`<li>${esc(c.name)}: <code>${esc(c.status)}</code> (${c.details_count})</li>`).join('');
+    slot.innerHTML=`<div><b>Coherence</b> — overall: <code>${esc(d.overall_status||'?')}</code><ul style="margin:4px 0 0 16px">${checks}</ul></div>`;
+  }catch(e){ slot.innerHTML=`<div style="color:var(--danger)">Coherence erreur: ${esc(e.message)}</div>`; }
 }

@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
+import httpx
 import pytest
 
 from src.services.image_gen import (
@@ -20,11 +21,13 @@ from src.services.image_gen import (
     ImageGenError,
     ImageResult,
     _MODEL_PROVIDER,
+    _MODEL_CATALOG,
     _PROVIDER_API_KEY,
     _PROVIDER_FALLBACK_ORDER,
     _PROMPT_TEMPLATES,
     _STABILITY_EDIT_ENDPOINTS,
     _FLUX_API_PATHS,
+    _safe_error_summary,
     _slugify,
     _parse_size,
     GENERATED_IMAGES_DIR,
@@ -125,13 +128,40 @@ class TestModelProvider:
         for model in _PROVIDER_FALLBACK_ORDER:
             assert model in _MODEL_PROVIDER, f"{model} not in _MODEL_PROVIDER"
 
+    def test_fallback_order_covers_catalog(self):
+        assert set(_PROVIDER_FALLBACK_ORDER) == set(_MODEL_CATALOG)
+
+    def test_auto_fallback_is_cost_first_not_premium_first(self):
+        first_tier = _PROVIDER_FALLBACK_ORDER[:4]
+        assert first_tier == [
+            "gemini-3.1-flash-image",
+            "gemini-3-pro-image",
+            "gemini-2.5-flash-image",
+            "huggingface-sdxl",
+        ]
+        premium = {
+            "gpt-image-2",
+            "gpt-image-1.5",
+            "flux-2-max",
+            "imagen-4-ultra",
+            "stable-image-ultra",
+            "ideogram-v4-quality",
+        }
+        assert premium.isdisjoint(_PROVIDER_FALLBACK_ORDER[:10])
+
     def test_gemini_models(self):
         assert _MODEL_PROVIDER["gemini-3.1-flash-image"] == "gemini"
         assert _MODEL_PROVIDER["gemini-3-pro-image"] == "gemini"
 
     def test_openai_models(self):
+        assert _MODEL_PROVIDER["gpt-image-2"] == "openai"
         assert _MODEL_PROVIDER["gpt-image-1.5"] == "openai"
         assert _MODEL_PROVIDER["gpt-image-1-mini"] == "openai"
+
+    def test_ideogram_v4_models(self):
+        assert _MODEL_PROVIDER["ideogram-v4-quality"] == "ideogram"
+        assert _MODEL_PROVIDER["ideogram-v4"] == "ideogram"
+        assert _MODEL_PROVIDER["ideogram-v4-turbo"] == "ideogram"
 
     def test_flux_models(self):
         assert _MODEL_PROVIDER["flux-2-pro"] == "flux"
@@ -284,6 +314,56 @@ class TestGenerateDispatch:
 
 # ── Tests generate auto fallback ──────────────────────────────────────────
 
+class TestGoogleImageModels:
+    @pytest.mark.asyncio
+    async def test_gemini_image_api_uses_current_v1_model_id_and_header_key(self, svc):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "image/png",
+                                    "data": base64.b64encode(b"png-bytes").decode(),
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        client = MagicMock()
+        client.post = AsyncMock(return_value=response)
+        svc._get_client = AsyncMock(return_value=client)
+
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "SECRET_GOOGLE_KEY"}, clear=True):
+            await svc._generate_gemini(
+                "cat",
+                model="gemini-3.1-flash-image",
+                size="1024x1024",
+                quality="hd",
+                style="",
+            )
+
+        url = client.post.call_args.args[0]
+        kwargs = client.post.call_args.kwargs
+        assert url == "https://generativelanguage.googleapis.com/v1/models/gemini-3.1-flash-image:generateContent"
+        assert "preview" not in url
+        assert "SECRET_GOOGLE_KEY" not in url
+        assert "?key=" not in url
+        assert kwargs["headers"]["x-goog-api-key"] == "SECRET_GOOGLE_KEY"
+
+    def test_no_gemini_image_generate_content_url_contains_query_key_or_preview_id(self):
+        text = Path("src/services/image_gen.py").read_text(encoding="utf-8")
+
+        assert "generateContent?key=" not in text
+        assert "gemini-3.1-flash-image-preview" not in text
+        assert "gemini-3-pro-image-preview" not in text
+
+
 class TestAutoFallback:
     @pytest.mark.asyncio
     async def test_skips_missing_keys(self, svc):
@@ -393,6 +473,33 @@ class TestConstants:
 
     def test_generated_images_dir(self):
         assert isinstance(GENERATED_IMAGES_DIR, Path)
+
+
+class TestSafeErrorSummary:
+    def test_http_status_error_does_not_leak_google_api_key_url(self):
+        request = httpx.Request(
+            "POST",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?key=SECRET_GOOGLE_KEY",
+        )
+        response = httpx.Response(429, request=request, text="quota exceeded")
+        err = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+        summary = _safe_error_summary(err)
+
+        assert summary == "http_status:429:Too Many Requests"
+        assert "SECRET_GOOGLE_KEY" not in summary
+        assert "generativelanguage.googleapis.com" not in summary
+        assert "?key=" not in summary
+
+    def test_generic_error_redacts_query_secret_and_bearer(self):
+        err = RuntimeError("failed url=https://x.test/path?api_key=SECRET123 header=Bearer TOKEN456")
+
+        summary = _safe_error_summary(err)
+
+        assert "SECRET123" not in summary
+        assert "TOKEN456" not in summary
+        assert "api_key=<redacted>" in summary
+        assert "Bearer <redacted>" in summary
 
 
 # ── Tests enrich_prompt ───────────────────────────────────────────────────

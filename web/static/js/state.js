@@ -11,6 +11,7 @@ let _thinkingStart=0;
 let _lastEventTs=0;
 let allTools=[];
 let allModels=[];
+let allImageModels=[];
 let selectedModel=null;
 let traceEventSource=null;
 let traceConnected=false;

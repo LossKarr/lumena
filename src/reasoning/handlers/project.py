@@ -1143,6 +1143,15 @@ async def create_project_handler(
         _out_path.mkdir(parents=True, exist_ok=True)
 
         _ca_prompt = f"Crée un projet complet dans le dossier {_out}.\n"
+        _ca_prompt += (
+            "IMPORTANT CHEMINS : ton workspace actif EST DÉJÀ le dossier de sortie. "
+            "Écris les fichiers à la racine avec des chemins relatifs comme "
+            "`index.html`, `css/style.css`, `js/main.js`.\n"
+        )
+        _ca_prompt += (
+            f"N'utilise jamais le préfixe `{_out}`, `workspace/`, ni `{_slug}/` "
+            "dans les chemins write_file/read_file/list_files.\n"
+        )
         _ca_prompt += f"Le dossier {_out} EXISTE DÉJÀ — ne tente PAS de le créer avec mkdir ou run_command.\n"
         _ca_prompt += f"Utilise directement write_file pour créer tes fichiers (les sous-dossiers sont créés automatiquement).\n"
         _ca_prompt += f"Description: {description}\n"
@@ -1165,14 +1174,15 @@ async def create_project_handler(
                 "- Pas d'images locales : utilise des emojis, SVG inline, ou CSS uniquement\n"
                 "- Les event listeners JS doivent cibler des éléments qui EXISTENT dans le HTML\n"
                 "- Teste la cohérence : chaque id/class référencé en JS/CSS doit exister dans le HTML\n"
-                "- PORTS : si le projet lance un serveur, utilise un port entre 8700 et 8750 (jamais 8080/3000/5000)\n"
+                "- Ne lance pas de serveur HTTP dans CodeAgent : ReAct/Playwright fera la vérification navigateur après livraison\n"
+                "- Si un serveur est requis par l'utilisateur, indique seulement la commande dans le README\n"
             )
         else:
             _ca_prompt += (
                 "\nCrée tous les fichiers nécessaires un par un avec write_file. "
                 "Chaque fichier doit être complet et syntaxiquement valide. "
                 "Après chaque fichier, relis les précédents pour vérifier la cohérence.\n"
-                "Si le projet lance un serveur, utilise un port entre 8700 et 8750 (jamais 8080/3000/5000).\n"
+                "Ne lance pas de serveur HTTP dans CodeAgent; ReAct se chargera des vérifications runtime.\n"
             )
 
         try:

@@ -40,7 +40,7 @@ def _get_provider_semaphore(provider_name: str) -> asyncio.Semaphore:
 from .providers import (
     ProviderType, ModelConfig, get_model_config, 
     get_api_key, check_api_key, AVAILABLE_MODELS,
-    get_default_model_for_provider,
+    get_default_model_for_provider, get_model_fallbacks,
 )
 
 try:
@@ -91,7 +91,7 @@ class MultiProviderLLM:
         self.cooldown_minutes = int(os.getenv("LUMENA_PROVIDER_COOLDOWN_MIN", "5"))
         
         # Ordre de fallback : cloud providers d'abord, ollama en dernier recours
-        _default_fallback = "deepseek,mistral,zai,anthropic,openai,google,moonshot,xai,nvidia,minimax,ollama"
+        _default_fallback = "deepseek,mistral,zai,google,moonshot,minimax,nvidia,xai,anthropic,openai,ollama"
         self.fallback_order = os.getenv("LUMENA_FALLBACK_ORDER", _default_fallback).split(",")
         self.max_continuation_steps = int(os.getenv("LUMENA_MAX_CONTINUATION_STEPS", "3"))
         self._last_response_meta: Dict[str, Any] = self._default_response_meta()
@@ -183,7 +183,13 @@ class MultiProviderLLM:
     @property
     def provider(self) -> ProviderType:
         """Retourne le provider actuel."""
-        return self._config.provider if self._config else ProviderType.OLLAMA
+        if not self._config:
+            return ProviderType.OLLAMA
+        provider_value = getattr(self._config.provider, "value", self._config.provider)
+        try:
+            return ProviderType(str(provider_value))
+        except Exception:
+            return self._config.provider
     
     @property
     def context_window(self) -> int:
@@ -750,19 +756,20 @@ class MultiProviderLLM:
         target_model = model or self.model
         cfg = get_model_config(target_model) if target_model else None
         model_cap = cfg.max_output_tokens if cfg else 4096
+        provider_value = str(getattr(provider, "value", provider)).strip().lower()
 
-        if provider == ProviderType.OLLAMA:
+        if provider_value == ProviderType.OLLAMA.value:
             return await self._chat_ollama_result(messages, model=model, temperature=temperature, stop=stop)
-        if provider == ProviderType.OPENAI:
+        if provider_value == ProviderType.OPENAI.value:
             return await self._chat_openai_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), stop=stop, model=model)
-        if provider == ProviderType.ANTHROPIC:
+        if provider_value == ProviderType.ANTHROPIC.value:
             return await self._chat_anthropic_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), stop=stop, model=model)
-        if provider == ProviderType.GOOGLE:
+        if provider_value == ProviderType.GOOGLE.value:
             # Google API plafonne à 65535 même si le modèle dit 65536
             return await self._chat_google_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap, 65535), stop=stop, model=model)
-        if provider == ProviderType.MOONSHOT:
+        if provider_value == ProviderType.MOONSHOT.value:
             return await self._chat_moonshot_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), stop=stop, model=model)
-        if provider == ProviderType.DEEPSEEK:
+        if provider_value == ProviderType.DEEPSEEK.value:
             return await self._chat_deepseek_result(
                 messages,
                 temperature=temperature,
@@ -770,17 +777,17 @@ class MultiProviderLLM:
                 model=target_model,
                 stop=stop,
             )
-        if provider == ProviderType.XAI:
+        if provider_value == ProviderType.XAI.value:
             # Les modèles grok reasoning rejettent le paramètre stop → on ne le passe pas
             xai_stop = None if any(x in str(target_model) for x in ("reasoning", "grok-4")) else stop
             return await self._chat_xai_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=xai_stop)
-        if provider == ProviderType.NVIDIA:
+        if provider_value == ProviderType.NVIDIA.value:
             return await self._chat_nvidia_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
-        if provider == ProviderType.MINIMAX:
+        if provider_value == ProviderType.MINIMAX.value:
             return await self._chat_minimax_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
-        if provider == ProviderType.ZAI:
+        if provider_value == ProviderType.ZAI.value:
             return await self._chat_zai_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
-        if provider == ProviderType.MISTRAL:
+        if provider_value == ProviderType.MISTRAL.value:
             return await self._chat_mistral_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
         raise ValueError(f"Provider non supporté: {provider}")
 
@@ -1112,8 +1119,67 @@ class MultiProviderLLM:
             # Déterminer la variable pour _mark_failure
             provider_name = provider.value if hasattr(provider, 'value') else str(provider)
 
-            # Marquer le provider défaillant AVANT le fallback (health tracking)
-            self._mark_failure(provider_name)
+            # Un refus modèle Anthropic (ex: Fable) est un résultat policy, pas une panne provider.
+            is_model_refusal = error_msg.startswith("anthropic_refusal:")
+            if not is_model_refusal:
+                self._mark_failure(provider_name)
+
+            # Fallbacks gratuits rattaches au modele demande, avant la cascade provider globale.
+            tried_model_names = {self.model_name, str(model_for_call), str(requested_model)}
+            for fb_model_name in get_model_fallbacks(self.model_name):
+                if fb_model_name in tried_model_names:
+                    continue
+                fb_config = get_model_config(fb_model_name)
+                if not fb_config:
+                    continue
+                if not (fb_config.is_local() or check_api_key(fb_config.provider)):
+                    continue
+                try:
+                    logger.info(
+                        "Fallback modele {} -> {} ({})...",
+                        self.model_name,
+                        fb_model_name,
+                        fb_config.provider.value,
+                    )
+                    fallback_result = await self._chat_provider_result(
+                        provider=fb_config.provider,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        model=fb_model_name,
+                        stop=stop,
+                    )
+                    fallback_result = await self._continue_if_needed(
+                        provider=fb_config.provider,
+                        base_messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        initial_result=fallback_result,
+                        model=fb_model_name,
+                    )
+                    if isinstance(fallback_result, str):
+                        fallback_result = {"text": fallback_result, "finish_reason": "stop"}
+                    self._mark_success(fb_config.provider.value)
+                    self._set_last_response_meta(
+                        provider_requested=requested_provider,
+                        provider_used=fallback_result.get("provider_used", fb_config.provider.value),
+                        model_requested=requested_model,
+                        model_used=fallback_result.get("model_used", fb_config.model_id),
+                        auto_switch_used=auto_switch_used,
+                        auto_switch_reason=auto_switch_reason,
+                        fallback_used=True,
+                        fallback_reason=f"{requested_provider}: {error_msg}",
+                        continuation_used=fallback_result.get("continuation_used", False),
+                        continuation_steps=fallback_result.get("continuation_steps", 0),
+                        finish_reason=fallback_result.get("finish_reason"),
+                        continuation_warning=fallback_result.get("continuation_warning"),
+                        prompt_tokens=fallback_result.get("prompt_tokens"),
+                        completion_tokens=fallback_result.get("completion_tokens"),
+                    )
+                    return fallback_result.get("text", "")
+                except Exception as fallback_error:
+                    logger.error(f"Fallback modele {fb_model_name} echoue: {fallback_error}")
+                    self._mark_failure(fb_config.provider.value)
 
             # Fallback intelligent : parcourt TOUTE la chaîne de providers sains
             tried_providers = [provider_name]
@@ -1456,9 +1522,14 @@ class MultiProviderLLM:
             "messages": chat_messages,
             "temperature": temperature
         }
-        # Opus 4.7+ (adaptive thinking models) refuse le paramètre temperature
+        # Opus 4.7+ / Fable / Mythos (adaptive thinking models) refusent le paramètre temperature.
         _model_id = payload["model"] or ""
-        if "opus-4-7" in _model_id or "opus-4-8" in _model_id:
+        if (
+            "opus-4-7" in _model_id
+            or "opus-4-8" in _model_id
+            or "claude-fable-5" in _model_id
+            or "claude-mythos-5" in _model_id
+        ):
             payload.pop("temperature", None)
         if stop:
             payload["stop_sequences"] = stop
@@ -1468,6 +1539,9 @@ class MultiProviderLLM:
         response = await self._http.post(url, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
+        stop_reason = data.get("stop_reason")
+        if stop_reason == "refusal":
+            raise ValueError(f"anthropic_refusal:{payload['model']}")
         blocks = data.get("content", [])
         text_parts = [
             block.get("text", "")
@@ -1481,7 +1555,7 @@ class MultiProviderLLM:
         _usage = data.get("usage") or {}
         return {
             "text": "".join(text_parts),
-            "finish_reason": data.get("stop_reason"),
+            "finish_reason": stop_reason,
             "provider_used": ProviderType.ANTHROPIC.value,
             "model_used": payload["model"],
             "prompt_tokens": _usage.get("input_tokens"),
@@ -1828,7 +1902,7 @@ class MultiProviderLLM:
         max_tokens: int = 32768,
         model: Optional[str] = None,
     ) -> str:
-        """Chat via NVIDIA NIM API (Kimi models gratuits)."""
+        """Chat via NVIDIA NIM API."""
         result = await self._chat_nvidia_result(messages, temperature=temperature, max_tokens=max_tokens, model=model)
         return result.get("text", "")
 
@@ -1844,7 +1918,7 @@ class MultiProviderLLM:
         
         NVIDIA NIM utilise un format compatible OpenAI.
         URL : https://integrate.api.nvidia.com/v1/chat/completions
-        6 modèles gratuits: kimi-k2-instruct, kimi-k2-instruct-0905, kimi-k2-thinking, deepseek-v3.2, deepseek-v3.1, minimax-m2.5
+        Les noms internes nvidia-* sont resolus vers les model_id NVIDIA.
         """
         api_key = get_api_key(ProviderType.NVIDIA)
         if not api_key:
@@ -1874,6 +1948,11 @@ class MultiProviderLLM:
         }
         if stop:
             payload["stop"] = stop
+        if "deepseek-v4-flash" in str(target_model):
+            payload["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "high"}
+        if "nemotron-3-ultra" in str(target_model):
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
+            payload["reasoning_budget"] = min(max_tokens, 16384)
 
         try:
             response = await self._http.post(url, headers=headers, json=payload)
@@ -1883,9 +1962,11 @@ class MultiProviderLLM:
             if not choices:
                 raise ValueError(f"NVIDIA NIM: réponse vide (pas de choices) pour {target_model}")
             choice = choices[0]
-            content = choice.get("message", {}).get("content", "") or ""
+            message = choice.get("message") or {}
+            content = message.get("content", "") or ""
+            reasoning_content = message.get("reasoning_content", "") or ""
             _usage = data.get("usage") or {}
-            return {
+            result = {
                 "text": content,
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.NVIDIA.value,
@@ -1893,6 +1974,9 @@ class MultiProviderLLM:
                 "prompt_tokens": _usage.get("prompt_tokens"),
                 "completion_tokens": _usage.get("completion_tokens"),
             }
+            if reasoning_content:
+                result["reasoning_content"] = reasoning_content
+            return result
         except httpx.HTTPStatusError as e:
             error_detail = ""
             try:
@@ -2219,7 +2303,9 @@ class MultiProviderLLM:
         if not brain_name:
             provider = self.provider
             if provider not in (ProviderType.OPENAI, ProviderType.ANTHROPIC,
-                                ProviderType.GOOGLE, ProviderType.XAI, ProviderType.OLLAMA):
+                                ProviderType.GOOGLE, ProviderType.XAI,
+                                ProviderType.MOONSHOT, ProviderType.NVIDIA,
+                                ProviderType.OLLAMA):
                 return ""
             vision_provider = provider
             vision_model_id = self.model_name
@@ -2347,6 +2433,46 @@ class MultiProviderLLM:
                 }
                 resp = await self._http.post(
                     "https://api.x.ai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=60.0,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"] or ""
+
+            elif vision_provider in (ProviderType.MOONSHOT, ProviderType.NVIDIA):
+                if vision_provider == ProviderType.MOONSHOT:
+                    api_key = get_api_key(ProviderType.MOONSHOT)
+                    url = "https://api.moonshot.ai/v1/chat/completions"
+                    default_model = "kimi-k2.6"
+                else:
+                    api_key = get_api_key(ProviderType.NVIDIA)
+                    url = "https://integrate.api.nvidia.com/v1/chat/completions"
+                    default_model = "moonshotai/kimi-k2.6"
+                if not api_key:
+                    return ""
+                model_id = vision_model_id or default_model
+                try:
+                    cfg = get_model_config(model_id)
+                    if cfg:
+                        model_id = cfg.model_id
+                except Exception:
+                    pass
+                payload = {
+                    "model": model_id,
+                    "max_tokens": 1024,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                                {"type": "text", "text": user_prompt},
+                            ],
+                        }
+                    ],
+                }
+                resp = await self._http.post(
+                    url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json=payload,
                     timeout=60.0,

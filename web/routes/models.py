@@ -116,14 +116,19 @@ async def get_providers():
 
 def _find_best_available_fallback(requested_name: str):
     """Trouve le meilleur modele disponible si le modele demande n'a pas de cle API."""
-    from src.llm.providers import AVAILABLE_MODELS, get_model_config, check_api_key
+    from src.llm.providers import AVAILABLE_MODELS, get_model_config, check_api_key, get_model_fallbacks
 
     config = get_model_config(requested_name)
 
-    FALLBACK_PRIORITY = ["ollama", "google", "deepseek", "anthropic", "openai", "xai", "kimi"]
+    FALLBACK_PRIORITY = ["deepseek", "mistral", "zai", "google", "moonshot", "minimax", "nvidia", "xai", "anthropic", "openai", "ollama"]
 
     def _is_available(name: str, m_cfg) -> bool:
         return m_cfg.is_local() or check_api_key(m_cfg.provider)
+
+    for name in get_model_fallbacks(requested_name):
+        m_cfg = get_model_config(name)
+        if m_cfg and _is_available(name, m_cfg):
+            return name
 
     if config:
         for name, m_cfg in AVAILABLE_MODELS.items():
@@ -164,6 +169,7 @@ async def get_models():
             "is_local": config.is_local(),
             "is_free": config.is_free(),
             "supports_vision": config.supports_vision,
+            "supports_image_generation": config.supports_image_generation,
             "context_window": config.context_window,
             "available": has_key,
             "current": name == current_model

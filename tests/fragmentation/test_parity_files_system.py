@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from src.reasoning.handlers.context import HandlerContext
 from src.reasoning.handlers.contracts import HandlerResult
+from src.reasoning.react_config import Observation
 from src.reasoning.handlers.registry_v2 import HandlerRegistryV2
 from src.reasoning.handlers.files import get_file_handler_defs
 from src.reasoning.handlers.system import get_system_handler_defs
@@ -134,12 +135,13 @@ class TestLegacyFormatCompat:
             assert callable(entry["handler"])
 
     @pytest.mark.asyncio
-    async def test_legacy_wrapper_returns_str(self, v2_registry, ctx):
-        """Le wrapper legacy retourne bien un str, pas un HandlerResult."""
+    async def test_legacy_wrapper_returns_observation(self, v2_registry, ctx):
+        """Le wrapper legacy preserve le statut via Observation."""
         legacy = v2_registry.to_legacy_tools_dict(ctx)
         result = await legacy["get_time"]["handler"]()
-        assert isinstance(result, str)
-        assert ":" in result  # format heure
+        assert isinstance(result, Observation)
+        assert result.success is True
+        assert ":" in result.content  # format heure
 
     def test_tools_description(self, v2_registry):
         desc = v2_registry.get_tools_description()

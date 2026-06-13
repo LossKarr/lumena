@@ -103,6 +103,26 @@ _PIPELINE_METRICS: Dict[str, Any] = {
 }
 _TASK_ORCHESTRATOR = TaskOrchestrator() if (RUNTIME_AVAILABLE and TaskOrchestrator is not None) else None
 _SESSION_STORE = SessionStore() if (RUNTIME_AVAILABLE and SessionStore is not None) else None
+# Phase 20B-1 : singleton ApprovalQueue partagé pour les mutations UI.
+# Initialisé au startup (web/routes/lifespan.py). None si module non chargé.
+_MCP_APPROVAL_QUEUE_SINGLETON: Optional[Any] = None
+# Phase 20B-2 : singletons Catalog + InstallOrchestrator séparés.
+# Catalog = source de vérité Phase 14. JAMAIS accédé via attribut privé d'un
+# autre singleton (interdit : _MCP_APPROVAL_QUEUE_SINGLETON._catalog).
+_MCP_SERVER_CATALOG_SINGLETON: Optional[Any] = None
+_MCP_INSTALL_ORCHESTRATOR_SINGLETON: Optional[Any] = None
+# Phase I-7 : singleton MCPCatalogAddOrchestrator partage entre la route
+# add_mcp (handler ReAct) et la route approve qui dispatch les tickets
+# `mcp_catalog_add:<server_id>` vers execute_approved_catalog_add().
+_MCP_CATALOG_ADD_ORCHESTRATOR_SINGLETON: Optional[Any] = None
+# Phase 20B-3 : singletons RuntimeWatcher + ActivationService.
+# RuntimeWatcher partagé inter-requêtes (runners actifs + snapshots).
+# ActivationService partagé inter-requêtes (state _running_contexts Phase 19).
+_MCP_RUNTIME_WATCHER_SINGLETON: Optional[Any] = None
+_MCP_ACTIVATION_SERVICE_SINGLETON: Optional[Any] = None
+# Phase 20B-5 : singleton AutoApproveEngine (CRUD patterns Phase 11).
+# Mutations de policy future — double opt-in obligatoire pour les mutations.
+_MCP_AUTO_APPROVE_ENGINE_SINGLETON: Optional[Any] = None
 _SLO_MONITOR = None
 _AUTONOMY_DAEMON = None
 _AUTONOMY_STARTED_BY_WEB = False
@@ -156,6 +176,69 @@ def get_task_orchestrator():
 
 def get_session_store():
     return _SESSION_STORE
+
+
+def get_mcp_approval_queue_singleton():
+    """Phase 20B-1 : accesseur du singleton ApprovalQueue lifespan.
+
+    Retourne None si le module MCP n'est pas chargé ou si l'init du
+    singleton a échoué au startup. Les routes mutatives Phase 20B-1
+    répondent alors {"error_code": "queue_unavailable"}.
+    """
+    return _MCP_APPROVAL_QUEUE_SINGLETON
+
+
+def get_mcp_server_catalog_singleton():
+    """Phase 20B-2 : accesseur du singleton MCPServerCatalog lifespan.
+
+    Singleton SÉPARÉ du singleton ApprovalQueue. Source de vérité Phase 14.
+    Aucun helper ne doit accéder à `_MCP_APPROVAL_QUEUE_SINGLETON._catalog`
+    ni à un autre attribut privé.
+    """
+    return _MCP_SERVER_CATALOG_SINGLETON
+
+
+def get_mcp_install_orchestrator_singleton():
+    """Phase 20B-2 : accesseur du singleton MCPInstallOrchestrator lifespan.
+
+    Si None (module non importable au boot ou init échouée), les routes
+    mutatives Install répondent {"error_code": "orchestrator_unavailable"}.
+    """
+    return _MCP_INSTALL_ORCHESTRATOR_SINGLETON
+
+
+def get_mcp_catalog_add_orchestrator_singleton():
+    """Phase I-7 : accesseur du singleton MCPCatalogAddOrchestrator.
+
+    Utilise par la route approve pour dispatcher les tickets
+    `mcp_catalog_add:<server_id>` vers execute_approved_catalog_add().
+    Si None (boot anterieur a Phase I-7 ou Phase 26 desactivee),
+    l'approbation reste valide mais l'execution catalog_add n'est pas
+    declenchee (l'utilisateur peut toujours installer manuellement).
+    """
+    return _MCP_CATALOG_ADD_ORCHESTRATOR_SINGLETON
+
+
+def get_mcp_runtime_watcher_singleton():
+    """Phase 20B-3 : accesseur du singleton RuntimeWatcher lifespan.
+
+    Singleton obligatoire (visibilité inter-requêtes des runners actifs).
+    """
+    return _MCP_RUNTIME_WATCHER_SINGLETON
+
+
+def get_mcp_activation_service_singleton():
+    """Phase 20B-3 : accesseur du singleton MCPActivationService lifespan."""
+    return _MCP_ACTIVATION_SERVICE_SINGLETON
+
+
+def get_mcp_auto_approve_engine_singleton():
+    """Phase 20B-5 : accesseur du singleton AutoApproveEngine lifespan.
+
+    Si None (module non importable au boot), les routes mutatives 20B-5
+    répondent {"error_code": "engine_unavailable"}.
+    """
+    return _MCP_AUTO_APPROVE_ENGINE_SINGLETON
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

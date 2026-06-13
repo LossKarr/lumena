@@ -41,6 +41,14 @@ def _make_registry() -> ToolRegistry:
         "codebase": ["search_code", "analyze_deps"],
         "ide": ["ide_open_file"],
         "documents": ["ocr_image"],
+        # Phase D : 4 outils boucle + actifs MCP partagent categorie "mcp" unifiee.
+        "mcp": [
+            "request_mcp_capability",
+            "request_mcp_ticket",
+            "run_mcp_autonomy",
+            "resume_mcp_task",
+            "mcp__github__search",
+        ],
     }
 
     for cat, tool_names in _categories.items():
@@ -278,3 +286,48 @@ def test_custom_category_covered():
     reg.apply_context_filter("utilise mon outil custom personnalisé")
     if reg._allowed_tools is not None:
         assert "custom_handler_1" in reg._allowed_tools
+
+
+def test_mcp_install_request_exposes_capability_tool():
+    """Phase D : sous le contrat unifie, "installe un MCP" expose la boucle
+    Phase 26 ET les MCP actifs (categorie "mcp" unique)."""
+    reg = _make_registry()
+    reg.apply_context_filter("installe un MCP pour github")
+    assert reg._allowed_tools is not None
+    assert "request_mcp_capability" in reg._allowed_tools
+    assert "run_mcp_autonomy" in reg._allowed_tools
+    # Phase D : actifs MCP visibles aussi (contrat unifie)
+    assert "mcp__github__search" in reg._allowed_tools
+
+
+def test_mcp_missing_external_tool_exposes_capability_tool():
+    reg = _make_registry()
+    reg.apply_context_filter("il me manque un outil externe pour analyser github")
+    assert reg._allowed_tools is not None
+    assert "request_mcp_capability" in reg._allowed_tools
+    assert "resume_mcp_task" in reg._allowed_tools
+
+
+def test_mcp_active_tool_request_exposes_real_mcp_tool():
+    reg = _make_registry()
+    reg.apply_context_filter("utilise le MCP actif github")
+    assert reg._allowed_tools is not None
+    assert "mcp__github__search" in reg._allowed_tools
+
+
+def test_mcp_active_tool_request_can_also_expose_loop_tools_for_context():
+    reg = _make_registry()
+    reg.apply_context_filter("utilise le MCP actif github")
+    assert reg._allowed_tools is not None
+    assert "request_mcp_capability" in reg._allowed_tools
+
+
+def test_non_mcp_query_does_not_expose_mcp_loop_tools():
+    reg = _make_registry()
+    reg.apply_context_filter("envoie un mail")
+    assert reg._allowed_tools is not None
+    assert "request_mcp_capability" not in reg._allowed_tools
+    assert "request_mcp_ticket" not in reg._allowed_tools
+    assert "run_mcp_autonomy" not in reg._allowed_tools
+    assert "resume_mcp_task" not in reg._allowed_tools
+    assert "mcp__github__search" not in reg._allowed_tools

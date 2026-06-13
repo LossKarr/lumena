@@ -23,6 +23,7 @@ from src.reasoning.handlers.skills import (
     get_my_capabilities_handler,
     rollback_handler,
     list_backups_handler,
+    run_tests_handler,
     get_skills_handler_defs,
 )
 
@@ -31,6 +32,14 @@ from src.reasoning.handlers.skills import (
 def ctx(tmp_path):
     """HandlerContext minimal pour tests."""
     return HandlerContext.for_testing(lumena_root=tmp_path, runtime_root=tmp_path / "workspace")
+
+
+@pytest.mark.asyncio
+async def test_run_tests_empty_path_is_failure(ctx):
+    r = await run_tests_handler(ctx, test_path="")
+    assert not r.success
+    assert r.status_code == "missing_test_path"
+    assert "test_path requis" in r.output
 
 
 # ─── read_own_code ─────────────────────────────────────────────────────────

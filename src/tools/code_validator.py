@@ -200,9 +200,13 @@ def _validate_css(
                 defined_vars.add(f"--{m.group(1)}")
 
     # ── Vérifier les var() utilisées ──
-    for m in re.finditer(r'var\(\s*(--([\w-]+))', content):
+    for m in re.finditer(r'var\(\s*(--[\w-]+)\s*(?:,\s*([^)]+))?\)', content):
         var_name = m.group(1)
+        fallback = (m.group(2) or "").strip()
         if var_name not in defined_vars:
+            # CSS valide : var(--x, fallback) ne casse pas si --x n'est pas défini.
+            if fallback:
+                continue
             line = content[:m.start()].count("\n") + 1
             issues.append(ValidationIssue(
                 file_path=file_path, line=line, severity=Severity.ERROR,
@@ -355,11 +359,13 @@ def _validate_js(
     for func_name in sorted(_undefined):
         # Vérifier que l'appel n'est pas une méthode (précédé par ".")
         standalone_pattern = re.compile(r'(?<!\.)\b' + re.escape(func_name) + r'\s*\(')
-        standalone_calls = standalone_pattern.findall(content)
+        standalone_calls = standalone_pattern.findall(stripped)
         if not standalone_calls:
             continue
         # Trouver la première ligne d'appel
-        first_match = standalone_pattern.search(content)
+        if _has_typeof_function_guard(func_name, content):
+            continue
+        first_match = standalone_pattern.search(stripped)
         if first_match:
             line = content[:first_match.start()].count("\n") + 1
             issues.append(ValidationIssue(
@@ -515,7 +521,19 @@ def _validate_cross_file(all_files: Dict[str, str]) -> List[ValidationIssue]:
                     all_html_classes.add(cls)
             for m in re.finditer(r'\bid=["\']([^"\']+)["\']', js_content):
                 all_html_ids.add(m.group(1))
+            for m in re.finditer(r'\b[\w$]+\.id\s*=\s*["\']([^"\']+)["\']', js_content):
+                all_html_ids.add(m.group(1))
+            for m in re.finditer(r'\.setAttribute\s*\(\s*["\']id["\']\s*,\s*["\']([^"\']+)["\']', js_content):
+                all_html_ids.add(m.group(1))
+            for m in re.finditer(r'\b[\w$]+\.className\s*=\s*["\']([^"\']+)["\']', js_content):
+                for cls in m.group(1).split():
+                    all_html_classes.add(cls)
+            for m in re.finditer(r'\.classList\.add\s*\(([^)]*)\)', js_content):
+                for cls in re.findall(r'["\']([^"\']+)["\']', m.group(1)):
+                    all_html_classes.add(cls)
             for m in re.finditer(r'\b(data-[\w-]+)', js_content):
+                all_html_data_attrs.add(m.group(1))
+            for m in re.finditer(r'\.setAttribute\s*\(\s*["\'](data-[\w-]+)["\']', js_content):
                 all_html_data_attrs.add(m.group(1))
 
         # Aussi collecter les classes depuis tous les CSS (pour les pseudo-classes JS)
@@ -843,17 +861,88 @@ def _resolve_relative_path(base_dir: str, href: str) -> str:
 
 
 def _strip_js_strings_and_comments(content: str) -> str:
-    """Retire les strings et commentaires JS pour analyse syntaxique."""
-    # Retirer les commentaires de bloc
-    content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
-    # Retirer les commentaires de ligne
-    content = re.sub(r'//[^\n]*', '', content)
-    # Retirer les template literals
-    content = re.sub(r'`[^`]*`', '""', content)
-    # Retirer les strings
-    content = re.sub(r'"(?:[^"\\]|\\.)*"', '""', content)
-    content = re.sub(r"'(?:[^'\\]|\\.)*'", "''", content)
-    return content
+    """Retire strings/commentaires JS en conservant les offsets et retours ligne."""
+    out: list[str] = []
+    i = 0
+    n = len(content)
+    mode = "code"
+    quote = ""
+    escaped = False
+
+    while i < n:
+        ch = content[i]
+        nxt = content[i + 1] if i + 1 < n else ""
+
+        if mode == "code":
+            if ch == "/" and nxt == "/":
+                out.extend((" ", " "))
+                i += 2
+                mode = "line_comment"
+                continue
+            if ch == "/" and nxt == "*":
+                out.extend((" ", " "))
+                i += 2
+                mode = "block_comment"
+                continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                escaped = False
+                out.append(" ")
+                i += 1
+                mode = "string"
+                continue
+            out.append(ch)
+            i += 1
+            continue
+
+        if mode == "line_comment":
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            if ch == "\n":
+                mode = "code"
+            continue
+
+        if mode == "block_comment":
+            if ch == "*" and nxt == "/":
+                out.extend((" ", " "))
+                i += 2
+                mode = "code"
+                continue
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            continue
+
+        # string/template literal. On masque tout, y compris le contenu GLSL/HTML,
+        # afin que les appels comme max() dans un shader ne soient pas vus comme JS.
+        if escaped:
+            out.append("\n" if ch == "\n" else " ")
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            out.append(" ")
+            escaped = True
+            i += 1
+            continue
+        if ch == quote:
+            out.append(" ")
+            i += 1
+            mode = "code"
+            continue
+        out.append("\n" if ch == "\n" else " ")
+        i += 1
+
+    return "".join(out)
+
+
+def _has_typeof_function_guard(name: str, content: str) -> bool:
+    """Retourne True si un appel variable() est protégé par typeof variable === 'function'."""
+    return bool(
+        re.search(
+            r'typeof\s+' + re.escape(name) + r'\s*={2,3}\s*["\']function["\']',
+            content,
+        )
+    )
 
 
 # ═══════════════════════════════════════════════════════════════

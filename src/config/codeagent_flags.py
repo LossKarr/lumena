@@ -73,6 +73,11 @@ CODING_METRICS: bool = _flag("CODING_METRICS")
 DESTRUCTIVE_CONFIRM: bool = _flag("DESTRUCTIVE_CONFIRM", default=False)  # opt-IN (peut bloquer batch)
 FRENCH_ERRORS: bool = _flag("FRENCH_ERRORS")
 
+# ── Stabilisation long terme CodeAgent ───────────────────────
+CODEAGENT_ACTION_SCHEMA: bool = _flag("CODEAGENT_ACTION_SCHEMA", default=True)
+CODEAGENT_OBSERVATION_COMPACT: bool = _flag("CODEAGENT_OBSERVATION_COMPACT", default=True)
+CODEAGENT_DONE_GATE_SOFT: bool = _flag("CODEAGENT_DONE_GATE_SOFT", default=True)
+
 # ── Upgrade Final ─────────────────────────────────────────────
 # P2 — Verification Gate (validate avant de déclarer "done")
 VERIFICATION_GATE: bool = _flag("VERIFICATION_GATE", default=False)  # opt-IN progressif
@@ -114,6 +119,9 @@ __all__ = [
     "CODING_METRICS",
     "DESTRUCTIVE_CONFIRM",
     "FRENCH_ERRORS",
+    "CODEAGENT_ACTION_SCHEMA",
+    "CODEAGENT_OBSERVATION_COMPACT",
+    "CODEAGENT_DONE_GATE_SOFT",
     "VERIFICATION_GATE",
     "FAIL_TO_PASS",
     "LSP_PRE_EDIT",

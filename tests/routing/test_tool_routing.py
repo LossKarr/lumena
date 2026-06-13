@@ -222,6 +222,26 @@ class TestPackRouting:
             f"Catégories matchées: {cats}"
         )
 
+    @pytest.mark.parametrize("query", [
+        "installe un MCP pour github",
+        "trouve un outil externe pour analyser github",
+        "il me manque un outil externe",
+    ])
+    def test_mcp_install_queries_load_mcp_category(self, query, tool_packs):
+        """Phase D : install/missing-tool queries pointent vers la categorie
+        unifiee "mcp" (etait "mcp_loop_integration")."""
+        cats = _match_packs(query, tool_packs)
+        assert "mcp" in cats
+
+    @pytest.mark.parametrize("query", [
+        "utilise le MCP actif github",
+        "utiliser le mcp active pour chercher",
+        "use mcp tool github search",
+    ])
+    def test_active_mcp_queries_load_real_mcp_category(self, query, tool_packs):
+        cats = _match_packs(query, tool_packs)
+        assert "mcp" in cats
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Tests de NON-COLLISION : pas de faux positifs critiques

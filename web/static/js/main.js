@@ -96,8 +96,8 @@ import {
 // ── Startup ──
 import {
   loadStartupModels, selectStartupModel, startLumena,
-  toggleModelDropdown, closeModelPicker, setModelFilter, filterModelSearch,
-  loadModels, switchModel, toggleAgent,
+  toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, filterModelSearch,
+  loadModels, loadImageModels, switchModel, toggleAgent,
   startLiveRefreshLoops, scheduleStatusRefresh
 } from './startup.js';
 
@@ -167,8 +167,8 @@ Object.assign(window, {
   renderTaskProgress, resetTaskProgress, hideTaskProgressDelayed,
   // startup
   loadStartupModels, selectStartupModel, startLumena,
-  toggleModelDropdown, closeModelPicker, setModelFilter, filterModelSearch,
-  loadModels, switchModel, toggleAgent,
+  toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, filterModelSearch,
+  loadModels, loadImageModels, switchModel, toggleAgent,
   startLiveRefreshLoops, scheduleStatusRefresh,
 });
 

@@ -687,6 +687,40 @@ def _format_size(size_bytes: int) -> str:
 _preview_process: Optional[subprocess.Popen] = None
 _preview_port: int = 0
 
+_PREVIEW_SERVER_SCRIPT = r"""
+import http.server
+import posixpath
+import sys
+
+
+class LumenaPreviewHandler(http.server.SimpleHTTPRequestHandler):
+    _forced_types = {
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".js": "text/javascript; charset=utf-8",
+        ".mjs": "text/javascript; charset=utf-8",
+        ".json": "application/json; charset=utf-8",
+        ".svg": "image/svg+xml",
+        ".wasm": "application/wasm",
+    }
+
+    def guess_type(self, path):
+        ext = posixpath.splitext(path)[1].lower()
+        if ext in self._forced_types:
+            return self._forced_types[ext]
+        return super().guess_type(path)
+
+    def log_message(self, format, *args):
+        pass
+
+
+if __name__ == "__main__":
+    port = int(sys.argv[1])
+    server = http.server.ThreadingHTTPServer(("localhost", port), LumenaPreviewHandler)
+    server.serve_forever()
+"""
+
 
 def start_preview_server(directory: Path, port: int = 8080) -> Dict[str, Any]:
     """Lance un serveur HTTP local pour prévisualiser le site."""
@@ -711,7 +745,7 @@ def start_preview_server(directory: Path, port: int = 8080) -> Dict[str, Any]:
 
     try:
         _preview_process = subprocess.Popen(
-            [sys.executable, "-m", "http.server", str(port)],
+            [sys.executable, "-c", _PREVIEW_SERVER_SCRIPT, str(port)],
             cwd=str(directory),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

@@ -65,9 +65,10 @@ def save_and_truncate(
         rel = str(target)
 
     marker = (
-        f"\n\n[... {dropped} chars tronqués — sortie complète sauvegardée: "
-        f"{rel} ({total} chars total). Utilise read_file('{rel}') pour "
-        f"consulter l'intégralité si nécessaire ...]\n\n"
+        f"\n\n[... {dropped} chars tronqués / chars omis ...]\n"
+        f"OBS_FULL_PATH={rel}\n"
+        f"OBS_FULL_CHARS={total}\n"
+        f"Pour consulter l'integralite si necessaire: read_file(path=\"{rel}\").\n\n"
     )
     return head + marker + tail
 

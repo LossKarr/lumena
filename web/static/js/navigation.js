@@ -65,6 +65,7 @@ export function loadPanelData(p){
     case'logs':loadLogsRecent();break;
     case'config':loadConfig();break;
     case'ionos':loadIonosSites();break;
+    case'mcp':loadMcp();break;
     case'docs':loadDocs();break;
     case'product-docs':loadProductDocs();break;
     case'stripe-overview':loadStripeOverview();break;
@@ -99,6 +100,7 @@ const cmdItems=[
   {icon:'bot',label:'Autonomie',action:()=>switchPanel('infra-autonomy')},
   {icon:'book-open-check',label:'Documentation',action:()=>switchPanel('product-docs')},
   {icon:'server',label:'IONOS',action:()=>switchPanel('ionos')},
+  {icon:'plug',label:'MCP',action:()=>switchPanel('mcp')},
   {icon:'cpu',label:'Fine-tuning',action:()=>switchPanel('finetuning')},
   {icon:'maximize',label:'Mode Focus',action:()=>toggleFocus()},
   {icon:'plug',label:'Toggle Agent',action:()=>toggleAgent()},

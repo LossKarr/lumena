@@ -1,4 +1,4 @@
-"""Lecture/écriture des fichiers texte de configuration Lumena (.lumena_rules, README.md, HEARTBEAT.md)."""
+"""Lecture/écriture des fichiers texte de configuration et de documentation Lumena."""
 from __future__ import annotations
 from pathlib import Path
 
@@ -17,6 +17,10 @@ _ALLOWED_FILES = {
     "lumena_rules": ".lumena_rules",
     "readme":       "README.md",
     "heartbeat":    "HEARTBEAT.md",
+    "mcp_status":   "MCP_PHASES_STATUS.md",
+    "mcp_plan":     "MCP_FINAL_PLAN.md",
+    "mcp_category": "MCP_CATEGORY_UNIFICATION.md",
+    "work_method":  "methode de travaille.md",
 }
 
 

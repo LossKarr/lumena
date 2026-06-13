@@ -116,6 +116,53 @@ async def run_command_handler(
                 handler_name="run_command",
             )
 
+        # ── Phase I-2 : guard MCP — bloquer `npm install`/`pip install`/uvx/npx
+        #     ciblant un package MCP. L'install d'un MCP DOIT passer par
+        #     `add_mcp(target=...)` qui utilise InstallOrchestrator + SandboxRunner.
+        #     Cela garantit isolation (data/mcp/<server_id>), traçabilité Catalog,
+        #     et propagation correcte du schéma config.
+        from src.reasoning.handlers._mcp_shell_guard import (
+            detect_mcp_shell_install,
+            detect_react_tool_as_shell,
+        )
+        # Phase I-8 (Fix AP) : un outil ReAct MCP émis comme commande shell
+        # (`run_mcp_autonomy(...)` dans run_command) → rediriger vers l'appel
+        # d'outil direct AVANT le sanitizer (dont le refus générique égare le
+        # LLM vers « cet outil n'existe pas »).
+        _react_tool = detect_react_tool_as_shell(command)
+        if _react_tool is not None:
+            return HandlerResult.ok(
+                f"⛔ `{_react_tool}` n'est PAS une commande shell — c'est un "
+                "OUTIL.\n\n"
+                "Appelle-le directement comme action :\n"
+                "```\n"
+                f"ACTION: {_react_tool}\n"
+                "ACTION_INPUT: {…mêmes arguments en JSON…}\n"
+                "```\n"
+                "Il s'exécutera même s'il n'apparaît pas dans ta liste "
+                "d'outils (soft-filter). N'utilise JAMAIS run_command pour "
+                "les outils MCP.",
+                handler_name="run_command",
+            )
+        _mcp_guard = detect_mcp_shell_install(command)
+        if _mcp_guard is not None:
+            return HandlerResult.ok(
+                "⛔ Installation MCP via shell interdite — utilise **add_mcp**.\n\n"
+                f"Détecté : `{_mcp_guard.detected_tool}` ciblant "
+                f"`{_mcp_guard.detected_package}`.\n\n"
+                "Les installs `npm install -g` / `pip install` / `uvx` / `npx` "
+                "contournent le sandbox Lumena (`data/mcp/`), le Catalog "
+                "(statut DECLARED→INSTALLED), et la persistance du schéma de "
+                "config. Le MCP ainsi installé ne sera **PAS** activable.\n\n"
+                "À la place :\n"
+                "```\n"
+                f"add_mcp(target=\"{_mcp_guard.suggested_target}\", live=False)\n"
+                "```\n"
+                "→ proposera le bon `package_spec` et les clés requises avant "
+                "tout install effectif.",
+                handler_name="run_command",
+            )
+
         from ...utils.command_sanitizer import sanitize_chained_command
         extra = ctx._discovered_executables if ctx._discovered_executables else None
         allowed, reason = sanitize_chained_command(command, extra_allowed=extra)
@@ -716,8 +763,24 @@ async def parallel_tools_handler(
             lines.append(f"{status} {idx}. {call['name']}: {preview}")
         sub_results.append(sub)
 
+    # Phase I-8 (Fix AV) : l'agrégat est un SUCCÈS dès lors que les appels
+    # ont été exécutés — l'outil a fait son travail (lancer N appels et
+    # rapporter les résultats). Les échecs INDIVIDUELS (403 web, 404...)
+    # sont de l'information portée par le contenu et sub_results, pas un
+    # échec de parallel_tools. L'ancien `success=all_success` faisait
+    # compter chaque agrégat contenant un ❌ comme « échec de l'outil »
+    # par le détecteur d'échecs consécutifs de react.py → 2 agrégats avec
+    # des 403 de sites web + 1 vraie erreur de format = forçage FINAL, run
+    # coupé en plein vol (observé runtime 2026-06-12 10:54, réponse 249
+    # chars alors que la recherche MCP avait réussi).
+    if all(not s.success for s in sub_results):
+        # 0/N : signal réel — tous les sous-appels ont échoué.
+        lines.append(
+            "⚠️ Tous les sous-appels ont échoué — vérifie les arguments "
+            "ou utilise un outil alternatif pour cette cible."
+        )
     return HandlerResult(
-        success=all_success,
+        success=True,
         output="\n".join(lines),
         handler_name="parallel_tools",
         sub_results=tuple(sub_results),

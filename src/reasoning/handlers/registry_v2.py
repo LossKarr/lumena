@@ -156,17 +156,26 @@ class HandlerRegistryV2:
         Convertit le registre V2 au format legacy ToolRegistry.tools.
 
         Chaque entrée: {name: {name, description, parameters, handler}}
-        Le handler est wrappé pour capturer le ctx et retourner un str.
+        Le handler est wrappé pour capturer le ctx et retourner une Observation
+        afin de préserver success=False jusqu'au ReAct loop.
 
         Ceci sera utilisé en Phase 7 pour brancher les handlers fragmentés
         dans ReActLoop sans changer son interface.
         """
         legacy: Dict[str, Dict[str, Any]] = {}
+        from ..react_config import Observation
+
         for name, hdef in self._handlers.items():
-            # Crée un wrapper qui convertit HandlerResult -> str
-            async def _legacy_wrapper(_hdef=hdef, _ctx=ctx, **kw) -> str:
+            # Crée un wrapper qui convertit HandlerResult -> Observation.
+            # Important: ne jamais perdre result.success, sinon ReAct peut valider
+            # une tâche à partir d'un simple message d'erreur textuel.
+            async def _legacy_wrapper(_hdef=hdef, _ctx=ctx, **kw) -> Observation:
                 result = await _hdef.handler(_ctx, **kw)
-                return result.to_legacy_str()
+                return Observation(
+                    content=result.to_legacy_str(),
+                    success=result.success,
+                    sub_results=result.sub_results,
+                )
 
             # Convertir les paramètres V2 (JSON Schema) au format legacy (dict plat)
             # V2: {"properties": {"path": {...}}, "required": [...]}

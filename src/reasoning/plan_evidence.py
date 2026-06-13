@@ -28,6 +28,7 @@ la catégorie de l'outil détermine ses capabilities.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from enum import Enum
 from typing import Dict, FrozenSet, List, Optional
@@ -110,6 +111,19 @@ _VERIFY_TASK_KEYWORDS: frozenset[str] = frozenset({
     "accessible", "opérationnel", "operationnel",
 })
 
+# Keywords ambigus dont l'expansion par substring matche un NOM de
+# livrable plutôt qu'un verbe de vérification. Pour ces keywords, on
+# exige une word boundary stricte (mot entier) dans `is_verify_task`.
+# Si "Generer le PDF de presentation" arrivait avant la chaîne MCP/post-
+# CodeAgent, le substring naïf "present" matchait "presentation" et la
+# tâche métier "Generer le PDF" était traitée comme une vérif → ReAct
+# pouvait finaliser prématurément.
+_VERIFY_KW_STRICT_BOUNDARY: frozenset[str] = frozenset({
+    "present", "présent",   # ↔ "presentation", "présentation"
+    "valide",               # ↔ "validation" (peut être un livrable)
+    "confirme",             # ↔ "confirmation" (peut être un livrable)
+})
+
 # Outils Phase 1 (flat-list) — conservés pour backward compat et Garde 3.
 _VERIFY_PROOF_TOOLS: frozenset[str] = frozenset({
     "run_command", "run_shell", "exec_command",
@@ -178,6 +192,10 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "files":         frozenset({ProofCapability.FILE_WRITE}),
     "system":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     "web":           frozenset({ProofCapability.HTTP_PROBE}),
+    # Phase D : `mcp_loop_integration` fusionne dans `mcp`. Entree conservee
+    # en back-compat pour les anciens callers qui passent encore l'ancien nom.
+    "mcp_loop_integration": frozenset({ProofCapability.GENERIC_MUTATION}),
+    "mcp":           frozenset({ProofCapability.GENERIC_MUTATION}),
     "data":          frozenset({ProofCapability.GENERIC_READONLY}),  # data.gouv/SIRENE/géo/analyse : readonly par défaut ; seuls download/export prouvent (overrides)
     "memory":        frozenset({ProofCapability.GENERIC_READONLY}),
     "browser":       frozenset({ProofCapability.BROWSER_PROBE}),
@@ -246,6 +264,7 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "browser_type_index":    frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "browser_click":         frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "browser_click_smart":   frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
+    "browser_verify_local_project": frozenset({ProofCapability.BROWSER_PROBE, ProofCapability.HTTP_PROBE}),
     "process_status":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     # git deploy is a real exception from the generic git category
     "git_push_pull":         frozenset({ProofCapability.DEPLOY_MUTATION}),
@@ -260,6 +279,12 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "read_skill_reference":  frozenset({ProofCapability.GENERIC_READONLY}),
     "pip_check":             frozenset({ProofCapability.GENERIC_READONLY}),
     "search_in_code":        frozenset({ProofCapability.GENERIC_READONLY}),
+    # MCP loop integration: capability lookup is pure read-only; ticket request
+    # mutates only the approval queue pending state.
+    "request_mcp_capability": frozenset({ProofCapability.GENERIC_READONLY}),
+    "request_mcp_ticket":     frozenset({ProofCapability.GENERIC_MUTATION}),
+    "run_mcp_autonomy":       frozenset({ProofCapability.GENERIC_MUTATION}),
+    "resume_mcp_task":        frozenset({ProofCapability.GENERIC_READONLY}),
     # ── IONOS BDD read-only : le module ionos défaut DEPLOY_MUTATION, mais ces
     # outils sont strictement en lecture (config non sensible, statut, listes,
     # ping). Ils ne doivent PAS exiger une mutation pour conclure un FINAL.
@@ -334,7 +359,7 @@ _KIND_DETECT: tuple = (
     # Document
     (VerificationKind.DOCUMENT,   ("document créé", "rapport créé", "pdf créé", "fichier rapport", "docx", "xlsx", "excel créé")),
     # Web app (large overlap — check after more specific ones)
-    (VerificationKind.WEB_APP,    ("site", "serveur", "server", "app web", "localhost", "port", "http accessible", "web app")),
+    (VerificationKind.WEB_APP,    ("site", "serveur", "server", "app web", "application web", "localhost", "port", "http accessible", "web app", "dashboard", "jeu web")),
     # API
     (VerificationKind.API,        ("api", "endpoint", "rest", "graphql", "swagger")),
     # Script
@@ -361,6 +386,13 @@ _KIND_PROOF_CAPABILITIES: Dict[str, frozenset] = {
         ProofCapability.EXT_RESOURCE_CREATE, ProofCapability.GENERIC_MUTATION,
     }),
 }
+
+_NON_RUNTIME_GENERIC_VERIFY_CAPABILITIES: frozenset = frozenset({
+    ProofCapability.FILE_WRITE,
+    ProofCapability.PROJECT_CREATE,
+    ProofCapability.EXT_RESOURCE_CREATE,
+    ProofCapability.GENERIC_MUTATION,
+})
 
 
 # Marqueurs d'observation par capability — doit correspondre à une preuve réelle,
@@ -498,6 +530,15 @@ def _is_runtime_status_task_desc(task_desc: str) -> bool:
     return any(marker in desc_l for marker in runtime_markers)
 
 
+def _requires_browser_probe_task_desc(task_desc: str) -> bool:
+    desc_l = (task_desc or "").lower()
+    browser_markers = (
+        "navigateur", "browser", "playwright", "dom", "screenshot",
+        "capture", "interactions", "interaction", "cliquer", "click",
+    )
+    return any(marker in desc_l for marker in browser_markers)
+
+
 def has_sufficient_proof(
     tool_name: str,
     observation: str,
@@ -528,6 +569,7 @@ def has_sufficient_proof(
     kind = detect_verification_kind(task_desc)
     if tool_name == "process_status" and not _is_runtime_status_task_desc(task_desc):
         return False
+    requires_browser_probe = _requires_browser_probe_task_desc(task_desc)
     allowed_caps = _KIND_PROOF_CAPABILITIES[kind]
     obs_l = (observation or "").lower()
 
@@ -535,6 +577,14 @@ def has_sufficient_proof(
         if cap in _NON_PROOF_CAPABILITIES:
             continue
         if cap not in allowed_caps:
+            continue
+        if requires_browser_probe and cap != ProofCapability.BROWSER_PROBE:
+            continue
+        if (
+            kind == VerificationKind.GENERIC
+            and is_verify_task((task_desc or "").lower())
+            and cap in _NON_RUNTIME_GENERIC_VERIFY_CAPABILITIES
+        ):
             continue
         markers = _CAPABILITY_OBS_MARKERS.get(cap, ())
         if markers and any(m in obs_l for m in markers):
@@ -558,8 +608,43 @@ def classify_observation(observation: str) -> tuple[bool, bool]:
 
 
 def is_verify_task(desc: str) -> bool:
-    """True si la description de tâche exige une preuve réelle d'exécution."""
-    return any(kw in desc for kw in _VERIFY_TASK_KEYWORDS)
+    """True si la description de tâche exige une preuve réelle d'exécution.
+
+    Matching substring permissif par défaut : "teste" matche "tester",
+    "valide" matche "validez", "fonctionne" matche "fonctionnement", etc.
+    Cette permissivité permet de couvrir toutes les conjugaisons d'un
+    verbe de vérification sans énumérer chaque forme.
+
+    Mais certains keywords courts ont une expansion qui donne un NOM de
+    livrable, pas un verbe de vérification :
+      - "present"/"présent" → "presentation"/"présentation" (PDF/slides)
+      - "valide" → "validation" (peut être un livrable : doc de validation)
+      - "confirme" → "confirmation" (peut être un livrable : email de
+        confirmation)
+
+    Pour ces keywords ambigus, on exige une **word boundary** stricte
+    pour qu'ils ne matchent que comme mot entier — ce qui évite que
+    "Generer le PDF de presentation" soit traité comme une tâche de
+    vérification et bloque ReAct de continuer vers les tâches métier
+    suivantes après CodeAgent.
+
+    Les autres keywords gardent le matching substring (suffixe permissif
+    requis pour couvrir les conjugaisons verbales).
+    """
+    if not desc:
+        return False
+    for kw in _VERIFY_TASK_KEYWORDS:
+        if kw in _VERIFY_KW_STRICT_BOUNDARY:
+            # Mot entier obligatoire : ne matche pas les noms-livrables
+            # dérivés comme "presentation", "validation", "confirmation".
+            if re.search(r"\b" + re.escape(kw) + r"\b", desc):
+                return True
+        else:
+            # Substring permissif : couvre les conjugaisons verbales
+            # ("teste" → "tester", "valider" → "validera", etc.).
+            if kw in desc:
+                return True
+    return False
 
 
 def has_verify_proof(tool_name: str, observation: str) -> bool:

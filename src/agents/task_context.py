@@ -139,7 +139,7 @@ class TaskContext:
 
         # 1. project_path explicite
         if project_path:
-            pp = Path(project_path)
+            pp = Path(cls._clean_extracted_path_candidate(str(project_path)))
             target_path = pp
             if pp.is_dir():
                 resolved_path = pp
@@ -307,11 +307,13 @@ class TaskContext:
     @staticmethod
     def _clean_extracted_path_candidate(raw: str) -> str:
         """Nettoie la ponctuation autour d'un chemin extrait."""
-        cleaned = (raw or "").rstrip(".,;:!?)")
+        cleaned = (raw or "").strip().strip("`\"'")
+        cleaned = cleaned.rstrip(".,;:!?)`\"'")
         if cleaned.endswith(("\\", "/")) and len(cleaned) > 1:
             # Cas fréquent en texte libre : \"C:\path\" ou \"\Users\...\"
             # La regex s'arrête avant le guillemet et garde le backslash d'échappement.
             cleaned = cleaned.rstrip("\\/")
+            cleaned = cleaned.rstrip("`\"'")
         return cleaned
 
     @staticmethod

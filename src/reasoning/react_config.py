@@ -195,6 +195,7 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     "web_fetch": ["télécharg", "telecharg", "fetch", "récupér", "recuper", "scrap"],
     # Browser (navigation + interaction DOM) — PRIORISÉ pour la navigation web
     "browser_navigate": ["navig", "ouvrir", "aller", "browser", "accéd", "acced", "visit", "lire", "site", "page", "url", "contenu", "prix", "stock", "billet"],
+    "browser_verify_local_project": ["vérifi", "verifi", "test", "navigateur", "browser", "site", "page", "interactions", "runtime"],
     "browser_search_google": ["cherch", "search", "recherch", "google", "trouv"],
     "browser_get_content": ["extrai", "contenu", "lire", "récupér", "recuper"],
     "browser_dom_state": ["analys", "vérifi", "verifi", "inspect", "observ", "page", "état", "etat", "formulaire", "confirm"],
@@ -367,6 +368,27 @@ ACTION_INPUT: {"path": "..."}
         return """
 ## ⚠️ RÈGLE FORMAT RÉPONSE:
 - Respecte strictement THOUGHT → ACTION → ACTION_INPUT. Pas de texte libre hors de ces blocs.
+"""
+    if "nemotron" in m:
+        return """
+## REGLE FORMAT REPONSE (NEMOTRON):
+- Format strict: THOUGHT: puis ACTION: puis ACTION_INPUT: sur des lignes separees.
+- Une seule ACTION par reponse. N'invente jamais OBSERVATION:.
+- N'expose pas de raisonnement long: THOUGHT reste court et operationnel.
+"""
+    if "gpt-oss" in m:
+        return """
+## REGLE FORMAT REPONSE (GPT-OSS):
+- ACTION_INPUT doit etre du JSON nu, jamais dans des triple backticks.
+- Ne copie jamais reasoning_content dans ACTION_INPUT ni dans FINAL.
+- Commence directement par THOUGHT:, puis une seule ACTION.
+"""
+    if "step-3.7" in m or "stepfun" in m:
+        return """
+## REGLE FORMAT REPONSE (STEP):
+- JSON nu uniquement dans ACTION_INPUT.
+- Une seule ACTION par reponse, puis attente de l'OBSERVATION.
+- Si une image est fournie, decris seulement ce qui est visible et utile a l'action.
 """
     if "claude" in m:
         return """

@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from web.routes.lifespan import lifespan  # noqa: E402
 
 # ── Route modules ──
-from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers  # noqa: E402
+from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp  # noqa: E402
 
 # ── App creation ──
 _SETUP_DONE = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
@@ -143,7 +143,24 @@ _RATE_LIMITS = {
     "default":  int(os.getenv("LUMENA_RATE_DEFAULT", "200")),     # most API endpoints
     "health":   int(os.getenv("LUMENA_RATE_HEALTH", "600")),     # /api/health, /api/status
 }
-_EXPENSIVE_PREFIXES = ("/api/chat", "/api/upload")
+_EXPENSIVE_PREFIXES = (
+    "/api/chat",
+    "/api/upload",
+    "/api/mcp/approvals/",
+    "/api/mcp/install/",
+    "/api/mcp/local-create/",
+    "/api/mcp/activation/",
+    "/api/mcp/catalog/",
+    "/api/mcp/autoapprove/",
+    # Phase 21 — Hardening MCP : observabilité / keys / audit-integrity /
+    # coherence / readiness (lectures qui font tail jsonl ou agrégat
+    # multi-singletons, donc traitées comme expensive pour throttling)
+    "/api/mcp/observability/",
+    "/api/mcp/keys/",
+    "/api/mcp/audit-integrity/",
+    "/api/mcp/coherence/",
+    "/api/mcp/readiness/",
+)
 _HEALTH_PREFIXES = ("/api/health", "/api/status")
 
 
@@ -231,6 +248,7 @@ app.include_router(emotion.router)
 app.include_router(ionos.router)
 app.include_router(image_gen.router)
 app.include_router(peers.router)
+app.include_router(mcp.router)
 
 # ── Static files and root page ──
 _WEB_DIR = Path(__file__).parent

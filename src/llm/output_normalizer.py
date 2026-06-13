@@ -160,6 +160,16 @@ def normalize_action_name(name: str) -> str:
     """
     if not name:
         return name
+
+    # Fix AZ (Phase I-8) : un nom MCP namespacé est un CONTRAT du serveur,
+    # pas une typo LLM — windows-mcp expose WaitFor/PowerShell/MultiSelect
+    # (PascalCase) et la conversion camelCase→snake_case les rendait
+    # introuvables au registry (mcp__windows-mcp__WaitFor → __wait_for).
+    # On ne normalise JAMAIS un mcp__*. Les typos restent couvertes par le
+    # fuzzy d'auto_fix_action_name (garde same-provider, Fix H).
+    if name.strip().startswith("mcp__"):
+        return name.strip()
+
     lower = name.strip().lower()
 
     # Lookup direct
@@ -226,13 +236,41 @@ def normalize_file_path(path: str, workspace_root: str = "") -> str:
 
 # ── auto_fix_action_name ──────────────────────────────────────────
 
+def _mcp_provider_prefix(name: str) -> str:
+    """Phase I-7 fix H : extrait le préfixe MCP provider (`__` strict).
+
+    Convention MCP : `<server_id>__<tool_name>` avec double underscore.
+      - `slack__list_channels` → "slack"
+      - `github__create_issue` → "github"
+      - `discord_list_channels` → ""  (handler natif, pas MCP)
+      - `read_file` → ""
+
+    Le garde-fou cross-provider s'applique UNIQUEMENT entre tools MCP (`__`).
+    Les noms avec simple `_` restent libres au fuzzy (typos légitimes type
+    `liste_files` → `list_files`).
+    """
+    if not name or "__" not in name:
+        return ""
+    return name.split("__", 1)[0]
+
+
+def _provider_prefix(name: str) -> str:
+    """Compat : alias historique conservé pour les tests."""
+    return _mcp_provider_prefix(name)
+
+
 def auto_fix_action_name(name: str, known_tools: set[str]) -> str:
     """Correction automatique d'un nom d'outil si proche d'un outil connu.
 
     1. Si name est dans known_tools → retour direct
     2. normalize_action_name() → si dans known_tools → retour
-    3. difflib fuzzy (cutoff=0.75) → retour si match
+    3. difflib fuzzy (cutoff=0.75) → retour si match (avec garde provider)
     4. Retour name original
+
+    Phase I-7 fix H : refuse le fuzzy cross-provider.
+    `slack__list_channels` ne doit JAMAIS être auto-corrigé vers
+    `discord_list_channels` même si le score difflib > 0.75.
+    Sinon risque sécurité : message posté sur le mauvais provider.
     """
     if not name:
         return name
@@ -244,16 +282,29 @@ def auto_fix_action_name(name: str, known_tools: set[str]) -> str:
     if normalized in known_tools:
         return normalized
 
+    requested_mcp_prefix = _mcp_provider_prefix(name)
+
+    def _same_provider(candidate: str) -> bool:
+        # Si name n'est PAS un format MCP (`__`), pas de contrainte
+        # → typos type `liste_files` → `list_files` autorisés.
+        if not requested_mcp_prefix:
+            return True
+        # name est format MCP : le candidate doit être MCP avec le même server_id.
+        # Refuse explicitement le glissement MCP → handler natif (slack__* → discord_*).
+        return _mcp_provider_prefix(candidate) == requested_mcp_prefix
+
     # Fuzzy match strict (0.75 pour auto-correction, plus strict que 0.5 pour suggestion)
-    matches = difflib.get_close_matches(name, list(known_tools), n=1, cutoff=0.75)
-    if matches:
-        return matches[0]
+    matches = difflib.get_close_matches(name, list(known_tools), n=5, cutoff=0.75)
+    for cand in matches:
+        if _same_provider(cand):
+            return cand
 
     # Essayer fuzzy sur le nom normalisé aussi
     if normalized != name:
-        matches = difflib.get_close_matches(normalized, list(known_tools), n=1, cutoff=0.75)
-        if matches:
-            return matches[0]
+        matches = difflib.get_close_matches(normalized, list(known_tools), n=5, cutoff=0.75)
+        for cand in matches:
+            if _same_provider(cand):
+                return cand
 
     return name
 # ──────────────────────────────────────────────────────────────────────────────

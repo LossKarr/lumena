@@ -12,6 +12,7 @@ Chaque handler est une fonction async standalone:
 from __future__ import annotations
 
 import asyncio
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +56,115 @@ async def _watch_delegate_cancel(
 
 # ─── Sub-Agent Handlers ───────────────────────────────────────────────────
 
+_MCP_DELEGATE_GUARD_TOKENS = (
+    "mcp_local_create",
+    "mcp_install:",
+    "mcp_activate:",
+    "run_mcp_autonomy",
+    "resume_mcp_task",
+    "request_mcp_ticket",
+    "request_mcp_capability",
+    "i-confirm-mcp-ticket",
+    "i-confirm-mcp-autonomy",
+    "ticket mcp",
+    "panel mcp",
+    "materialiser local mcp",
+    "matérialiser local mcp",
+)
+
+
+def _looks_like_mcp_control_flow(description: str, context: Any) -> bool:
+    parts = [description or ""]
+    if isinstance(context, dict):
+        for value in context.values():
+            if isinstance(value, (str, int, float, bool)):
+                parts.append(str(value))
+    elif isinstance(context, str):
+        parts.append(context)
+    haystack = "\n".join(parts).lower()
+    return any(token in haystack for token in _MCP_DELEGATE_GUARD_TOKENS)
+
+
+def _path_within(child: Path, root: Path) -> bool:
+    try:
+        child.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _path_mentioned_by_user(path: Path, original_user_query: str) -> bool:
+    if not original_user_query:
+        return False
+    raw = str(path)
+    return (
+        raw in original_user_query
+        or raw.replace("\\", "/") in original_user_query
+        or raw in original_user_query.replace("/", "\\")
+    )
+
+
+_CODE_AGENT_KINDS = {"code", "debug", "refactor"}
+
+
+def _fold_delegate_text(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", text or "")
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return folded.lower()
+
+
+def _coerce_positive_int(value: Any) -> int:
+    try:
+        if isinstance(value, bool):
+            return 0
+        return max(0, int(value))
+    except Exception:
+        return 0
+
+
+def _suspicious_delegate_success_reason(result: Any, agent_kind: str) -> str:
+    """Retourne une raison si un succès CodeAgent ressemble à une non-exécution."""
+    if (agent_kind or "").strip().lower() not in _CODE_AGENT_KINDS:
+        return ""
+
+    output = str(getattr(result, "output", "") or "")
+    folded = _fold_delegate_text(output)
+    no_work_markers = (
+        "run_tests : test_path requis",
+        "test_path requis pour run_tests",
+        "test_path required",
+        "aucun test runner detecte",
+        "aucun test runner détecte",
+        "aucun test runner détecté",
+    )
+    if any(marker in folded for marker in no_work_markers):
+        return "rapport CodeAgent contenant une non-exécution d'outil"
+
+    no_result_markers = (
+        "aucun resultat pour",
+        "aucun resultat trouve",
+        "aucun resultat trouve pour",
+        "aucun r?sultat pour",
+        "aucun r?sultat trouve",
+        "no results for",
+        "no matching files",
+    )
+    if any(marker in folded for marker in no_result_markers):
+        return "rapport CodeAgent sans action productive (recherche sans résultat)"
+
+    meta = getattr(result, "meta", {}) or {}
+    raw_iterations = meta.get("iterations", None)
+    iterations = _coerce_positive_int(raw_iterations)
+    duration_ms = _coerce_positive_int(getattr(result, "duration_ms", 0))
+    artifacts = list(getattr(result, "artifacts", []) or [])
+
+    if raw_iterations in (None, "", "?") and duration_ms < 500 and not artifacts:
+        return "rapport CodeAgent sans itérations ni durée crédible"
+    if iterations <= 0 and duration_ms < 500 and not artifacts:
+        return "rapport CodeAgent avec zéro itération productive"
+    return ""
+
+
 async def delegate_task_handler(
     ctx: HandlerContext,
     description: str,
@@ -72,7 +182,21 @@ async def delegate_task_handler(
         # interprète la tâche comme une recherche de code et échoue en silence.
         from ..file_categories import looks_like_document_creation
         _dev_agents = {"code", "debug", "refactor"}
-        if (agent_type or "").strip().lower() in _dev_agents and looks_like_document_creation(description):
+        _agent_kind = (agent_type or "").strip().lower()
+        if _agent_kind in _dev_agents and _looks_like_mcp_control_flow(description, context):
+            logger.warning(
+                "delegate_task refusé : flux MCP délégué à '{}'Agent (desc: {})",
+                agent_type, (description or "")[:120],
+            )
+            return HandlerResult.fail(
+                "⛔ Le CodeAgent ne doit pas remplacer la chaîne MCP. "
+                "Pour un ticket MCP approuvé ou une reprise MCP, utilise "
+                "`resume_mcp_task` puis le panel MCP (`Materialiser local MCP`, "
+                "install, activation). Aucun fichier MCP ne doit être créé par "
+                "CodeAgent hors du rail d'approbation.",
+                handler_name="delegate_task",
+            )
+        if _agent_kind in _dev_agents and looks_like_document_creation(description):
             logger.warning(
                 "delegate_task refusé : tâche document déléguée à '{}'Agent (desc: {})",
                 agent_type, (description or "")[:120],
@@ -140,6 +264,32 @@ async def delegate_task_handler(
             resolve_workspace_fn=resolve_workspace,
             memory_fn=_mem_fn,
         )
+
+        # Guard anti path hallucination:
+        # A dev-agent may use an external path only if it came from an explicit
+        # project_path or from the user's original wording. If the LLM invents
+        # a path inside the delegated description/context, keep CodeAgent inside
+        # the current runtime scope instead of creating files elsewhere.
+        if (
+            _agent_kind in _dev_agents
+            and task_ctx.workspace_path is not None
+            and task_ctx.resolution_source in {"explicit_text", "explicit_text_new"}
+            and ctx.runtime_root is not None
+            and not _path_within(task_ctx.workspace_path, Path(ctx.runtime_root))
+            and not _path_mentioned_by_user(task_ctx.workspace_path, _orig_user_q)
+        ):
+            logger.warning(
+                "delegate_task refuse : chemin hors runtime issu de la reformulation LLM ({})",
+                task_ctx.workspace_path,
+            )
+            return HandlerResult.fail(
+                "⛔ Chemin de travail hors scope refusé pour CodeAgent. "
+                f"Le chemin `{task_ctx.workspace_path}` provient de la "
+                "description/contexte généré, pas d'un chemin explicite de "
+                "l'utilisateur. Fournis un `project_path` explicite ou travaille "
+                "dans le workspace Lumena courant.",
+                handler_name="delegate_task",
+            )
 
         # ── Guard anti-fuzzy-routing ──────────────────────────────────────
         # Si la résolution vient du registre avec une confiance < seuil et que
@@ -245,22 +395,32 @@ async def delegate_task_handler(
                     pass
 
         # ── Rapport structuré ──
-        _icon = "✅" if result.success else "❌"
+        _meta = result.meta or {}
+        _suspicious_reason = (
+            _suspicious_delegate_success_reason(result, _agent_kind)
+            if result.success else ""
+        )
+        _effective_success = bool(result.success) and not _suspicious_reason
+        _icon = "✅" if _effective_success else "❌"
         _duration = f"{result.duration_ms / 1000:.1f}s" if result.duration_ms else "N/A"
         _artifacts_str = ""
         if result.artifacts:
             _artifacts_str = "\n**Fichiers** : " + ", ".join(f"`{a}`" for a in result.artifacts[:20])
         if _missing_artifacts:
             _artifacts_str += "\n⚠️ **Fichiers annoncés mais absents ou vides** : " + ", ".join(f"`{p}`" for p in _missing_artifacts)
-        _meta = result.meta or {}
         _iterations = _meta.get("iterations", "?")
         _report = (
             f"{_icon} **{agent_type}Agent terminé** ({_duration}, {_iterations} itérations)"
             f"{_artifacts_str}\n\n"
             f"{result.output}"
         )
+        if _suspicious_reason:
+            _report += (
+                "\n\n❌ **Livraison refusée** : "
+                f"{_suspicious_reason}. Lumena doit relancer ou continuer au lieu de finaliser."
+            )
         # Sur échec : ajouter le contexte exploitable pour la reprise
-        if not result.success and _meta.get("blocked_at"):
+        if not _effective_success and _meta.get("blocked_at"):
             _failure_lines = []
             if _meta.get("attempted"):
                 _failure_lines.append("**Dernières actions tentées** :\n" + "\n".join(f"- {a}" for a in _meta["attempted"][-3:]))
@@ -271,9 +431,13 @@ async def delegate_task_handler(
         # Propager le succès/échec réel du sous-agent dans HandlerResult.
         # Si result.success=False, observation.success sera False → _update_plan_progress
         # ne sera pas appelé et aucune tâche ne sera cochée à tort.
-        if result.success:
+        if _effective_success:
             return HandlerResult.ok(_report, handler_name="delegate_task", status_code=result.status_code)
-        return HandlerResult.fail(_report, handler_name="delegate_task", status_code=result.status_code)
+        return HandlerResult.fail(
+            _report,
+            handler_name="delegate_task",
+            status_code=("suspicious_success" if _suspicious_reason else result.status_code),
+        )
     except ImportError:
         return HandlerResult.fail(
             "❌ Module sub_agent non disponible",

@@ -22,6 +22,59 @@ def test_data_download_is_file_write_proof():
     assert not caps & _NON_PROOF_CAPABILITIES
 
 
+def test_mcp_category_defaults_to_generic_mutation_not_readonly_fallback():
+    """Real activated MCP tools are conservative mutations, not silent readonly fallback."""
+    caps = get_tool_capabilities("mcp__github__search", "mcp", "mcp")
+    assert caps == frozenset({ProofCapability.GENERIC_MUTATION})
+    assert not caps & _NON_PROOF_CAPABILITIES
+
+
+def test_mcp_loop_capability_tool_is_readonly():
+    caps = get_tool_capabilities(
+        "request_mcp_capability",
+        "mcp_loop_integration",
+        "mcp_loop_integration",
+    )
+    assert caps == frozenset({ProofCapability.GENERIC_READONLY})
+    assert caps & _NON_PROOF_CAPABILITIES
+
+
+def test_mcp_loop_ticket_tool_is_mutation():
+    caps = get_tool_capabilities(
+        "request_mcp_ticket",
+        "mcp_loop_integration",
+        "mcp_loop_integration",
+    )
+    assert caps == frozenset({ProofCapability.GENERIC_MUTATION})
+    assert not caps & _NON_PROOF_CAPABILITIES
+
+
+def test_mcp_loop_run_autonomy_tool_is_mutation():
+    caps = get_tool_capabilities(
+        "run_mcp_autonomy",
+        "mcp_loop_integration",
+        "mcp_loop_integration",
+    )
+    assert caps == frozenset({ProofCapability.GENERIC_MUTATION})
+    assert not caps & _NON_PROOF_CAPABILITIES
+
+
+def test_mcp_loop_resume_task_tool_is_readonly():
+    caps = get_tool_capabilities(
+        "resume_mcp_task",
+        "mcp_loop_integration",
+        "mcp_loop_integration",
+    )
+    assert caps == frozenset({ProofCapability.GENERIC_READONLY})
+    assert caps & _NON_PROOF_CAPABILITIES
+
+
+def test_real_mcp_tool_is_not_known_readonly():
+    from src.reasoning.plan_evidence import tool_capabilities_are_known_readonly
+
+    assert tool_capabilities_are_known_readonly("mcp__github__search", "mcp", "mcp") is False
+
+
 def test_data_export_is_file_write_proof():
     """data_export écrit un fichier → FILE_WRITE (preuve)."""
     caps = get_tool_capabilities("data_export", "data", "data")

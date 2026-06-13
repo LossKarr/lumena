@@ -1,244 +1,247 @@
 ---
 name: mcp-builder
-description: "[DÉPRÉCIÉ — usage rare] Guide pour créer des serveurs MCP (Model Context Protocol). À n'utiliser QUE si l'utilisateur demande explicitement de construire un serveur MCP. ⚠️ Les scripts requièrent `pip install anthropic mcp` (NON installés par défaut dans Lumena) — sans cette installation, ils ne s'exécutent pas. Pour intégrer un service externe à Lumena, préférer les outils/handlers natifs existants."
-keywords: [mcp, model context protocol, serveur mcp, construire mcp, fastmcp, mcp sdk, creer serveur, api integration, tools llm, mcp server, node typescript mcp, python mcp]
-license: Lumena - usage interne
+description: "Guide Lumena vers le bon outil MCP selon l'intention de l'utilisateur. Cas 1 (installer/activer/utiliser un MCP) → run_mcp_autonomy (autonomie complète). Cas 2 (désactiver/supprimer/préférence/catégorie) → outils Phase F. Cas 3 (inspecter dry-run) → add_mcp(live=false). Ne déclenche le skill QUE si l'utilisateur parle explicitement d'install/activation/usage/désactivation d'un MCP nommé, OU s'il demande une capacité externe (Slack, Linear, Notion, etc.) que Lumena n'a pas en natif."
+keywords: [run_mcp_autonomy, add_mcp, disable_mcp, remove_mcp, set_mcp_preference, set_mcp_category, installer un mcp, active mcp, utilise mcp, désactiver mcp, supprimer mcp, prefer mcp, categorie mcp, slack, github, linear, notion, filesystem, sqlite, postgres, brave-search, gitlab, google-drive, puppeteer, sentry, tavily, canaux slack, slack channels, github issues, notion pages, linear tickets]
+applyTo: [run_mcp_autonomy, add_mcp, disable_mcp, remove_mcp, set_mcp_preference, set_mcp_category]
 ---
 
-# MCP Server Development Guide
+# MCP — Doctrine d'utilisation
 
-> ⚠️ **DÉPRÉCIÉ / usage rare.** Ce skill n'est pertinent que pour **construire un serveur
-> MCP** sur demande explicite. Ses scripts (`scripts/evaluation.py`, `connections.py`)
-> dépendent de `anthropic>=0.39.0` et `mcp>=1.1.0` qui **ne sont PAS installés** dans
-> l'environnement Lumena → exécuter `pip install anthropic mcp` au préalable, sinon échec
-> à l'import. Pour intégrer un service externe à Lumena, **préférer les outils/handlers
-> natifs** plutôt qu'un serveur MCP.
+Lumena dispose de deux familles d'outils MCP. La **bonne doctrine** est de choisir selon l'**intention** de l'utilisateur, PAS selon la phase d'origine.
 
-## Overview
+## 🚫 RÈGLE 0 — INTERDICTION ABSOLUE (Phase I-2)
 
-Create MCP (Model Context Protocol) servers that enable LLMs to interact with external services through well-designed tools. The quality of an MCP server is measured by how well it enables LLMs to accomplish real-world tasks.
+**Tu n'as PAS LE DROIT** d'utiliser `run_command`, `exec_command`, `run_shell` ou tout autre outil shell pour :
 
----
+- `npm install`, `npm i`, `npx`, `yarn add`, `pnpm install`, `pnpm add`
+- `pip install`, `pip3 install`, `pipx install`, `pipx run`
+- `uv pip install`, `uvx`
 
-# Process
+…lorsque la commande cible un **package MCP** (ex: `@modelcontextprotocol/...`, `mcp-server-*`, `@scope/mcp-*`).
 
-## 🚀 High-Level Workflow
+Le runtime **bloque automatiquement** ces commandes. Toutes les installs MCP passent par `run_mcp_autonomy` ou `add_mcp`.
 
-Creating a high-quality MCP server involves four main phases:
-
-### Phase 1: Deep Research and Planning
-
-#### 1.1 Understand Modern MCP Design
-
-**API Coverage vs. Workflow Tools:**
-Balance comprehensive API endpoint coverage with specialized workflow tools. Workflow tools can be more convenient for specific tasks, while comprehensive coverage gives agents flexibility to compose operations. Performance varies by client—some clients benefit from code execution that combines basic tools, while others work better with higher-level workflows. When uncertain, prioritize comprehensive API coverage.
-
-**Tool Naming and Discoverability:**
-Clear, descriptive tool names help agents find the right tools quickly. Use consistent prefixes (e.g., `github_create_issue`, `github_list_repos`) and action-oriented naming.
-
-**Context Management:**
-Agents benefit from concise tool descriptions and the ability to filter/paginate results. Design tools that return focused, relevant data. Some clients support code execution which can help agents filter and process data efficiently.
-
-**Actionable Error Messages:**
-Error messages should guide agents toward solutions with specific suggestions and next steps.
-
-#### 1.2 Study MCP Protocol Documentation
-
-**Navigate the MCP specification:**
-
-Start with the sitemap to find relevant pages: `https://modelcontextprotocol.io/sitemap.xml`
-
-Then fetch specific pages with `.md` suffix for markdown format (e.g., `https://modelcontextprotocol.io/specification/draft.md`).
-
-Key pages to review:
-- Specification overview and architecture
-- Transport mechanisms (streamable HTTP, stdio)
-- Tool, resource, and prompt definitions
-
-#### 1.3 Study Framework Documentation
-
-**Recommended stack:**
-- **Language**: TypeScript (high-quality SDK support and good compatibility in many execution environments e.g. MCPB. Plus AI models are good at generating TypeScript code, benefiting from its broad usage, static typing and good linting tools)
-- **Transport**: Streamable HTTP for remote servers, using stateless JSON (simpler to scale and maintain, as opposed to stateful sessions and streaming responses). stdio for local servers.
-
-**Load framework documentation:**
-
-- **MCP Best Practices**: [📋 View Best Practices](./reference/mcp_best_practices.md) - Core guidelines
-
-**For TypeScript (recommended):**
-- **TypeScript SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
-- [⚡ TypeScript Guide](./reference/node_mcp_server.md) - TypeScript patterns and examples
-
-**For Python:**
-- **Python SDK**: Use WebFetch to load `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
-- [🐍 Python Guide](./reference/python_mcp_server.md) - Python patterns and examples
-
-#### 1.4 Plan Your Implementation
-
-**Understand the API:**
-Review the service's API documentation to identify key endpoints, authentication requirements, and data models. Use web search and WebFetch as needed.
-
-**Tool Selection:**
-Prioritize comprehensive API coverage. List endpoints to implement, starting with the most common operations.
+Pourquoi ? Un install via shell :
+- contourne le sandbox `data/mcp/<server_id>/` (isolation perdue)
+- n'ajoute pas l'entrée au Catalog (le MCP devient invisible)
+- ne persiste pas le `config_schema` (clés API non gérées)
+- rend le MCP **inutilisable** par Lumena
 
 ---
 
-### Phase 2: Implementation
+## ⚡ La règle d'or : 3 cas, 3 outils
 
-#### 2.1 Set Up Project Structure
+### CAS 1 — L'utilisateur veut **installer / activer / utiliser** un MCP
 
-See language-specific guides for project setup:
-- [⚡ TypeScript Guide](./reference/node_mcp_server.md) - Project structure, package.json, tsconfig.json
-- [🐍 Python Guide](./reference/python_mcp_server.md) - Module organization, dependencies
+> *« installe Slack »* · *« active Linear »* · *« j'ai besoin de Notion »* · *« utilise un MCP pour X »*
 
-#### 2.2 Implement Core Infrastructure
+→ **`run_mcp_autonomy(intent="…", live=true, confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")`**
 
-Create shared utilities:
-- API client with authentication
-- Error handling helpers
-- Response formatting (JSON/Markdown)
-- Pagination support
+C'est l'outil d'**orchestration complète**. Il fait, **en une seule boucle automatisée** :
+1. Vérifie si la capacité est déjà active (peut-être qu'un MCP est déjà installé)
+2. Sinon, propose un ticket d'install
+3. Auto-approuve si la policy curated le permet (KNOWN_MCPS officiels)
+4. Installe (`npm install --prefix data/mcp/<sid>/`)
+5. Active (spawn du serveur MCP + register des tools dans le ToolRegistry)
+6. Retry → la capacité devient `use_existing` → **les nouveaux tools apparaissent dans ta liste**
+7. Tu peux alors appeler `mcp__<server_id>__<tool_name>` (ex: `mcp__slack__list_channels`)
 
-#### 2.3 Implement Tools
+**Workflow** :
+```
+1. Première fois : run_mcp_autonomy(intent="utiliser Slack", live=false)
+   → annonce ce que ça va faire, attend "oui"
+2. Sur "oui" : run_mcp_autonomy(intent="utiliser Slack", live=true,
+                                 confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")
+   ⚠ JAMAIS demander à l'utilisateur de taper cette phrase — tu la générés toi-même.
+3. Lis le retour :
+   - recommendation_code: "autonomy_ready_to_use" / "autonomy_activated" → utilisable
+   - recommendation_code: "autonomy_executed" → installe a réussi, retry
+   - recommendation_code: "autonomy_ticket_created" / next_step "approve_ticket_then_resume"
+     → MCP non-curated : UNE approbation humaine dans le panel est requise
+     (voir section Phase I-8 ci-dessous)
+   - recommendation_code: "autonomy_install_failed" → l'install a échoué,
+     lis force_install_reason et explique honnêtement
+   - recommendation_code: "auto_loop_exhausted" → secrets manquants probables
+     → DEMANDE à l'user les valeurs (ex : SLACK_BOT_TOKEN), stocke-les via
+     le panel MCP UI, puis relance.
+```
 
-For each tool:
+### 🌍 MCP non-curated (Phase I-8) — n'importe quel MCP au monde
 
-**Input Schema:**
-- Use Zod (TypeScript) or Pydantic (Python)
-- Include constraints and clear descriptions
-- Add examples in field descriptions
+Pour un MCP **hors des 17 curated** (météo, finance, n'importe quoi trouvé sur npm/PyPI) :
 
-**Output Schema:**
-- Define `outputSchema` where possible for structured data
-- Use `structuredContent` in tool responses (TypeScript SDK feature)
-- Helps clients understand and process tool outputs
+1. `run_mcp_autonomy(intent="…", live=true, confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")`
+   → retourne `autonomy_ticket_created` : un ticket **catalog_add** est créé.
+2. Dis à l'utilisateur : *« Approuve le ticket dans **MCP > Approbations**, puis dis-moi simplement "fait". »*
+   **C'est LA SEULE intervention humaine de tout le flux.**
+3. Quand il dit « fait » : **rappelle `run_mcp_autonomy` avec le MÊME intent qu'au départ**,
+   live=true, phrase générée toi-même. L'entrée est maintenant au catalogue :
+   install + activation **s'enchaînent automatiquement** (aucun nouveau ticket,
+   aucune nouvelle approbation, aucune phrase à demander).
+4. ⚠ Ne reformule PAS l'intent en cours de route (ex : « utiliser un MCP météo »
+   ne doit pas devenir « weather forecast ») — le même intent garantit que le
+   système retrouve l'entrée déjà approuvée au lieu de re-chercher.
+5. ⚠ Ne devine JAMAIS un nom de package npm. `add_mcp` vérifie maintenant
+   l'existence sur le registry et bloque (`mcp_package_not_found`) les noms
+   inventés. La recherche de `run_mcp_autonomy` trouve les vrais packages.
 
-**Tool Description:**
-- Concise summary of functionality
-- Parameter descriptions
-- Return type schema
+### 🎯 L'utilisateur donne une CIBLE EXPLICITE (`npm:...` / `pypi:...` / URL GitHub)
 
-**Implementation:**
-- Async/await for I/O operations
-- Proper error handling with actionable messages
-- Support pagination where applicable
-- Return both text content and structured data when using modern SDKs
+> *« installe le mcp pypi:bitcoin-mcp »* · *« ajoute npm:@scope/serveur-x »*
 
-**Annotations:**
-- `readOnlyHint`: true/false
-- `destructiveHint`: true/false
-- `idempotentHint`: true/false
-- `openWorldHint`: true/false
+**N'utilise PAS `run_mcp_autonomy` en premier** : il ne transporte qu'un
+intent texte et relancera une RECHERCHE réseau qui peut élire un AUTRE
+package que celui demandé. Pour une cible exacte :
+
+1. `add_mcp(target="pypi:bitcoin-mcp", live=true, confirmation_phrase="I-CONFIRM-ADD-MCP")`
+   → résout LA cible exacte (zéro recherche) et catalogue le package.
+2. **Lis le payload** : si `approval_ticket_id` est présent → l'utilisateur
+   approuve dans MCP > Approbations puis dit « fait ». S'il est `null`
+   (entrée déjà au catalogue) → **AUCUNE approbation à demander**, passe
+   directement à l'étape 3.
+3. `run_mcp_autonomy(intent="utiliser <nom du package>", live=true,
+   confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")` → install + activation
+   s'enchaînent automatiquement sur l'entrée cataloguée. ⚠ Cette étape
+   est OBLIGATOIRE : `add_mcp` ne fait QUE cataloguer, il n'installe ni
+   n'active RIEN.
+
+**URL GitHub** (Fix AS) : `add_mcp(target="https://github.com/<owner>/<repo>", ...)`
+fonctionne pareil — Lumena lit le README du repo pour retrouver le package
+npm/PyPI publié, puis suit le même flux (jamais de `git clone` : registres
+uniquement). Si le payload revient avec `mcp_github_no_package`, le repo
+n'a pas de package publié détectable : demande à l'utilisateur le nom
+exact (`npm:<nom>` / `pypi:<nom>`), n'invente JAMAIS.
+
+### CAS 2 — L'utilisateur veut **désactiver / supprimer / changer prio ou catégorie**
+
+> *« désactive Slack »* · *« supprime Linear »* · *« préfère le MCP filesystem au natif »* · *« range gmail dans messagerie »*
+
+→ Outils **Phase F** (granulaires CRUD) :
+
+| Tool | Phrase de confirmation | Usage |
+|---|---|---|
+| `disable_mcp(server_id)` | `I-CONFIRM-DISABLE-MCP` | Désactive sans supprimer |
+| `remove_mcp(server_id)` | `I-CONFIRM-REMOVE-MCP` | Soft-delete catalog (irréversible) |
+| `set_mcp_preference(server_id, prefer_over_native)` | `I-CONFIRM-MCP-PREFERENCE` | Bascule prio quand MCP + natif couvrent la même capacité |
+| `set_mcp_category(server_id, human_phrase)` | `I-CONFIRM-MCP-CATEGORY` | Range avec un mot humain (« messagerie », « boulot »…) |
+
+### CAS 3 — L'utilisateur veut juste **inspecter** ce qui serait installé
+
+> *« qu'est-ce qui s'installerait si je demandais Linear ? »* · *« montre-moi le package pour Slack »*
+
+→ **`add_mcp(target="…", live=false)`** (dry-run pur, sans side-effect)
+
+Retourne `{kind, package_spec, version, source_url, config_schema}` sans créer aucun ticket. Utile pour audit/curiosité.
 
 ---
 
-### Phase 3: Review and Test
+## 🚫 Interdictions absolues
 
-#### 3.1 Code Quality
-
-Review for:
-- No duplicated code (DRY principle)
-- Consistent error handling
-- Full type coverage
-- Clear tool descriptions
-
-#### 3.2 Build and Test
-
-**TypeScript:**
-- Run `npm run build` to verify compilation
-- Test with MCP Inspector: `npx @modelcontextprotocol/inspector`
-
-**Python:**
-- Verify syntax: `python -m py_compile your_server.py`
-- Test with MCP Inspector
-
-See language-specific guides for detailed testing approaches and quality checklists.
+- **JAMAIS demander à l'utilisateur de taper la `confirmation_phrase` lui-même.** Lumena la fournit automatiquement après le « oui » verbal.
+- **JAMAIS prononcer le jargon technique** des catégories (`mail`, `project`, `files`) face à l'utilisateur. Toujours le langage humain.
+- **JAMAIS proposer une « création locale »** (`request_mcp_ticket` avec local_creation) si l'utilisateur n'a pas explicitement dit « crée-moi un MCP local pour … ». Sinon utiliser `run_mcp_autonomy` qui résout depuis npm/pypi/github.
+- **JAMAIS dire « MCP installé/activé »** sans avoir vu une observation `recommendation_code: autonomy_ready_to_use` (cas 1) ou `mcp_disabled / mcp_removed` (cas 2).
+- **JAMAIS confondre les deux confirmation_phrase** :
+  - `run_mcp_autonomy` → `I-CONFIRM-MCP-AUTONOMY`
+  - `add_mcp` (cas 3 uniquement) → `I-CONFIRM-ADD-MCP`
 
 ---
 
-### Phase 4: Create Evaluations
+## Une fois un MCP ACTIF : comment l'utiliser ?
 
-After implementing your MCP server, create comprehensive evaluations to test its effectiveness.
+Quand `run_mcp_autonomy` retourne `recommendation_code: autonomy_ready_to_use`, le serveur MCP est démarré en background et **ses tools apparaissent automatiquement dans ta liste d'outils**.
 
-**Load [✅ Evaluation Guide](./reference/evaluation.md) for complete evaluation guidelines.**
+Format : `mcp__<server_id>__<tool_name>` (préfixe `mcp__` obligatoire — c'est le namespace anti-collision du registre)
 
-#### 4.1 Understand Evaluation Purpose
+**⚠️ RÈGLE D'OR : les noms EXACTS des tools sont déclarés par le serveur lui-même** (protocole MCP `tools/list`) et apparaissent dans TA liste d'outils après activation. **NE DEVINE JAMAIS un nom de tool MCP** — lis ta liste, ou utilise `discover_tools(query="slack")` pour les trouver. Le `<tool_name>` peut déjà contenir le nom du provider (ex : le serveur Slack officiel expose `slack_list_channels` → nom final `mcp__slack__slack_list_channels`).
 
-Use evaluations to test whether LLMs can effectively use your MCP server to answer realistic, complex questions.
+(La forme courte `<server_id>__<tool>` est tolérée — un alias la redirige — mais utilise toujours le nom exact vu dans ta liste.)
 
-#### 4.2 Create 10 Evaluation Questions
+Tu les appelles **comme n'importe quel autre outil natif**. Pas besoin de `mcp_call` ou de wrapper spécial — c'est transparent.
 
-To create effective evaluations, follow the process outlined in the evaluation guide:
+Si tu ne trouves pas le tool attendu dans ta liste après activation : refais un tour ReAct, la `tools_description` est rebuild à chaque iter.
 
-1. **Tool Inspection**: List available tools and understand their capabilities
-2. **Content Exploration**: Use READ-ONLY operations to explore available data
-3. **Question Generation**: Create 10 complex, realistic questions
-4. **Answer Verification**: Solve each question yourself to verify answers
+---
 
-#### 4.3 Evaluation Requirements
+## 🔁 Règle de récupération : tool MCP absent (Phase I-7 fix M)
 
-Ensure each question is:
-- **Independent**: Not dependent on other questions
-- **Read-only**: Only non-destructive operations required
-- **Complex**: Requiring multiple tool calls and deep exploration
-- **Realistic**: Based on real use cases humans would care about
-- **Verifiable**: Single, clear answer that can be verified by string comparison
-- **Stable**: Answer won't change over time
+**Si l'utilisateur te demande une capacité externe (Slack, GitHub, Linear, etc.) et que le tool `mcp__<provider>__<tool>` correspondant N'EST PAS dans ta liste d'outils**, NE PAS abandonner directement. Suis cet ordre strict :
 
-#### 4.4 Output Format
+1. **Tente l'activation auto** AVANT de chercher autre chose :
+   ```
+   run_mcp_autonomy(intent="utiliser <provider>", live=true,
+                    confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")
+   ```
+   - Si retour `autonomy_activated` ou `autonomy_ready_to_use` (avec `force_activate_ok: true`) → le serveur vient d'être lancé. Refais un tour ReAct, le tool `mcp__<provider>__<x>` doit maintenant apparaître. Retry ton appel d'origine.
+   - Si retour `approve_ticket_then_resume` → MCP non-curated : demande à l'user d'approuver dans MCP > Approbations puis de dire « fait », et rappelle `run_mcp_autonomy` avec le MÊME intent (cf. section Phase I-8 — install+activation s'enchaînent seuls ensuite).
 
-Create an XML file with this structure:
+2. **Si l'activation a échoué pour secrets manquants** (`auto_execute_failed` avec mention secrets) → annonce clairement à l'user les credentials nécessaires (ex : `SLACK_BOT_TOKEN`, `SLACK_TEAM_ID`) et propose deux voies :
+   - **Voie A** : l'user te colle les valeurs directement → tu les stockes via les routes Library.
+   - **Voie B** : l'user va dans **MCP > Bibliothèque > Configurer (clés / config)** et te dit "fait", puis tu retry.
 
-```xml
-<evaluation>
-  <qa_pair>
-    <question>Find discussions about AI model launches with animal codenames. One model needed a specific safety designation that uses the format ASL-X. What number X was being determined for the model named after a spotted wild cat?</question>
-    <answer>3</answer>
-  </qa_pair>
-<!-- More qa_pairs... -->
-</evaluation>
+3. **JAMAIS** : confondre l'absence d'un tool MCP avec une autre solution (ex : appeler `discord_list_channels` quand l'user demande Slack). Si après activation le tool reste absent, dis-le honnêtement : *"Le MCP `<provider>` n'est pas activable actuellement parce que `<raison précise>`"*.
+
+**Anti-pattern à NE PAS faire** :
+```
+User: "liste mes canaux Slack"
+Lumena: discover_tools → trouve seulement discord_list_channels
+Lumena: tâtonne, tente d'autres outils, abandonne ❌
+```
+
+**Pattern correct** :
+```
+User: "liste mes canaux Slack"
+Lumena: mcp__slack__list_channels n'est pas dans ma liste
+Lumena: run_mcp_autonomy(intent="utiliser Slack", live=true,
+                          confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")
+       → autonomy_activated ✅
+Lumena: mcp__slack__list_channels() → vrais canaux Slack ✅
 ```
 
 ---
 
-# Reference Files
+## Que faire quand des secrets manquent ?
 
-## 📚 Documentation Library
+Si `run_mcp_autonomy` retourne `approve_ticket_then_resume` ou `auto_loop_exhausted` à cause de credentials manquants :
 
-Load these resources as needed during development:
+1. **Lis les `pending_questions`** du retour (liste des champs requis).
+2. **Demande à l'user les valeurs manquantes**, en lui indiquant où les obtenir (ex : Slack Bot Token → https://api.slack.com/apps).
+3. **Propose-lui deux voies équivalentes** :
+   - Coller la valeur directement en chat (Lumena la stocke chiffrée via les outils MCP Library)
+   - Aller la remplir dans le panel **MCP > Bibliothèque > Configurer (clés / config)** (UI Phase I-6)
+4. **Une fois rempli** : `resume_mcp_task(intent="…")` pour reprendre l'autonomie là où elle s'est arrêtée.
 
-### Core MCP Documentation (Load First)
-- **MCP Protocol**: Start with sitemap at `https://modelcontextprotocol.io/sitemap.xml`, then fetch specific pages with `.md` suffix
-- [📋 MCP Best Practices](./reference/mcp_best_practices.md) - Universal MCP guidelines including:
-  - Server and tool naming conventions
-  - Response format guidelines (JSON vs Markdown)
-  - Pagination best practices
-  - Transport selection (streamable HTTP vs stdio)
-  - Security and error handling standards
+---
 
-### SDK Documentation (Load During Phase 1/2)
-- **Python SDK**: Fetch from `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md`
-- **TypeScript SDK**: Fetch from `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
+## Exemples de dialogue
 
-### Language-Specific Implementation Guides (Load During Phase 2)
-- [🐍 Python Implementation Guide](./reference/python_mcp_server.md) - Complete Python/FastMCP guide with:
-  - Server initialization patterns
-  - Pydantic model examples
-  - Tool registration with `@mcp.tool`
-  - Complete working examples
-  - Quality checklist
+### Exemple A — Install + activate complet
 
-- [⚡ TypeScript Implementation Guide](./reference/node_mcp_server.md) - Complete TypeScript guide with:
-  - Project structure
-  - Zod schema patterns
-  - Tool registration with `server.registerTool`
-  - Complete working examples
-  - Quality checklist
+**User** : « Installe et active le MCP Slack »
 
-### Evaluation Guide (Load During Phase 4)
-- [✅ Evaluation Guide](./reference/evaluation.md) - Complete evaluation creation guide with:
-  - Question creation guidelines
-  - Answer verification strategies
-  - XML format specifications
-  - Example questions and answers
-  - Running an evaluation with the provided scripts
+**Lumena (tour 1)** :
+1. `run_mcp_autonomy(intent="utiliser Slack", live=false)` (dry-run)
+2. Annonce : « Je vais installer **server-slack** depuis npm puis l'activer. Tu confirmes ? »
+
+**User** : « oui »
+
+**Lumena (tour 2)** :
+1. `run_mcp_autonomy(intent="utiliser Slack", live=true, confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")`
+2. Lit le retour :
+   - Si `autonomy_ready_to_use` : « ✅ Slack est actif. Demande-moi de lister tes canaux, envoyer un message… »
+   - Si secrets manquants : « ⚠️ Il me manque ton SLACK_BOT_TOKEN. Tu peux me le coller ici ou aller dans MCP > Bibliothèque > server-slack > Configurer. »
+
+### Exemple B — Utilisation après activation
+
+**User** : « Liste mes canaux Slack »
+**Lumena** : `mcp__slack__list_channels()` → affiche la liste.
+
+### Exemple C — Désactivation
+
+**User** : « Désactive le MCP Slack »
+**Lumena** : `disable_mcp(server_id="slack", confirmation_phrase="I-CONFIRM-DISABLE-MCP")` → annonce le résultat.
+
+### Exemple D — Range dans une catégorie humaine
+
+**User** : « Range gmail dans messagerie »
+**Lumena** : `set_mcp_category(server_id="gmail", human_phrase="messagerie", confirmation_phrase="I-CONFIRM-MCP-CATEGORY")` → annonce.

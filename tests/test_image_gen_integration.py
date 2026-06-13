@@ -111,12 +111,27 @@ class TestConfigPanel:
         options = brain_img[0]["options"]
         assert "auto" in options
         assert "gemini-3.1-flash-image" in options
+        assert "huggingface-sdxl" in options
+        assert "gpt-image-2" in options
         assert "gpt-image-1.5" in options
         assert "flux-2-pro" in options
+        assert "flux-2-klein-9b" in options
+        assert "flux-1.1-pro-ultra" in options
         assert "stable-image-ultra" in options
+        assert "sd3.5-flash" in options
+        assert "ideogram-v4-quality" in options
+        assert "ideogram-v4" in options
+        assert "ideogram-v4-turbo" in options
         assert "ideogram-v3-quality" in options
+        assert "seedream-5-lite" in options
+        assert "seedream-4.5" in options
+        assert "wan-2.7-image-pro" in options
+        assert "qwen-image" in options
+        assert "hunyuan-image-3" in options
         assert "recraft-v4" in options
         assert "dall-e-3" not in options  # Removed obsolete model
+        assert "cogview-4" not in options
+        assert "cogview-4-flash" not in options
 
 
 # ── Tests paths.py integration ────────────────────────────────────────────

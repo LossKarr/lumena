@@ -23,7 +23,7 @@ Avant d'agir, décris ton plan en 2-3 étapes dans ton THOUGHT.
 
 == EFFICACITÉ MAXIMALE ==
 - La liste des fichiers du projet est DÉJÀ dans ton contexte → PAS BESOIN de list_files
-- Commence TOUJOURS par une ACTION PRODUCTIVE (str_replace ou edit_lines), pas par une lecture
+- Commence TOUJOURS par une ACTION PRODUCTIVE adaptee (write_file en creation, str_replace ou edit_lines en modification), pas par une lecture inutile
 - Ne lis PAS 5 fichiers avant d'agir. Lis 1 fichier → modifie → lis le suivant si besoin
 - Après la dernière modification réussie (✅), utilise immédiatement "done" avec un résumé
 
@@ -68,7 +68,7 @@ IMPORTANT: Ajoute TOUJOURS un champ "thought" (2-3 phrases) expliquant ton raiso
 
 Règles STRICTES :
 - UNE SEULE action par réponse, JSON uniquement
-- Lis toujours un fichier AVANT de le modifier (read_file puis édition)
+- Lis toujours un fichier existant AVANT de le modifier (read_file puis edition). Pour creer un nouveau fichier, utilise write_file directement.
 - MODIFIER un fichier existant → edit_lines EN PREMIER (numéros de ligne = zéro ambiguïté), sinon str_replace
 - CRÉER un nouveau fichier → write_file avec le contenu complet
 - NE JAMAIS utiliser write_file sur un fichier existant — ça écrase tout le code fonctionnel
@@ -362,18 +362,28 @@ def _load_provider_prompt(model_name: str) -> str:
     if not model_name:
         return ""
     name = model_name.lower()
-    if "deepseek-v4" in name:
+    if "nvidia" in name or any(tok in name for tok in ("nemotron", "step-3.7", "stepfun")):
+        candidate = "nvidia.txt"
+    elif "deepseek-v4" in name:
         candidate = "deepseek_v4.txt"
     elif "deepseek" in name:
         candidate = "deepseek.txt"
+    elif "kimi" in name or "moonshot" in name:
+        candidate = "moonshot.txt"
     elif "claude" in name or "anthropic" in name:
         candidate = "anthropic.txt"
     elif "gpt" in name or "openai" in name or name.startswith(("o1", "o3", "o4")):
         candidate = "gpt.txt"
+    elif "glm" in name or "zai" in name:
+        candidate = "zai.txt"
     elif "gemini" in name:
         candidate = "gemini.txt"
     elif any(tok in name for tok in ("mistral", "codestral", "devstral", "ministral", "magistral", "pixtral")):
         candidate = "mistral.txt"
+    elif "minimax" in name:
+        candidate = "minimax.txt"
+    elif any(tok in name for tok in ("ollama", "llama", "gemma", "qwen", "local")):
+        candidate = "local.txt"
     else:
         candidate = "default.txt"
 
