@@ -6,7 +6,7 @@ Supporte plusieurs providers LLM :
 - OpenAI : GPT-5.4, GPT-5.4 Mini, GPT-4o
 - Anthropic : Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 4.5
 - Google : Gemini 3.1 Pro, Gemini 2.5 Flash
-- Moonshot : Kimi K2.5
+- Moonshot : Kimi K2.7 Code, Kimi K2.6
 - xAI : Grok 4.3, Grok 4.20, Grok 4.1
 - DeepSeek : V3.2, Reasoner
 """
@@ -416,6 +416,21 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
     
     # === MOONSHOT (Kimi) ===
+    "kimi-k2.7-code": ModelConfig(
+        name="kimi-k2.7-code",
+        display_name="Kimi K2.7 Code (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2.7-code",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_tools=True,
+        supports_image_generation=False,
+        cost_per_million_tokens=0.95,  # $0.95/M input cache miss, $4/M output
+        description="Kimi K2.7 Code - Moonshot code/agent, 256K contexte, vision/video input, thinking obligatoire",
+        badge="Code",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context", "code_generation"}),
+    ),
     "kimi-k2.5": ModelConfig(
         name="kimi-k2.5",
         display_name="Kimi K2.5 (Moonshot)",
@@ -591,6 +606,20 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         badge="Gratuit NIM",
         capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
     ),
+    "nvidia-deepseek-v4-pro": ModelConfig(
+        name="nvidia-deepseek-v4-pro",
+        display_name="DeepSeek V4 Pro (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="deepseek-ai/deepseek-v4-pro",
+        context_window=1_000_000,
+        max_output_tokens=32768,
+        supports_vision=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="DeepSeek V4 Pro via NVIDIA NIM - free endpoint, long-context coding, agentic reasoning and tool use.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
+    ),
     "nvidia-gpt-oss-120b": ModelConfig(
         name="nvidia-gpt-oss-120b",
         display_name="GPT-OSS 120B (NVIDIA NIM)",
@@ -675,6 +704,36 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="MiniMax M2.7 via NVIDIA NIM — préférer MiniMax natif si MINIMAX_API_KEY configuré. ⚠️ Serveurs souvent saturés : latence élevée possible.",
         badge="Gratuit",
         capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "nvidia-minimax-m3": ModelConfig(
+        name="nvidia-minimax-m3",
+        display_name="MiniMax M3 (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="minimaxai/minimax-m3",
+        context_window=1_000_000,
+        max_output_tokens=65536,
+        supports_vision=True,
+        supports_image_generation=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="MiniMax M3 via NVIDIA NIM - free multimodal endpoint for reasoning, coding, tool use and image understanding.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
+    ),
+    "nvidia-gemma-4-31b-it": ModelConfig(
+        name="nvidia-gemma-4-31b-it",
+        display_name="Gemma 4 31B IT (NVIDIA NIM)",
+        provider=ProviderType.NVIDIA,
+        model_id="google/gemma-4-31b-it",
+        context_window=262144,
+        max_output_tokens=32768,
+        supports_vision=True,
+        supports_image_generation=False,
+        supports_tools=True,
+        cost_per_million_tokens=0.0,
+        description="Gemma 4 31B IT via NVIDIA NIM - free multimodal instruction model for text, image understanding, coding and agents.",
+        badge="Gratuit NIM",
+        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
     ),
 
     # === MINIMAX (natif — API OpenAI-compatible) ===
@@ -1044,13 +1103,20 @@ MODEL_FALLBACKS: Dict[str, List[str]] = {
     ],
     "deepseek-v4-flash": [
         "nvidia-deepseek-v4-flash",
+        "nvidia-deepseek-v4-pro",
         "nvidia-gpt-oss-120b",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "deepseek-v4-pro": [
+        "nvidia-deepseek-v4-pro",
         "nvidia-nemotron-3-ultra-550b-a55b",
         "nvidia-deepseek-v4-flash",
         "nvidia-gpt-oss-120b",
+    ],
+    "kimi-k2.7-code": [
+        "kimi-k2.6",
+        "nvidia-kimi-k2.6",
+        "nvidia-step-3.7-flash",
     ],
     "kimi-k2.6": [
         "nvidia-kimi-k2.6",
@@ -1065,12 +1131,15 @@ MODEL_FALLBACKS: Dict[str, List[str]] = {
         "nvidia-step-3.7-flash",
     ],
     "minimax-m2.7": [
+        "nvidia-minimax-m3",
         "nvidia-minimax-m2.7",
         "nvidia-step-3.7-flash",
     ],
     "minimax-m3": [
         "minimax-m2.7",
+        "nvidia-minimax-m3",
         "nvidia-minimax-m2.7",
+        "nvidia-gemma-4-31b-it",
         "nvidia-step-3.7-flash",
         "nvidia-kimi-k2.6",
     ],
@@ -1095,10 +1164,14 @@ MODEL_FALLBACKS: Dict[str, List[str]] = {
         "nvidia-deepseek-v4-flash",
     ],
     "gemini-3.1-pro": [
+        "nvidia-gemma-4-31b-it",
+        "nvidia-minimax-m3",
         "nvidia-step-3.7-flash",
         "nvidia-kimi-k2.6",
     ],
     "gemini-2.5-pro": [
+        "nvidia-gemma-4-31b-it",
+        "nvidia-minimax-m3",
         "nvidia-step-3.7-flash",
         "nvidia-kimi-k2.6",
     ],
@@ -1655,16 +1728,20 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "gemini-2.5-pro":              {"code": 84, "speed": 65, "reasoning": 88, "creative": 78, "research": 88, "vision": 92, "web": 88},
     "gemini-2.5-flash":            {"code": 78, "speed": 94, "reasoning": 74, "creative": 74, "research": 86, "vision": 88, "web": 89},
     # ── Moonshot (Kimi) ────────────────────────────────────────────────────
+    "kimi-k2.7-code":              {"code": 94, "speed": 55, "reasoning": 92, "creative": 80, "research": 94, "vision": 92, "web": 88},
     "kimi-k2.5":                   {"code": 74, "speed": 75, "reasoning": 78, "creative": 72, "research": 90, "vision":  0, "web": 82},
     "kimi-k2.6":                   {"code": 88, "speed": 62, "reasoning": 88, "creative": 78, "research": 92, "vision": 90, "web": 86},
     # ── NVIDIA NIM ─────────────────────────────────────────────────────────
     "nvidia-deepseek-v4-flash":    {"code": 90, "speed": 86, "reasoning": 88, "creative": 72, "research": 82, "vision":  0, "web": 76},
+    "nvidia-deepseek-v4-pro":      {"code": 94, "speed": 50, "reasoning": 94, "creative": 76, "research": 92, "vision":  0, "web": 82},
     "nvidia-gpt-oss-120b":         {"code": 84, "speed": 78, "reasoning": 86, "creative": 76, "research": 80, "vision":  0, "web": 78},
     "nvidia-step-3.7-flash":       {"code": 84, "speed": 82, "reasoning": 84, "creative": 76, "research": 82, "vision": 86, "web": 80},
     "nvidia-kimi-k2.6":            {"code": 88, "speed": 60, "reasoning": 88, "creative": 78, "research": 92, "vision": 90, "web": 86},
     "nvidia-glm-5.1":              {"code": 86, "speed": 68, "reasoning": 88, "creative": 78, "research": 82, "vision":  0, "web": 78},
     "nvidia-nemotron-3-ultra-550b-a55b": {"code": 92, "speed": 38, "reasoning": 95, "creative": 82, "research": 94, "vision":  0, "web": 84},
     "nvidia-minimax-m2.7":         {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
+    "nvidia-minimax-m3":           {"code": 89, "speed": 72, "reasoning": 88, "creative": 86, "research": 86, "vision": 88, "web": 78},
+    "nvidia-gemma-4-31b-it":       {"code": 82, "speed": 76, "reasoning": 84, "creative": 78, "research": 82, "vision": 86, "web": 76},
     # ── MiniMax (natif) ────────────────────────────────────────────────────
     "minimax-m2.5":                {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
     "minimax-m2.5-highspeed":      {"code": 84, "speed": 95, "reasoning": 78, "creative": 78, "research": 74, "vision":  0, "web": 66},

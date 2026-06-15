@@ -135,3 +135,143 @@ class TestHCToolsFamilies:
         assert "stripe_create_invoice" in _HC_TOOLS_STRIPE
         assert "telegram_send_message" in _HC_TOOLS_MESSAGING
         assert "twitter_post_tweet" in _HC_TOOLS_SOCIAL
+
+
+# ── Extension CU / login (familles ajoutées pour l'ancrage-vérité) ──────────
+
+from src.reasoning.react import (
+    _HC_TOOLS_TYPE, _HC_TOOLS_OPEN_APP, _HC_TOOLS_CLICK, _HC_TOOLS_LOGIN,
+)
+
+
+class TestHCToolsCUFamilies:
+    def test_familles_cu_non_vides_et_frozenset(self):
+        for fam in (_HC_TOOLS_TYPE, _HC_TOOLS_OPEN_APP, _HC_TOOLS_CLICK, _HC_TOOLS_LOGIN):
+            assert isinstance(fam, frozenset) and len(fam) > 0
+
+    def test_type_couvre_natif_et_browser(self):
+        assert "type_text" in _HC_TOOLS_TYPE
+        assert "browser_type" in _HC_TOOLS_TYPE
+
+    def test_login_inclut_browser_login_et_la_frappe(self):
+        assert "browser_login" in _HC_TOOLS_LOGIN
+        assert _HC_TOOLS_TYPE <= _HC_TOOLS_LOGIN
+
+    def test_open_app_natif(self):
+        assert "open_app" in _HC_TOOLS_OPEN_APP
+
+    def test_aucun_nom_mcp_code_en_dur(self):
+        # Les noms d'outils MCP sont dynamiques → ne doivent PAS être listés.
+        for fam in (_HC_TOOLS_TYPE, _HC_TOOLS_OPEN_APP, _HC_TOOLS_CLICK, _HC_TOOLS_LOGIN):
+            assert not any(t.startswith("mcp__") for t in fam), "nom MCP codé en dur"
+
+
+class TestMCPGenericProof:
+    """Un outil MCP réussi (installé dynamiquement) compte comme preuve plausible
+    pour une action bureau/login, sans avoir à le déclarer."""
+
+    def _loop(self, tmp_path):
+        from src.reasoning.react import ReActLoop, ToolRegistry
+        return ReActLoop(llm_chat_func=None, tools=ToolRegistry(lumena=None, lumena_root=tmp_path))
+
+    def test_claim_tape_sans_aucun_outil_est_bloque(self, tmp_path):
+        loop = self._loop(tmp_path)
+        loop._successful_session_tools = set()
+        assert loop._action_hallucination_retry_query("j'ai tapé le texte", "orig") is not None
+
+    def test_claim_tape_avec_mcp_reussi_passe(self, tmp_path):
+        loop = self._loop(tmp_path)
+        loop._successful_session_tools = {"mcp__un-mcp-quelconque__Type"}
+        assert loop._action_hallucination_retry_query("j'ai tapé le texte", "orig") is None
+
+    def test_claim_tape_avec_type_text_natif_passe(self, tmp_path):
+        loop = self._loop(tmp_path)
+        loop._successful_session_tools = {"type_text"}
+        assert loop._action_hallucination_retry_query("j'ai tapé le texte", "orig") is None
+
+
+# ── Temps 2 — familles complètes (carte) + claims vagues + anti-dérive ───────
+
+from src.reasoning.react import _HC_TOOLS_ANY_ACTION, _HC_TOOLS_READONLY, _HC_TOOLS_OPEN_APP
+from src.reasoning.hallucination_guard import (
+    _HC_TOOLS_MEDIA, _HC_TOOLS_EXEC,
+    _HC_TOOLS_IDE, _HC_TOOLS_BROWSER_TECH, _HC_TOOLS_DEPLOY, _HC_TOOLS_DB,
+    _HC_TOOLS_DB_PROPOSE, _HC_TOOLS_DB_CONFIG, _HC_TOOLS_NETWORK, _HC_TOOLS_N8N,
+    _HC_TOOLS_SKILL, _HC_TOOLS_HTTP, _HC_TOOLS_PEER, _HC_TOOLS_CONFIG,
+    _HC_TOOLS_MEMORY, _HC_TOOLS_MAIL_ADMIN, _HC_TOOLS_CU_TASK,
+)
+
+_NEW_FAMILIES = [
+    _HC_TOOLS_MEDIA, _HC_TOOLS_EXEC, _HC_TOOLS_IDE, _HC_TOOLS_BROWSER_TECH,
+    _HC_TOOLS_DEPLOY, _HC_TOOLS_DB, _HC_TOOLS_DB_PROPOSE, _HC_TOOLS_DB_CONFIG,
+    _HC_TOOLS_NETWORK, _HC_TOOLS_N8N, _HC_TOOLS_SKILL, _HC_TOOLS_HTTP,
+    _HC_TOOLS_PEER, _HC_TOOLS_CONFIG, _HC_TOOLS_MEMORY, _HC_TOOLS_MAIL_ADMIN,
+    _HC_TOOLS_CU_TASK,
+]
+
+
+class TestNewFamiliesAndAnyAction:
+    def test_nouvelles_familles_non_vides_frozenset(self):
+        for fam in _NEW_FAMILIES:
+            assert isinstance(fam, frozenset) and len(fam) > 0
+
+    def test_readonly_et_any_action_disjoints(self):
+        assert not (_HC_TOOLS_READONLY & _HC_TOOLS_ANY_ACTION)
+
+    def test_nouvelles_familles_incluses_dans_any_action(self):
+        for fam in _NEW_FAMILIES:
+            assert fam <= _HC_TOOLS_ANY_ACTION, fam
+
+    def test_spotify_classe(self):
+        # Fix du faux positif : Spotify est une action (MEDIA + OPEN_APP), pas du vide.
+        assert "spotify_play" in _HC_TOOLS_MEDIA
+        assert "spotify_play" in _HC_TOOLS_OPEN_APP
+        assert "spotify_play" in _HC_TOOLS_ANY_ACTION
+        assert "spotify_play" not in _HC_TOOLS_READONLY
+
+
+class TestVagueClaimsProvenByAnyAction:
+    """« c'est fait » / claims d'install = prouvés par TOUTE action réelle ;
+    le vide pur reste bloqué (pas de régression de la protection)."""
+
+    def _q(self, text, tools):
+        from src.reasoning.hallucination_guard import hallucination_retry_query
+        q, _ = hallucination_retry_query(text, "orig", set(tools), 0)
+        return q
+
+    def test_cest_fait_avec_spotify_play_passe(self):
+        assert self._q("c'est fait", {"spotify_play"}) is None
+
+    def test_cest_fait_sans_aucun_outil_bloque(self):
+        assert self._q("c'est fait", set()) is not None
+
+    def test_cest_fait_avec_lecture_seule_bloque(self):
+        # une lecture (read_file) n'est PAS une action → claim vague non prouvé
+        assert self._q("c'est fait", {"read_file"}) is not None
+
+    def test_deploye_avec_succes_avec_deploy_tool_passe(self):
+        assert self._q("Le site a été déployé avec succès", {"deploy_to_ionos"}) is None
+
+    def test_installe_avec_succes_avec_mcp_dynamique_passe(self):
+        assert self._q("MCP installé et testé avec succès", {"mcp__weather__forecast"}) is None
+
+    def test_claim_precis_reste_strict(self):
+        # « j'ai envoyé le mail » exige toujours un outil MAIL, pas n'importe quelle action
+        assert self._q("j'ai envoyé le mail", {"spotify_play"}) is not None
+
+
+class TestAntiDriftClassification:
+    """Garde-fou anti-dérive : TOUT outil natif enregistré doit être classé
+    (READONLY ou ANY_ACTION). Les outils MCP dynamiques (mcp__*) sont exclus."""
+
+    def test_tous_les_outils_natifs_sont_classes(self, tmp_path):
+        from src.reasoning.react import ToolRegistry
+        reg = ToolRegistry(lumena=None, lumena_root=tmp_path)
+        registered = set(getattr(reg, "tools", {}) or {})
+        native = {t for t in registered if not t.startswith("mcp__")}
+        classified = _HC_TOOLS_READONLY | _HC_TOOLS_ANY_ACTION
+        unclassified = native - classified
+        assert not unclassified, (
+            f"{len(unclassified)} outil(s) natif(s) non classé(s) — "
+            f"ajoute-les à READONLY ou à une famille d'action : {sorted(unclassified)}"
+        )

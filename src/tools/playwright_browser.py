@@ -11,7 +11,7 @@ Avantages Playwright:
 - Network interception
 """
 
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
@@ -19,6 +19,7 @@ import asyncio
 import ipaddress
 import os
 import random
+import re
 import socket
 from loguru import logger
 
@@ -148,6 +149,19 @@ class PlaywrightBrowser:
             self._active_tab_index = 0
             self._page = None
             return
+        # self._page est AUTORITAIRE : si la page courante est toujours vivante et
+        # présente, on la GARDE et on resynchronise juste l'index sur sa position.
+        # Sinon un onglet FANTÔME (restauré par Chrome en arrière-plan) qui se
+        # glisse à l'index 0 détournerait self._page → on lirait "Polyester"
+        # alors qu'on affiche "Viaduc" (bug "contenu lu ≠ affiché").
+        cur = self._page
+        if cur is not None:
+            try:
+                if not cur.is_closed() and cur in tabs:
+                    self._active_tab_index = tabs.index(cur)
+                    return
+            except Exception:
+                pass
         if self._active_tab_index < 0 or self._active_tab_index >= len(tabs):
             self._active_tab_index = max(0, min(self._active_tab_index, len(tabs) - 1))
         self._page = tabs[self._active_tab_index]
@@ -651,6 +665,29 @@ class PlaywrightBrowser:
             if self.is_running:
                 return True
 
+            # RÉCUPÉRATION DE SESSION (avant tout nettoyage) : si le contexte
+            # persistant est encore VIVANT mais que la page active est morte
+            # (onglet fermé, popup, navigation), on récupère/recrée juste une
+            # page DANS le contexte existant — au lieu de fermer+rouvrir tout
+            # le navigateur (ce qui tuerait la fenêtre via le taskkill du verrou
+            # de profil, et ferait perdre la session : fatal pour un handoff
+            # captcha/2FA ou un login en cours).
+            if self._context is not None:
+                try:
+                    live_pages = [p for p in self._context.pages if not p.is_closed()]
+                    self._page = live_pages[-1] if live_pages else await self._context.new_page()
+                    _ = self._page.url  # vérifie que la page répond
+                    logger.info(
+                        "🔄 Playwright : session existante récupérée "
+                        "(page ré-acquise, navigateur NON refermé)"
+                    )
+                    return True
+                except Exception as _recover_err:
+                    logger.debug(
+                        "[browser] récupération du contexte impossible "
+                        f"({_recover_err}) — relance complète",
+                    )
+
             # Nettoyer proprement tout état résiduel d'une session précédente crashée
             # pour éviter "NoneType has no attribute 'send'" au prochain navigate()
             if self._playwright is not None:
@@ -737,10 +774,27 @@ class PlaywrightBrowser:
                     
                     # Injecter le JS anti-détection
                     await self._context.add_init_script(stealth_js)
-                    self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+                    # Le profil persistant RESTAURE parfois d'anciens onglets
+                    # (session Chrome précédente). Si on garde pages[0], self._page
+                    # peut pointer sur un onglet FANTÔME (ex. une vieille page
+                    # "Polyester") pendant que navigate/screenshot agissent sur un
+                    # autre onglet → le contenu LU ≠ le contenu AFFICHÉ. On démarre
+                    # PROPRE : une seule page neuve, on ferme les onglets restaurés.
+                    _restored_pages = list(self._context.pages)
+                    self._page = await self._context.new_page()
+                    for _old_tab in _restored_pages:
+                        try:
+                            await _old_tab.close()
+                        except Exception:
+                            pass
                     if extra_headers:
                         await self._page.set_extra_http_headers(extra_headers)
                     self._active_tab_index = 0
+                    if _restored_pages:
+                        logger.info(
+                            "🧹 {} onglet(s) restauré(s) du profil fermé(s) au démarrage "
+                            "(évite le bug 'contenu lu ≠ affiché')", len(_restored_pages),
+                        )
                     logger.info(f"🌐 Playwright démarré avec profil '{self.profile_name}' (stealth v2)")
                 else:
                     # Mode standard sans persistance
@@ -1143,6 +1197,32 @@ class PlaywrightBrowser:
             # Humanisation: délai pré-clic + mouvement souris
             from .browser_stealth import human_delay
             await asyncio.sleep(human_delay(60, 250) / 1000)
+            # Robustesse multi-match : si le sélecteur vise PLUSIEURS éléments,
+            # Playwright (strict mode) refuse le clic et renvoie un timeout
+            # trompeur ("Élément non trouvé"). On cible alors le 1er élément
+            # VISIBLE (l'agent produit souvent des sélecteurs larges).
+            # En cas d'absence de `.locator` (page mockée), on retombe sur le
+            # chemin direct -> comportement inchangé pour les tests.
+            count = 1
+            loc = None
+            try:
+                loc = self._page.locator(selector)
+                count = await loc.count()
+            except Exception:
+                count = 1
+            if loc is not None and isinstance(count, int) and count > 1:
+                target = loc.first
+                for i in range(min(count, 12)):
+                    cand = loc.nth(i)
+                    try:
+                        if await cand.is_visible():
+                            target = cand
+                            break
+                    except Exception:
+                        continue
+                await target.click(timeout=timeout)
+                await asyncio.sleep(human_delay(30, 120) / 1000)
+                return {"success": True, "clicked": selector, "matches": count}
             await self._page.click(selector, timeout=timeout)
             await asyncio.sleep(human_delay(30, 120) / 1000)
             return {"success": True, "clicked": selector}
@@ -1507,7 +1587,10 @@ class PlaywrightBrowser:
         return await self.start()
 
     async def accept_cookies(self) -> Dict[str, Any]:
-        """Tente d'accepter automatiquement les bandeaux cookies les plus courants."""
+        """Accepte le bandeau cookies. Vérification INSTANTANÉE d'existence
+        (query_selector / locator.count) au lieu d'un page.click qui *attend*
+        1s par sélecteur — sinon ~33 candidats × 1s = jusqu'à 33s, ce qui
+        ralentit toute lecture de page (get_page_content appelle ceci)."""
         if not self._page:
             return {"success": False, "error": "Page non chargée"}
 
@@ -1526,30 +1609,100 @@ class PlaywrightBrowser:
             "button[class*='consent']",
             "#didomi-notice-agree-button",      # Didomi (courant FR)
             ".sd-cmp-3cRQ2",                    # SourcePoint
+            "#bbccookies-continue-button",      # BBC
+            ".cmplz-accept",                    # Complianz (WordPress, très courant)
+            "button.cmplz-accept",
+            "button[data-testid='accept-all']", # variantes data-testid courantes
+            "button[data-testid*='accept']",
+            "button[data-cy*='accept']",
+            ".fc-cta-consent",                  # Google Funding Choices
         ]
-
-        for selector in css_candidates:
-            try:
-                await self._page.click(selector, timeout=1000)
-                return {"success": True, "method": "css", "selector": selector}
-            except Exception:
-                continue  # essayer le sélecteur suivant
-
         text_candidates = [
-            "Tout accepter", "Accepter", "Accepter et fermer", "J'accepte",
-            "Accept all", "Accept", "I agree", "Agree", "Consent",
+            "Tout accepter", "Accepter et fermer", "Accepter & Fermer", "Accepter",
+            "J'accepte", "Tout autoriser", "Accept all", "Allow all", "I agree",
+            "Agree", "Yes, I agree", "Yes, I'm happy", "Got it", "Accept", "Yes", "OK",
         ]
 
-        for text in text_candidates:
-            try:
-                await self._page.click(f"button:has-text('{text}')", timeout=1000)
-                return {"success": True, "method": "text", "selector": text}
-            except Exception:
+        async def _try_in(frame) -> Optional[Tuple[str, str]]:
+            # CSS — query_selector est instantané (aucune attente d'apparition)
+            for selector in css_candidates:
                 try:
-                    await self._page.click(f"a:has-text('{text}')", timeout=500)
-                    return {"success": True, "method": "text", "selector": text}
+                    el = await frame.query_selector(selector)
+                    if el and await el.is_visible():
+                        await el.click(timeout=1500)
+                        return selector, "css"
                 except Exception:
-                    continue  # essayer le texte suivant
+                    continue
+            # Texte — locator.count() instantané ; guillemets doubles pour gérer
+            # les apostrophes ("J'accepte", "Yes, I'm happy").
+            for text in text_candidates:
+                for tag in ("button", "a", "[role='button']"):
+                    try:
+                        loc = frame.locator(f'{tag}:has-text("{text}")')
+                        if await loc.count() > 0:
+                            cand = loc.first
+                            if await cand.is_visible():
+                                await cand.click(timeout=1500)
+                                return text, "text"
+                    except Exception:
+                        continue
+            return None
+
+        # 1) Page principale
+        try:
+            hit = await _try_in(self._page)
+            if hit:
+                return {"success": True, "method": hit[1], "selector": hit[0]}
+        except Exception:
+            pass
+
+        # 2) iframes — mais SEULEMENT celles d'un CMP connu (rapide + ciblé).
+        #    Beaucoup de bandeaux (SourcePoint/privacy-mgmt, Didomi, OneTrust,
+        #    Usercentrics…) vivent dans une iframe hors de portée de page.click.
+        cmp_hints = ("consent", "privacy", "didomi", "onetrust", "sourcepoint",
+                     "sp-prod", "cmp", "cookie", "consensu", "trustarc",
+                     "quantcast", "usercentrics", "privacy-mgmt")
+        try:
+            main_frame = self._page.main_frame
+            for frame in self._page.frames:
+                if frame is main_frame:
+                    continue
+                furl = (getattr(frame, "url", "") or "").lower()
+                if not any(h in furl for h in cmp_hints):
+                    continue
+                hit = await _try_in(frame)
+                if hit:
+                    return {"success": True, "method": "iframe-" + hit[1], "selector": hit[0]}
+        except Exception:
+            pass
+
+        # 3) Dernier recours GÉNÉRIQUE : on balaie les boutons/liens VISIBLES et on
+        #    clique celui dont le texte court ressemble le plus à un consentement
+        #    (couvre les CMP non listés, ex. Frandroid). Conservateur : texte
+        #    d'acceptation explicite uniquement, jamais un "refuser/settings".
+        try:
+            clicked = await self._page.evaluate(r"""
+            () => {
+              const ACCEPT = /^(tout accepter|accepter (?:et|&) fermer|j'accepte|tout autoriser|accepter|accept all|accept cookies|allow all|agree and close|i agree|accept|agree|j'ai compris|ok,? tout accepter)$/i;
+              const REJECT = /(refuser|reject|décliner|decline|param[ée]trer|settings|pr[ée]f[ée]rences|gérer|manage|en savoir|continuer sans)/i;
+              const els = [...document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]')];
+              for (const el of els) {
+                const t = ((el.innerText || el.value || '').trim());
+                if (!t || t.length > 30) continue;
+                if (REJECT.test(t)) continue;
+                if (!ACCEPT.test(t)) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width < 1 || r.height < 1 || el.offsetParent === null) continue;
+                el.click();
+                return t;
+              }
+              return null;
+            }
+            """)
+            if clicked:
+                return {"success": True, "method": "generic", "selector": clicked}
+        except Exception:
+            pass
 
         return {"success": False, "error": "Aucun bouton cookie reconnu"}
 
@@ -2148,19 +2301,152 @@ class PlaywrightBrowser:
             logger.error(f"Erreur deep_research: {e}")
             return {"success": False, "error": str(e)}
 
+    # ── W4 — Recherche « aiguille dans la botte de foin » ──────────────────────
+    # Au lieu de vider N pages en vrac, on EXTRAIT le passage qui contient la
+    # réponse, on le SCORE par pertinence, on CLASSE, et on s'ARRÊTE dès qu'on
+    # tient une correspondance forte.
+
+    _NEEDLE_STOP = {
+        "le", "la", "les", "de", "des", "du", "un", "une", "et", "ou", "à", "a",
+        "en", "au", "aux", "ce", "se", "sa", "son", "ses", "que", "qui", "quoi",
+        "quel", "quelle", "quels", "quelles", "est", "sont", "sur", "pour", "dans",
+        "avec", "par", "the", "of", "and", "or", "to", "in", "for", "is", "are",
+        "what", "which", "how", "where", "when",
+    }
+
+    @classmethod
+    def _needle_tokens(cls, s: str) -> List[str]:
+        toks = re.findall(r"[a-zA-ZÀ-ÿ0-9]{2,}", (s or "").lower())
+        return [t for t in toks if t not in cls._NEEDLE_STOP]
+
+    @classmethod
+    def _best_passage(cls, text: str, query: str,
+                      must_include: Optional[List[str]] = None,
+                      window: int = 420) -> Dict[str, Any]:
+        """Retourne le passage le plus pertinent d'un texte pour une requête.
+        Pur (sans I/O) → testable hors navigateur."""
+        terms = set(cls._needle_tokens(query))
+        must = [m.lower() for m in (must_include or []) if m]
+        if not text:
+            return {"passage": "", "score": 0.0, "matched": []}
+
+        chunks = [c.strip() for c in re.split(r"\n{2,}|(?<=[.!?])\s+(?=[A-ZÀ-Ý0-9])", text) if c.strip()]
+        passages: List[str] = []
+        cur = ""
+        for c in chunks:
+            if len(cur) + len(c) + 1 < window:
+                cur = (cur + " " + c).strip()
+            else:
+                if cur:
+                    passages.append(cur)
+                cur = c
+        if cur:
+            passages.append(cur)
+        if not passages:
+            passages = [text[:window]]
+
+        best = {"passage": "", "score": 0.0, "matched": []}
+        for p in passages:
+            pl = p.lower()
+            if must and not all(m in pl for m in must):
+                continue  # un terme obligatoire manque → passage écarté
+            matched = sorted({t for t in terms if t in pl})
+            score = (len(matched) / len(terms)) if terms else 0.0
+            if terms and len(matched) == len(terms):
+                score += 0.25                      # bonus : tous les termes présents
+            if must:
+                score += 0.25 * len(must)          # bonus : termes obligatoires présents
+            if score > best["score"]:
+                best = {"passage": p[:600], "score": round(score, 3), "matched": matched}
+        return best
+
+    async def find_needle(self, query: str, max_pages: int = 8,
+                          must_include: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Cherche une information PRÉCISE sur le web : balaie les résultats,
+        extrait le meilleur passage de chaque page, classe par pertinence, et
+        s'arrête dès qu'une correspondance forte est trouvée."""
+        if not await self._ensure_started():
+            return {"success": False, "error": "Navigateur non démarré"}
+        search = await self.search_google(query)
+        if not search.get("success") or not search.get("results"):
+            # Retry : un consent/captcha intermittent peut vider le 1er essai
+            try:
+                await self.accept_cookies()
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+            search = await self.search_google(query)
+        if not search.get("success") or not search.get("results"):
+            return {"success": False, "error": "Aucun résultat de recherche",
+                    "query": query, "pages_scanned": 0}
+
+        findings: List[Dict[str, Any]] = []
+        scanned = 0
+        for result in search["results"][:max_pages]:
+            url = result.get("url", "")
+            if not url.startswith("http"):
+                continue
+            try:
+                nav = await self.navigate(url)
+                if not nav.get("success"):
+                    continue
+                scanned += 1
+                content = await self._extract_readable_content()
+                content = self._strip_cookie_noise(content)
+                best = self._best_passage(content, query, must_include=must_include)
+                if best["score"] > 0:
+                    findings.append({
+                        "url": url, "title": result.get("title", ""),
+                        "passage": best["passage"], "score": best["score"],
+                        "matched": best["matched"],
+                    })
+                    # Arrêt anticipé : correspondance très forte (tous les termes)
+                    if best["score"] >= 1.2:
+                        break
+            except Exception as e:
+                logger.debug(f"[find_needle] {url}: {e}")
+                continue
+
+        findings.sort(key=lambda f: f["score"], reverse=True)
+        top = findings[0] if findings else None
+        return {
+            "success": bool(findings),
+            "query": query,
+            "pages_scanned": scanned,
+            "best_answer": top,
+            "findings": findings[:5],
+            "error": None if findings else "Aucune correspondance pertinente trouvée",
+        }
+
     async def _extract_readable_content(self) -> str:
         """Extrait le contenu lisible (supprime scripts, styles, cookies, etc.)."""
         if not self._page:
             return ""
 
-        try:
-            script = """
+        # IMPORTANT : Playwright exige une EXPRESSION (fonction). Un `return` au
+        # niveau racine du script déclenche "Illegal return statement" et fait
+        # échouer tout l'extracteur → repli silencieux sur body.innerText brut
+        # (avec fuites de CSS des CMP). On enveloppe donc en fonction fléchée.
+        script = """
+        () => {
             try {
-                const remove = document.querySelectorAll(
-                    'script, style, noscript, iframe, nav, footer, header, aside, '
-                    + '.advertisement, .ads, [class*="cookie"], [class*="popup"], [class*="banner"]'
-                );
-                remove.forEach(el => { try { el.remove(); } catch(e) {} });
+                // 1) Retire toujours le bruit technique (sans danger)
+                document.querySelectorAll('script, style, noscript, iframe')
+                    .forEach(el => { try { el.remove(); } catch(e) {} });
+
+                // 2) Snapshot du body AVANT la suppression agressive : filet de
+                //    sécurité si retirer le chrome/pubs vide toute la page
+                //    (ex. allociné dont les blocs de contenu portent "banner").
+                const bodySnapshot = document.body ? (document.body.innerText || '') : '';
+
+                // 3) Suppression agressive du chrome / pubs / CMP, utile pour
+                //    isoler le contenu via les sélecteurs sémantiques
+                document.querySelectorAll(
+                    'nav, footer, header, aside, .advertisement, .ads, '
+                    + '[class*="cookie"], [class*="popup"], [class*="banner"], '
+                    + '[id*="didomi"], [class*="didomi"], [id*="onetrust"], [class*="onetrust"], '
+                    + '[id*="sp_message"], [id*="usercentrics"], [aria-modal="true"]'
+                ).forEach(el => { try { el.remove(); } catch(e) {} });
 
                 const selectors = [
                     'main', 'article', '[role="main"]', '.content', '#content',
@@ -2173,27 +2459,50 @@ class PlaywrightBrowser:
                     }
                 }
 
-                return document.body ? document.body.innerText || '' : '';
+                // 4) Repli : body après suppression, sinon le snapshot d'avant
+                const after = document.body ? (document.body.innerText || '') : '';
+                return after.length > 200 ? after : bodySnapshot;
             } catch(e) {
                 return document.body ? document.body.innerText || '' : '';
             }
-            """
+        }
+        """
 
+        content = ""
+        try:
             content = await self._page.evaluate(script)
-
-            if content:
-                import re
-                content = re.sub(r'\n{3,}', '\n\n', content)
-                content = re.sub(r'[ \t]+', ' ', content)
-                content = content.strip()
-
-            return content or ""
         except Exception:
+            # Repli ultime : texte brut du body (nettoyé ci-dessous comme le reste)
             try:
                 text_result = await self.get_text("body")
-                return text_result.get("text", "")
+                content = text_result.get("text", "") if isinstance(text_result, dict) else ""
             except Exception:
-                return ""  # extraction contenu impossible
+                content = ""
+
+        return self._clean_extracted_text(content or "")
+
+    @staticmethod
+    def _clean_extracted_text(content: str) -> str:
+        """Nettoie le texte extrait : retire les blocs CSS qui fuient (certains
+        CMP type Didomi injectent du <style> dont le texte remonte dans
+        innerText) puis normalise les espaces. Défense en profondeur, en plus
+        de la suppression DOM côté JS."""
+        if not content:
+            return ""
+        import re
+        # Retrait ITÉRATIF des blocs {...} pour gérer l'imbriqué (@keyframes{0%{...}})
+        prev = None
+        guard = 0
+        while prev != content and "{" in content and guard < 12:
+            prev = content
+            content = re.sub(r'\{[^{}]*\}', ' ', content)
+            guard += 1
+        # Retire les sélecteurs/at-rules orphelins laissés par le CSS supprimé
+        content = re.sub(r'@[a-zA-Z-]+[^;{}\n]{0,200};?', ' ', content)
+        content = re.sub(r'(?m)^\s*[#.\[][^\n]{0,200}$', ' ', content)
+        content = re.sub(r'\n{3,}', '\n\n', content)
+        content = re.sub(r'[ \t]+', ' ', content)
+        return content.strip()
 
     @staticmethod
     def _strip_cookie_noise(text: str) -> str:
@@ -2972,6 +3281,32 @@ class PlaywrightBrowser:
     # ── Phase 4 — Downloads ──
     # ═══════════════════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _verify_downloaded_file(path: str) -> Dict[str, Any]:
+        """W3 — Vérifie qu'un fichier téléchargé est réellement exploitable :
+        présent sur le disque, non vide, et lisible. Un download "completed"
+        de 0 octet est en réalité un échec — on le détecte ici."""
+        p = Path(path)
+        if not p.exists():
+            return {"verified": False, "reason": "fichier absent du disque", "size": 0}
+        try:
+            size = p.stat().st_size
+        except Exception as e:
+            return {"verified": False, "reason": f"stat impossible: {e}", "size": 0}
+        if size <= 0:
+            return {"verified": False, "reason": "fichier vide (0 octet)", "size": 0}
+        try:
+            with open(p, "rb") as fh:
+                head = fh.read(16)
+        except Exception as e:
+            return {"verified": False, "reason": f"fichier illisible: {e}", "size": size}
+        return {
+            "verified": True,
+            "reason": "présent, non vide, lisible",
+            "size": size,
+            "magic": head[:8].hex(),
+        }
+
     def _install_download_listener(self) -> None:
         """Intercepte les downloads du contexte et les sauve dans data/browser_downloads/."""
         if not self._context or self._download_listening:
@@ -2990,13 +3325,17 @@ class PlaywrightBrowser:
                     stem, ext = target.stem, target.suffix
                     target = self._downloads_dir / f"{stem}_{int(datetime.now().timestamp())}{ext}"
                 await download.save_as(str(target))
+                # W3 — vérification : un fichier vide/absent = échec réel
+                verif = self._verify_downloaded_file(str(target))
                 entry = {
                     "timestamp": datetime.now().isoformat(),
                     "filename": safe_name,
                     "path": str(target),
                     "url": download.url,
-                    "size": target.stat().st_size if target.exists() else 0,
-                    "state": "completed",
+                    "size": verif["size"],
+                    "state": "completed" if verif["verified"] else "empty",
+                    "verified": verif["verified"],
+                    "verify_reason": verif["reason"],
                 }
                 self._downloads.append(entry)
                 if len(self._downloads) > 200:
@@ -3042,7 +3381,12 @@ class PlaywrightBrowser:
         self._download_waiters.append(fut)
         try:
             entry = await asyncio.wait_for(fut, timeout=timeout_ms / 1000.0)
-            return {"success": True, **entry}
+            # W3 — le succès suit la vérification : un download vide n'est pas un succès
+            ok = bool(entry.get("verified", True))
+            result = {"success": ok, **entry}
+            if not ok:
+                result.setdefault("error", entry.get("verify_reason", "download non vérifié"))
+            return result
         except asyncio.TimeoutError:
             if fut in self._download_waiters:
                 self._download_waiters.remove(fut)
@@ -3058,6 +3402,377 @@ class PlaywrightBrowser:
             "downloads_dir": str(self._downloads_dir),
             "downloads": self._downloads[-limit:],
         }
+
+    # Motifs d'erreur courants signalant un formulaire NON abouti (login, inscription…)
+    _SUBMISSION_ERROR_HINTS = (
+        "identifiants incorrects", "mot de passe incorrect", "email ou mot de passe",
+        "champ obligatoire", "champ requis", "ce champ est requis", "est obligatoire",
+        "adresse e-mail invalide", "email invalide", "invalide", "incorrect",
+        "une erreur s'est produite", "une erreur est survenue", "erreur",
+        "invalid", "incorrect password", "required field", "is required",
+        "please try again", "réessayer", "échec", "echec", "failed", "denied",
+        "captcha", "vérifiez que vous", "trop de tentatives", "too many attempts",
+    )
+
+    async def verify_submission(
+        self,
+        *,
+        before_url: Optional[str] = None,
+        expect_text: Optional[str] = None,
+        forbid_text: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """W3 — Confirme qu'une action (soumission de formulaire, login, inscription…)
+        a réellement abouti. Signaux : changement d'URL, présence d'un texte de
+        succès attendu, ABSENCE de message d'erreur. Une erreur détectée prime
+        sur tout (confirmed=False), car « soumis » ≠ « accepté »."""
+        if not self._page:
+            return {"confirmed": False, "reason": "page non chargée", "signals": []}
+
+        signals: List[str] = []
+        after_url = self._page.url
+        url_changed = before_url is not None and after_url != before_url
+        if url_changed:
+            signals.append(f"url changée → {after_url}")
+
+        try:
+            body = (await self._page.inner_text("body"))[:8000]
+        except Exception:
+            body = ""
+        low = body.lower()
+
+        success_found = bool(expect_text) and expect_text.lower() in low
+        if expect_text:
+            signals.append(
+                f"texte de succès {'trouvé' if success_found else 'ABSENT'}: '{expect_text}'"
+            )
+
+        hints = list(self._SUBMISSION_ERROR_HINTS) + [h.lower() for h in (forbid_text or [])]
+        errors_found = sorted({h for h in hints if h and h in low})
+        if errors_found:
+            signals.append(f"signal(aux) d'erreur: {errors_found[:4]}")
+
+        # Décision : une erreur prime ; sinon succès si texte attendu OU url changée.
+        if errors_found and not success_found:
+            confirmed = False
+            reason = "message d'erreur détecté sur la page"
+        elif success_found or url_changed:
+            confirmed = True
+            reason = "succès confirmé (texte attendu et/ou navigation)"
+        else:
+            confirmed = False
+            reason = "aucun signal de succès (ni texte, ni changement d'URL)"
+
+        return {
+            "confirmed": confirmed,
+            "reason": reason,
+            "url": after_url,
+            "url_changed": url_changed,
+            "signals": signals,
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── W1 — Login autonome (identifiants depuis le coffre chiffré) ──
+    # Le mot de passe ne transite JAMAIS en clair dans un log/observation.
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    WEB_LOGIN_SCOPE = "web_login"
+
+    @staticmethod
+    def _login_domain(url_or_service: str) -> str:
+        """Normalise une URL ou un nom de service en domaine nu (clé du coffre)."""
+        s = (url_or_service or "").strip().lower()
+        if not s:
+            return ""
+        s = re.sub(r"^[a-z]+://", "", s)      # retire le schéma
+        s = s.split("/")[0].split("?")[0]      # host[:port] seul
+        if s.startswith("www."):
+            s = s[4:]
+        return s
+
+    @staticmethod
+    def _secrets():
+        # Robuste aux différents styles d'import (src.tools.* en prod, tools.* en test)
+        try:
+            from ..services.secrets_service import get_secrets_service
+        except (ImportError, ValueError):
+            try:
+                from src.services.secrets_service import get_secrets_service
+            except ImportError:
+                from services.secrets_service import get_secrets_service
+        return get_secrets_service()
+
+    def save_login(self, service: str, username: str, password: str,
+                   login_url: Optional[str] = None) -> Dict[str, Any]:
+        """Enregistre des identifiants dans le coffre chiffré (scope web_login)."""
+        dom = self._login_domain(service)
+        if not dom or not username or not password:
+            return {"success": False, "error": "service, username et password requis"}
+        sec = self._secrets()
+        sec.set(self.WEB_LOGIN_SCOPE, f"{dom}::username", username)
+        sec.set(self.WEB_LOGIN_SCOPE, f"{dom}::password", password)
+        if login_url:
+            sec.set(self.WEB_LOGIN_SCOPE, f"{dom}::login_url", login_url)
+        return {"success": True, "domain": dom, "username": username, "password": "***"}
+
+    def list_logins(self) -> Dict[str, Any]:
+        """Liste les domaines pour lesquels un identifiant est enregistré.
+        NE renvoie JAMAIS les valeurs (ni username, ni password)."""
+        try:
+            keys = self._secrets().list_keys(self.WEB_LOGIN_SCOPE)
+        except Exception:
+            keys = []
+        domains = sorted({k.split("::")[0] for k in keys if "::" in k})
+        return {"success": True, "domains": domains, "count": len(domains)}
+
+    def delete_login(self, service: str) -> Dict[str, Any]:
+        dom = self._login_domain(service)
+        sec = self._secrets()
+        removed = sum(
+            1 for suf in ("username", "password", "login_url")
+            if sec.delete(self.WEB_LOGIN_SCOPE, f"{dom}::{suf}")
+        )
+        return {"success": removed > 0, "domain": dom, "removed": removed}
+
+    async def _fill_login_form(self, username: str, password: str,
+                               password_only: bool = False) -> Dict[str, Any]:
+        res = {"user_ok": False, "pass_ok": False}
+        user_selectors = [
+            'input[autocomplete="username"]', 'input[type="email"]',
+            'input[name*="email" i]', 'input[id*="email" i]',
+            'input[name*="user" i]', 'input[id*="user" i]',
+            'input[name*="login" i]', 'input[id*="login" i]',
+            'input[type="text"]:not([type="hidden"])',
+        ]
+        pass_selectors = [
+            'input[type="password"]', 'input[autocomplete="current-password"]',
+            'input[name*="pass" i]', 'input[id*="pass" i]',
+        ]
+        if not password_only:
+            for sel in user_selectors:
+                try:
+                    el = await self._page.query_selector(sel)
+                    if el and await el.is_visible():
+                        await el.fill(username)
+                        res["user_ok"] = True
+                        break
+                except Exception:
+                    continue
+        for sel in pass_selectors:
+            try:
+                el = await self._page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.fill(password)
+                    res["pass_ok"] = True
+                    break
+            except Exception:
+                continue
+        return res
+
+    async def _submit_login(self) -> bool:
+        for sel in ('button[type="submit"]', 'input[type="submit"]'):
+            try:
+                el = await self._page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.click()
+                    return True
+            except Exception:
+                continue
+        for txt in ("Se connecter", "Connexion", "Sign in", "Log in", "Login",
+                    "Continuer", "Continue", "Suivant", "Next", "S'identifier"):
+            try:
+                loc = self._page.locator(
+                    f'button:has-text("{txt}"), [role="button"]:has-text("{txt}")'
+                )
+                if await loc.count() > 0:
+                    cand = loc.first
+                    if await cand.is_visible():
+                        await cand.click()
+                        return True
+            except Exception:
+                continue
+        try:
+            await self._page.keyboard.press("Enter")
+            return True
+        except Exception:
+            return False
+
+    async def login(self, service: str, login_url: Optional[str] = None) -> Dict[str, Any]:
+        """Connecte Lumena à un site avec les identifiants du coffre chiffré.
+        Détecte les champs, remplit, soumet, et CONFIRME via verify_submission
+        (W3). Le mot de passe n'apparaît jamais dans le retour."""
+        dom = self._login_domain(service)
+        sec = self._secrets()
+        username = sec.get(self.WEB_LOGIN_SCOPE, f"{dom}::username")
+        password = sec.get(self.WEB_LOGIN_SCOPE, f"{dom}::password")
+        if not username or not password:
+            return {
+                "success": False, "domain": dom,
+                "error": f"Aucun identifiant enregistré pour '{dom}'. "
+                         f"Utilise browser_save_login d'abord.",
+            }
+        if not await self._ensure_started():
+            return {"success": False, "error": "Navigateur non démarré"}
+        url = login_url or sec.get(self.WEB_LOGIN_SCOPE, f"{dom}::login_url")
+        if url:
+            await self.navigate(url)
+        if not self._page:
+            return {"success": False, "error": "Page non chargée"}
+        before_url = self._page.url
+        try:
+            await self.accept_cookies()
+        except Exception:
+            pass
+
+        filled = await self._fill_login_form(username, password)
+        if not filled.get("user_ok"):
+            return {"success": False, "domain": dom,
+                    "error": "Champ identifiant introuvable sur la page"}
+        await self._submit_login()
+        await asyncio.sleep(2.0)
+
+        # Login en 2 étapes (identifiant puis mot de passe sur l'écran suivant)
+        if not filled.get("pass_ok"):
+            step2 = await self._fill_login_form(username, password, password_only=True)
+            if step2.get("pass_ok"):
+                await self._submit_login()
+                await asyncio.sleep(2.0)
+
+        verify = await self.verify_submission(
+            before_url=before_url,
+            forbid_text=["mot de passe incorrect", "identifiants incorrects",
+                         "incorrect password", "invalid", "réessay"],
+        )
+        return {
+            "success": bool(verify.get("confirmed")),
+            "domain": dom,
+            "username": username,
+            "password": "***",
+            "confirmed": verify.get("confirmed"),
+            "reason": verify.get("reason"),
+            "signals": verify.get("signals"),
+            "url": verify.get("url"),
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ── W2 — Relais humain : captcha / 2FA / OTP ──
+    # Détecte un blocage que l'autonomie ne peut PAS franchir seule (c'est leur
+    # but), pour que l'agent demande l'aide humaine via ask_user SANS fermer le
+    # navigateur, puis saisisse le code / reprenne là où il en était.
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    async def detect_challenge(self) -> Dict[str, Any]:
+        """Détecte un captcha (reCAPTCHA/hCaptcha/Turnstile) ou une étape 2FA/OTP
+        sur la page courante. Retourne kind = 'captcha' | 'otp' | 'none'."""
+        if not self._page:
+            return {"kind": "none", "reason": "page non chargée"}
+        script = r"""
+        () => {
+          const q = (sel) => !!document.querySelector(sel);
+          const txt = (document.body ? (document.body.innerText || '') : '').toLowerCase();
+          const frames = [...document.querySelectorAll('iframe')].map(f => (f.src || '').toLowerCase());
+          const recaptcha = q('.g-recaptcha') || q('iframe[src*="recaptcha"]') || frames.some(s => s.includes('recaptcha'));
+          const hcaptcha  = q('.h-captcha')  || q('iframe[src*="hcaptcha"]')  || frames.some(s => s.includes('hcaptcha'));
+          const turnstile = q('.cf-turnstile') || frames.some(s => s.includes('challenges.cloudflare'))
+              || /v[eé]rifiez que vous [eê]tes (un )?humain|verify you are (a )?human|checking your browser|just a moment|un instant/.test(txt);
+          const otpField = q('input[autocomplete="one-time-code"]') || q('input[name*="otp" i]')
+              || q('input[id*="otp" i]') || q('input[name*="code" i]') || q('input[id*="code" i]');
+          const twofa = /code de v[eé]rification|verification code|two[- ]factor|authentification (à|a) deux facteurs|code (re[çc]u|envoy[eé])|enter the .*code|saisis(sez)? le code|code (sms|à 6|de s[eé]curit[eé])/.test(txt);
+          return { recaptcha, hcaptcha, turnstile, otpField, twofa, title: document.title };
+        }
+        """
+        try:
+            d = await self._page.evaluate(script)
+        except Exception as e:
+            return {"kind": "none", "reason": f"scan impossible: {e}"}
+
+        if d.get("recaptcha") or d.get("hcaptcha") or d.get("turnstile"):
+            provider = ("reCAPTCHA" if d.get("recaptcha") else
+                        "hCaptcha" if d.get("hcaptcha") else "Cloudflare Turnstile")
+            return {
+                "kind": "captcha", "provider": provider, "url": self._page.url,
+                "needs": f"Un captcha {provider} bloque la page. Résous-le manuellement "
+                         f"dans la fenêtre du navigateur (elle reste ouverte), puis "
+                         f"confirme avec browser_solve_challenge(done=true).",
+            }
+        if d.get("otpField") or d.get("twofa"):
+            return {
+                "kind": "otp", "url": self._page.url,
+                "needs": "Une étape de vérification (2FA / code à usage unique) est "
+                         "demandée. Fournis le code reçu (SMS / e-mail / app), puis "
+                         "appelle browser_solve_challenge(code=\"123456\").",
+            }
+        return {"kind": "none", "url": self._page.url}
+
+    async def _fill_otp(self, code: str) -> bool:
+        """Saisit un code OTP : champ unique, ou N cases à un caractère."""
+        code = "".join(ch for ch in str(code) if ch.isalnum())
+        if not code:
+            return False
+        # Cas N cases (maxlength=1) — fréquent pour les codes à 6 chiffres
+        try:
+            boxes = await self._page.query_selector_all(
+                'input[maxlength="1"], input[inputmode="numeric"][maxlength="1"]'
+            )
+            visible = []
+            for b in boxes:
+                try:
+                    if await b.is_visible():
+                        visible.append(b)
+                except Exception:
+                    continue
+            if len(visible) >= len(code) and len(visible) > 1:
+                for el, ch in zip(visible, code):
+                    await el.fill(ch)
+                return True
+        except Exception:
+            pass
+        # Cas champ unique
+        for sel in ('input[autocomplete="one-time-code"]', 'input[name*="otp" i]',
+                    'input[id*="otp" i]', 'input[name*="code" i]', 'input[id*="code" i]',
+                    'input[inputmode="numeric"]', 'input[type="tel"]', 'input[type="text"]'):
+            try:
+                el = await self._page.query_selector(sel)
+                if el and await el.is_visible():
+                    await el.fill(code)
+                    return True
+            except Exception:
+                continue
+        return False
+
+    async def solve_challenge(self, code: Optional[str] = None,
+                              done: bool = False) -> Dict[str, Any]:
+        """Applique l'aide humaine. `code` = 2FA/OTP à saisir ; `done=True` =
+        l'humain a résolu le captcha dans la fenêtre. Sans rien : (re)détecte."""
+        if not self._page:
+            return {"success": False, "error": "page non chargée"}
+        before_url = self._page.url
+
+        if code:
+            filled = await self._fill_otp(code)
+            if not filled:
+                return {"success": False, "error": "champ de code introuvable sur la page"}
+            await self._submit_login()
+            await asyncio.sleep(2.0)
+            verify = await self.verify_submission(
+                before_url=before_url,
+                forbid_text=["code incorrect", "code invalide", "invalid code",
+                             "expiré", "expired", "réessay"],
+            )
+            return {"success": bool(verify.get("confirmed")), "kind": "otp",
+                    "confirmed": verify.get("confirmed"), "reason": verify.get("reason"),
+                    "url": verify.get("url"), "signals": verify.get("signals")}
+
+        if done:
+            # L'humain a résolu le captcha : on vérifie qu'il a disparu
+            await asyncio.sleep(1.0)
+            still = await self.detect_challenge()
+            cleared = still.get("kind") != "captcha"
+            return {"success": cleared, "kind": "captcha", "cleared": cleared,
+                    "url": self._page.url,
+                    "reason": "captcha franchi" if cleared else "captcha toujours présent"}
+
+        # Ni code ni done : on (re)détecte et on dit ce qu'il faut
+        return await self.detect_challenge()
 
     # ═══════════════════════════════════════════════════════════════════════════
     # ── Phase 4 — Frames / iframes ──

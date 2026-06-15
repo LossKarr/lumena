@@ -16,10 +16,7 @@ html,body{height:100%}
 body{
   font:400 13.5px/1.55 var(--font-body);
   letter-spacing:-0.01em;
-  background:
-    radial-gradient(1200px 900px at 15% -10%,#162031 0%,transparent 55%) fixed,
-    radial-gradient(900px 700px at 80% 10%,#251f1a 0%,transparent 60%) fixed,
-    linear-gradient(160deg,var(--bg) 0%,var(--bg-accent) 100%) fixed;
+  background:#06080d;
   color:var(--text);
   -webkit-font-smoothing:antialiased;
 }
@@ -32,9 +29,163 @@ button,input,textarea,select{font:inherit;color:inherit}
 ::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.2)}
 
 /* ============================================================
+   GLOBAL MOTION BACKGROUND - imported from OpenLumena
+   ============================================================ */
+.motion-bg{
+  position:fixed;
+  inset:0;
+  z-index:0;
+  overflow:hidden;
+  pointer-events:none;
+  background:
+    radial-gradient(ellipse at 50% -18%, rgba(255,174,89,0.28), transparent 30%),
+    radial-gradient(ellipse at 82% 18%, rgba(51,88,111,0.18), transparent 33%),
+    radial-gradient(ellipse at 12% 62%, rgba(122,58,18,0.34), transparent 38%),
+    linear-gradient(140deg, #05060a 0%, #101623 45%, #07151a 100%);
+  perspective:1100px;
+}
+
+.motion-bg::before,
+.motion-bg::after{
+  content:"";
+  position:absolute;
+  pointer-events:none;
+}
+
+.motion-bg::before{
+  left:-14vw;
+  top:-10vh;
+  width:62vw;
+  height:128vh;
+  background:
+    linear-gradient(115deg, rgba(255,255,255,0.06), transparent 28%),
+    linear-gradient(180deg, rgba(245,159,74,0.10), rgba(4,7,11,0.12));
+  clip-path:polygon(26% 0, 100% 0, 72% 100%, 0 100%);
+  opacity:0.72;
+  filter:blur(0.2px);
+  transform:translateZ(-120px) rotateX(0deg);
+  animation:premiumPlane 24s ease-in-out infinite;
+}
+
+.motion-bg::after{
+  right:-16vw;
+  bottom:-30vh;
+  width:76vw;
+  height:86vh;
+  background:
+    radial-gradient(circle at 32% 20%, rgba(245,159,74,0.18), transparent 34%),
+    linear-gradient(130deg, rgba(255,255,255,0.055), rgba(255,255,255,0.012) 46%, transparent 72%);
+  clip-path:polygon(14% 0, 100% 18%, 84% 100%, 0 76%);
+  opacity:0.62;
+  transform:rotateX(62deg) rotateZ(-8deg) translate3d(0,0,-160px);
+  animation:premiumDeck 28s ease-in-out infinite;
+}
+
+.grid-layer{
+  position:absolute;
+  left:-14%;
+  right:-14%;
+  bottom:-34%;
+  height:92%;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+  background-size:68px 68px;
+  mask-image:linear-gradient(to top, rgba(0,0,0,0.88), transparent 80%);
+  -webkit-mask-image:linear-gradient(to top, rgba(0,0,0,0.88), transparent 80%);
+  transform-origin:50% 100%;
+  transform:rotateX(68deg) translate3d(0,10vh,-120px);
+  opacity:0.78;
+  animation:gridDrift 22s linear infinite;
+}
+
+.beam{
+  position:absolute;
+  width:48vw;
+  height:48vw;
+  border-radius:50%;
+  filter:blur(72px);
+  opacity:0.42;
+  mix-blend-mode:screen;
+}
+
+.beam-a{
+  top:-18vw;
+  right:4vw;
+  background:rgba(245,159,74,0.38);
+  animation:beamA 17s ease-in-out infinite;
+}
+
+.beam-b{
+  bottom:-8vh;
+  left:-18vw;
+  background:rgba(230,126,34,0.24);
+  animation:beamB 21s ease-in-out infinite;
+}
+
+.spark{
+  position:absolute;
+  width:3px;
+  height:3px;
+  border-radius:50%;
+  background:var(--accent);
+  box-shadow:0 0 18px rgba(245,159,74,0.9);
+  animation:sparkFloat 11s ease-in-out infinite;
+}
+
+.s1{left:8%;top:20%;animation-delay:-1s}
+.s2{left:82%;top:14%;animation-delay:-4s}
+.s3{left:64%;top:52%;animation-delay:-7s}
+.s4{left:22%;top:74%;animation-delay:-2s}
+.s5{left:91%;top:78%;animation-delay:-6s}
+
+@keyframes gridDrift{
+  from{transform:rotateX(68deg) translate3d(0,10vh,-120px);background-position:0 0}
+  to{transform:rotateX(68deg) translate3d(0,10vh,-120px);background-position:68px 68px}
+}
+
+@keyframes premiumPlane{
+  0%,100%{transform:translate3d(0,0,-120px) skewX(-2deg);opacity:0.66}
+  50%{transform:translate3d(2vw,0.8vh,-120px) skewX(-4deg);opacity:0.82}
+}
+
+@keyframes premiumDeck{
+  0%,100%{transform:rotateX(62deg) rotateZ(-8deg) translate3d(0,0,-160px);opacity:0.56}
+  50%{transform:rotateX(62deg) rotateZ(-7deg) translate3d(-2vw,-1vh,-160px);opacity:0.72}
+}
+
+@keyframes beamA{
+  0%,100%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(-8vw,12vh,0) scale(1.12)}
+}
+
+@keyframes beamB{
+  0%,100%{transform:translate3d(0,0,0) scale(1)}
+  50%{transform:translate3d(18vw,-10vh,0) scale(0.9)}
+}
+
+@keyframes sparkFloat{
+  0%,100%{transform:translateY(0);opacity:0.35}
+  50%{transform:translateY(-34px);opacity:1}
+}
+
+@media (prefers-reduced-motion:reduce){
+  .motion-bg,
+  .motion-bg::before,
+  .motion-bg::after,
+  .grid-layer,
+  .beam,
+  .spark{
+    animation:none;
+  }
+}
+
+/* ============================================================
    SHELL GRID LAYOUT
    ============================================================ */
 .shell{
+  position:relative;
+  z-index:1;
   height:100vh;
   display:grid;
   grid-template-columns:var(--shell-nav-width) minmax(0,1fr);

@@ -27,353 +27,20 @@ from loguru import logger
 # Vérifié entre chaque itération pour stopper la boucle sans ctypes.
 _REACT_CANCEL_EVENTS: Dict[int, Any] = {}
 
-_DELEGATE_NOOP_MARKERS = (
-    "run_tests : test_path requis",
-    "test_path requis pour run_tests",
-    "test_path required",
-    "aucun test runner detecte",
-    "livraison refusee",
-    "livraison refusée",
+# ── Stratégie delegate / vérif web post-CodeAgent : extraite dans
+#    src/reasoning/delegate_strategy.py (déménagement pur). Re-export pour compat.
+from src.reasoning.delegate_strategy import (  # noqa: F401
+    _DELEGATE_NOOP_MARKERS, _WEB_DELIVERY_MARKERS, _CANVAS_DELIVERY_MARKERS,
+    _CANVAS_NON_TECHNICAL_MARKERS,
+    _fold_react_status_text, _delegate_report_has_real_work,
+    _post_delegate_web_verify_enabled, _looks_like_web_delegate_delivery,
+    _delegate_delivery_expects_canvas, _is_post_codeagent_synthesis_task,
+    _is_post_codeagent_conditional_correction_task, _is_post_codeagent_closure_task,
+    _candidate_is_web_project, _extract_existing_web_project_path,
+    _build_post_delegate_web_verify_success_query, _build_post_delegate_continue_query,
+    _verify_report_has_preview_server_mime_error,
+    _build_post_delegate_web_verify_failure_query,
 )
-
-
-def _fold_react_status_text(text: str) -> str:
-    folded = unicodedata.normalize("NFKD", text or "")
-    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
-    return folded.lower()
-
-
-def _delegate_report_has_real_work(tool_name: str, obs_text: str) -> bool:
-    """True si un rapport delegate_task peut déclencher le FINAL direct."""
-    folded = _fold_react_status_text(obs_text)
-    if any(marker in folded for marker in _DELEGATE_NOOP_MARKERS):
-        return False
-    if tool_name == "delegate_task":
-        match = re.search(
-            r"\((?:n/a|[0-9]+(?:\.[0-9]+)?s),\s*(\?|\d+)\s+it",
-            folded,
-        )
-        return bool(match and match.group(1) != "?" and int(match.group(1)) > 0)
-    return True
-
-
-_WEB_DELIVERY_MARKERS = (
-    "index.html", ".html", ".css", ".js", "site", "website", "web app",
-    "application web", "jeu", "game", "three.js", "threejs", "canvas",
-    "frontend", "vite", "react", "html/css/js",
-)
-
-_CANVAS_DELIVERY_MARKERS = (
-    "three.js", "threejs", "webgl", "babylon.js", "babylonjs",
-    "pixi.js", "pixijs", "<canvas", "canvas html", "html canvas",
-    "canvas 2d", "2d canvas", "dessin canvas", "drawing canvas",
-    "paint canvas", "canvas drawing", "particle canvas", "particles canvas",
-    "particules canvas", "context 2d", "getcontext",
-)
-
-_CANVAS_NON_TECHNICAL_MARKERS = (
-    "moodboard", "mood board", "zone type canvas", "type canvas",
-    "canvas/moodboard", "canvas de travail", "workspace canvas",
-    "kanban",
-)
-
-
-def _post_delegate_web_verify_enabled() -> bool:
-    raw = os.environ.get("LUMENA_POST_DELEGATE_WEB_VERIFY", "1")
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _looks_like_web_delegate_delivery(original_query: str, tool_args: dict, obs_text: str) -> bool:
-    payload = " ".join(
-        str(part or "") for part in (
-            original_query,
-            obs_text,
-            tool_args.get("description") if isinstance(tool_args, dict) else "",
-            tool_args.get("project_path") if isinstance(tool_args, dict) else "",
-            tool_args.get("output_dir") if isinstance(tool_args, dict) else "",
-            tool_args.get("project_dir") if isinstance(tool_args, dict) else "",
-            tool_args.get("project_name") if isinstance(tool_args, dict) else "",
-            tool_args.get("path") if isinstance(tool_args, dict) else "",
-            json.dumps(tool_args.get("context", {}), ensure_ascii=False, default=str)
-            if isinstance(tool_args, dict) else "",
-        )
-    )
-    folded = _fold_react_status_text(payload)
-    return any(marker in folded for marker in _WEB_DELIVERY_MARKERS)
-
-
-def _delegate_delivery_expects_canvas(original_query: str, tool_args: dict, obs_text: str) -> bool:
-    payload = " ".join(
-        str(part or "") for part in (
-            original_query,
-            obs_text,
-            tool_args.get("description") if isinstance(tool_args, dict) else "",
-        )
-    )
-    folded = _fold_react_status_text(payload)
-    if any(marker in folded for marker in _CANVAS_DELIVERY_MARKERS):
-        return True
-    if bool(
-        re.search(
-            r"\b(?:jeu|game|open world|monde|scene|sc[eè]ne)\b.{0,32}\b3d\b"
-            r"|\b3d\b.{0,32}\b(?:jeu|game|open world|monde|scene|sc[eè]ne)\b",
-            folded,
-        )
-    ):
-        return True
-    if any(marker in folded for marker in _CANVAS_NON_TECHNICAL_MARKERS):
-        return False
-    return False
-
-
-def _is_post_codeagent_synthesis_task(description: str) -> bool:
-    """True for plan tasks that are fulfilled by writing the FINAL response."""
-    text = _fold_react_status_text(description)
-    if any(
-        marker in text
-        for marker in (
-            "email", "mail", "courriel", "telegram", "whatsapp",
-            "discord", "pdf", "docx", "xlsx", "zip", "archive",
-            "upload", "deployer", "deploi", "publier", "poster",
-            "envoyer", "envoie", "envoi", "send", "joindre", "attacher",
-        )
-    ):
-        return False
-    stripped = re.sub(
-        r"^\s*(?:etape|step)\s*\d+\s*[:\-]\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).strip()
-    if any(
-        stripped.startswith(prefix)
-        for prefix in (
-            "resumer", "recapituler", "synthetiser", "conclure",
-            "repondre a l'utilisateur", "repondre a l utilisateur",
-            "donner le resume", "donner un resume", "donner le recap",
-            "donner le bilan", "faire le resume", "faire un resume",
-        )
-    ):
-        return True
-    if any(
-        marker in stripped
-        for marker in (
-            "resume final", "rapport final", "reponse finale",
-            "compte rendu final", "synthese finale",
-            "donner le resume final", "donner le rapport final",
-        )
-    ):
-        return True
-    return (
-        ("a l'utilisateur" in stripped or "a l utilisateur" in stripped)
-        and any(
-            verb in stripped
-            for verb in (
-                "presenter", "donner", "informer", "communiquer",
-                "signaler", "expliquer", "livrer",
-            )
-        )
-    )
-
-
-def _is_post_codeagent_conditional_correction_task(description: str) -> bool:
-    """True for no-op correction tasks covered when the web runtime verify passed."""
-    text = _fold_react_status_text(description)
-    has_correction = any(
-        marker in text
-        for marker in (
-            "corriger", "correction", "corrige", "reparer",
-            "fix", "debugger", "deboguer",
-        )
-    )
-    has_condition = any(
-        marker in text
-        for marker in (
-            "si necessaire", "si besoin", "au besoin",
-            "si besoin est", "if needed", "if necessary",
-        )
-    )
-    return has_correction and has_condition
-
-
-def _is_post_codeagent_closure_task(description: str) -> bool:
-    return (
-        _is_post_codeagent_synthesis_task(description)
-        or _is_post_codeagent_conditional_correction_task(description)
-    )
-
-
-def _candidate_is_web_project(path: Path) -> bool:
-    try:
-        if path.is_file():
-            path = path.parent
-        return path.is_dir() and (
-            (path / "index.html").is_file()
-            or (path / "package.json").is_file()
-            or any(path.glob("*.html"))
-        )
-    except Exception:
-        return False
-
-
-def _extract_existing_web_project_path(
-    tool_args: dict,
-    obs_text: str,
-    *,
-    base_dir: Optional[Path] = None,
-) -> Optional[Path]:
-    """Extract an existing web project directory from delegate args/report."""
-    base = Path(base_dir or Path.cwd())
-    candidates: list[str] = []
-
-    def add(value: Any) -> None:
-        if value is None:
-            return
-        text = str(value).strip().strip("`\"'")
-        if not text:
-            return
-        candidates.append(text)
-
-    if isinstance(tool_args, dict):
-        add(tool_args.get("project_path"))
-        add(tool_args.get("output_dir"))
-        add(tool_args.get("project_dir"))
-        add(tool_args.get("path"))
-        add(tool_args.get("project_name"))
-        context = tool_args.get("context")
-        if isinstance(context, dict):
-            add(context.get("workspace_path"))
-            add(context.get("output_dir"))
-            add(context.get("project_dir"))
-            add(context.get("path"))
-            add(context.get("project_name"))
-        add(tool_args.get("description"))
-
-    text_blob = "\n".join([obs_text or ""] + candidates)
-    for match in re.finditer(
-        r"([A-Za-z]:[\\/][^\n\r`\"<>|]+|\\\\[^\n\r`\"<>|]+|(?:^|[\s`'\"])(workspace[\\/][^\n\r`\"'<>|]+))",
-        text_blob,
-    ):
-        raw = match.group(1) or match.group(2) or ""
-        add(raw)
-
-    seen: set[str] = set()
-    for raw in candidates:
-        cleaned = re.sub(r"^[\s`'\"()]+|[\s`'\"().,;:!?]+$", "", raw)
-        if not cleaned or cleaned in seen:
-            continue
-        seen.add(cleaned)
-        probes = [Path(cleaned)]
-        if not Path(cleaned).is_absolute():
-            probes.append(base / cleaned)
-            probes.append(base / "workspace" / cleaned)
-        for probe in probes:
-            try:
-                resolved = probe.resolve()
-            except Exception:
-                resolved = probe
-            if _candidate_is_web_project(resolved):
-                return resolved.parent if resolved.is_file() else resolved
-    try:
-        workspace_root = base / "workspace"
-        if workspace_root.is_dir():
-            latest_indexes = sorted(
-                [p for p in workspace_root.rglob("index.html") if p.is_file()],
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if latest_indexes:
-                return latest_indexes[0].parent.resolve()
-    except Exception:
-        pass
-    return None
-
-
-def _build_post_delegate_web_verify_success_query(
-    original_query: str,
-    obs_text: str,
-    verify_report: str,
-) -> str:
-    return (
-        f"Requête originale: {original_query}\n\n"
-        f"Le CodeAgent a terminé avec succès :\n{obs_text[:2200]}\n\n"
-        "Vérification navigateur autonome après CodeAgent : OK\n"
-        f"{verify_report[:2200]}\n\n"
-        "INSTRUCTION : Rédige maintenant ta réponse finale à l'utilisateur en résumant "
-        "ce qui a été accompli et vérifié. Utilise OBLIGATOIREMENT :\n"
-        "THOUGHT: (1 ligne)\n"
-        "ACTION: FINAL\n"
-        "ACTION_INPUT: [résumé clair de ce qui a été fait et vérifié]"
-    )
-
-
-def _build_post_delegate_continue_query(
-    original_query: str,
-    obs_text: str,
-    pending_tasks: List[str],
-    verify_report: str = "",
-) -> str:
-    pending = "\n".join(f"- {task}" for task in pending_tasks[:8])
-    verify_block = (
-        "Vérification navigateur autonome après CodeAgent : OK\n"
-        f"{verify_report[:1600]}\n\n"
-        if verify_report
-        else ""
-    )
-    return (
-        f"Requête originale: {original_query}\n\n"
-        f"Le CodeAgent a terminé avec succès :\n{obs_text[:2200]}\n\n"
-        f"{verify_block}"
-        "Ne finalise pas encore : le CodeAgent a terminé sa sous-tâche, "
-        "mais il reste des tâches métier à accomplir.\n"
-        f"Tâches restantes:\n{pending}\n\n"
-        "INSTRUCTION : continue avec la prochaine tâche métier restante. "
-        "Ne produis une reponse finale que quand ces tâches restantes sont réellement faites "
-        "ou impossibles avec explication claire."
-    )
-
-
-def _verify_report_has_preview_server_mime_error(verify_report: str) -> bool:
-    folded = _fold_react_status_text(verify_report)
-    return (
-        "preview_server_mime_error" in folded
-        or (
-            "mime type" in folded
-            and "application/json" in folded
-            and "javascript" in folded
-        )
-    )
-
-
-def _build_post_delegate_web_verify_failure_query(
-    original_query: str,
-    project_path: Path,
-    obs_text: str,
-    verify_report: str,
-) -> str:
-    if _verify_report_has_preview_server_mime_error(verify_report):
-        instruction = (
-            "INSTRUCTION OBLIGATOIRE : ne finalise pas et ne redemande pas au CodeAgent "
-            "de reecrire les fichiers JS uniquement pour ce MIME. Relance d'abord "
-            "`browser_verify_local_project` sur ce dossier : le serveur preview Lumena "
-            "force les MIME JavaScript. Si la verification echoue encore avec une vraie "
-            "erreur applicative distincte, appelle ensuite `delegate_task` pour corriger."
-        )
-    else:
-        instruction = (
-            "INSTRUCTION OBLIGATOIRE : ne finalise pas. Appelle maintenant `delegate_task` "
-            "avec `agent_type=\"code\"`, `project_path` sur ce dossier, et une description "
-            "demandant de corriger les erreurs runtime navigateur ci-dessus. Après correction, "
-            "la vérification navigateur sera relancée."
-        )
-    return (
-        f"Requête originale: {original_query}\n\n"
-        f"Le CodeAgent a livré ce rapport :\n{obs_text[:1800]}\n\n"
-        "VÉRIFICATION NAVIGATEUR AUTONOME ÉCHOUÉE.\n"
-        f"Projet vérifié: {project_path}\n"
-        f"{verify_report[:2600]}\n\n"
-        f"{instruction}"
-    )
 
 # ── Imports depuis react_config (constantes, enums, flags) ─────────
 from .react_config import (
@@ -397,112 +64,27 @@ from ..runtime.execution_ledger import (
     _extract_target as _ledger_extract_target,
     _extract_proof as _ledger_extract_proof,
 )
-# ── Semantic tool families for anti-hallucination guard ──────────────────────
-_HC_TOOLS_FILE = frozenset({
-    "write_file", "edit_file", "apply_patch", "insert_at_anchor", "edit_by_lines",
-    "str_replace", "multi_edit_file", "create_file", "create_html", "create_markdown",
-    "create_from_template", "create_email_html", "create_ics", "create_vcard",
-    "create_meeting_report", "create_zip",
-})
-_HC_TOOLS_DOC = frozenset({
-    "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv",
-    "create_invoice_pdf", "create_batch_documents", "edit_docx", "edit_pptx",
-    "edit_xlsx", "annotate_pdf", "add_watermark", "assemble_document", "convert_document",
-})
-_HC_TOOLS_SITE = frozenset({
-    "generate_website", "serve_website", "edit_website", "write_website_files",
-    "create_project", "delegate_task", "delegate_task_bg",
-})
-_HC_TOOLS_TASK = frozenset({
-    "create_task", "schedule_task", "memory_save", "memory_store", "memory_add", "create_skill",
-})
-_HC_TOOLS_MAIL = frozenset({"mail_send", "send_email", "mail_reply_message"})
-_HC_TOOLS_DISCORD = frozenset({
-    "discord_send", "discord_send_message", "discord_send_embed",
-    "discord_create_channel", "discord_create_category", "discord_create_invite",
-    "discord_create_role", "discord_delete_channel", "discord_delete_message",
-    "discord_delete_role", "discord_modify_channel", "discord_pin", "discord_unpin",
-    "discord_assign_role", "discord_remove_role", "discord_ban", "discord_unban",
-    "discord_kick", "discord_set_channel_permissions", "discord_server_configure",
-})
-_HC_TOOLS_MESSAGING = frozenset({
-    "telegram_send_message", "telegram_send_document",
-    "send_whatsapp_message", "send_whatsapp_document", "send_whatsapp_photo",
-    "send_whatsapp_audio", "send_message", "send_critical_sms",
-})
-_HC_TOOLS_SOCIAL = frozenset({
-    "twitter_post_tweet", "twitter_reply", "twitter_like", "twitter_compose_thread",
-})
-_HC_TOOLS_STRIPE = frozenset({
-    "stripe_create_product", "stripe_update_product", "stripe_delete_product",
-    "stripe_create_price", "stripe_create_payment_link", "stripe_update_payment_link",
-    "stripe_create_customer", "stripe_update_customer", "stripe_create_subscription",
-    "stripe_cancel_subscription", "stripe_create_invoice", "stripe_send_invoice",
-    "stripe_void_invoice", "stripe_add_invoice_item", "stripe_create_checkout_session",
-    "stripe_create_coupon", "stripe_delete_coupon", "stripe_create_refund",
-})
-_HC_TOOLS_GITHUB = frozenset({
-    "github_repo_create", "github_file_write", "github_push_directory",
-    "git_add", "git_commit", "git_push_pull", "git_init",
-})
-_HC_TOOLS_IMAGE = frozenset({
-    "generate_image", "edit_image", "generate_thumbnail", "generate_thumbnail_pro",
-    "generate_logo", "generate_svg", "upscale_image", "remove_background",
-    "replace_background", "sketch_to_image", "compose_image", "generate_video", "edit_video",
-})
-_HC_TOOLS_NOTION = frozenset({"notion_create_page", "notion_update_page", "notion_add_to_database"})
-_HC_TOOLS_RUNTIME = frozenset({
-    "process_status", "health_check", "web_fetch",
-    "browser_navigate", "browser_get_content", "browser_dom_state",
-})
-# Phase I-8 (Fix AF) : outils MCP comptant comme preuve d'une action
-# d'installation/activation MCP réelle (exonération du guard sans-plan).
-_HC_TOOLS_MCP = frozenset({
-    "run_mcp_autonomy", "add_mcp", "resume_mcp_task", "request_mcp_ticket",
-})
-_HC_TOOLS_ANY_CREATE = (
-    _HC_TOOLS_FILE | _HC_TOOLS_DOC | _HC_TOOLS_SITE | _HC_TOOLS_TASK
-    | _HC_TOOLS_GITHUB | _HC_TOOLS_STRIPE | _HC_TOOLS_IMAGE | _HC_TOOLS_NOTION
-    | _HC_TOOLS_DISCORD | _HC_TOOLS_MCP
+# ── Anti-hallucination guard : extrait dans src/reasoning/hallucination_guard.py
+# Re-export pour compat (react reste le point d'import historique des tests).
+from src.reasoning.hallucination_guard import (  # noqa: F401
+    _HC_TOOLS_FILE, _HC_TOOLS_DOC, _HC_TOOLS_SITE, _HC_TOOLS_TASK, _HC_TOOLS_MAIL,
+    _HC_TOOLS_DISCORD, _HC_TOOLS_MESSAGING, _HC_TOOLS_SOCIAL, _HC_TOOLS_STRIPE,
+    _HC_TOOLS_GITHUB, _HC_TOOLS_IMAGE, _HC_TOOLS_NOTION, _HC_TOOLS_RUNTIME, _HC_TOOLS_MCP,
+    _HC_TOOLS_ANY_CREATE, _HC_TOOLS_ANY_SEND, _HC_TOOLS_TYPE, _HC_TOOLS_OPEN_APP,
+    _HC_TOOLS_CLICK, _HC_TOOLS_LOGIN, _HC_CU_FAMILIES, _HALLUCINATION_CLAIM_PATTERNS,
+    _HC_TEMPORAL_BYPASS_RE, _HINT_ONLY_PROOF_REQUIRED_TOOLS, _SERVER_RUNTIME_CLAIM_RE,
+    _HC_TOOLS_ANY_ACTION, _HC_TOOLS_READONLY,
+    _has_runtime_server_claim_proof, _normalize_guard_text, _strip_accents,
+    claim_text_is_negated, claim_match_is_negated, hallucination_retry_query,
 )
-_HC_TOOLS_ANY_SEND = _HC_TOOLS_MAIL | _HC_TOOLS_MESSAGING | _HC_TOOLS_DISCORD | _HC_TOOLS_SOCIAL | _HC_TOOLS_GITHUB
-
-_HINT_ONLY_PROOF_REQUIRED_TOOLS = frozenset({"run_command", "run_shell", "exec_command"})
-_SERVER_RUNTIME_CLAIM_RE = re.compile(
-    r"\b(serveur|server|processus|localhost|127\.0\.0\.1|::1|port\s*\d+).{0,40}"
-    r"(lanc[ée]|demarr|démarr|running|tourne|actif|accessible|en ligne)\b",
-    re.IGNORECASE,
+# ── LEDGER guard : cœur de décision extrait dans src/reasoning/ledger_guard.py
+from src.reasoning.ledger_guard import (  # noqa: F401
+    _LEDGER_CLAIM_PATTERNS, ledger_text_claims_action,
+    compute_effective_successful_tools, extract_h3_target_hint,
+    ledger_final_guard_query, ledger_h2_guard_query, ledger_h3_guard_query,
 )
-
-
-def _has_runtime_server_claim_proof(text: str, successful_tools: set[str]) -> bool:
-    if not text or not _SERVER_RUNTIME_CLAIM_RE.search(text):
-        return False
-    return any(tool in successful_tools for tool in _HC_TOOLS_RUNTIME)
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Prédicats purs des guards read-only vs mutation (testables) ──────────────
-def _normalize_guard_text(text: str) -> str:
-    """Normalise une requête pour un matching robuste des mots-clés.
-
-    - minuscule + suppression des diacritiques (créer/creer, génère/genere…) ;
-    - unification des apostrophes typographiques (’ ‘ ` ´ ʼ) en ' ;
-    - compactage des espaces (apostrophe + espaces : "n' envoie" → "n'envoie").
-
-    Évite les faux négatifs sur les négations ("N’envoie rien" vs "n'envoie rien").
-    """
-    nfd = unicodedata.normalize("NFD", (text or "").lower())
-    no_accents = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
-    for apo in ("’", "‘", "ʼ", "´", "`"):
-        no_accents = no_accents.replace(apo, "'")
-    # "n' envoie" / "n'  envoie" → "n'envoie" ; compacte aussi les espaces.
-    no_accents = no_accents.replace("' ", "'")
-    return " ".join(no_accents.split())
-
-
-# Alias rétro-compatible : ancienne API interne.
-def _strip_accents(text: str) -> str:
-    return _normalize_guard_text(text)
 
 
 # Verbes d'action (envoi + mutation) reconnus par la règle de négation.
@@ -549,64 +131,6 @@ def _has_action_negation(normalized_q: str) -> bool:
     )
 
 
-# ── Négation de CLAIM pour le HALLUCINATION GUARD ────────────────────────────
-# La négation doit être SYNTAXIQUEMENT liée au claim (négation + objet +
-# participe/verbe d'action), PAS une simple présence de "rien"/"pas"/"aucun"
-# dans la fenêtre — pour ne pas confondre "aucun problème, le tweet posté" avec
-# une négation. Participe/verbe d'action (texte normalisé, sans accents) :
-_CLAIM_ACTION_WORD: str = (
-    r"(?:envoye?e?s?|expedie?e?s?|poste?e?s?|publie?e?s?|partage?e?s?|"
-    r"cree?e?s?|modifie?e?s?|supprime?e?s?|ecrit[es]?|genere?e?s?|"
-    r"exporte?e?s?|sauvegarde?e?s?|deploye?e?s?|effectue?e?s?|"
-    r"enregistre?e?s?|configure?e?s?|planifie?e?s?|programme?e?s?|"
-    r"ajoute?e?s?|produit[es]?|rendu[es]?|gere?e?s?|organise?e?s?|anime?e?s?)"
-)
-# 1. aucun/aucune/0/zero + objet(0-2 mots) + action  → "aucun message envoyé"
-_CLAIM_NEG_QUANT_RE = re.compile(
-    rf"\b(?:aucun|aucune|0|zero)\b(?:\s+\w+){{0,2}}?\s+{_CLAIM_ACTION_WORD}\b"
-)
-# 2. pas de/d' + objet(0-2 mots) + action  → "pas de message envoyé"
-_CLAIM_NEG_PASDE_RE = re.compile(
-    rf"\bpas\s+d(?:e|')\b(?:\s+\w+){{0,2}}?\s+{_CLAIM_ACTION_WORD}\b"
-)
-# 3. rien + (0-1 mot) + action  → "rien envoyé", "rien créé"
-_CLAIM_NEG_RIEN_RE = re.compile(
-    rf"\brien\b(?:\s+\w+){{0,1}}?\s+{_CLAIM_ACTION_WORD}\b"
-)
-# 4. ne/n' + aux/verbe(0-3 mots) + (pas|rien|jamais) + objet(0-2) + action
-#    → "je n'ai rien envoyé", "je n'ai pas créé de fichier", "n'a pas été envoyé"
-_CLAIM_NEG_NE_RE = re.compile(
-    rf"\bne\b(?:\s+\w+){{0,3}}?\s+(?:pas|rien|jamais)\b"
-    rf"(?:\s+\w+){{0,2}}?\s+{_CLAIM_ACTION_WORD}\b"
-)
-
-
-def claim_text_is_negated(text: str) -> bool:
-    """True si le texte exprime un claim d'action NÉGATIF (rien fait).
-
-    Exige une négation liée au verbe/participe d'action ("aucun message
-    envoyé", "pas de fichier créé", "rien envoyé", "je n'ai rien envoyé"), pas
-    une simple présence de "rien"/"pas"/"aucun". Réutilise `_normalize_guard_text`.
-    """
-    norm = _normalize_guard_text(text)
-    # "n'ai" / "n'a" → "ne ai" / "ne a" pour unifier avec la règle "ne … pas/rien".
-    t = norm.replace("n'", "ne ")
-    return bool(
-        _CLAIM_NEG_QUANT_RE.search(t)
-        or _CLAIM_NEG_PASDE_RE.search(t)
-        or _CLAIM_NEG_RIEN_RE.search(t)
-        or _CLAIM_NEG_NE_RE.search(t)
-    )
-
-
-def claim_match_is_negated(text: str, start: int, end: int) -> bool:
-    """True si le claim détecté à [start:end] est nié dans son contexte proche.
-
-    Examine une fenêtre précédant le match (même proposition) : "aucun message
-    envoyé" / "0 fichier créé" → nié. Évite de bloquer un rapport read-only.
-    """
-    window = text[max(0, start - 45):end]
-    return claim_text_is_negated(window)
 
 
 # Verbes d'envoi/post Discord (demande POSITIVE d'action).
@@ -1135,22 +659,12 @@ _BROWSER_SURFACE_SPA_SHELL_HINTS: frozenset[str] = frozenset({
     "chargement de l'application",
     "interactive elements: 0\n", "interactive elements: 1\n",
 })
-_BROWSER_PLAN_PASSIVE_TOOLS: frozenset[str] = frozenset({
-    "browser_navigate", "browser_dom_state", "browser_screenshot",
-    "browser_screenshot_labels", "browser_page_info", "browser_get_content",
-    "browser_get_text", "browser_frames", "browser_frame_content",
-    "browser_scroll", "browser_wait_for",
-})
-
-_READ_ONLY_DISCOVERY_PLAN_TOOLS: frozenset[str] = frozenset({
-    "web_fetch",
-    "web_search",
-    "web_search_brave",
-    "browser_search_google",
-    "get_time",
-    "health_check",
-    "process_status",
-})
+# ── PLAN progress : helpers de complétion extraits dans src/reasoning/plan_progress.py
+from src.reasoning.plan_progress import (  # noqa: F401
+    _BROWSER_PLAN_PASSIVE_TOOLS, _READ_ONLY_DISCOVERY_PLAN_TOOLS,
+    _browser_passive_tool_can_complete_task, _read_only_discovery_tool_can_complete_task,
+    _SYNTH_KW, _SYNTH_SIDE_EFFECT_BLOCK_KW, final_fulfills_task,
+)
 
 _BROWSER_AUXILIARY_ACTION_MARKERS: frozenset[str] = frozenset({
     'copy to clipboard',
@@ -1441,52 +955,6 @@ def _extract_browser_textbox_targets(obs_text: str) -> list[tuple[str, str, str]
     return matches
 
 
-def _browser_passive_tool_can_complete_task(tool_name: str, task_desc: str) -> bool:
-    """Autorise seulement certaines tâches de plan pour les outils browser passifs."""
-    desc = (task_desc or "").lower()
-    if tool_name == "browser_navigate":
-        return any(tok in desc for tok in (
-            "naviguer", "aller", "ouvrir", "accéder", "acceder", "visiter",
-            "vérifier", "verifier", "accessible", "opérationnel", "operationnel",
-        ))
-    if tool_name in {
-        "browser_dom_state", "browser_screenshot", "browser_screenshot_labels",
-        "browser_page_info", "browser_get_content", "browser_get_text",
-        "browser_frames", "browser_frame_content",
-    }:
-        # Exclure les tâches qui mentionnent des contextes non-browser
-        if any(excl in desc for excl in ("email", "mail", "spam", "sms", "téléphone", "telephone", "appel")):
-            return False
-        return any(tok in desc for tok in (
-            "trouver", "identifier", "repérer", "reperer", "inspecter",
-            "voir", "lire", "analyser", "localiser", "détecter", "detecter",
-            "vérifier", "verifier", "confirmer",
-        ))
-    if tool_name == "browser_scroll":
-        return any(tok in desc for tok in ("scroller", "scroll", "charger plus"))
-    return False
-
-
-def _read_only_discovery_tool_can_complete_task(tool_name: str, task_desc: str) -> bool:
-    desc = (task_desc or "").lower()
-    if tool_name == "get_time":
-        return any(tok in desc for tok in ("heure", "date", "horaire", "time"))
-    if tool_name in {"health_check", "process_status"}:
-        return any(tok in desc for tok in (
-            "statut", "status", "santé", "sante", "health",
-            "vérifier", "verifier", "accessible", "opérationnel", "operationnel",
-            "disponible", "fonctionne", "running", "alive", "check",
-            "lancer", "démarrer", "demarrer", "serveur", "server", "port",
-        ))
-    if tool_name in {"web_fetch", "web_search", "web_search_brave", "browser_search_google"}:
-        if any(tok in desc for tok in ("échanger", "echanger", "discussion", "conversation", "discuter", "parler", "envoyer")):
-            return False
-        return any(tok in desc for tok in (
-            "vérifier", "verifier", "chercher", "rechercher", "trouver",
-            "identifier", "inspecter", "lire", "consulter", "analyser",
-            "comparer", "regarder",
-        ))
-    return True
 
 
 def _browser_rewrite_human_navigation_action(
@@ -2026,40 +1494,10 @@ _BROWSER_DRIFT_TOOLS: frozenset = frozenset({
 # V2.1 fix prod 2026-05-19 (rev 2) : marqueurs d'INTENTION dans un thought/réponse.
 # Si le texte contient principalement ces phrases, ce n'est PAS un livrable mais une
 # promesse de livrable. Le LLM dit qu'il VA faire, pas qu'il A fait.
-_INTENTION_MARKERS: tuple = (
-    "je vais livrer", "je vais répondre", "je vais synthétiser", "je vais presenter",
-    "je vais présenter", "je vais maintenant", "je vais fournir", "je vais formuler",
-    "je vais résumer", "je vais resumer", "je vais produire", "je vais rédiger",
-    "je dois livrer", "je dois synthétiser", "je dois répondre",
-    "je dois présenter", "je dois fournir", "je dois resumer", "je dois résumer",
-    "je peux maintenant", "je peux livrer", "je peux répondre",
-    "je livre", "je présente", "je propose ci-dessous", "je propose ci-dessus",
-    "il me reste à", "il me reste a",
-    "les données sont déjà", "les donnees sont deja",
-    "déjà récupéré", "deja recupere", "déjà récupérée", "deja recuperee",
-    "déjà récupérées", "deja recuperees", "déjà récupérés", "deja recuperes",
-    "j'ai toutes les données", "j'ai toutes les donnees",
-    "j'ai toutes les infos", "j'ai tout ce qu'il faut",
-    "toutes les étapes sont terminées", "toutes les etapes sont terminees",
-    "toutes les étapes sont complètes", "toutes les etapes sont completes",
-    "le plan est à", "le plan est a",
-    "i will now", "i will provide", "i will deliver", "i'm going to",
-    "i need to synthesize", "i need to provide", "let me now",
-)
-
-# Marqueurs de LIVRABLE : présence de chiffres, citations, données concrètes.
-_DELIVERABLE_MARKERS: tuple = (
-    # nombres formatés
-    "lignes :", "lignes:", "colonnes :", "colonnes:",
-    # md tableaux / listes
-    "\n- ", "\n* ", "\n1.", "\n| ",
-    # provenance
-    "md5", "sha256", "resource id", "resource_id", "chemin absolu",
-    "downloads/", "downloads\\",
-    # citations data.gouv typiques
-    "data.gouv", "data_profile_file", "datagouv_",
-    # devises / pourcentages
-    "%", "€", "EUR", "kWh",
+# ── Helpers purs des guards finaux : extraits dans src/reasoning/final_guards.py
+from src.reasoning.final_guards import (  # noqa: F401
+    _INTENTION_MARKERS, _DELIVERABLE_MARKERS, _INTERNAL_PREFIXES,
+    _looks_like_intention, strip_thought_leak_prefix, remask_secrets,
 )
 
 
@@ -2288,29 +1726,6 @@ def _synthesize_response_from_observation(
     )
 
 
-def _looks_like_intention(text: str) -> bool:
-    """Détecte si un texte est une INTENTION ("je vais livrer") plutôt qu'un livrable.
-
-    Retourne True si :
-      - le texte contient au moins 1 marqueur d'intention (case-insensitive)
-      - ET ne contient AUCUN marqueur de livrable (chiffres, citations, tableau...)
-    Sinon False (livrable potentiellement valide).
-    """
-    if not text:
-        return True
-    low = text.lower()
-    has_intention = any(m in low for m in _INTENTION_MARKERS)
-    if not has_intention:
-        return False
-    # Marqueurs de livrable concret : nombres, citations, tableau
-    has_deliverable = any(m in low for m in _DELIVERABLE_MARKERS)
-    if has_deliverable:
-        return False
-    # Heuristique chiffres : au moins 3 nombres distincts ≥ 2 chiffres → livrable probable
-    import re as _re
-    if len(set(_re.findall(r"\d{2,}", text))) >= 3:
-        return False
-    return True
 
 
 class ReActLoop:
@@ -2938,81 +2353,8 @@ class ReActLoop:
 
     @staticmethod
     def _strip_thought_leak_prefix(text: str) -> Optional[str]:
-        """Supprime les phrases de réflexion interne du début d'une réponse.
-
-        Retourne le texte nettoyé si du contenu utile reste (≥ 50 chars),
-        sinon None (la reformulation classique prendra le relais).
-        """
-        import re as _re
-
-        # Patterns de phrases internes à retirer du début.
-        # On retire phrase par phrase jusqu'à trouver du contenu utilisateur.
-        _STRIP_PATTERNS = [
-            # FR
-            _re.compile(
-                r"^(?:l['\u2018\u2019]utilisateur\s+(?:demande|veut|souhaite|a\s+demandé)[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:je\s+(?:dois|vais|peux)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:il\s+faut\s+que\s+je\s+[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:(?:maintenant\s+que\s+j['\u2018\u2019]ai|après\s+avoir|sur\s+la\s+base\s+de|d['\u2018\u2019]après\s+les)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:(?:j['\u2018\u2019]ai\s+(?:déjà|maintenant|exécuté|effectué|analysé))[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:(?:rien\s+à\s+faire)[^.!?\n]{0,80}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            # EN
-            _re.compile(
-                r"^(?:the\s+user\s+(?:is\s+asking|wants|asked|requested)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:(?:i\s+(?:need\s+to|should|will)|i['\u2018\u2019](?:ll|ve)|let\s+me)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-            _re.compile(
-                r"^(?:(?:based\s+on|now\s+that\s+i\s+have|i\s+have\s+(?:already|now)|having\s+gathered)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
-                _re.IGNORECASE,
-            ),
-        ]
-
-        cleaned = text.strip()
-        # On fait plusieurs passes (un prefix peut en cacher un autre)
-        for _ in range(5):
-            changed = False
-            for pat in _STRIP_PATTERNS:
-                m = pat.match(cleaned)
-                if m:
-                    cleaned = cleaned[m.end():].strip()
-                    changed = True
-                    break
-            if not changed:
-                break
-
-        # Sécurité : si on a trop nettoyé, retourner None
-        if not cleaned or len(cleaned) < 50:
-            return None
-        # Sécurité : si le résultat commence toujours par un prefix interne, abandonner
-        _cl = cleaned.lower()
-        _STILL_INTERNAL = (
-            "l'utilisateur", "je dois ", "je vais ", "il faut que je",
-            "the user ", "i need to", "i should ", "i will now",
-        )
-        if any(_cl.startswith(p) for p in _STILL_INTERNAL):
-            return None
-        return cleaned
+        """Délègue au helper pur strip_thought_leak_prefix (final_guards.py)."""
+        return strip_thought_leak_prefix(text)
 
     def _mark_task_failed(self, error: str) -> None:
         if not self._orchestrator_enabled():
@@ -4008,42 +3350,13 @@ Maintenant, reflechis et reponds:"""
 
 
     def _remask_observed_masked_values(self, answer: str) -> str:
-        """Anti-hallucination/fuite : ré-impose les valeurs masquées vues en observation.
-
-        Si une observation de la session contient un champ masqué (ex.
-        `db50****.hosting-data.io`, `dbu****776`), la réponse finale ne doit JAMAIS
-        en reconstituer une version concrète (qu'elle soit hallucinée ou réelle).
-        Toute valeur du même préfixe/suffixe est ré-écrite vers la forme masquée.
-        """
-        if not answer or "****" not in "".join(
+        """Délègue au helper pur remask_secrets (final_guards.py) en lui passant
+        les contenus d'observation de la session."""
+        obs_texts = [
             (h.observation.content or "") for h in self.history
             if getattr(h, "observation", None)
-        ):
-            return answer
-
-        import re as _re_mask
-        # Collecte des tokens masqués observés (préfixe****suffixe).
-        tokens: set[str] = set()
-        _tok_re = _re_mask.compile(r"([A-Za-z0-9_.\-]{3,}\*{2,}[A-Za-z0-9_.\-]*)")
-        for h in self.history:
-            obs = getattr(h, "observation", None)
-            if not obs or not obs.content:
-                continue
-            for m in _tok_re.findall(obs.content):
-                tokens.add(m)
-
-        out = answer
-        for tok in tokens:
-            star_idx = tok.find("*")
-            prefix = tok[:star_idx]
-            suffix = tok[star_idx:].lstrip("*")
-            # Garde-fou anti sur-correction : préfixe ET suffixe assez spécifiques.
-            if len(prefix) < 3 or len(suffix) < 2:
-                continue
-            # Reconstitue toute valeur concrète prefix<chars>suffix → token masqué.
-            pat = _re_mask.escape(prefix) + r"[A-Za-z0-9_\-]+" + _re_mask.escape(suffix)
-            out = _re_mask.sub(pat, tok, out)
-        return out
+        ]
+        return remask_secrets(answer, obs_texts)
 
     def _tool_is_safe_readonly(self, tool_name: str) -> bool:
         """Verdict guard-safe : l'outil est-il un read-only CONNU et sûr ?
@@ -4893,6 +4206,16 @@ Maintenant, reflechis et reponds:"""
             self._mark_task_failed(str(exc))
             raise
     
+    def _action_hallucination_retry_query(self, combined_text: str, original_query: str):
+        """Wrapper sur `hallucination_retry_query` (logique pure dans
+        hallucination_guard.py). Branche l'état `self` (outils réussis + compteur
+        de retry) sur la fonction pure. Comportement identique à l'origine."""
+        query, self._premature_final_retries = hallucination_retry_query(
+            combined_text, original_query,
+            self._successful_session_tools, self._premature_final_retries,
+        )
+        return query
+
     async def _run_internal(self, query: str) -> str:
         """Implémentation interne de la boucle ReAct."""
         logger.info(f"ReAct Loop: {query}")
@@ -6210,64 +5533,38 @@ Maintenant, reflechis et reponds:"""
                         action.answer = _remasked
                         step.action.answer = _remasked
                 self.history.append(step)
+                # ── Guard anti-hallucination d'ACTION (avec OU sans plan) ──────────
+                # Tourne pour TOUT FINAL : « j'ai tapé/cliqué/ouvert l'app/connecté/
+                # créé/envoyé » sans outil RÉUSSI → retry forcé. Couvre les tâches
+                # SANS plan, où les hallucinations CU/login passaient à travers
+                # (le bloc plan plus bas garde sa propre vérif, désormais redondante).
+                _hc_combined = ((thought.content or "") + " " + (action.answer or "")).lower()
+                _hc_retry = self._action_hallucination_retry_query(_hc_combined, original_query)
+                if _hc_retry is not None:
+                    self.history.pop()
+                    query = _hc_retry
+                    _finish_iteration(status="ok", summary="hallucination_action_blocked")
+                    continue
                 # ── Plan TODO : bilan ──
                 # Default: sans plan, on ne sait rien → repair garde son comportement standard.
                 # Le flag passe à True uniquement si on a un plan ET que toutes les tâches métier sont done.
                 _plan_business_complete = False
                 if self._task_plan:
-                    # Auto-compléter les tâches de synthèse/résumé (réalisées par FINAL lui-même)
-                    _SYNTH_KW = {
-                        "synthétis", "synthetis", "résumer", "resumer", "récapitul", "recapitul",
-                        "synthèse", "synthese", "conclur", "répondre", "repondre",
-                        "fournir une réponse", "présenter les résultats", "presenter les resultats",
-                        "confirm", "valider", "vérifi", "verifi",
-                        "informer", "inform", "notifier", "communiquer", "communique",
-                        "avertir", "signaler", "dire à", "dire a",
-                        # V2.1 fix prod 2026-05-19 : tâches "présenter le rapport / réponse à l'utilisateur"
-                        # Logs montraient une étape 5 "Présenter le rapport complet à l'utilisateur"
-                        # qui restait SKIP malgré 4 tool steps complétés et un Action: final.
-                        "présenter le", "presenter le",
-                        "présenter la", "presenter la",
-                        "présenter au", "presenter au",
-                        "présenter à", "presenter a",
-                        "rapport final", "rapport complet",
-                        "résumé final", "resume final",
-                        "donner le résumé", "donner le resume",
-                        "à l'utilisateur", "a l'utilisateur",
-                        "donner la réponse", "donner la reponse",
-                        "afficher", "exposer", "expliquer",
-                        "livrer", "remettre", "transmettre",
-                        "écrire la réponse", "ecrire la reponse",
-                    }
-                    _SYNTH_SIDE_EFFECT_BLOCK_KW = {
-                        "email", "mail", "courriel", "telegram", "whatsapp",
-                        "discord", "pdf", "docx", "xlsx", "zip", "archive",
-                        "upload", "déployer", "deployer", "déploi", "deploi",
-                        "publier", "poster", "envoyer", "envoie", "envoi", "send", "joindre",
-                        "attacher",
-                    }
+                    # Auto-compléter les tâches de synthèse/résumé (réalisées par
+                    # FINAL lui-même) — logique pure : plan_progress.final_fulfills_task.
                     # Avant l'auto-mark : on note si toutes les tâches "métier" (non-synthèse)
                     # étaient déjà completed. Si oui → le travail est vraiment fini, on évite
                     # les repair-loops thought_leak/final_tronqué sur la branche FINAL.
                     _business_tasks_remaining = sum(
                         1
                         for _t in self._task_plan
-                        if not _t.completed
-                        and not (
-                            any(_kw in _t.description.lower() for _kw in _SYNTH_KW)
-                            and not any(_kw in _t.description.lower() for _kw in _SYNTH_SIDE_EFFECT_BLOCK_KW)
-                        )
+                        if not _t.completed and not final_fulfills_task(_t.description)
                     )
                     _plan_business_complete = _business_tasks_remaining == 0
                     for _st in self._task_plan:
-                        if not _st.completed:
-                            _dl = _st.description.lower()
-                            if (
-                                any(_kw in _dl for _kw in _SYNTH_KW)
-                                and not any(_kw in _dl for _kw in _SYNTH_SIDE_EFFECT_BLOCK_KW)
-                            ):
-                                _st.completed = True
-                                _st.completed_by_tool = "FINAL"
+                        if not _st.completed and final_fulfills_task(_st.description):
+                            _st.completed = True
+                            _st.completed_by_tool = "FINAL"
                     completed = sum(1 for t in self._task_plan if t.completed)
                     total = len(self._task_plan)
                     logger.info(f"[PLAN BILAN] {completed}/{total} taches completees")
@@ -6321,104 +5618,13 @@ Maintenant, reflechis et reponds:"""
                         )
                         _finish_iteration(status="ok", summary="premature_final_blocked")
                         continue
-                    # ── Guard anti-hallucination : pensée/réponse affirme une action sans outil appelé ──
-                    # Détecte quand le THOUGHT ou le ANSWER dit "j'ai créé/planifié/envoyé" mais aucun outil
-                    # correspondant n'a été exécuté dans cette session (protection contre hallucination pure).
-                    _thought_text = (thought.content or "").lower()
-                    _answer_text_guard = (action.answer or "").lower()
-                    _combined_text = _thought_text + " " + _answer_text_guard
-                    _HALLUCINATION_PATTERNS = [
-                        # Générique création/planification/envoi → famille cohérente attendue
-                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|configuré|configure|programmé|programme|ajouté|ajoute|sauvegardé|sauvegarde)\b", _HC_TOOLS_ANY_CREATE),
-                        (r"\bj[''`]ai (envoyé|envoye|expedié|expedie)\b", _HC_TOOLS_ANY_SEND),
-                        (r"\bla tâche a été (créée|planifiée|enregistrée|programmée)\b", _HC_TOOLS_TASK),
-                        (r"\bj[''`]ai bien (enregistré|planifié|créé|configuré)\b", _HC_TOOLS_ANY_CREATE),
-                        (r"\bj[''`]ai bien (envoyé|envoye)\b", _HC_TOOLS_ANY_SEND),
-                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", _HC_TOOLS_ANY_CREATE),
-                        # Discord
-                        (r"\bdiscord.{0,30}(animé|anime|géré|gere|organisé|organise|avec succès|avec succes)\b", _HC_TOOLS_DISCORD),
-                        (r"\b(animé|anime).{0,20}discord\b", _HC_TOOLS_DISCORD),
-                        (r"\b(salon|channel|canal).{0,20}(créé|crée|supprimé|supprime)\b", _HC_TOOLS_DISCORD),
-                        (r"\b(message|messages|fichier|document|zip).{0,20}(envoyé|envoye|posté|poste|publié|publie)\b", _HC_TOOLS_MESSAGING | _HC_TOOLS_MAIL | _HC_TOOLS_DISCORD | _HC_TOOLS_SOCIAL),
-                        # Apprentissage — pas une mutation, pas de faux positif
-                        (r"\bj[''`]ai (appris|découvert|exploré|explore|recherché|recherche|étudié|etudie)\b", frozenset({"web_search", "web_search_brave", "ddg_search", "web_fetch", "memory_search", "browser_navigate", "browser_get_content"})),
-                        # GitHub / Git
-                        (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|pushé sur github|commit réussi|commit reussi|fichier poussé)\b", _HC_TOOLS_GITHUB),
-                        # Mail
-                        (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", _HC_TOOLS_MAIL),
-                        # Images / vidéos / logos
-                        (r"\b(image|logo|thumbnail|vignette|svg|vidéo|video).{0,30}(généré|genere|créé|crée|produit|rendu)\b", _HC_TOOLS_IMAGE),
-                        # Stripe (forme masc./fém. : créé/créée, annulé/annulée, envoyé/envoyée)
-                        (r"\b(produit|abonnement|facture|paiement|remboursement).{0,20}(créé[e]?|crée[e]?|envoyé[e]?|annulé[e]?)\b", _HC_TOOLS_STRIPE),
-                        # Notion
-                        (r"\b(page|base de données|database).{0,20}(créée|ajoutée|mise à jour)\b", _HC_TOOLS_NOTION),
-                    ]
-                    # Seuls les outils dont l'observation.success=True comptent comme preuve
-                    _tools_used_this_session = self._successful_session_tools
-                    _all_known_tools = _tools_used_this_session
-
-                    # Fix F: Exclusion browser — si des outils browser ont été utilisés dans la session,
-                    # les patterns "message/messages envoyé" et "j'ai envoyé" sont des résumés légitimes
-                    # d'actions browser réelles (ex: "j'ai eu une conversation de 10 messages avec Mistral").
-                    # Ces patterns ne doivent pas déclencher le guard anti-hallucination.
-                    _browser_tools_used_session = any(
-                        t.startswith("browser_") for t in _tools_used_this_session
-                    )
-
-                    # Exclusion : références temporelles au passé ("j'ai créé plus tôt", "que j'avais envoyé hier")
-                    # → le LLM parle d'une action passée, pas d'une action de cette session.
-                    _TEMPORAL_BYPASS_RE = re.compile(
-                        r"\bj[''`']ai\s+\w+(\s+\w+){0,5}\s+(plus\s+t[oô]t|pr[eé]c[eé]demment|avant|hier|la\s+derni[eè]re\s+fois|tout\s+[àa]\s+l[''']heure|tantôt|tantoˆt)|"
-                        r"\b(que\s+tu\s+m[''']a(vai[st]|s)\s+demand\w*|comme\s+(demand\w*|convenu)|"
-                        r"tout\s+[àa]\s+l[''']instant|juste\s+avant)\b",
-                        re.IGNORECASE,
-                    )
-                    _has_temporal_ref = bool(_TEMPORAL_BYPASS_RE.search(_combined_text))
-                    _has_runtime_claim_proof = _has_runtime_server_claim_proof(_combined_text, _tools_used_this_session)
-                    _hallucination_blocked = False
-                    if self._premature_final_retries < 2 and not _has_temporal_ref:
-                        for _pattern, _expected_tools in _HALLUCINATION_PATTERNS:
-                            _m_halluc = re.search(_pattern, _combined_text, re.IGNORECASE)
-                            if _m_halluc:
-                                # Claim NÉGATIF ("aucun message envoyé", "0 fichier
-                                # créé", "rien envoyé") → pas une hallucination.
-                                if claim_match_is_negated(_combined_text, _m_halluc.start(), _m_halluc.end()):
-                                    continue
-                                if _expected_tools == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof:
-                                    continue
-                                # Fix F: Si des outils browser ont été utilisés dans la session,
-                                # les patterns "message/messages envoyé" et "j'ai envoyé" sont des
-                                # résumés légitimes d'actions browser (ex: conversation de 10 messages).
-                                # On exclut les patterns d'envoi de messages pour éviter les faux positifs.
-                                if _browser_tools_used_session and any(
-                                    kw in _pattern for kw in (
-                                        "message|messages", "envoyé|envoye|expedié|expedie",
-                                        r"\bj[''`]ai (envoyé|envoye",
-                                    )
-                                ):
-                                    continue
-                                # Vérifie si AU MOINS l'un des outils attendus a été appelé
-                                if not any(t in _all_known_tools for t in _expected_tools):
-                                    self._premature_final_retries += 1
-                                    logger.warning(
-                                        "[HALLUCINATION GUARD] Thought affirme une action non exécutée (pattern: {}, outils attendus: {}, outils utilisés: {}) - retry {}/2",
-                                        _pattern[:50], _expected_tools, list(_all_known_tools)[:5], self._premature_final_retries,
-                                    )
-                                    self.history.pop()
-                                    query = (
-                                        f"Requête originale: {original_query}\n\n"
-                                        "⛔ ERREUR CRITIQUE : Tu as déclaré FINAL en affirmant avoir accompli une action "
-                                        f"({_pattern[:60]}...) SANS l'avoir réellement exécutée avec un outil!\n\n"
-                                        f"Outils que tu as réellement appelés : {list(_tools_used_this_session) or 'AUCUN'}\n\n"
-                                        "Tu DOIS maintenant appeler l'outil approprié (ex: create_task, schedule_task, write_file, send_message, etc.) "
-                                        "et ATTENDRE l'OBSERVATION de retour avant de conclure. "
-                                        "INTERDICTION absolue de prétendre qu'une action est faite sans OBSERVATION."
-                                    )
-                                    _finish_iteration(status="ok", summary="hallucination_action_blocked")
-                                    _hallucination_blocked = True
-                                    break
-                    if _hallucination_blocked:
-                        continue
+                    # ── Guard anti-hallucination d'ACTION (in-plan) : SUPPRIMÉ ──
+                    # Ce guard dupliquait à l'identique `hallucination_retry_query`
+                    # (mêmes _HALLUCINATION_CLAIM_PATTERNS, même négation, même
+                    # exemption runtime/browser, même compteur). Or le guard
+                    # centralisé tourne déjà plus haut (cf. _action_hallucination_retry_query,
+                    # appelé avant le split `if self._task_plan`) pour TOUS les FINAL.
+                    # → bloc mort retiré (Temps 1, déménagement pur, zéro changement).
 
                     # ── Guard anti-hallucination : tâches critiques marquées SKIP ──
                     _CRITICAL_KW = {
@@ -6550,188 +5756,59 @@ Maintenant, reflechis et reponds:"""
                             _finish_iteration(status="ok", summary="discord_count_guard_blocked")
                             continue
 
-                # ── Guard anti-hallucination sans plan (quand _task_plan est vide) ──
-                # Même logique que le guard dans if self._task_plan, mais exécuté
-                # quand le LLM n'a pas émis de PLAN: (requêtes simples).
-                if not self._task_plan:
-                    _ht = (thought.content or "").lower()
-                    _at = (action.answer or "").lower()
-                    _ct = _ht + " " + _at
-                    # Seuls les outils dont l'observation.success=True comptent comme preuve
-                    _tu = self._successful_session_tools
-                    _HP_NOPLAN = [
-                        (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|configuré|configure|programmé|programme|ajouté|ajoute|sauvegardé|sauvegarde)\b", _HC_TOOLS_ANY_CREATE),
-                        (r"\bj[''`]ai (envoyé|envoye|expedié|expedie)\b", _HC_TOOLS_ANY_SEND),
-                        (r"\bj[''`]ai bien (enregistré|planifié|créé|configuré)\b", _HC_TOOLS_ANY_CREATE),
-                        (r"\bj[''`]ai bien (envoyé|envoye)\b", _HC_TOOLS_ANY_SEND),
-                        (r"\bc[''`]est (fait|configuré|planifié|enregistré|créé)\b", _HC_TOOLS_ANY_CREATE),
-                        (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|commit réussi|commit reussi)\b", _HC_TOOLS_GITHUB),
-                        (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", _HC_TOOLS_MAIL),
-                        # Phase I-8 (Fix AF) : formes passives + « avec succès » +
-                        # installation/activation. Observé runtime 2026-06-11 04:34 :
-                        # « MCP Météo installé et testé avec succès » / « a été
-                        # installé sur ton système » avec ZÉRO outil appelé —
-                        # aucun pattern ci-dessus ne matchait.
-                        (r"\bj[''`]ai (installé|installe|activé|active|testé|teste|déployé|deploye)\b", _HC_TOOLS_ANY_CREATE),
-                        (r"\b(a|ont) été (installé|installe|créé|cree|configuré|configure|activé|active|testé|teste|envoyé|envoye|généré|genere|déployé|deploye)", _HC_TOOLS_ANY_CREATE),
-                        (r"\b(installé|installe|activé|active|créé|cree|configuré|configure|testé|teste|déployé|deploye)\w*( et \w+)? avec succ[èe]s\b", _HC_TOOLS_ANY_CREATE),
-                    ]
-                    _all_known_np = _tu
-                    _hb_noplan = False
-                    # Bypass: si un outil de création non listé dans _HP_NOPLAN a été utilisé,
-                    # le LLM rapporte un vrai résultat — ne pas bloquer
-                    _all_hp_expected = {t for _, _et0 in _HP_NOPLAN for t in _et0}
-                    _READONLY_TOOLS = {
-                        "read_file", "web_search", "search_web", "read_url", "memory_recall",
-                        "memory_retrieve", "get_context", "list_files", "list_directory",
-                        "search_memory", "retrieve_memory", "get_weather",
-                    }
-                    _unlisted_action_tools = _tu - _READONLY_TOOLS - _all_hp_expected
-                    if _unlisted_action_tools:
-                        _hb_noplan = False  # outils d'action utilisés → claims probablement légitimes
-                        _has_temporal_ref_np = True  # skip HP guard (action réelle)
-                    else:
-                        _has_temporal_ref_np = bool(re.search(
-                        r"\bj[''`']ai\s+\w+(\s+\w+){0,5}\s+(plus\s+t[oô]t|pr[eé]c[eé]demment|avant|hier|la\s+derni[eè]re\s+fois|tout\s+[àa]\s+l[''']heure|tantôt|tantoˆt)|"
-                        r"\b(que\s+tu\s+m[''']a(vai[st]|s)\s+demand\w*|comme\s+(demand\w*|convenu)|"
-                        r"tout\s+[àa]\s+l[''']instant|juste\s+avant)\b",
-                        _ct, re.IGNORECASE,
-                    ))
-                    _has_runtime_claim_proof_np = _has_runtime_server_claim_proof(_ct, _all_known_np)
-                    if self._premature_final_retries < 2 and not _has_temporal_ref_np:
-                        for _p, _et in _HP_NOPLAN:
-                            _m_np = re.search(_p, _ct, re.IGNORECASE)
-                            if _m_np:
-                                # Claim NÉGATIF → pas une hallucination.
-                                if claim_match_is_negated(_ct, _m_np.start(), _m_np.end()):
-                                    continue
-                                if _et == _HC_TOOLS_ANY_CREATE and _has_runtime_claim_proof_np:
-                                    continue
-                                if any(t in _all_known_np for t in _et):
-                                    continue
-                                self._premature_final_retries += 1
-                                logger.warning(
-                                    "[HALLUCINATION GUARD] Action non exécutée (sans plan): {} — retry {}/2",
-                                    _p[:50], self._premature_final_retries,
-                                )
-                                self.history.pop()
-                                query = (
-                                    f"Requête originale: {original_query}\n\n"
-                                    "⛔ ERREUR CRITIQUE: Tu as déclaré FINAL en affirmant avoir accompli une action "
-                                    "SANS l'avoir exécutée avec un outil!\n\n"
-                                    f"Outils appelés: {list(_tu) or 'AUCUN'}\n\n"
-                                    "Tu DOIS appeler l'outil approprié (write_file, send_message, etc.) "
-                                    "et ATTENDRE l'OBSERVATION avant de conclure."
-                                )
-                                _finish_iteration(status="ok", summary="hallucination_action_blocked")
-                                _hb_noplan = True
-                                break
-                    if _hb_noplan:
-                        continue
+                # ── Guard anti-hallucination sans plan : SUPPRIMÉ (centralisé) ──
+                # Ce guard `_HP_NOPLAN` est désormais couvert par le guard centralisé
+                # (hallucination_retry_query, appelé plus haut pour TOUS les FINAL).
+                # Ses spécificités ont été migrées dans hallucination_guard.py :
+                #   • patterns install/activation/déploiement + « a été … » + « avec succès »
+                #     → ajoutés à _HALLUCINATION_CLAIM_PATTERNS (mappés sur ANY_ACTION) ;
+                #   • « c'est fait » → ANY_ACTION (toute action réelle = preuve) ;
+                #   • outils MCP dynamiques exonèrent les claims vagues (cf. _HC_GENERIC_FAMILIES).
+                # → bloc retiré (Temps 2, centralisation).
 
-                # ── ExecutionLedger FINAL guard ──────────────────────────────
-                # Si le FINAL prétend avoir fait des mutations mais que le ledger
-                # ne contient aucune mutation réussie, bloquer une fois et forcer
-                # l'agent à exécuter réellement les outils.
-                # Garde conservateur : n'intervient que si :
-                #   1) la réponse FINAL affirme avoir agi (regex léger)
-                #   2) le ledger ne contient AUCUNE mutation réussie
-                #   3) on n'a pas déjà retry via ce guard
+                # ── ExecutionLedger FINAL guard (decision-core → ledger_guard.py) ──
+                # Si le FINAL prétend avoir agi mais que le ledger ne contient
+                # aucune mutation réussie, bloquer une fois et forcer l'exécution.
                 _ledger_guard_triggered = False
                 if not getattr(self, '_ledger_final_guard_used', False):
                     _final_text_lower = ((action.answer or "") + " " + (thought.content or "")).lower()
                     # Phase I-8 (Fix AF) : normalise les apostrophes typographiques
-                    # (DeepSeek écrit souvent « j’ai ») pour que les patterns
-                    # ASCII matchent.
+                    # (DeepSeek écrit souvent « j'ai ») pour que les patterns matchent.
                     for _apo in ("’", "‘", "ʼ", "´", "`"):
                         _final_text_lower = _final_text_lower.replace(_apo, "'")
                     _runtime_claim_for_final = _has_runtime_server_claim_proof(_final_text_lower, self._successful_session_tools)
-                    _CLAIM_PATTERNS = (
-                        "j'ai créé", "j'ai crée", "j'ai envoyé", "j'ai envoye",
-                        "j'ai écrit", "j'ai modifié", "j'ai configuré", "j'ai planifié",
-                        "j'ai enregistré", "j'ai sauvegardé", "j'ai généré",
-                        "c'est fait", "c'est envoyé", "c'est créé",
-                        "i created", "i wrote", "i sent", "i saved", "i configured",
-                        "fichier créé", "fichier écrit", "message envoyé",
-                        # Phase I-8 (Fix AF) : formes passives + « avec succès » +
-                        # install/activation/test — trous observés runtime
-                        # 2026-06-11 04:34 (« installé et testé avec succès » /
-                        # « a été installé » sans AUCUN outil appelé).
-                        "j'ai installé", "j'ai installe", "j'ai activé",
-                        "j'ai active", "j'ai testé", "j'ai teste",
-                        "j'ai déployé", "j'ai deploye",
-                        "a été installé", "a ete installe",
-                        "a été créé", "a ete cree",
-                        "a été configuré", "a ete configure",
-                        "a été activé", "a ete active",
-                        "a été testé", "a ete teste",
-                        "a été envoyé", "a ete envoye",
-                        "a été généré", "a ete genere",
-                        "a été déployé", "a ete deploye",
-                        "installé avec succès", "installe avec succes",
-                        "activé avec succès", "active avec succes",
-                        "créé avec succès", "cree avec succes",
-                        "configuré avec succès", "configure avec succes",
-                        "testé avec succès", "teste avec succes",
-                        "envoyé avec succès", "envoye avec succes",
-                        "installé et testé", "installe et teste",
-                        "installé et activé", "installe et active",
-                        "test effectué", "test effectue",
-                        "test réussi", "test reussi",
-                        "i installed", "successfully installed",
-                        "installed and tested", "installed successfully",
-                    )
-                    _claims_action = any(p in _final_text_lower for p in _CLAIM_PATTERNS)
+                    _claims_action = ledger_text_claims_action(_final_text_lower)
 
-                    # ── Exonération read-only : un rapport read-only sans mutation
-                    # attendue ne doit pas être bloqué. On déplie parallel_tools sur
-                    # ses sous-outils réels ; s'ils sont indisponibles, on ignore
-                    # l'agrégateur plutôt que de faire échouer tout le bypass.
-                    _eff_succ_tools: list[str] = []
-                    for _h in self.history:
-                        if not (_h.action and _h.observation and _h.observation.success):
-                            continue
-                        _tn = _h.action.tool_name or ""
-                        if _tn == "parallel_tools":
-                            _subs = getattr(_h.observation, "sub_results", ()) or ()
-                            for _sub in _subs:
-                                if not getattr(_sub, "success", False):
-                                    continue
-                                _sn = getattr(_sub, "tool_name", "") or ""
-                                if _sn:
-                                    _eff_succ_tools.append(_sn)
-                            # pas de sub_results -> agrégateur ignoré (pas ajouté)
-                        elif _tn:
-                            _eff_succ_tools.append(_tn)
+                    # Exonération read-only : rapport read-only sans mutation attendue.
+                    _eff_succ_tools = compute_effective_successful_tools(self.history)
                     _all_successful_readonly = bool(_eff_succ_tools) and all(
                         self._tool_is_safe_readonly(_t) for _t in _eff_succ_tools
                     )
-                    # Mutation attendue : kind mutation-like OU verbe positif de
-                    # mutation non nié (cf mission_expects_mutation). WEB_APP / API /
-                    # SCRIPT / GENERIC seuls ne comptent PAS.
                     _mutation_expected = mission_expects_mutation(original_query)
                     _readonly_exoneration = _all_successful_readonly and not _mutation_expected
+                    # Exonération « vraie action hors-ledger » (spotify_play, etc.).
+                    _real_action_done = any(_t in _HC_TOOLS_ANY_ACTION for _t in _eff_succ_tools)
 
-                    if (_claims_action and not _runtime_claim_for_final
-                            and not self.execution_ledger.has_any_mutation()
-                            and not _readonly_exoneration):
+                    _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
+                    _lg_query = ledger_final_guard_query(
+                        claims_action=_claims_action,
+                        runtime_claim=_runtime_claim_for_final,
+                        has_any_mutation=self.execution_ledger.has_any_mutation(),
+                        readonly_exoneration=_readonly_exoneration,
+                        real_action_done=_real_action_done,
+                        original_query=original_query,
+                        led_tools=_led_tools,
+                    )
+                    if _lg_query is not None:
                         self._ledger_final_guard_used = True
                         _ledger_guard_triggered = True
-                        _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
                         logger.warning(
                             "[LEDGER GUARD] FINAL prétend avoir agi mais aucune mutation dans le ledger "
                             "(outils réussis: {}) — retry",
                             _led_tools,
                         )
                         self.history.pop()
-                        query = (
-                            f"Requête originale: {original_query}\n\n"
-                            "⛔ Tu as déclaré avoir accompli une action (création, envoi, écriture…) "
-                            "mais le journal d'exécution ne contient AUCUNE mutation réussie.\n\n"
-                            f"Outils exécutés avec succès: {', '.join(_led_tools)}\n\n"
-                            "Tu DOIS appeler l'outil approprié et ATTENDRE le résultat "
-                            "avant de conclure avec FINAL."
-                        )
+                        query = _lg_query
                         _finish_iteration(status="ok", summary="ledger_final_guard_blocked")
                 if _ledger_guard_triggered:
                     continue
@@ -6746,48 +5823,56 @@ Maintenant, reflechis et reponds:"""
                     _ss_guard = self._structured_state
                     _guard_intent = _ss_guard.last_intent if _ss_guard else None
                     _expected_family = _LEDGER_INTENT_FAMILIES.get(_guard_intent, frozenset())
-                    if _expected_family and not self.execution_ledger.has_mutation_in_family(_expected_family):
+                    _has_mut_in_family = (
+                        self.execution_ledger.has_mutation_in_family(_expected_family)
+                        if _expected_family else False
+                    )
+                    _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
+                    _h2_query = ledger_h2_guard_query(
+                        claims_action=_claims_action,
+                        runtime_claim=_runtime_claim_for_final,
+                        has_any_mutation=True,
+                        expected_family_nonempty=bool(_expected_family),
+                        has_mutation_in_expected_family=_has_mut_in_family,
+                        original_query=original_query,
+                        guard_intent=_guard_intent,
+                        led_tools=_led_tools,
+                    )
+                    if _h2_query is not None:
                         self._ledger_final_guard_used = True
-                        _led_tools = self.execution_ledger.successful_actions() or ["AUCUN"]
                         logger.warning(
                             "[LEDGER GUARD H2] Mutations existent mais hors famille '{}' — retry",
                             _guard_intent,
                         )
                         self.history.pop()
-                        query = (
-                            f"Requête originale: {original_query}\n\n"
-                            f"⛔ Tu as déclaré avoir agi pour une tâche '{_guard_intent}' "
-                            f"mais aucun outil de la catégorie attendue n'a été exécuté.\n\n"
-                            f"Outils exécutés: {', '.join(_led_tools)}\n\n"
-                            "Appelle l'outil approprié avant de conclure."
-                        )
+                        query = _h2_query
                         _finish_iteration(status="ok", summary=f"ledger_guard_h2_wrong_family_{_guard_intent}")
                         continue
 
                 # ── Heuristique H3 : cible explicite mentionnée mais aucune mutation pour elle ──
-                # Repair léger fire-once. Plus conservateur que H2 :
-                #   - flag propre (_ledger_h3_guard_used), pas _ledger_final_guard_used
-                #   - message ⚠️ (vérification), pas ⛔ (blocage dur)
-                #   - ne tire pas si H2 a déjà escaladé (_ledger_final_guard_used)
+                # Repair léger fire-once (flag propre _ledger_h3_guard_used, message ⚠️).
                 if (not getattr(self, '_ledger_h3_guard_used', False)
                         and not getattr(self, '_ledger_final_guard_used', False)
                         and _claims_action
                         and not _runtime_claim_for_final
                         and self.execution_ledger.has_any_mutation()):
-                    import re as _re_h3
-                    _target_hint_h3: Optional[str] = None
-                    _channel_match_h3 = _re_h3.search(r'#([\w\-]{2,32})', original_query)
-                    if _channel_match_h3:
-                        _target_hint_h3 = _channel_match_h3.group(1)
-                    else:
-                        _file_match_h3 = _re_h3.search(
-                            r'[\w\-]+\.(py|js|ts|html|css|json|md|txt|yaml|toml)', original_query
-                        )
-                        if _file_match_h3:
-                            _target_hint_h3 = _file_match_h3.group(0)
-                    if _target_hint_h3 and not self.execution_ledger.has_mutation_for_target_hint(_target_hint_h3):
+                    _target_hint_h3 = extract_h3_target_hint(original_query)
+                    _has_mut_for_target = (
+                        self.execution_ledger.has_mutation_for_target_hint(_target_hint_h3)
+                        if _target_hint_h3 else False
+                    )
+                    _led_tools_h3 = self.execution_ledger.successful_actions() or ["AUCUN"]
+                    _h3_query = ledger_h3_guard_query(
+                        claims_action=_claims_action,
+                        runtime_claim=_runtime_claim_for_final,
+                        has_any_mutation=True,
+                        target_hint=_target_hint_h3,
+                        has_mutation_for_target=_has_mut_for_target,
+                        original_query=original_query,
+                        led_tools=_led_tools_h3,
+                    )
+                    if _h3_query is not None:
                         self._ledger_h3_guard_used = True
-                        _led_tools_h3 = self.execution_ledger.successful_actions() or ["AUCUN"]
                         logger.warning(
                             "[LEDGER GUARD H3] Cible '{}' mentionnée mais aucune mutation pour cette cible"
                             " — repair léger (outils: {})",
@@ -6795,14 +5880,7 @@ Maintenant, reflechis et reponds:"""
                             _led_tools_h3,
                         )
                         self.history.pop()
-                        query = (
-                            f"Requête originale: {original_query}\n\n"
-                            f"⚠️ Tu affirmes avoir agi, et une mutation a bien eu lieu, "
-                            f"mais aucune action ne semble concerner la cible « {_target_hint_h3} ».\n\n"
-                            f"Outils exécutés: {', '.join(_led_tools_h3)}\n\n"
-                            "Vérifie que tu as bien traité la bonne cible, "
-                            "puis agis dessus si ce n'est pas encore fait avant de conclure."
-                        )
+                        query = _h3_query
                         _finish_iteration(status="ok", summary=f"ledger_guard_h3_target_{_target_hint_h3}")
                         continue
 
@@ -6845,72 +5923,6 @@ Maintenant, reflechis et reponds:"""
                 # On ne doit PAS considérer ça comme un leak si le contenu ne ressemble pas à
                 # de la réflexion interne (sinon on gaspille des itérations en re-prompting).
                 _answer_lower = (answer or "").lower().lstrip()
-                _INTERNAL_PREFIXES = (
-                    # FR — réflexion interne
-                    "l'utilisateur me demande",
-                    "l'utilisateur demande",
-                    "l'utilisateur souhaite",
-                    "l'utilisateur veut",
-                    "l'utilisateur a demandé",
-                    "l'utilisateur a sollicité",
-                    "l'utilisateur me pose",
-                    "me demande comment",
-                    "me demande de",
-                    "me demande si",
-                    "je dois maintenant",
-                    "je vais maintenant synthétiser",
-                    "je vais maintenant formuler",
-                    "je vais maintenant fournir",
-                    "je vais maintenant résumer",
-                    "je vais maintenant répondre",
-                    "je vais maintenant donner",
-                    "je vais répondre directement",
-                    "je réponds directement",
-                    "je dois analyser",
-                    "je dois vérifier",
-                    "je dois d'abord",
-                    "je dois ensuite",
-                    "je lance ",
-                    "je lance`",
-                    "je vais lire ",
-                    "je vais vérifier ",
-                    "je vais chercher ",
-                    "je vais appeler ",
-                    "je vais utiliser ",
-                    "je vais grep",
-                    "j'ai exécuté les",
-                    "j'ai déjà exécuté",
-                    "j'ai déjà effectué une recherche",
-                    "j'ai maintenant toutes les",
-                    "maintenant que j'ai",
-                    "sur la base de",
-                    "après avoir analysé",
-                    "d'après les résultats",
-                    "rien à faire ici",
-                    "rien à faire,",
-                    # EN — internal reasoning prefixes
-                    "the user is asking",
-                    "the user wants",
-                    "the user asked",
-                    "the user requested",
-                    "i need to now",
-                    "i should now",
-                    "i will now",
-                    "i'll now",
-                    "let me analyze",
-                    "let me now",
-                    "let me provide",
-                    "let me summarize",
-                    "let me now provide",
-                    "based on the",
-                    "based on my",
-                    "now that i have",
-                    "i have already",
-                    "i've already",
-                    "i have now",
-                    "i've now",
-                    "having gathered",
-                )
                 _is_reasoning_prefix = any(_answer_lower.startswith(p) for p in _INTERNAL_PREFIXES)
                 # V2.1 fix prod (rev 2) : détection d'une réponse "intention" — le LLM
                 # promet de répondre mais ne le fait pas. Doit être détectée comme leak.

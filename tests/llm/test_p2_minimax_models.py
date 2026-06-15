@@ -98,7 +98,8 @@ class TestMiniMaxModels:
         from src.llm.providers import get_model_fallbacks
 
         fallbacks = get_model_fallbacks("minimax-m3")
-        assert fallbacks[:2] == ["minimax-m2.7", "nvidia-minimax-m2.7"]
+        assert fallbacks[:2] == ["minimax-m2.7", "nvidia-minimax-m3"]
+        assert "nvidia-minimax-m2.7" in fallbacks
         assert "nvidia-step-3.7-flash" in fallbacks
 
 
@@ -227,6 +228,7 @@ class TestConfigPanelP2:
     def test_brain_code_has_minimax(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_CODE")
         assert "minimax-m3" in entry["options"]
+        assert "nvidia-minimax-m3" in entry["options"]
         assert "minimax-m2.5" in entry["options"]
         assert "minimax-m2.7" in entry["options"]
 
@@ -234,16 +236,22 @@ class TestConfigPanelP2:
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_CODE")
         assert "o3" in entry["options"]
         assert "o4-mini" in entry["options"]
+        assert "kimi-k2.7-code" in entry["options"]
 
     def test_brain_vision_has_o3(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_VISION")
         assert "o3" in entry["options"]
         assert "o4-mini" in entry["options"]
+        assert "kimi-k2.7-code" in entry["options"]
+        assert "nvidia-minimax-m3" in entry["options"]
+        assert "nvidia-gemma-4-31b-it" in entry["options"]
 
     def test_brain_web_has_minimax(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_WEB")
         assert "minimax-m3" in entry["options"]
+        assert "nvidia-minimax-m3" in entry["options"]
         assert "minimax-m2.5" in entry["options"]
+        assert "kimi-k2.7-code" in entry["options"]
 
 
 # ── Total model count ────────────────────────────────────────────────────────

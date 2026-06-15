@@ -985,6 +985,14 @@ async def browser_dom_state(ctx: HandlerContext, *, screenshot: bool = False) ->
         except Exception:
             pass  # timeout = page déjà chargée ou lente, on continue
 
+        # Fermer le bandeau cookies AVANT d'indexer (rapide ~0.5s) : sinon ses
+        # boutons occupent les premiers index et le LLM clique dessus par erreur
+        # (ex. "Préférences de consentement"). Best-effort, jamais bloquant.
+        try:
+            await browser.accept_cookies()
+        except Exception:
+            pass
+
         indexer = get_dom_indexer()
         snap = await indexer.snapshot(browser._page)
         snap = await indexer.enrich_with_bboxes(browser._page, snap)
@@ -2455,6 +2463,185 @@ async def browser_list_downloads(ctx: HandlerContext, *, limit: int = 20) -> Han
         return HandlerResult.fail(f"Erreur: {e}")
 
 
+async def browser_verify(
+    ctx: HandlerContext,
+    *,
+    before_url: Optional[str] = None,
+    expect_text: Optional[str] = None,
+    forbid_text: Optional[List[str]] = None,
+) -> HandlerResult:
+    """W3 — Confirme qu'une action (formulaire, login, inscription…) a vraiment
+    abouti : URL changée, texte de succès présent, ABSENCE d'erreur. Une erreur
+    détectée (« identifiants incorrects », « champ obligatoire »…) prime."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        res = await browser.verify_submission(
+            before_url=before_url,
+            expect_text=expect_text,
+            forbid_text=forbid_text,
+        )
+        icon = "✅" if res.get("confirmed") else "❌"
+        lines = [
+            f"{icon} Action {'CONFIRMÉE' if res.get('confirmed') else 'NON confirmée'} — {res.get('reason', '')}",
+            f"   url: {res.get('url', '')}",
+        ]
+        for s in res.get("signals", []):
+            lines.append(f"   • {s}")
+        # confirmed=False est une info utile, pas une erreur d'exécution → on renvoie ok()
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_save_login(
+    ctx: HandlerContext, *, service: str, username: str, password: str,
+    login_url: Optional[str] = None,
+) -> HandlerResult:
+    """W1 — Enregistre des identifiants dans le coffre chiffré (jamais en clair)."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        res = browser.save_login(service, username, password, login_url=login_url)
+        if not res.get("success"):
+            return HandlerResult.fail(res.get("error", "échec enregistrement"))
+        return HandlerResult.ok(
+            f"🔐 Identifiants enregistrés pour {res['domain']} (user: {res['username']}, mot de passe: ***)"
+        )
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_list_logins(ctx: HandlerContext) -> HandlerResult:
+    """W1 — Liste les sites pour lesquels un identifiant est enregistré (valeurs jamais exposées)."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        res = browser.list_logins()
+        if not res.get("domains"):
+            return HandlerResult.ok("Aucun identifiant enregistré.")
+        return HandlerResult.ok(
+            "🔐 Identifiants enregistrés pour : " + ", ".join(res["domains"])
+        )
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_login(
+    ctx: HandlerContext, *, service: str, login_url: Optional[str] = None,
+) -> HandlerResult:
+    """W1 — Connecte Lumena à un site avec les identifiants du coffre, puis
+    CONFIRME la réussite (détecte un échec de login au lieu de continuer à l'aveugle)."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré (browser_start d'abord)")
+        res = await browser.login(service, login_url=login_url)
+        if not res.get("success"):
+            return HandlerResult.fail(
+                f"❌ Connexion à {res.get('domain', service)} NON confirmée — "
+                f"{res.get('error') or res.get('reason', 'échec')}"
+            )
+        return HandlerResult.ok(
+            f"✅ Connectée à {res['domain']} (user: {res['username']}) — confirmé, url: {res.get('url', '')}"
+        )
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_find(
+    ctx: HandlerContext, *, query: str, max_pages: int = 8,
+    must_include: Optional[List[str]] = None,
+) -> HandlerResult:
+    """W4 — Cherche une info PRÉCISE sur le web (l'aiguille dans la botte de foin) :
+    balaie les résultats, extrait le passage qui contient la réponse, classe par
+    pertinence, et s'arrête dès qu'il trouve. Renvoie le meilleur passage + sources."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        res = await browser.find_needle(query, max_pages=max_pages, must_include=must_include)
+        if not res.get("success"):
+            return HandlerResult.fail(
+                f"🔍 Rien trouvé pour « {query} » ({res.get('pages_scanned', 0)} pages balayées) — "
+                f"{res.get('error', '')}"
+            )
+        best = res["best_answer"]
+        lines = [
+            f"🎯 Meilleure réponse pour « {query} » ({res['pages_scanned']} pages balayées) :",
+            "",
+            f"« {best['passage']} »",
+            f"   └─ source : {best['title'] or best['url']}",
+            f"      {best['url']}  (score {best['score']}, termes: {', '.join(best['matched'])})",
+        ]
+        others = res["findings"][1:4]
+        if others:
+            lines.append("")
+            lines.append("Autres sources pertinentes :")
+            for f in others:
+                lines.append(f"  • [{f['score']}] {f['title'] or f['url']} — {f['url']}")
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_check_challenge(ctx: HandlerContext) -> HandlerResult:
+    """W2 — Détecte si un captcha ou une étape 2FA/OTP bloque la page. Si oui,
+    demande à l'utilisateur (ask_user) puis applique avec browser_solve_challenge.
+    Le navigateur reste ouvert sur la même page pendant l'attente."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        res = await browser.detect_challenge()
+        kind = res.get("kind")
+        if kind == "none":
+            return HandlerResult.ok("✅ Aucun captcha ni 2FA détecté — tu peux continuer.")
+        if kind == "captcha":
+            return HandlerResult.ok(
+                f"🧑‍🤝‍🧑 RELAIS HUMAIN — captcha {res.get('provider')} détecté.\n"
+                f"➡️ Utilise `ask_user` pour demander à l'utilisateur de résoudre le "
+                f"captcha dans la fenêtre du navigateur (elle reste ouverte), puis "
+                f"appelle `browser_solve_challenge` avec done=true. Ne ferme PAS le navigateur."
+            )
+        return HandlerResult.ok(
+            "🧑‍🤝‍🧑 RELAIS HUMAIN — vérification 2FA / code à usage unique demandée.\n"
+            "➡️ Utilise `ask_user` pour demander le code (SMS / e-mail / app), puis "
+            "appelle `browser_solve_challenge` avec code=\"<le code>\". Ne ferme PAS le navigateur."
+        )
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
+async def browser_solve_challenge(
+    ctx: HandlerContext, *, code: Optional[str] = None, done: bool = False,
+) -> HandlerResult:
+    """W2 — Applique l'aide humaine à un captcha/2FA : `code` = code 2FA/OTP à
+    saisir ; `done=true` = l'humain a résolu le captcha dans la fenêtre."""
+    try:
+        from ...tools.playwright_browser import get_playwright_browser
+        browser = get_playwright_browser()
+        if not browser.is_running:
+            return HandlerResult.fail("Navigateur non démarré")
+        res = await browser.solve_challenge(code=code, done=done)
+        if res.get("kind") == "captcha" and "cleared" in res:
+            return (HandlerResult.ok(f"✅ Captcha franchi — url: {res.get('url', '')}")
+                    if res.get("cleared")
+                    else HandlerResult.fail("❌ Le captcha est toujours présent. "
+                                            "Demande à l'utilisateur de le terminer dans la fenêtre."))
+        if res.get("kind") == "otp":
+            return (HandlerResult.ok(f"✅ Code accepté — connexion/vérification confirmée (url: {res.get('url', '')})")
+                    if res.get("success")
+                    else HandlerResult.fail(f"❌ Code refusé — {res.get('reason', 'vérification non confirmée')}"))
+        # ni code ni done → détection renvoyée
+        return HandlerResult.ok(res.get("needs", "Aucun challenge détecté."))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
 async def browser_frames(ctx: HandlerContext) -> HandlerResult:
     """Liste toutes les frames/iframes de la page active."""
     try:
@@ -2661,14 +2848,14 @@ def get_browser_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="browser_click",
-            description="Clique sur un element de la page (par CSS selector, XPath, ID, etc.)",
+            description="Clique sur un element de la page (par CSS selector, XPath, ID, ou par texte via 'text').",
             parameters={
                 "properties": {
-                    "selector": {"type": "string", "description": "Selecteur de l'element"},
+                    "selector": {"type": "string", "description": "Selecteur de l'element (ou utiliser 'text')"},
                     "by": {"type": "string", "description": "Type: css, xpath, id, class, name, text, partial_text", "default": "css"},
-                    "text": {"type": "string", "description": "Texte du bouton/lien a cliquer"},
+                    "text": {"type": "string", "description": "Texte du bouton/lien a cliquer (alternative a selector)"},
                 },
-                "required": ["selector"],
+                "required": [],
             },
             handler=browser_click,
             category="browser",
@@ -2729,10 +2916,10 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Scroll dans la page",
             parameters={
                 "properties": {
-                    "direction": {"type": "string", "description": "up, down, top, bottom"},
+                    "direction": {"type": "string", "description": "up, down, top, bottom", "default": "down"},
                     "amount": {"type": "integer", "description": "Pixels a scroller", "default": 500},
                 },
-                "required": ["direction"],
+                "required": [],
             },
             handler=browser_scroll,
             category="browser",
@@ -2788,9 +2975,9 @@ def get_browser_handler_defs() -> List[HandlerDef]:
             description="Change d'onglet par index (0 = premier onglet)",
             parameters={
                 "properties": {
-                    "index": {"type": "integer", "description": "Index de l'onglet (0-based)"},
+                    "index": {"type": "integer", "description": "Index de l'onglet (0-based)", "default": 0},
                 },
-                "required": ["index"],
+                "required": [],
             },
             handler=browser_switch_tab,
             category="browser",
@@ -3367,6 +3554,126 @@ def get_browser_handler_defs() -> List[HandlerDef]:
                 "required": [],
             },
             handler=browser_list_downloads,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_verify",
+            description=(
+                "Vérifie qu'une action vient de RÉUSSIR (soumission de formulaire, "
+                "connexion, inscription…) : URL changée, texte de succès présent, "
+                "et ABSENCE de message d'erreur. À appeler après un submit/clic "
+                "décisif. Passe before_url (l'URL d'avant l'action) et/ou expect_text "
+                "(un texte attendu en cas de succès)."
+            ),
+            parameters={
+                "properties": {
+                    "before_url": {"type": "string", "description": "URL avant l'action (pour détecter une navigation)"},
+                    "expect_text": {"type": "string", "description": "Texte attendu si l'action a réussi"},
+                    "forbid_text": {"type": "array", "items": {"type": "string"}, "description": "Textes d'erreur supplémentaires à surveiller"},
+                },
+                "required": [],
+            },
+            handler=browser_verify,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_save_login",
+            description=(
+                "Enregistre des identifiants (login/mot de passe) dans le coffre "
+                "chiffré pour un site, afin que Lumena puisse s'y connecter seule "
+                "ensuite. Le mot de passe n'est jamais stocké ni affiché en clair."
+            ),
+            parameters={
+                "properties": {
+                    "service": {"type": "string", "description": "Domaine ou URL du site (ex: github.com)"},
+                    "username": {"type": "string", "description": "Identifiant / email"},
+                    "password": {"type": "string", "description": "Mot de passe (chiffré au stockage)"},
+                    "login_url": {"type": "string", "description": "URL de la page de connexion (optionnel)"},
+                },
+                "required": ["service", "username", "password"],
+            },
+            handler=browser_save_login,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_list_logins",
+            description="Liste les sites pour lesquels un identifiant est enregistré (valeurs jamais exposées).",
+            parameters={"properties": {}, "required": []},
+            handler=browser_list_logins,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_login",
+            description=(
+                "Connecte Lumena à un site avec les identifiants du coffre "
+                "(enregistrés via browser_save_login), puis CONFIRME la réussite. "
+                "Détecte un échec de connexion (mauvais identifiants) au lieu de "
+                "continuer à l'aveugle."
+            ),
+            parameters={
+                "properties": {
+                    "service": {"type": "string", "description": "Domaine ou URL du site (ex: github.com)"},
+                    "login_url": {"type": "string", "description": "URL de la page de connexion (optionnel si déjà enregistrée)"},
+                },
+                "required": ["service"],
+            },
+            handler=browser_login,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_find",
+            description=(
+                "Cherche une information PRÉCISE sur le web (l'aiguille dans la "
+                "botte de foin) : balaie plusieurs résultats, extrait le passage "
+                "exact qui répond, classe par pertinence et s'arrête dès qu'il "
+                "trouve. Idéal quand un simple web_search ne suffit pas. "
+                "must_include = termes obligatoires dans la réponse."
+            ),
+            parameters={
+                "properties": {
+                    "query": {"type": "string", "description": "La question / l'information recherchée"},
+                    "max_pages": {"type": "integer", "description": "Nombre max de pages à balayer", "default": 8},
+                    "must_include": {"type": "array", "items": {"type": "string"}, "description": "Termes qui DOIVENT figurer dans la réponse"},
+                },
+                "required": ["query"],
+            },
+            handler=browser_find,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_check_challenge",
+            description=(
+                "Détecte si un captcha (reCAPTCHA/hCaptcha/Cloudflare) ou une "
+                "étape 2FA/OTP bloque la page. À appeler quand une action semble "
+                "bloquée. Si un blocage est trouvé, demande l'aide humaine via "
+                "ask_user (le navigateur reste ouvert) puis browser_solve_challenge."
+            ),
+            parameters={"properties": {}, "required": []},
+            handler=browser_check_challenge,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_solve_challenge",
+            description=(
+                "Applique l'aide humaine à un captcha/2FA. Passe code=\"123456\" "
+                "pour saisir un code 2FA/OTP fourni par l'utilisateur, ou done=true "
+                "si l'utilisateur a résolu le captcha lui-même dans la fenêtre."
+            ),
+            parameters={
+                "properties": {
+                    "code": {"type": "string", "description": "Code 2FA/OTP fourni par l'utilisateur"},
+                    "done": {"type": "boolean", "description": "True si l'humain a résolu le captcha dans la fenêtre"},
+                },
+                "required": [],
+            },
+            handler=browser_solve_challenge,
             category="browser",
             source_module="handlers.browser",
         ),

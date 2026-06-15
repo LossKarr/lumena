@@ -230,8 +230,8 @@ class TestNoDuplicates:
         +3 (Étape 4.6 IONOS) : get/set sandbox_drop_config, propose_drop_sandbox_table.
         +3 (Étape 4.7 IONOS) : get/set sandbox_clear_config, propose_clear_sandbox_table.
         """
-        assert len(ALL_HDEFS) == 279, (
-            f"Attendu 279 handlers, trouvé {len(ALL_HDEFS)}. "
+        assert len(ALL_HDEFS) == 287, (
+            f"Attendu 287 handlers, trouvé {len(ALL_HDEFS)}. "
             f"Mettre à jour ce test si ajout/suppression intentionnel."
         )
 

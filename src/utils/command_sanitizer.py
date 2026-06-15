@@ -142,19 +142,20 @@ _DEPLOY_NETWORK_MSG = (
 )
 _DEPLOY_NETWORK_EXES = frozenset({"ssh", "scp", "sftp", "rsync", "ftp", "psftp", "pscp", "winscp"})
 
-# Verbes PowerShell autorisés (lecture / diagnostic / formatage)
+# Verbes PowerShell autorisés (lecture / diagnostic / formatage / lancement)
 _PS_SAFE_VERBS: Set[str] = {
     "get", "test", "format", "select", "where", "sort", "measure",
     "write", "out", "foreach", "read", "find", "group", "join",
     "show", "trace", "compare", "convert", "push", "pop",
     "invoke",  # Invoke-WebRequest, Invoke-RestMethod
     "resolve", "split", "join",
+    "start",   # Start-Process / Start-Service / Start-Job — lancer une app/un process
 }
 
 # Verbes PowerShell toujours bloqués (modification système)
 _PS_BLOCKED_VERBS: Set[str] = {
     "remove", "delete", "stop", "kill", "reset", "clear", "set",
-    "new", "add", "copy", "move", "rename", "start",
+    "new", "add", "copy", "move", "rename",
     "register", "unregister", "enable", "disable",
     "mount", "dismount", "suspend", "resume",
 }

@@ -80,6 +80,13 @@ EXPECTED_BROWSER_NAMES = [
     "browser_drag_at",
     "browser_wait_for_download",
     "browser_list_downloads",
+    "browser_verify",
+    "browser_save_login",
+    "browser_list_logins",
+    "browser_login",
+    "browser_find",
+    "browser_check_challenge",
+    "browser_solve_challenge",
     "browser_frames",
     "browser_frame_click",
     "browser_frame_type",
@@ -110,6 +117,7 @@ EXPECTED_COMPUTER_USE_NAMES = [
     "spotify_play",
     "open_url",
     "list_windows",
+    "cu_readiness",
     "drag",
     "screenshot_analyze",
     "click_element",
@@ -130,7 +138,7 @@ EXPECTED_COMPUTER_USE_NAMES = [
 class TestBrowserParity:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 68
+        assert len(defs) == 75
 
     def test_names_match(self):
         defs = get_browser_handler_defs()
@@ -159,7 +167,7 @@ class TestBrowserParity:
 class TestComputerUseParity:
     def test_count(self):
         defs = get_computer_use_handler_defs()
-        assert len(defs) == 28
+        assert len(defs) == 29
 
     def test_names_match(self):
         defs = get_computer_use_handler_defs()
@@ -196,4 +204,4 @@ class TestCrossModuleParity:
     def test_total_count(self):
         """browser(66) + computer_use(28) = 94 handlers."""
         total = len(get_browser_handler_defs()) + len(get_computer_use_handler_defs())
-        assert total == 96
+        assert total == 104

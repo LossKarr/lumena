@@ -260,6 +260,39 @@ class DOMSnapshot:
 
 # ─── DOMIndexer ────────────────────────────────────────────────────────────
 
+# Contrôles de bandeaux cookies / consentement (CMP). On les DÉPRIORISE dans
+# l'index (jamais retirés) pour qu'ils ne raflent plus les premiers index :
+# sinon le LLM clique "Préférences de consentement"/"Accepter" en croyant
+# ouvrir le contenu (cas vécu en runtime). Déprioriser = sûr (l'élément reste
+# accessible) vs supprimer = risqué.
+_CONSENT_NAME_RE = re.compile(
+    r"(tout accepter|tout refuser|accepter (?:et|&) fermer|\baccepter\b|"
+    r"j'accepte|accept all|accept cookies|\baccept\b|agree and close|i agree|"
+    r"\bagree\b|reject all|\brefuser\b|\breject\b|\bdecline\b|\bdeny\b|"
+    r"pr[ée]f[ée]rences? de consentement|voir les pr[ée]f[ée]rences|"
+    r"g[ée]rer les cookies|manage cookies|cookie settings|cookie preferences|"
+    r"continuer sans accepter|consentement|gérer mes choix)",
+    re.IGNORECASE,
+)
+
+
+def _is_consent_control(raw: Dict[str, Any]) -> bool:
+    """True si l'élément ressemble à un bouton de bandeau cookies/consentement."""
+    name = str(raw.get("name", "") or "").strip()
+    if not name or len(name) > 48:
+        return False
+    return bool(_CONSENT_NAME_RE.search(name))
+
+
+def _deprioritize_consent(raw_elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Pousse les contrôles de consentement en fin de liste (tri stable :
+    l'ordre des autres éléments est préservé). Appliqué AVANT la troncature
+    pour que les vrais éléments de contenu gardent les premiers index."""
+    if not raw_elements:
+        return raw_elements
+    return sorted(raw_elements, key=lambda r: 1 if _is_consent_control(r) else 0)
+
+
 class DOMIndexer:
     """
     Extraie un DOMSnapshot depuis une page Playwright.
@@ -304,6 +337,7 @@ class DOMIndexer:
         # 2. Parcourir l'arbre et collecter les elements interactifs
         raw_elements = self._collect_interactive(tree)
         raw_elements = await self._merge_dom_augmented_inputs(page, raw_elements)
+        raw_elements = _deprioritize_consent(raw_elements)
         total = len(raw_elements)
 
         # 3. Tronquer si necessaire et indexer
@@ -436,6 +470,7 @@ class DOMIndexer:
             logger.warning(f"DOM indexer fallback DOM echoue: {e}")
             raw_elements = []
 
+        raw_elements = _deprioritize_consent(raw_elements)
         total = len(raw_elements)
         truncated = total > self.max_elements
         selected = raw_elements[: self.max_elements]

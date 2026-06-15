@@ -318,9 +318,24 @@ async def close_app(
     name: str = "",
     close_terminals: bool = False,
     force: bool = True,
+    confirm: bool = False,
 ) -> HandlerResult:
     """Ferme une application (ou les terminaux) pour éviter la saturation."""
     try:
+        # CU-1/CU-1b — close_app force-kill via taskkill : il CONTOURNE le
+        # contrôleur, donc on applique les garde-fous ici aussi.
+        from ...computer_use.safety import enforce, require_approval, CUBlockedError
+        try:
+            enforce("close_app", name=name)  # kill-switch / observe-only
+        except CUBlockedError as e:
+            return HandlerResult.fail(f"🛡️ Action refusée: {e}")
+        if require_approval("close_app") and not confirm:
+            return HandlerResult.ok(
+                f"🔒 Fermer une application ('{name or 'dernière app'}') est une action "
+                f"à haut risque. Demande à l'utilisateur via `ask_user` s'il confirme, "
+                f"puis rappelle `close_app` avec confirm=true."
+            )
+
         targets = _resolve_close_targets(name=name, close_terminals=close_terminals)
         if not targets and ctx._opened_apps_history:
             last_name = ctx._opened_apps_history[-1]
@@ -557,9 +572,16 @@ async def press_key(ctx: HandlerContext, *, key: str = None, input: str = None) 
         return HandlerResult.fail(f"Erreur touche: {e}")
 
 
-async def close_window(ctx: HandlerContext) -> HandlerResult:
+async def close_window(ctx: HandlerContext, *, confirm: bool = False) -> HandlerResult:
     """Ferme la fenêtre active (Alt+F4)."""
     try:
+        from ...computer_use.safety import require_approval
+        if require_approval("close_window") and not confirm:
+            return HandlerResult.ok(
+                "🔒 Fermer la fenêtre active est une action à haut risque. Demande "
+                "confirmation à l'utilisateur via `ask_user`, puis rappelle "
+                "`close_window` avec confirm=true."
+            )
         from ...computer_use import get_computer_use
         cu = get_computer_use()
         cu.keyboard.hotkey("alt", "f4")
@@ -576,6 +598,24 @@ async def wait(ctx: HandlerContext, *, seconds: int = 2) -> HandlerResult:
         return HandlerResult.ok(f"Attendu {wait_time} secondes")
     except Exception as e:
         return HandlerResult.fail(f"Erreur attente: {e}")
+
+
+async def cu_readiness(ctx: HandlerContext) -> HandlerResult:
+    """CU-2 — Diagnostic : Lumena peut-elle voir et piloter l'écran ? (backends,
+    capture, moniteurs, scaling, garde-fous de sécurité). À appeler avant une
+    tâche Computer Use, ou en cas de clics qui tombent à côté."""
+    try:
+        from ...computer_use import get_computer_use
+        cu = get_computer_use()
+        rep = cu.diagnostics()
+        icon = "✅" if rep.get("ready") else "❌"
+        lines = [f"{icon} Computer Use {'PRÊT' if rep.get('ready') else 'NON prêt'} :"]
+        for c in rep.get("checks", []):
+            mark = "✅" if c["ok"] else "⚠️"
+            lines.append(f"  {mark} {c['name']} — {c['detail']}")
+        return HandlerResult.ok("\n".join(lines))
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur diagnostic CU: {e}")
 
 
 async def spotify_play(ctx: HandlerContext, *, query: str) -> HandlerResult:
@@ -1307,6 +1347,7 @@ def get_computer_use_handler_defs() -> List[HandlerDef]:
                     "name": {"type": "string", "description": "Nom app/process (ex: cmd, powershell, notepad, chrome)", "default": ""},
                     "close_terminals": {"type": "boolean", "description": "Fermer les terminaux CMD/PowerShell/Windows Terminal", "default": False},
                     "force": {"type": "boolean", "description": "Forcer la fermeture", "default": True},
+                    "confirm": {"type": "boolean", "description": "Confirmation utilisateur (requis seulement si l'approbation opt-in est activée)", "default": False},
                 },
                 "required": [],
             },
@@ -1411,7 +1452,12 @@ def get_computer_use_handler_defs() -> List[HandlerDef]:
         HandlerDef(
             name="close_window",
             description="Ferme la fenêtre active (Alt+F4)",
-            parameters={"properties": {}, "required": []},
+            parameters={
+                "properties": {
+                    "confirm": {"type": "boolean", "description": "Confirmation utilisateur (requis seulement si l'approbation opt-in est activée)", "default": False},
+                },
+                "required": [],
+            },
             handler=close_window,
             category="computer_use",
             source_module="handlers.computer_use",
@@ -1460,6 +1506,19 @@ def get_computer_use_handler_defs() -> List[HandlerDef]:
             description="Liste les fenêtres ouvertes",
             parameters={"properties": {}, "required": []},
             handler=list_windows,
+            category="computer_use",
+            source_module="handlers.computer_use",
+        ),
+        HandlerDef(
+            name="cu_readiness",
+            description=(
+                "Diagnostic Computer Use : vérifie que Lumena peut voir et piloter "
+                "l'écran (souris/clavier, capture, moniteurs, scaling) et l'état des "
+                "garde-fous (kill-switch, observe-only). À appeler avant une tâche "
+                "bureau ou si les clics tombent à côté."
+            ),
+            parameters={"properties": {}, "required": []},
+            handler=cu_readiness,
             category="computer_use",
             source_module="handlers.computer_use",
         ),

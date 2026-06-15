@@ -210,7 +210,7 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("Clés API (non-wizard)", "TWITTER_ACCESS_TOKEN", "", "Access token Twitter/X"),
     ("Clés API (non-wizard)", "TWITTER_ACCESS_TOKEN_SECRET", "", "Access token secret Twitter/X"),
     ("Clés API (non-wizard)", "SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback", "URI redirect OAuth Spotify"),
-    ("Clés API (non-wizard)", "MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1", "URL base API Moonshot/Kimi"),
+    ("Clés API (non-wizard)", "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1", "URL base API Moonshot/Kimi"),
     ("Clés API (non-wizard)", "OLLAMA_HOST", "http://localhost:11434", "URL Ollama (legacy, utiliser LUMENA_OLLAMA_HOST)"),
     ("Clés API (non-wizard)", "GEMINI_API_KEY", "", "Alias GOOGLE_API_KEY (Gemini)"),
     ("Clés API (non-wizard)", "DEFAULT_MODEL", "", "Alias legacy modèle par défaut"),

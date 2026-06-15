@@ -1816,6 +1816,13 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                 max_thoughts = _env_int("LUMENA_SSE_MAX_THOUGHTS", 600, minimum=50)
                 heartbeat_interval = float(_env_int("LUMENA_SSE_HEARTBEAT_SEC", 5, minimum=1))
                 last_stream_emit = time.time()
+                # `thoughts_captured` est une fenêtre glissante bornée à max_thoughts
+                # → sa longueur plafonne. On suit donc séparément :
+                #  - "dropped"  : nb d'items retirés en tête (pour un curseur ABSOLU monotone)
+                #  - "pensees"  : compteur de raisonnement réel (hors sortie console / tokens)
+                # Sans ça, le stream se figeait à 600 (UI "freezée") dès qu'une commande
+                # console remplissait le buffer.
+                _stream_meta = {"dropped": 0, "pensees": 0}
 
                 # Creer un handler personnalise pour capturer les pensees
                 def capture_thought(message):
@@ -1862,11 +1869,22 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                         # Video generation pipeline
                         "[video]", "[remotion]",
                     )
+
                     if any(p in msg for p in _CAPTURE_PATTERNS):
                         with thoughts_lock:
                             thoughts_captured.append(msg)
+                            # Compteur "pensées" = raisonnement réel. On EXCLUT les
+                            # lignes de sortie console et les tokens de la réponse finale
+                            # (sinon il explose et atteint le plafond sur le moindre
+                            # install/listing → ancien symptôme "bloqué à 600").
+                            if not any(_s in msg for _s in ("[cmd_output]", "[cmd_output_err]", "[FINAL_TOKEN]")):
+                                _stream_meta["pensees"] += 1
+                            # Fenêtre glissante : on mémorise combien d'items sont retirés
+                            # en tête, pour garder un curseur d'émission absolu et monotone.
                             if len(thoughts_captured) > max_thoughts:
-                                del thoughts_captured[: len(thoughts_captured) - max_thoughts]
+                                _removed = len(thoughts_captured) - max_thoughts
+                                del thoughts_captured[:_removed]
+                                _stream_meta["dropped"] += _removed
 
                 handler_id = stream_logger.add(capture_thought, format="{message}", level="DEBUG")
 
@@ -1989,12 +2007,17 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                             _request_task_cancel(task_id, result_container["error"])
                             break
 
-                        # Envoyer les nouvelles pensees
+                        # Envoyer les nouvelles pensees.
+                        # last_count = curseur ABSOLU (index global monotone), PAS
+                        # len(thoughts_captured) : la liste est une fenêtre glissante
+                        # bornée, sa longueur plafonne. Le total réel vu = dropped + len.
                         new_thoughts: List[str] = []
                         with thoughts_lock:
-                            if len(thoughts_captured) > last_count:
-                                new_thoughts = thoughts_captured[last_count:]
-                                last_count = len(thoughts_captured)
+                            _total_seen = _stream_meta["dropped"] + len(thoughts_captured)
+                            if _total_seen > last_count:
+                                _start = max(0, last_count - _stream_meta["dropped"])
+                                new_thoughts = thoughts_captured[_start:]
+                                last_count = _total_seen
                         if new_thoughts:
                             for thought in new_thoughts:
                                 # Token streaming — réponse finale mot par mot
@@ -2113,7 +2136,7 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                             checkpoint_payload = {
                                 "phase": "running",
                                 "ts": heartbeat_ts,
-                                "thoughts": last_count,
+                                "thoughts": _stream_meta["pensees"],
                                 "file_edits": file_edit_cursor,
                                 "action_detail": _last_agent_action,
                             }
@@ -2131,9 +2154,11 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                     # Flush remaining captured thoughts (generated between last check and thread exit)
                     _remaining_thoughts: List[str] = []
                     with thoughts_lock:
-                        if len(thoughts_captured) > last_count:
-                            _remaining_thoughts = thoughts_captured[last_count:]
-                            last_count = len(thoughts_captured)
+                        _total_seen = _stream_meta["dropped"] + len(thoughts_captured)
+                        if _total_seen > last_count:
+                            _start = max(0, last_count - _stream_meta["dropped"])
+                            _remaining_thoughts = thoughts_captured[_start:]
+                            last_count = _total_seen
                     if _remaining_thoughts:
                         for thought in _remaining_thoughts:
                             if "[FINAL_TOKEN]" in thought:

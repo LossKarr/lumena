@@ -334,10 +334,17 @@ class TestPowerShellBlockedVerbs:
         allowed, _ = sanitize_command("Clear-Content log.txt")
         assert not allowed
 
-    def test_start_process_blocked(self):
-        """Start-Process est bloqué (verbe 'start')."""
-        allowed, _ = sanitize_command("Start-Process cmd.exe")
-        assert not allowed
+    def test_start_process_allowed(self):
+        """Start-Process est AUTORISÉ (lancer une app/un process) — le verbe
+        'start' est sûr. Les actions destructrices (Stop-Process -Force,
+        Remove-Item -Recurse) restent bloquées par les patterns dangereux."""
+        allowed, _ = sanitize_command("Start-Process notepad")
+        assert allowed
+        allowed, _ = sanitize_command("Start-Process -FilePath chrome.exe")
+        assert allowed
+        # Le dangereux reste bloqué
+        blocked, _ = sanitize_command("Stop-Process -Force chrome")
+        assert not blocked
 
     def test_get_content_allowed(self):
         """Get-Content est autorisé (verbe 'get' = lecture)."""

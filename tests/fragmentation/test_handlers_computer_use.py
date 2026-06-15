@@ -825,7 +825,7 @@ class TestComputerTask:
 class TestComputerUseHandlerDefs:
     async def test_count(self):
         defs = get_computer_use_handler_defs()
-        assert len(defs) == 28
+        assert len(defs) == 29
 
     async def test_names_unique(self):
         defs = get_computer_use_handler_defs()
@@ -848,6 +848,6 @@ class TestComputerUseHandlerDefs:
             "screenshot_analyze", "click_element", "find_element",
             "list_screens", "set_screen", "ui_click", "ui_type",
             "ui_list_controls", "mouse_pattern", "zoom",
-            "computer_task",
+            "computer_task", "cu_readiness",
         }
         assert expected == names

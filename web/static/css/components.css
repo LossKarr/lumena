@@ -256,7 +256,10 @@ svg.lucide{display:inline-block;vertical-align:middle;pointer-events:none}
    STARTUP SCREEN
    ============================================================ */
 .startup-screen{
-  position:fixed;inset:0;z-index:9999;background:var(--bg);
+  position:fixed;inset:0;z-index:9999;
+  background:rgba(6,8,13,0.72);
+  backdrop-filter:blur(16px) saturate(1.2);
+  -webkit-backdrop-filter:blur(16px) saturate(1.2);
   display:flex;align-items:center;justify-content:center;
 }
 .startup-screen.hidden{display:none}

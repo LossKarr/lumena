@@ -1,15 +1,28 @@
 @echo off
 
-REM === Relance dans une fenetre persistante si double-clic ===
+chcp 65001 >nul 2>&1
+setlocal EnableExtensions EnableDelayedExpansion
+cd /d "%~dp0"
+
+REM === Relance au double-clic : console masquee par defaut, visible si demande ===
 if "%~1"=="" (
-    cmd /c ""%~f0" _RUNNING"
+    if not defined LUMENA_DESKTOP_SHOW_CONSOLE set "LUMENA_DESKTOP_SHOW_CONSOLE=0"
+    if exist ".env" (
+        for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
+            if "%%a"=="LUMENA_DESKTOP_SHOW_CONSOLE" set "LUMENA_DESKTOP_SHOW_CONSOLE=%%b"
+        )
+    )
+    if "!LUMENA_DESKTOP_SHOW_CONSOLE!"=="1" (
+        cmd /c ""%~f0" _RUNNING_VISIBLE"
+    ) else (
+        set "LUMENA_DESKTOP_LAUNCHER=%~f0"
+        set "LUMENA_DESKTOP_CWD=%~dp0"
+        powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$bat=$env:LUMENA_DESKTOP_LAUNCHER; $cwd=$env:LUMENA_DESKTOP_CWD; Start-Process -FilePath $bat -ArgumentList '_RUNNING_HIDDEN' -WorkingDirectory $cwd -WindowStyle Hidden"
+    )
     exit /b
 )
 
-chcp 65001 >nul 2>&1
-setlocal EnableExtensions EnableDelayedExpansion
 title LUMENA Desktop
-cd /d "%~dp0"
 
 REM === Desactive QuickEdit (empeche le freeze console au clic) ===
 reg add HKCU\Console /v QuickEdit /t REG_DWORD /d 0 /f >nul 2>&1

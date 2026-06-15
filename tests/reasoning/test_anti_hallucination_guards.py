@@ -197,3 +197,80 @@ def test_list_directory_guard_message_for_creation_task():
         query_lower = query.lower()
         matched = any(kw in query_lower for kw in _creation_keywords)
         assert not matched, f"Query '{query}' should NOT be detected as creation intent"
+
+
+# ----- Extension CU / bureau / login : claim d'action sans outil réussi -----
+
+@pytest.mark.asyncio
+async def test_hallucination_guard_blocks_cu_typed_claim(tmp_path: Path):
+    """Cas vécu : le LLM dit 'j'ai tapé le texte' en FINAL alors qu'aucun outil
+    de frappe (type_text / mcp__windows-mcp__Type) n'a réussi → retry forcé."""
+    call_count = 0
+
+    async def _llm(_messages, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return (
+                "THOUGHT: J'ai tapé le texte dans le bloc-notes.\n"
+                "ACTION: FINAL\n"
+                "ACTION_INPUT: ✅ J'ai tapé \"Lumena CU test OK 2026\" dans le Bloc-notes."
+            )
+        return (
+            "THOUGHT: En réalité je n'ai pas réussi à taper.\n"
+            "ACTION: FINAL\n"
+            "ACTION_INPUT: Je n'ai pas pu taper le texte, le champ est introuvable."
+        )
+
+    loop = ReActLoop(
+        llm_chat_func=_llm,
+        tools=ToolRegistry(lumena=None, lumena_root=tmp_path),
+    )
+    await loop.run("Tape un texte dans le bloc-notes")
+    assert call_count >= 2, "Le guard aurait dû rejeter le faux 'texte tapé'"
+
+
+@pytest.mark.asyncio
+async def test_hallucination_guard_blocks_login_claim(tmp_path: Path):
+    """Le LLM dit 'connexion réussie' sans browser_login → retry forcé."""
+    call_count = 0
+
+    async def _llm(_messages, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return (
+                "THOUGHT: Connexion réussie au site.\n"
+                "ACTION: FINAL\n"
+                "ACTION_INPUT: ✅ Connexion réussie, je suis sur le tableau de bord."
+            )
+        return (
+            "THOUGHT: Je n'ai pas vraiment cliqué sur Login.\n"
+            "ACTION: FINAL\n"
+            "ACTION_INPUT: Je n'ai pas pu confirmer la connexion."
+        )
+
+    loop = ReActLoop(
+        llm_chat_func=_llm,
+        tools=ToolRegistry(lumena=None, lumena_root=tmp_path),
+    )
+    await loop.run("Connecte-toi au site")
+    assert call_count >= 2, "Le guard aurait dû rejeter le faux 'connexion réussie'"
+
+
+@pytest.mark.asyncio
+async def test_hallucination_guard_allows_innocent_text(tmp_path: Path):
+    """Pas de faux positif : un FINAL sans claim d'action ne déclenche rien."""
+    async def _llm(_messages, **kwargs):
+        return (
+            "THOUGHT: Réponse simple.\n"
+            "ACTION: FINAL\n"
+            "ACTION_INPUT: Voici l'information demandée : la tour Eiffel mesure 330 m."
+        )
+
+    loop = ReActLoop(
+        llm_chat_func=_llm,
+        tools=ToolRegistry(lumena=None, lumena_root=tmp_path),
+    )
+    result = await loop.run("Hauteur de la tour Eiffel ?")
+    assert "330" in result

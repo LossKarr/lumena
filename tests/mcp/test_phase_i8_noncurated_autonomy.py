@@ -801,10 +801,11 @@ class TestFixAFGuardsCoverMCPClaims:
     ).lower()
 
     def test_ledger_claim_patterns_cover_runtime_lie(self):
-        content = REACT_PATH.read_text(encoding="utf-8")
-        idx = content.find("_CLAIM_PATTERNS = (")
-        assert idx > 0
-        section = content[idx:idx + 3000]
+        # Les patterns du LEDGER guard ont été extraits dans ledger_guard.py
+        # (Phase 2). On teste la VALEUR (le tuple + la détection), pas l'emplacement.
+        from src.reasoning.ledger_guard import (
+            _LEDGER_CLAIM_PATTERNS, ledger_text_claims_action,
+        )
         for needle in (
             "a été installé",
             "installé et testé",
@@ -812,7 +813,9 @@ class TestFixAFGuardsCoverMCPClaims:
             "test effectué",
             "j'ai installé",
         ):
-            assert needle in section, f"_CLAIM_PATTERNS ne couvre pas: {needle}"
+            assert needle in _LEDGER_CLAIM_PATTERNS, f"_LEDGER_CLAIM_PATTERNS ne couvre pas: {needle}"
+        # Et la détection bloque bien le mensonge runtime exact.
+        assert ledger_text_claims_action(self.LYING_FINAL) is True
 
     def test_ledger_text_normalizes_typographic_apostrophes(self):
         content = REACT_PATH.read_text(encoding="utf-8")
@@ -842,23 +845,29 @@ class TestFixAFGuardsCoverMCPClaims:
         )
         assert passive.search(self.LYING_FINAL)
         assert success.search(self.LYING_FINAL)
-        # Et ces mêmes regex doivent exister dans le source
-        content = REACT_PATH.read_text(encoding="utf-8")
-        assert r"(a|ont) été (installé" in content
-        assert "avec succ[èe]s" in content
+        # Ces patterns ont été centralisés dans hallucination_guard.py (Temps 2) :
+        # ils vivent désormais dans _HALLUCINATION_CLAIM_PATTERNS, plus dans _HP_NOPLAN.
+        from pathlib import Path as _P
+        guard_src = (_P(__file__).resolve().parents[2]
+                     / "src" / "reasoning" / "hallucination_guard.py").read_text(encoding="utf-8")
+        assert r"(a|ont) été (installé" in guard_src
+        assert "avec succ[èe]s" in guard_src
+        # Et surtout : le guard centralisé BLOQUE bien ce mensonge runtime (aucun outil).
+        from src.reasoning.hallucination_guard import hallucination_retry_query
+        _q, _ = hallucination_retry_query(self.LYING_FINAL, "orig", set(), 0)
+        assert _q is not None
 
     def test_mcp_tools_count_as_create_proof(self):
         """Un VRAI run_mcp_autonomy réussi doit exonérer le guard sans-plan
-        (sinon chaque install MCP véridique coûte des retries)."""
-        content = REACT_PATH.read_text(encoding="utf-8")
-        assert "_HC_TOOLS_MCP" in content
-        idx = content.find("_HC_TOOLS_MCP = frozenset")
-        section = content[idx:idx + 400]
-        assert "run_mcp_autonomy" in section
+        (sinon chaque install MCP véridique coûte des retries).
+
+        NB : la définition vit désormais dans src/reasoning/hallucination_guard.py
+        (ré-exportée par react). On teste la VALEUR (comportement), pas l'emplacement
+        du source — plus robuste qu'un grep texte."""
+        from src.reasoning.react import _HC_TOOLS_MCP, _HC_TOOLS_ANY_CREATE
+        assert "run_mcp_autonomy" in _HC_TOOLS_MCP
         # Et inclus dans ANY_CREATE
-        idx2 = content.find("_HC_TOOLS_ANY_CREATE = (")
-        section2 = content[idx2:idx2 + 400]
-        assert "_HC_TOOLS_MCP" in section2
+        assert _HC_TOOLS_MCP <= _HC_TOOLS_ANY_CREATE
 
     def test_no_false_positive_on_honest_failure_report(self):
         """Un rapport HONNÊTE d'échec (« n'a PAS été installé ») contient

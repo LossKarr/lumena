@@ -1385,6 +1385,27 @@ async def create_project_handler(
             requested = Path(str(output_dir).strip())
             if requested.is_absolute():
                 parent_dir = requested.resolve()
+                # GARDE-FOU sandbox : un output_dir absolu HORS workspace/lumena
+                # (souvent recopié depuis un faux fait mémoire, ex.
+                # Documents/portefolio) est ramené dans le workspace courant.
+                # Sinon le projet est créé hors sandbox et devient inéditable
+                # (read_file/delegate bloqués par le path guard).
+                _rr = ctx.runtime_root.resolve()
+                _lr = ctx.lumena_root.resolve()
+                _inside = False
+                for _root in (_rr, _lr):
+                    try:
+                        parent_dir.relative_to(_root)
+                        _inside = True
+                        break
+                    except ValueError:
+                        pass
+                if not _inside:
+                    logger.warning(
+                        "[create_project] output_dir absolu hors sandbox ignoré "
+                        "({}) -> ramené dans le workspace {}", parent_dir, _rr,
+                    )
+                    parent_dir = _rr
             else:
                 rel = requested.as_posix()
                 if rel == "workspace":

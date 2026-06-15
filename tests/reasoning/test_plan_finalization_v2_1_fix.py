@@ -14,26 +14,9 @@ import pytest
 from src.reasoning.react_config import TaskItem
 
 
-# Reproduit la table de mots-clés présente dans react.py (FINAL_ANSWER branch).
-# Si tu modifies _SYNTH_KW dans react.py, mets ce miroir à jour aussi.
-_SYNTH_KW = {
-    "synthétis", "synthetis", "résumer", "resumer", "récapitul", "recapitul",
-    "synthèse", "synthese", "conclur", "répondre", "repondre",
-    "fournir une réponse", "présenter les résultats", "presenter les resultats",
-    "confirm", "valider", "vérifi", "verifi",
-    "informer", "inform", "notifier", "communiquer", "communique",
-    "avertir", "signaler", "dire à", "dire a",
-    "présenter le", "presenter le",
-    "présenter la", "presenter la",
-    "présenter au", "presenter au",
-    "présenter à", "presenter a",
-    "rapport final", "rapport complet",
-    "à l'utilisateur", "a l'utilisateur",
-    "donner la réponse", "donner la reponse",
-    "afficher", "exposer", "expliquer",
-    "livrer", "remettre", "transmettre",
-    "écrire la réponse", "ecrire la reponse",
-}
+# Plus de miroir : la table réelle est désormais importable (Phase 4B).
+# On teste DIRECTEMENT la source de vérité → aucune dérive possible.
+from src.reasoning.plan_progress import _SYNTH_KW, final_fulfills_task
 
 
 def _matches_synth(description: str) -> bool:
@@ -161,9 +144,36 @@ def test_legacy_synth_keywords_still_work(legacy_desc: str):
 
 
 def test_synth_kw_mirror_includes_v2_1_additions():
-    """Garde-fou : si quelqu'un retire les ajouts V2.1 du miroir local, on échoue."""
+    """Garde-fou : si quelqu'un retire les ajouts V2.1, on échoue (table réelle)."""
     must_have = {
         "présenter le", "rapport complet", "à l'utilisateur",
         "donner la réponse", "afficher", "livrer",
     }
     assert must_have.issubset(_SYNTH_KW)
+
+
+# ─── Fix 4E (2026-06-15) : tâches « demander/attendre approbation » ─────────
+
+
+@pytest.mark.parametrize("desc", [
+    "Si ticket créé, demander approbation manuelle",
+    "Demander l'approbation à l'utilisateur",
+    "Demander la validation manuelle",
+    "Attendre l'approbation du ticket",
+    "Étape 2 : approbation manuelle requise",
+])
+def test_4e_user_approval_tasks_fulfilled_by_final(desc: str):
+    """Une tâche d'approbation/attente utilisateur est réalisée par le FINAL lui-même."""
+    assert final_fulfills_task(desc) is True
+
+
+@pytest.mark.parametrize("desc", [
+    "Créer un workflow d'approbation",          # création, pas une demande
+    "Configurer l'approbation automatique",      # config
+    "Déployer après approbation manuelle",       # effet de bord (déploiement)
+    "Demander confirmation par email",           # effet de bord (email)
+    "Installer le package fastmcp",              # action
+])
+def test_4e_no_over_correction(desc: str):
+    """Anti-sur-correction : actions / effets de bord NE sont PAS auto-complétés."""
+    assert final_fulfills_task(desc) is False

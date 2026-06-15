@@ -468,6 +468,8 @@ class MouseController:
             clicks: Nombre de clics
             _retries: Nombre maximum de tentatives (interne)
         """
+        from .safety import enforce
+        enforce("click", x=x, y=y, button=button)
         if not PYAUTOGUI_AVAILABLE:
             return
 
@@ -564,6 +566,8 @@ class KeyboardController:
             text: Texte à taper
             interval: Délai de base entre les caractères (secondes)
         """
+        from .safety import enforce
+        enforce("type_text", text=text)
         if not PYAUTOGUI_AVAILABLE:
             return
 
@@ -609,9 +613,11 @@ class KeyboardController:
         Args:
             key: Nom de la touche (enter, tab, escape, etc.)
         """
+        from .safety import enforce
+        enforce("press_key", key=key)
         if not PYAUTOGUI_AVAILABLE:
             return
-        
+
         try:
             pyautogui.press(key)
             logger.debug(f"Pressed: {key}")
@@ -626,9 +632,11 @@ class KeyboardController:
             hotkey('ctrl', 'c')  # Copier
             hotkey('alt', 'tab')  # Changer fenêtre
         """
+        from .safety import enforce
+        enforce("hotkey", keys=list(keys))
         if not PYAUTOGUI_AVAILABLE:
             return
-        
+
         try:
             pyautogui.hotkey(*keys)
             logger.debug(f"Hotkey: {'+'.join(keys)}")
@@ -1020,6 +1028,8 @@ class ComputerUse:
         Returns:
             True si succès
         """
+        from .safety import enforce
+        enforce("open_application", name=name)
         # Ouvrir le menu Démarrer
         self.keyboard.press_key("win")
         await asyncio.sleep(random.uniform(0.35, 0.60))  # Attente d'ouverture du menu
@@ -1101,8 +1111,64 @@ class ComputerUse:
         await asyncio.sleep(0.5)
         return True
     
+    def diagnostics(self) -> Dict[str, Any]:
+        """CU-2 — Readiness : Lumena peut-elle voir ET piloter l'écran ?
+        Vérifie les backends, la capture d'écran, les moniteurs, la géométrie
+        (scaling) et l'état des garde-fous de sécurité. Aucun effet de bord."""
+        from .safety import _flag
+        checks: List[Dict[str, Any]] = []
+
+        def chk(name: str, ok: bool, detail: str = "") -> None:
+            checks.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+
+        chk("souris/clavier (pyautogui)", PYAUTOGUI_AVAILABLE,
+            "OK" if PYAUTOGUI_AVAILABLE else "ABSENT — aucune action possible")
+        chk("contrôle natif fenêtres (pywinauto)", PYWINAUTO_AVAILABLE,
+            "OK" if PYWINAUTO_AVAILABLE else "absent — fallback coordonnées/vision")
+
+        cap_ok, cap_detail = False, ""
+        try:
+            img = self.screen.capture_screen()
+            if img is not None:
+                w, h = img.size
+                cap_ok = w > 0 and h > 0
+                cap_detail = f"{w}x{h}"
+            else:
+                cap_detail = "capture indisponible (None)"
+        except Exception as e:
+            cap_detail = f"erreur: {e}"
+        chk("écran capturable (vision)", cap_ok, cap_detail)
+
+        mons = getattr(self.screen, "_monitor_info", {}) or {}
+        n_screens = max(0, len(mons) - 1)  # mss: index 0 = bureau virtuel global
+        chk("moniteurs détectés", n_screens >= 1, f"{n_screens} écran(s)")
+
+        geo_ok, geo_detail = False, ""
+        try:
+            ox, oy = self.screen.get_monitor_offset()
+            prim = mons.get(getattr(self.screen, "_primary_monitor_index", 1), {})
+            pw, ph = prim.get("width", 0), prim.get("height", 0)
+            geo_ok = pw > 0 and ph > 0
+            geo_detail = f"principal {pw}x{ph}, offset ({ox},{oy})"
+        except Exception as e:
+            geo_detail = f"erreur: {e}"
+        chk("géométrie écran (scaling)", geo_ok, geo_detail)
+
+        kill = _flag("LUMENA_CU_DISABLED")
+        observe = _flag("LUMENA_CU_OBSERVE_ONLY")
+        chk("kill-switch", not kill, "désactivé" if not kill else "ACTIF — CU entièrement bloqué")
+        chk("mode observe-only", not observe,
+            "off (autonomie totale)" if not observe else "ON (lecture seule)")
+
+        # Prêt = les 3 capacités critiques pour agir de façon autonome
+        critical = ("souris/clavier (pyautogui)", "écran capturable (vision)", "moniteurs détectés")
+        ready = all(c["ok"] for c in checks if c["name"] in critical)
+        return {"ready": ready, "checks": checks}
+
     async def close_window(self) -> bool:
         """Ferme la fenêtre active (Alt+F4)."""
+        from .safety import enforce
+        enforce("close_window")
         self.keyboard.hotkey("alt", "F4")
         await asyncio.sleep(0.5)
         return True

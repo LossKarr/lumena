@@ -1684,14 +1684,14 @@ class MultiProviderLLM:
     ) -> Dict[str, Any]:
         """Chat via Moonshot API (Kimi) with unified metadata payload.
         
-        NOTE: For kimi-k2.5, temperature/top_p cannot be modified (API restriction).
+        NOTE: For kimi-k2 models, temperature/top_p cannot be modified (API restriction).
         Temperature is fixed at 1.0 for Thinking mode, 0.6 for Instant mode.
         """
         api_key = get_api_key(ProviderType.MOONSHOT)
         if not api_key:
             raise ValueError("MOONSHOT_API_KEY non configurée")
         
-        # En fallback, model est passé explicitement (ex: kimi-k2.5)
+        # En fallback, model est passé explicitement (ex: kimi-k2.7-code)
         # self.model vaut deepseek-chat en fallback → toujours utiliser le param model si fourni
         target_model = model or self.model
         
@@ -1711,7 +1711,7 @@ class MultiProviderLLM:
         if stop:
             payload["stop"] = stop
         
-        # Pour kimi-k2.5, temperature ne peut pas être modifiée
+        # Pour les modèles kimi-k2, temperature ne peut pas être modifiée
         # On ne l'envoie que pour les anciens modèles moonshot-v1
         if not target_model.startswith("kimi-k2"):
             payload["temperature"] = temperature
@@ -1948,11 +1948,13 @@ class MultiProviderLLM:
         }
         if stop:
             payload["stop"] = stop
-        if "deepseek-v4-flash" in str(target_model):
+        if "deepseek-v4-" in str(target_model):
             payload["chat_template_kwargs"] = {"thinking": True, "reasoning_effort": "high"}
         if "nemotron-3-ultra" in str(target_model):
             payload["chat_template_kwargs"] = {"enable_thinking": True}
             payload["reasoning_budget"] = min(max_tokens, 16384)
+        if "gemma-4-31b-it" in str(target_model):
+            payload["chat_template_kwargs"] = {"enable_thinking": True}
 
         try:
             response = await self._http.post(url, headers=headers, json=payload)
@@ -2444,7 +2446,7 @@ class MultiProviderLLM:
                 if vision_provider == ProviderType.MOONSHOT:
                     api_key = get_api_key(ProviderType.MOONSHOT)
                     url = "https://api.moonshot.ai/v1/chat/completions"
-                    default_model = "kimi-k2.6"
+                    default_model = "kimi-k2.7-code"
                 else:
                     api_key = get_api_key(ProviderType.NVIDIA)
                     url = "https://integrate.api.nvidia.com/v1/chat/completions"
@@ -2738,7 +2740,7 @@ class MultiProviderLLM:
                     yield chunk
             elif provider == ProviderType.MOONSHOT:
                 api_key = get_api_key(ProviderType.MOONSHOT)
-                base_url = os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1")
+                base_url = os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
                 async for chunk in self._stream_openai_compat(
                     messages, temperature, min(max_tokens, 262144),
                     url=f"{base_url}/chat/completions",
@@ -3433,13 +3435,13 @@ class MultiProviderLLM:
                 "max_tokens": max_tokens
             }
             
-            # Pour kimi-k2.5, temperature ne peut pas être modifiée
+            # Pour les modèles kimi-k2, temperature ne peut pas être modifiée
             # On ne l'envoie que pour les anciens modèles moonshot-v1
             if not self.model.startswith("kimi-k2"):
                 payload["temperature"] = temperature
             
             # Ajouter les tools si disponibles
-            # NOTE: kimi-k2.5 supporte les tools mais avec certaines restrictions
+            # NOTE: kimi-k2 supporte les tools mais avec certaines restrictions
             if tools_def:
                 payload["tools"] = tools_def
                 payload["tool_choice"] = "auto"
