@@ -50,6 +50,38 @@ except Exception:
     TELEMETRY_AVAILABLE = False  # telemetry non disponible
 
 
+# ── Ollama (local) : num_ctx STABLE ──────────────────────────────────────────
+# CORRIGÉ après lecture d'un log runtime Ollama (RTX 3060) : un `num_ctx` qui
+# VARIE d'une requête à l'autre force Ollama à RECHARGER le modèle — la taille de
+# contexte est gravée dans le runner llama-server chargé. Un num_ctx adaptatif au
+# prompt provoquait donc des reloads (cold-start 5-7 s) qui ANNULENT keep_alive.
+# → On envoie une valeur STABLE par modèle : min(ctx_max_du_modèle, CAP). Ollama
+# clampe lui-même à la VRAM si besoin. Stable ⇒ modèle gardé chaud ⇒ plus de reload.
+# Fonction PURE. N'affecte QUE le chemin Ollama (les clouds passent ailleurs).
+_OLLAMA_NUM_CTX_CAP = 16384  # couvre les prompts Lumena (~5k tok) + marge ; tient en VRAM
+
+
+def _resolve_ollama_num_ctx(
+    model_context_window: Optional[int],
+    *,
+    env_override: Optional[str] = None,
+    cap: int = _OLLAMA_NUM_CTX_CAP,
+) -> int:
+    """num_ctx STABLE (indépendant du prompt) = min(ctx_modèle, cap).
+
+    - `env_override` (LUMENA_OLLAMA_NUM_CTX) prioritaire : power-user qui veut
+      un contexte plus grand (gros GPU) ou plus petit (GPU modeste).
+    - sinon : `min(cap, ctx_max_du_modèle)` — STABLE entre les requêtes pour ne
+      jamais forcer de rechargement Ollama.
+    """
+    if env_override is not None:
+        _s = str(env_override).strip()
+        if _s.isdigit() and int(_s) > 0:
+            return int(_s)
+    _model_ctx = max(512, int(model_context_window or 0) or cap)
+    return min(cap, _model_ctx)
+
+
 class MultiProviderLLM:
     """
     Client LLM unifié supportant plusieurs providers.
@@ -1293,13 +1325,24 @@ class MultiProviderLLM:
     ) -> Dict[str, Any]:
         """Chat via Ollama (local) with unified metadata payload."""
         url = f"{self.ollama_host}/api/chat"
-        
+
+        # num_ctx STABLE (L1) : fixe par modèle → ne force jamais de reload Ollama
+        # (cf. _resolve_ollama_num_ctx). Ollama clampe à la VRAM si besoin.
+        _model_name = model or self.model
+        _cfg = get_model_config(_model_name)
+        _num_ctx = _resolve_ollama_num_ctx(
+            _cfg.context_window if _cfg else None,
+            env_override=os.environ.get("LUMENA_OLLAMA_NUM_CTX"),
+        )
         _options: Dict[str, Any] = {
             "temperature": temperature,
-            "num_ctx": 32768
+            "num_ctx": _num_ctx,
         }
         if stop:
             _options["stop"] = stop
+        # keep_alive (L2) : garde le modèle chargé en VRAM (défaut 30 min) → évite
+        # les rechargements à froid (10-60 s) entre requêtes espacées.
+        _keep_alive = os.environ.get("LUMENA_OLLAMA_KEEP_ALIVE", "30m")
 
         # Convertir messages multipart (OpenAI vision format) → format Ollama
         ollama_messages = []
@@ -1327,9 +1370,10 @@ class MultiProviderLLM:
             "model": model or self.model,
             "messages": ollama_messages,
             "stream": False,
-            "options": _options
+            "options": _options,
+            "keep_alive": _keep_alive,
         }
-        
+
         response = await self._http.post(url, json=payload)
         response.raise_for_status()
         data = response.json()
@@ -2773,11 +2817,18 @@ class MultiProviderLLM:
     ) -> AsyncIterator[str]:
         """Stream depuis Ollama (format JSON ligne par ligne)."""
         url = f"{self.ollama_host}/api/chat"
+        # num_ctx STABLE (L1) + keep_alive (L2) — voir _chat_ollama_result.
+        _cfg = get_model_config(model)
+        _num_ctx = _resolve_ollama_num_ctx(
+            _cfg.context_window if _cfg else None,
+            env_override=os.environ.get("LUMENA_OLLAMA_NUM_CTX"),
+        )
         payload = {
             "model": model,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": temperature, "num_ctx": 32768},
+            "options": {"temperature": temperature, "num_ctx": _num_ctx},
+            "keep_alive": os.environ.get("LUMENA_OLLAMA_KEEP_ALIVE", "30m"),
         }
         async with self._http.stream("POST", url, json=payload) as resp:
             resp.raise_for_status()

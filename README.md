@@ -10,7 +10,7 @@ Raisonne, agit, apprend, s'améliore seul.
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.43**
+> **⚠️ Version Bêta — v1.0.44**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 > **👤 Projet solo**
