@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lumena"
-version = "1.0.44"
+version = "1.0.45"
 description = "Autonomous AI assistant with persistent memory, ReAct reasoning, and multi-channel support"
 readme = "README.md"
 license = {text = "AGPL-3.0-only"}
