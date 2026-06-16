@@ -1861,6 +1861,62 @@ class ToolRegistry:
             pass
         return Observation(content=msg, success=False)
 
+    # ──────────────────────────────────────────────────────────────
+    # F2c — Garde par construction : édition brute d'un SKILL.md
+    # ──────────────────────────────────────────────────────────────
+    # Outils d'édition de fichier qui contourneraient la validation des skills.
+    _SKILL_RAW_EDIT_TOOLS = frozenset({
+        "write_file", "edit_file", "multi_edit_file", "apply_patch", "apply_patches",
+        "insert_at_anchor", "edit_by_lines", "str_replace",
+    })
+
+    @staticmethod
+    def _is_skill_md_path(path_str: str) -> bool:
+        """Vrai si le chemin cible un .../skills/<dossier>/SKILL.md."""
+        if not path_str:
+            return False
+        p = path_str.replace("\\", "/").lower().strip().rstrip("/")
+        parts = p.split("/")
+        return (
+            len(parts) >= 3
+            and parts[-1] == "skill.md"
+            and parts[-3] == "skills"
+        )
+
+    def _skill_edit_guard(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        caller: CallerContext,
+    ) -> Optional[Observation]:
+        """Refuse l'édition brute d'un SKILL.md (contournerait la validation).
+
+        Redirige vers update_skill (existant) / create_skill (nouveau), qui
+        re-valident le skill (frontmatter, description, déclenchement). Garantit
+        que la porte de validation (S2/P1) n'est jamais contournée.
+        """
+        if caller.kind != "react":
+            return None
+        if name not in self._SKILL_RAW_EDIT_TOOLS:
+            return None
+        path_str = _extract_path_from_args(name, args or {})
+        if not self._is_skill_md_path(path_str or ""):
+            return None
+
+        msg = (
+            "⛔ Édition directe d'un SKILL.md interdite : elle contournerait la "
+            "validation du skill. Pour un skill EXISTANT, utilise "
+            "`update_skill(name=<nom>, content=<SKILL.md complet>)`. Pour un "
+            "NOUVEAU skill, utilise `create_skill(name=<nom>, content=...)`. "
+            "Ces outils re-valident le frontmatter, la description et le "
+            "déclenchement — `edit_file`/`insert_at_anchor` ne le font pas."
+        )
+        logger.warning(
+            "[policy] édition SKILL.md redirigée vers update_skill: {} sur {}",
+            name, path_str,
+        )
+        return Observation(content=msg, success=False)
+
     def _category_contract_check(
         self,
         name: str,
@@ -2176,6 +2232,11 @@ class ToolRegistry:
         if _refusal is not None:
             return _refusal
 
+        # ── F2c : édition brute d'un SKILL.md → redirige vers update_skill ──
+        _skill_refusal = self._skill_edit_guard(name, args or {}, caller)
+        if _skill_refusal is not None:
+            return _skill_refusal
+
         # ── Contrat de catégorie : préconditions formelles ──
         _cat_refusal = self._category_contract_check(name, args or {}, caller)
         if _cat_refusal is not None:
@@ -2470,6 +2531,10 @@ class ToolRegistry:
             _WRITE_TOOLS = {
                 "write_file", "edit_file", "edit_by_lines", "apply_patch", "apply_patches",
                 "run_command", "create_file", "delete_file",
+                # F1: ces muteurs n'invalidaient PAS le cache read_file → relecture
+                # périmée (Cache hit) après édition → boucles. Corrigé.
+                "insert_at_anchor", "str_replace", "multi_edit_file",
+                "update_skill", "delete_skill", "create_skill",
             }
             if name in _WRITE_TOOLS and self._observation_cache:
                 _stale = [k for k in self._observation_cache

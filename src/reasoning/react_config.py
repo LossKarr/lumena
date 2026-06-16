@@ -225,6 +225,9 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     # Skills
     "list_skills": ["list", "skill", "confirm", "vérifi", "verifi", "exist", "disponib"],
     "create_skill": ["cré", "creer", "skill", "compétence", "competence"],
+    "update_skill": ["modif", "mets a jour", "met a jour", "mettre a jour", "mise a jour",
+                     "update", "ajout", "actualis", "édit", "edit", "skill", "compétence", "competence"],
+    "delete_skill": ["supprim", "efface", "retir", "delete", "remov", "skill", "compétence", "competence"],
     # Capture
     "screenshot": ["screenshot", "capture", "ecran", "écran"],
     # Projet

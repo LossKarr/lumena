@@ -216,7 +216,8 @@ _HC_TOOLS_N8N = frozenset({
 })
 # Auto-modification (skills/outils custom)
 _HC_TOOLS_SKILL = frozenset({
-    "create_skill", "custom_tool_create", "custom_tool_load", "edit_own_code"
+    "create_skill", "update_skill", "delete_skill",
+    "custom_tool_create", "custom_tool_load", "edit_own_code"
 })
 # Requêtes HTTP mutatives
 _HC_TOOLS_HTTP = frozenset({
@@ -330,7 +331,8 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "create_markdown", "create_meeting_report", "create_pdf", "create_pptx", "create_project",
     "create_skill", "create_vcard", "create_xlsx", "create_zip", "cursor_ide_local",
     "custom_tool_create", "custom_tool_load", "data_export", "datagouv_download_resource",
-    "delegate_task", "delegate_task_bg", "delegate_to_peer", "delete_file", "delete_task",
+    "delegate_task", "delegate_task_bg", "delegate_to_peer", "delete_file", "delete_skill",
+    "delete_task", "update_skill",
     "deploy_to_ionos", "dev_run_fix", "discord_assign_role", "discord_ban",
     "discord_create_category", "discord_create_channel", "discord_create_invite",
     "discord_create_role", "discord_delete_channel", "discord_delete_message",

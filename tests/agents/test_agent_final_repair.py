@@ -134,6 +134,43 @@ async def test_agent_final_does_not_repair_complete_stop_answer(tmp_path: Path):
     assert run_meta["agent_final_finish_reason"] == "stop"
 
 
+@pytest.mark.asyncio
+async def test_agent_final_repair_tool_call_recovery_not_rolled_back(tmp_path: Path):
+    """F4 — Régression : un FINAL incomplet suivi d'un tool_call de récupération
+    ne doit PAS être rollback vers l'incomplet. Le modèle agit, puis produit un
+    vrai FINAL. Reproduit le scénario runtime (FINAL coupé sur « avec » → le
+    modèle reprend par une action → FINAL propre).
+
+    Avant F4 : result == la réponse coupée (rollback). Après F4 : le FINAL propre.
+    """
+    incomplete = "La reponse se coupe en plein milieu avec"
+    clean_final = "Voici la reponse finale complete et coherente."
+    llm = _SequencedLLM(
+        [
+            # 1) FINAL qui se termine sur un connecteur → jugé incomplet → repair
+            (_final_response(incomplete), "stop"),
+            # 2) le modèle se rattrape en AGISSANT (tool_call vers un outil lecture)
+            ("THOUGHT: je verifie d'abord\nACTION: list_skills\nACTION_INPUT: {}", "stop"),
+            # 3) FINAL propre et complet
+            (_final_response(clean_final), "stop"),
+        ]
+    )
+    loop = ReActLoop(
+        llm.chat,
+        ToolRegistry(lumena=None, lumena_root=tmp_path),
+        llm_meta_getter=llm.get_meta,
+        max_final_repair_attempts=1,
+    )
+
+    result = await loop.run("Liste les skills disponibles")
+
+    assert result == clean_final, (
+        "Le tool_call de récupération a été jeté au profit de la réponse "
+        f"incomplète (rollback). Obtenu: {result!r}"
+    )
+    assert not result.endswith("avec")
+
+
 def test_single_file_creation_intent_detection(tmp_path: Path):
     loop = ReActLoop(
         lambda _messages: None,

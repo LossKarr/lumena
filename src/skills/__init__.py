@@ -14,12 +14,13 @@ from .loader import (
 from .skill import SkillDefinition, SkillTrigger
 from .sync import sync_skills_main
 from .tools import (
-    SKILL_TOOLS,
     create_skill,
+    delete_skill,
     execute_skill_script,
     get_skill_info,
     install_skill_from_file,
     list_skills,
+    update_skill,
 )
 
 __all__ = [
@@ -36,9 +37,10 @@ __all__ = [
     "list_skills",
     "get_skill_info",
     "create_skill",
+    "update_skill",
+    "delete_skill",
     "execute_skill_script",
     "install_skill_from_file",
-    "SKILL_TOOLS",
 ]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project

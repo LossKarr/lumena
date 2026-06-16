@@ -943,10 +943,13 @@ class SelfImprover:
                 "description": candidate.get("description", ""),
             }
 
+        # P0 — garde "guides purs" : un skill auto-créé = savoir, jamais de code
+        # exécutable (sûreté par construction en autonomie full).
         create_result = create_skill(
             name=skill_name,
             description=candidate.get("description", ""),
-            with_script=True,
+            with_script=False,
+            allow_scripts=False,
         )
         created_ok = str(create_result).strip().startswith("✅")
 

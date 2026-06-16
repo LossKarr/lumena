@@ -279,6 +279,49 @@ class TestApplyPatchesMutationRecognition:
         assert muts[0].action == "apply_patches"
 
 
+# ── Skills (Phase 1 anti-fabrication) — mutations vérifiables + cible ────────
+
+class TestSkillMutationsLedger:
+    """update_skill / delete_skill sont des mutations vérifiables, et leur cible
+    est le NOM du skill (args `name`), pas un path."""
+
+    def test_skill_tools_in_mutation_tools(self):
+        assert "create_skill" in MUTATION_TOOLS
+        assert "update_skill" in MUTATION_TOOLS
+        assert "delete_skill" in MUTATION_TOOLS
+
+    def test_has_any_mutation_after_update_skill(self):
+        led = ExecutionLedger()
+        led.append(iteration=0, action="read_skill_reference", success=True)
+        assert not led.has_any_mutation()
+        led.append(iteration=1, action="update_skill", success=True,
+                   target="compte-rendu-reunion")
+        assert led.has_any_mutation()
+
+    def test_extract_target_update_skill_name(self):
+        target = _extract_target(
+            "update_skill", {"name": "compte-rendu-reunion", "content": "..."}
+        )
+        assert target == "compte-rendu-reunion"
+
+    def test_extract_target_delete_skill_name(self):
+        assert _extract_target("delete_skill", {"name": "obsolete-skill"}) == "obsolete-skill"
+
+    def test_extract_target_create_skill_skill_name_fallback(self):
+        # tolère aussi la clé `skill_name`
+        assert _extract_target("create_skill", {"skill_name": "demo"}) == "demo"
+
+    def test_extract_target_skill_no_name(self):
+        assert _extract_target("update_skill", {"content": "x"}) is None
+
+    def test_mutation_for_target_hint_on_skill(self):
+        led = ExecutionLedger()
+        led.append(iteration=0, action="update_skill", success=True,
+                   target="compte-rendu-reunion")
+        assert led.has_mutation_for_target_hint("compte-rendu") is True
+        assert led.has_mutation_for_target_hint("autre-skill") is False
+
+
 # ── Intégration ReActLoop ────────────────────────────────────────────────────
 
 class TestReActLoopLedgerIntegration:

@@ -78,7 +78,9 @@ EXTENSION_TRIGGER_MAP = {
     "algorithmic": {"generatif", "generative", "p5", "p5js", "particules", "particles", "flowfield", "algorithmique"},
     "canvas": {"poster", "affiche", "visuel", "illustration", "graphisme", "artwork", "dessin"},
     # ── Vidéo / Animation ─────────────────────────────────────────────────────
-    "remotion": {"video", "reel", "tiktok", "short", "clip", "motion", "captions", "sous-titres", "rendu"},
+    # NB: "rendu" retiré (matchait « compte-rendu » → faux positif). On garde
+    # "render"/"rendu video" plus spécifiques au montage vidéo Remotion.
+    "remotion": {"video", "reel", "tiktok", "short", "clip", "motion", "captions", "sous-titres", "render"},
     "gif": {"gif", "anime"},
     # ── Code / Apps ───────────────────────────────────────────────────────────
     "artifacts": {"react", "tailwind", "shadcn", "widget", "artifact"},

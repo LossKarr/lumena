@@ -1,8 +1,8 @@
 """
 skills.py - Handlers skills fragmentés depuis react.py.
 
-Handlers: read_own_code, create_skill, list_skills, pip_check,
-          search_in_code, get_my_capabilities, rollback, list_backups.
+Handlers: read_own_code, create_skill, update_skill, delete_skill, list_skills,
+          pip_check, search_in_code, get_my_capabilities, rollback, list_backups.
 
 Chaque handler est une fonction async standalone:
     async def handler_name(ctx: HandlerContext, **kwargs) -> HandlerResult
@@ -10,7 +10,6 @@ Chaque handler est une fonction async standalone:
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -114,48 +113,62 @@ async def read_own_code_handler(
 async def create_skill_handler(
     ctx: HandlerContext, name: str, content: str
 ) -> HandlerResult:
-    """Crée un nouveau skill."""
+    """Crée un nouveau skill via le builder unifié (validation + trigger garantis)."""
     try:
-        skills_path = ctx.lumena_root / "skills"
-        normalized = re.sub(
-            r"[^a-z0-9\-]+", "-", name.lower().replace("_", "-")
-        ).strip("-")
-        if not normalized:
-            return HandlerResult.fail(
-                f"Nom de skill invalide: {name}", handler_name="create_skill"
-            )
+        # Implémentation UNIQUE : on délègue au builder discipliné de src.skills.tools
+        # (S1 : plus de drift handler/tools ; S2 validation ; S3 trigger garanti).
+        from ...skills.tools import create_skill as _create_skill
 
-        skill_dir = skills_path / normalized
-        if skill_dir.exists():
-            return HandlerResult.fail(
-                f"Le skill '{normalized}' existe deja.",
-                handler_name="create_skill",
-            )
-
-        skill_dir.mkdir(parents=True, exist_ok=False)
-        skill_file = skill_dir / "SKILL.md"
-        payload = (content or "").strip()
-        if not payload.startswith("---"):
-            payload = (
-                "---\n"
-                f"name: {normalized}\n"
-                f"description: Skill {normalized}\n"
-                "---\n\n"
-                f"{payload}\n"
-            )
-        skill_file.write_text(payload, encoding="utf-8")
-
-        from ...skills import reload_skills
-
-        reload_skills()
-        return HandlerResult.ok(
-            f"Skill '{normalized}' cree avec succes.\n"
-            f"Fichier: skills/{normalized}/SKILL.md",
-            handler_name="create_skill",
+        result = _create_skill(
+            name=name,
+            content=content or "",
+            with_script=False,
+            skills_dir=ctx.lumena_root / "skills",
         )
+        if str(result).strip().startswith("✅"):
+            return HandlerResult.ok(result, handler_name="create_skill")
+        return HandlerResult.fail(result, handler_name="create_skill")
     except Exception as e:
         return HandlerResult.fail(
             f"Erreur création skill: {e}", handler_name="create_skill"
+        )
+
+
+async def update_skill_handler(
+    ctx: HandlerContext, name: str, content: str
+) -> HandlerResult:
+    """Met à jour un skill existant (re-validé). Symétrie avec create_skill (P1)."""
+    try:
+        from ...skills.tools import update_skill as _update_skill
+
+        result = _update_skill(
+            name=name,
+            content=content or "",
+            skills_dir=ctx.lumena_root / "skills",
+        )
+        if str(result).strip().startswith("✅"):
+            return HandlerResult.ok(result, handler_name="update_skill")
+        return HandlerResult.fail(result, handler_name="update_skill")
+    except Exception as e:
+        return HandlerResult.fail(
+            f"Erreur mise à jour skill: {e}", handler_name="update_skill"
+        )
+
+
+async def delete_skill_handler(
+    ctx: HandlerContext, name: str
+) -> HandlerResult:
+    """Supprime un skill (P1). Branche l'uninstall existant du loader."""
+    try:
+        from ...skills.tools import delete_skill as _delete_skill
+
+        result = _delete_skill(name=name, skills_dir=ctx.lumena_root / "skills")
+        if str(result).strip().startswith("✅"):
+            return HandlerResult.ok(result, handler_name="delete_skill")
+        return HandlerResult.fail(result, handler_name="delete_skill")
+    except Exception as e:
+        return HandlerResult.fail(
+            f"Erreur suppression skill: {e}", handler_name="delete_skill"
         )
 
 
@@ -447,7 +460,7 @@ async def run_tests_handler(
 # ─── HandlerDefs ───────────────────────────────────────────────────────────────
 
 def get_skills_handler_defs() -> List[HandlerDef]:
-    """Retourne les définitions des 14 handlers skills."""
+    """Retourne les définitions des 16 handlers skills."""
     return [
         HandlerDef(
             name="read_own_code",
@@ -473,7 +486,12 @@ def get_skills_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="create_skill",
-            description="Crée un nouveau skill dans le dossier skills/",
+            description=(
+                "⚡ OUTIL À UTILISER pour CRÉER un nouveau skill (valide le skill et "
+                "le charge à chaud). ⛔ NE PAS créer un SKILL.md à la main via "
+                "write_file/edit_file — passe par create_skill. Pour MODIFIER un "
+                "skill existant, utilise update_skill."
+            ),
             parameters={
                 "properties": {
                     "name": {
@@ -488,6 +506,52 @@ def get_skills_handler_defs() -> List[HandlerDef]:
                 "required": ["name", "content"],
             },
             handler=create_skill_handler,
+        ),
+        HandlerDef(
+            name="update_skill",
+            description=(
+                "⚡ OUTIL À UTILISER pour MODIFIER un skill existant (ajouter/changer "
+                "une section, corriger la description…). Réécrit le SKILL.md et le "
+                "RE-VALIDE (refuse + restaure si invalide). "
+                "⛔ NE JAMAIS utiliser edit_file / insert_at_anchor / write_file sur "
+                "un fichier SKILL.md : ça contourne la validation et sera refusé. "
+                "Fournis le contenu COMPLET du nouveau SKILL.md dans `content`."
+            ),
+            parameters={
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Nom du skill à mettre à jour",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Nouveau contenu complet du SKILL.md (markdown + frontmatter)",
+                    },
+                },
+                "required": ["name", "content"],
+            },
+            handler=update_skill_handler,
+            category="skills",
+            source_module="handlers.skills",
+        ),
+        HandlerDef(
+            name="delete_skill",
+            description=(
+                "Supprime définitivement un skill (dossier + désenregistrement). "
+                "Utiliser pour retirer un skill mort, en doublon, ou obsolète."
+            ),
+            parameters={
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Nom du skill à supprimer",
+                    },
+                },
+                "required": ["name"],
+            },
+            handler=delete_skill_handler,
+            category="skills",
+            source_module="handlers.skills",
         ),
         HandlerDef(
             name="list_skills",

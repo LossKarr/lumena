@@ -43,7 +43,7 @@ MUTATION_TOOLS: frozenset[str] = frozenset({
     "run_command", "run_shell", "exec_command",
     # ── Web & projets ────────────────────────────────────────────────────────
     "generate_website", "serve_website", "edit_website", "write_website_files",
-    "create_project", "create_skill",
+    "create_project", "create_skill", "update_skill", "delete_skill",
     # ── Documents ────────────────────────────────────────────────────────────
     "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv",
     "create_invoice_pdf", "create_from_template",
@@ -146,6 +146,13 @@ def _extract_target(tool_name: str, args: Dict[str, Any]) -> Optional[str]:
         desc = args.get("description", "")
         if isinstance(desc, str) and desc.strip():
             return desc.strip()[:120]
+
+    # Skills : la cible est le nom du skill (args `name`/`skill_name`), pas un path.
+    # Scopé aux outils skills → aucun impact sur la cible des autres outils.
+    if tool_name in ("create_skill", "update_skill", "delete_skill"):
+        nm = args.get("name") or args.get("skill_name")
+        if isinstance(nm, str) and nm.strip():
+            return nm.strip()
 
     return None
 

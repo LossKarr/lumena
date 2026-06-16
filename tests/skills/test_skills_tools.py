@@ -8,7 +8,6 @@ from src.skills.tools import (
     list_skills,
     get_skill_info,
     create_skill,
-    SKILL_TOOLS,
 )
 
 
@@ -36,15 +35,6 @@ class TestSkill:
         assert skill.keywords == []
         assert skill.apply_to == []
         assert skill.assets == []
-
-
-class TestSkillTools:
-    def test_skill_tools_is_dict(self):
-        assert isinstance(SKILL_TOOLS, dict)
-
-    def test_skill_tools_keys_are_strings(self):
-        for k in SKILL_TOOLS:
-            assert isinstance(k, str)
 
 
 class TestListSkills:

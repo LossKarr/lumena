@@ -4661,23 +4661,24 @@ Maintenant, reflechis et reponds:"""
             logger.debug(f"Thought: {thought.content}")
             logger.debug(f"Action: {action.action_type.value}")
 
-            # P2 FIX: Si une tentative de repair FINAL a produit un tool_call au lieu
-            # d'un FINAL, la réponse originale était correcte — rollback immédiat.
+            # F4: après un FINAL jugé incomplet, le repair re-interroge le modèle.
+            # S'il se rattrape en AGISSANT (tool_call), on NE rollback PLUS vers la
+            # réponse incomplète : c'était auto-contradictoire (on répare PARCE QUE
+            # c'est incomplet, puis on renverrait l'incomplet, en jetant la
+            # récupération légitime du modèle). On laisse l'action s'exécuter pour
+            # produire une vraie réponse. Bornes anti-emballement déjà en place :
+            # max_iterations global + _final_repair_attempts (déjà consommé).
             _pre_repair = getattr(self, '_pre_repair_answer', None)
             if _pre_repair and action.action_type != ActionType.FINAL_ANSWER:
-                logger.warning(
-                    "⚠️ Repair FINAL a produit {} au lieu de FINAL — rollback vers réponse originale ({} chars)",
+                logger.info(
+                    "🔧 Repair FINAL → le modèle reprend par {} : on laisse la "
+                    "récupération aboutir (au lieu de rollback vers l'incomplet, {} chars)",
                     action.action_type.value, len(_pre_repair),
                 )
                 self._pre_repair_answer = None
-                self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
-                self._run_meta["agent_output_incomplete"] = False
-                _finish_iteration(status="ok", summary="final_repair_rollback")
-                message = _pre_repair
-                self._mark_task_done(message)
-                return message
-            # Clear pre_repair si le repair a réussi (FINAL produit)
-            if _pre_repair and action.action_type == ActionType.FINAL_ANSWER:
+                # PAS de return : fall-through vers l'exécution normale de l'action.
+            elif _pre_repair and action.action_type == ActionType.FINAL_ANSWER:
+                # Repair réussi (FINAL produit) → on nettoie le marqueur.
                 self._pre_repair_answer = None
 
             # 2.0a Tracking hallucinations consécutives (Kimi simule des OBSERVATION)

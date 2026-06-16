@@ -510,10 +510,12 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
             else:
                 try:
                     from ..skills import create_skill
+                    # P0 — garde "guides purs" : autonomie ne crée jamais de script.
                     create_result = create_skill(
                         name=skill_name,
                         description=llm_candidate["description"],
                         with_script=False,
+                        allow_scripts=False,
                     )
                     created_ok = str(create_result).strip().startswith("✅")
                 except Exception as e:

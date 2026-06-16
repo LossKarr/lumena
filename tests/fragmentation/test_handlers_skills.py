@@ -17,6 +17,8 @@ from src.reasoning.handlers.contracts import HandlerResult
 from src.reasoning.handlers.skills import (
     read_own_code_handler,
     create_skill_handler,
+    update_skill_handler,
+    delete_skill_handler,
     list_skills_handler,
     pip_check_handler,
     search_in_code_handler,
@@ -90,14 +92,15 @@ async def test_read_own_code_line_range(ctx, tmp_path):
 
 @pytest.mark.asyncio
 async def test_create_skill_success(ctx, tmp_path):
-    """Création de skill quand le module skills existe."""
+    """Création réelle via le builder unifié : le SKILL.md est écrit et valide."""
     (tmp_path / "skills").mkdir()
-    mock_skills = MagicMock()
-    mock_skills.reload_skills = MagicMock()
-    with patch.dict(sys.modules, {"src.skills": mock_skills}):
-        r = await create_skill_handler(ctx, name="test_skill", content="Hello skill")
+    r = await create_skill_handler(ctx, name="test_skill", content="Hello skill")
     assert r.success
     assert "cree avec succes" in r.output
+    skill_md = tmp_path / "skills" / "test-skill" / "SKILL.md"
+    assert skill_md.exists()
+    # S3 : la description injectée n'est PAS générique (skill vivant).
+    assert "Hello skill" in skill_md.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -116,6 +119,45 @@ async def test_create_skill_invalid_name(ctx, tmp_path):
     (tmp_path / "skills").mkdir()
     r = await create_skill_handler(ctx, name="!!!", content="content")
     assert not r.success
+
+
+@pytest.mark.asyncio
+async def test_create_skill_generic_description_rejected(ctx, tmp_path):
+    """S3 : un skill sans description exploitable est refusé (trigger garanti)."""
+    (tmp_path / "skills").mkdir()
+    # content = uniquement un nom de skill générique → aucune description vivante.
+    r = await create_skill_handler(ctx, name="ghost_skill", content="ghost skill")
+    assert not r.success
+    # Le dossier ne doit PAS subsister.
+    assert not (tmp_path / "skills" / "ghost-skill").exists()
+
+
+# ─── update_skill / delete_skill (P1) ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_update_skill_handler(ctx, tmp_path):
+    """Mise à jour re-validée d'un skill existant via le handler."""
+    (tmp_path / "skills").mkdir()
+    await create_skill_handler(ctx, name="evo", content="Première description claire et utile")
+    r = await update_skill_handler(
+        ctx,
+        name="evo",
+        content='---\nname: evo\ndescription: "Description retravaillée et précise"\n---\n\n# Evo\n',
+    )
+    assert r.success
+    md = (tmp_path / "skills" / "evo" / "SKILL.md").read_text(encoding="utf-8")
+    assert "Description retravaillée" in md
+
+
+@pytest.mark.asyncio
+async def test_delete_skill_handler(ctx, tmp_path):
+    """Suppression d'un skill via le handler."""
+    (tmp_path / "skills").mkdir()
+    await create_skill_handler(ctx, name="temp", content="Skill temporaire mais avec vraie description")
+    assert (tmp_path / "skills" / "temp").exists()
+    r = await delete_skill_handler(ctx, name="temp")
+    assert r.success
+    assert not (tmp_path / "skills" / "temp").exists()
 
 
 # ─── list_skills ───────────────────────────────────────────────────────────
@@ -254,9 +296,9 @@ async def test_list_backups_with_data(ctx):
 # ─── HandlerDefs ───────────────────────────────────────────────────────────
 
 def test_handler_defs_count():
-    """get_skills_handler_defs retourne exactement 14 defs."""
+    """get_skills_handler_defs retourne exactement 16 defs."""
     defs = get_skills_handler_defs()
-    assert len(defs) == 14
+    assert len(defs) == 16
 
 
 def test_handler_defs_names():
@@ -270,7 +312,8 @@ def test_handler_defs_names():
 def test_handler_defs_expected_names():
     """Les noms correspondent à l'inventaire."""
     expected = {
-        "read_own_code", "create_skill", "list_skills", "pip_check",
+        "read_own_code", "create_skill", "update_skill", "delete_skill",
+        "list_skills", "pip_check",
         "search_in_code", "get_my_capabilities", "rollback", "list_backups",
         "execute_skill",
         "reload_skills", "sync_skills_main", "read_skill_reference",

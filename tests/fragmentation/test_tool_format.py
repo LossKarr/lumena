@@ -229,9 +229,10 @@ class TestNoDuplicates:
             list_pending_actions, install_bridge, create_sandbox_table.
         +3 (Étape 4.6 IONOS) : get/set sandbox_drop_config, propose_drop_sandbox_table.
         +3 (Étape 4.7 IONOS) : get/set sandbox_clear_config, propose_clear_sandbox_table.
+        +2 (P1 skills CRUD) : update_skill, delete_skill.
         """
-        assert len(ALL_HDEFS) == 287, (
-            f"Attendu 287 handlers, trouvé {len(ALL_HDEFS)}. "
+        assert len(ALL_HDEFS) == 289, (
+            f"Attendu 289 handlers, trouvé {len(ALL_HDEFS)}. "
             f"Mettre à jour ce test si ajout/suppression intentionnel."
         )
 

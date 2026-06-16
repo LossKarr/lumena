@@ -25,6 +25,8 @@ from src.reasoning.handlers.notion import get_notion_handler_defs
 EXPECTED_SKILLS_NAMES = [
     "read_own_code",
     "create_skill",
+    "update_skill",
+    "delete_skill",
     "list_skills",
     "pip_check",
     "search_in_code",
@@ -143,7 +145,7 @@ EXPECTED_NOTION_NAMES = [
 
 class TestSkillsParity:
     def test_count(self):
-        assert len(get_skills_handler_defs()) == 14
+        assert len(get_skills_handler_defs()) == 16
 
     def test_names_match(self):
         actual = [d.name for d in get_skills_handler_defs()]
