@@ -348,11 +348,11 @@ def test_ionos_hard_context_is_multi_site_not_openlumena_hardcoded():
         configured_sites=sites,
     )
     assert _looks_like_ionos_config_access(
-        r"C:\Users\charl\Desktop\lumena\workspace\formation-pro\api\config.local.php",
+        r"C:\Users\user\Desktop\lumena\workspace\formation-pro\api\config.local.php",
         configured_sites=sites,
     )
     assert not _looks_like_ionos_config_access(
-        r"C:\Users\charl\Desktop\lumena\workspace\site-formation\api\config.local.php",
+        r"C:\Users\user\Desktop\lumena\workspace\site-formation\api\config.local.php",
         configured_sites=sites,
     )
 
@@ -469,13 +469,13 @@ async def test_ionos_bdd_context_hard_blocks_file_shell_and_agents(_registry):
     )
 
     blocked_calls = [
-        ("find_files", {"pattern": "config*", "path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena"}),
-        ("read_file", {"path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena\api\config.php"}),
+        ("find_files", {"pattern": "config*", "path": r"C:\Users\user\Desktop\lumena\workspace\openlumena"}),
+        ("read_file", {"path": r"C:\Users\user\Desktop\lumena\workspace\openlumena\api\config.php"}),
         ("run_command", {"command": "node create_table.js"}),
         ("delegate_task", {
             "agent_type": "code",
             "description": "Créer un script PHP pour ajouter une table test à la BDD IONOS openlumena.",
-            "project_path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena",
+            "project_path": r"C:\Users\user\Desktop\lumena\workspace\openlumena",
         }),
     ]
     for name, args in blocked_calls:
@@ -492,7 +492,7 @@ async def test_ionos_config_path_hard_blocks_without_context_query(_registry):
     _registry.clear_context_filter()
     obs = await _registry.execute(
         "read_file",
-        {"path": r"C:\Users\charl\Desktop\lumena\workspace\openlumena\api\config.local.php"},
+        {"path": r"C:\Users\user\Desktop\lumena\workspace\openlumena\api\config.local.php"},
         caller=REACT,
     )
 

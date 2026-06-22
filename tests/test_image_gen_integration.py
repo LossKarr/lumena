@@ -130,7 +130,8 @@ class TestConfigPanel:
         assert "hunyuan-image-3" in options
         assert "recraft-v4" in options
         assert "dall-e-3" not in options  # Removed obsolete model
-        assert "cogview-4" not in options
+        assert "cogview-4" in options
+        assert "glm-image" in options
         assert "cogview-4-flash" not in options
 
 

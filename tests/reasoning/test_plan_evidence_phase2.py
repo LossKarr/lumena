@@ -226,3 +226,40 @@ def test_process_status_does_not_validate_generic_file_check():
         "agents",
         "agents",
     )
+
+
+# ── P2P : double-délégation (submit_peer_task prouve l'étape malgré kind=SCRIPT) ──
+
+def test_peer_mission_send_proves_step_even_when_objective_mentions_script():
+    """Bug double-délégation : « confier la mission … coder/exécuter un script » est
+    classée kind=SCRIPT, mais submit_peer_task (envoi async) doit PROUVER l'étape via
+    l'accusé du pair — sinon PlanGuard bloque le FINAL et l'agent re-délègue en boucle."""
+    assert has_sufficient_proof(
+        "submit_peer_task",
+        "✅ Mission bien lancée chez Lumena (réf. ta-bf295d8bbb94). Ça va prendre un peu de temps.",
+        "Confier la mission à l'autre Lumena (salon) via submit_peer_task pour coder et exécuter un script Python au choix",
+        "peers",
+        "peers",
+    )
+
+
+def test_peer_mission_failure_does_not_prove_fail_closed():
+    """Fail-closed : un échec de délégation (pas d'accusé de succès) ne coche pas l'étape."""
+    assert not has_sufficient_proof(
+        "submit_peer_task",
+        "❌ Erreur: pair injoignable (HTTP 429) — ReadTimeout",
+        "Confier la mission à l'autre Lumena via submit_peer_task pour coder un script",
+        "peers",
+        "peers",
+    )
+
+
+def test_peer_team_request_chat_still_proves():
+    """peer_team_request (Q/R) reste prouvé par l'accusé, non régressé."""
+    assert has_sufficient_proof(
+        "peer_team_request",
+        "Mission accomplie ! Voici la réponse de l'autre Lumena.",
+        "Demander à l'autre Lumena sa version",
+        "peers",
+        "peers",
+    )

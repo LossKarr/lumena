@@ -289,6 +289,9 @@ class TestPhase87DelegationContext:
             async def chat(self, prompt, **kwargs):
                 captured_prompt["prompt"] = prompt
                 return "OK"
+            async def think_and_act_silent(self, task, **kwargs):
+                captured_prompt["prompt"] = task
+                return "OK"
 
         from web.routes import deps as _deps
         monkeypatch.setattr(_deps, "lumena", FakeLumena())
@@ -308,7 +311,9 @@ class TestPhase87DelegationContext:
         prompt = captured_prompt.get("prompt", "")
         assert "DÉLÉGATION INTER-LUMENA" in prompt
         assert "trusted-peer-id" in prompt
-        assert "chat" in prompt
+        # A4 : le prompt expose la CAPACITÉ réelle (ici chat → lecture seule)
+        assert "chat" in prompt.lower()
+        assert "lecture seule" in prompt.lower()
         assert "Bonjour de l'autre côté." in prompt
 
     def test_original_prompt_preserved_after_prefix(self, tmp_path, monkeypatch):
@@ -320,6 +325,9 @@ class TestPhase87DelegationContext:
             is_initialized = True
             async def chat(self, prompt, **kwargs):
                 captured["prompt"] = prompt
+                return "réponse"
+            async def think_and_act_silent(self, task, **kwargs):
+                captured["prompt"] = task
                 return "réponse"
 
         from web.routes import deps as _deps
@@ -334,7 +342,10 @@ class TestPhase87DelegationContext:
         with TestClient(app) as c:
             c.post("/api/peer/delegate", json=payload,
                    headers={"Authorization": f"Bearer {self._PEER_TOKEN}"})
-        assert captured["prompt"].endswith(original)
+        # A4 Couche 1 : le prompt du pair est ENCADRÉ comme donnée (préambule +
+        # bloc délimité) → il n'est plus en fin de chaîne, mais bien préservé.
+        assert original in captured["prompt"]
+        assert "DEMANDE EXTERNE" in captured["prompt"]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

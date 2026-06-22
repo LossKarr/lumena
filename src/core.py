@@ -788,9 +788,17 @@ class LumenaCore:
         task: str,
         timeout: float = 120.0,
         allowed_tools: Optional[list] = None,
+        allow_when_busy: bool = False,
+        artifacts_out: Optional[list] = None,
+        allowed_tools_hard: bool = False,
+        refusals_out: Optional[list] = None,
     ) -> str:
         """Boucle ReAct silencieuse pour les taches autonomes internes."""
-        return await self._agent_svc.think_and_act_silent(task, timeout, allowed_tools)
+        return await self._agent_svc.think_and_act_silent(
+            task, timeout, allowed_tools, allow_when_busy=allow_when_busy,
+            artifacts_out=artifacts_out, allowed_tools_hard=allowed_tools_hard,
+            refusals_out=refusals_out,
+        )
 
     # =====================
     # Méthodes utilitaires

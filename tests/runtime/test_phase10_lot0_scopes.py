@@ -330,6 +330,7 @@ class TestDelegateScopeValidation:
 
         lumena_mock = MagicMock()
         lumena_mock.chat = AsyncMock(return_value="Délégation OK.")
+        lumena_mock.think_and_act_silent = AsyncMock(return_value="Délégation OK.")
         with patch.object(peers_module.deps, "lumena", lumena_mock):
             r = client.post("/api/peer/delegate", json={
                 "task_id": "t001",
@@ -427,6 +428,7 @@ class TestDelegateScopeValidation:
         app2.dependency_overrides[peers_module.verify_peer_token] = lambda: updated_peer
         lumena_mock = MagicMock()
         lumena_mock.chat = AsyncMock(return_value="Tâche OK.")
+        lumena_mock.think_and_act_silent = AsyncMock(return_value="Tâche OK.")
         with TestClient(app2, raise_server_exceptions=True) as c2:
             with patch.object(peers_module.deps, "lumena", lumena_mock):
                 r2 = c2.post("/api/peer/delegate", json={

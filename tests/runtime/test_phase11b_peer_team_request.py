@@ -173,7 +173,10 @@ class TestPeerTeamToolWiring:
 
         assert [d.name for d in defs][:2] == ["peer_team_request", "orchestrate_peer_request"]
         assert [d.category for d in defs][:2] == ["peers", "peers"]
-        assert "demande à l'autre Lumena" in defs[0].description
+        # P5 : la description oriente désormais vers submit_peer_task pour les missions
+        # à livrables (collaboration synchrone sans fichiers à rapatrier sinon).
+        assert "Lumena" in defs[0].description
+        assert "submit_peer_task" in defs[0].description
 
     def test_all_peer_handler_defs_use_peers_category(self, monkeypatch):
         from src.reasoning.handlers.peer_delegation import get_peer_delegation_handler_defs

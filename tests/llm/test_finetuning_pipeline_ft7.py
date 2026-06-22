@@ -107,7 +107,7 @@ class TestDataPrepFilters:
         )
         entry_lumena = self._make_entry(
             user="Qui es-tu ?" * 3,
-            assistant="Je suis Lumena, ton assistante IA personnelle créée par Charles !",
+            assistant="Je suis Lumena, ton assistante IA personnelle créée par son créateur !",
         )
         # Différents hashes
         entry_claude["metadata"]["content_hash"] = "11111111aaaaaaaa"

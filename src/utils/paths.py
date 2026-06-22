@@ -106,9 +106,22 @@ def ensure_instance_id(env_file: Path | None = None) -> str:
     # Persister dans .env (si accessible)
     target = env_file or (ROOT_DIR / ".env")
     try:
+        import re as _re
         if target.exists():
             text = target.read_text(encoding="utf-8", errors="replace")
-            if "LUMENA_INSTANCE_ID" not in text:
+            if _re.search(r'(?m)^\s*LUMENA_INSTANCE_ID\s*=', text):
+                # La clé existe (éventuellement VIDE ou "default") → on REMPLACE
+                # la ligne. Sans ça, un `LUMENA_INSTANCE_ID=` vide n'était jamais
+                # écrasé → l'identité changeait à chaque boot (doublons de pairs,
+                # auto-jumelage avec soi-même).
+                new_text = _re.sub(
+                    r'(?m)^\s*LUMENA_INSTANCE_ID\s*=.*$',
+                    f"LUMENA_INSTANCE_ID={new_id}",
+                    text,
+                    count=1,
+                )
+                target.write_text(new_text, encoding="utf-8")
+            else:
                 # Append à la fin du fichier
                 sep = "" if text.endswith("\n") else "\n"
                 target.write_text(

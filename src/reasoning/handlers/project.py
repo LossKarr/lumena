@@ -1117,7 +1117,17 @@ async def create_project_handler(
         logger.info("[create_project] Mode CodeAgent direct (défaut)")
         _out = output_dir or ""
         _slug = re.sub(r"[^\w\-.]", "_", (project_name or "project").lower())
-        if not _out and ctx.runtime_root:
+        # ── Mission de pair : forcer la sortie DANS le workspace (projet épinglé) ──
+        # Sinon un output_dir relatif (« wok-nomade ») résout hors workspace
+        # (lumena_root) → la capture par snapshot ne voit rien → le pair ne reçoit
+        # rien. On rebase tout sous workspace/<date>/<projet-épinglé>/<leaf>.
+        from src.tools.file_guardrails import WorkspaceFileGuardrails as _WFG
+        if _WFG._pinned_project:
+            from src.utils.paths import WORKSPACE_DIR as _WS_DIR
+            _today = datetime.now().strftime("%Y-%m-%d")
+            _leaf = (Path(output_dir).name if output_dir else _slug) or _slug
+            _out = str(_WS_DIR / _today / _WFG._pinned_project / _leaf)
+        elif not _out and ctx.runtime_root:
             _today = datetime.now().strftime("%Y-%m-%d")
             _root = ctx.runtime_root
             # Injecter le sous-dossier date sauf si runtime_root le contient déjà

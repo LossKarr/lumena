@@ -1059,6 +1059,66 @@ def _build_effective_message(message: str, attachments: Optional[List[Dict[str, 
     return "\n\n".join(att_sections) + "\n\n" + message
 
 
+def _inject_mission_reminders(message: str) -> str:
+    """Polish web — préfixe au message un rappel des missions inter-Lumena terminées.
+
+    Une mission confiée à un autre Lumena depuis le web ne peut pas être notifiée
+    par push : au prochain message, A le signale ici (« au fait, B a fini X »).
+    Les rappels présentés sont acquittés. Jamais bloquant.
+    """
+    try:
+        from src.runtime.peer_mission_tracker import (
+            pending_web_reminders, ack_web_reminders, list_pending,
+        )
+        done = pending_web_reminders()
+        # P1 — missions ENCORE EN COURS (web) : on informe sans acquitter, pour
+        # qu'un « alors ? » lise le contexte au lieu de re-déléguer / recréer.
+        running = [m for m in list_pending() if (m.get("channel") == "web")]
+        if not done and not running:
+            return message
+
+        lines, ids = [], []
+        for m in done[:5]:
+            ids.append(m.get("task_id"))
+            obj = (m.get("objective") or "").strip()[:120]
+            peer = m.get("peer_name") or "un autre Lumena"
+            if m.get("status") == "completed":
+                res = (m.get("result") or "").strip()[:400]
+                dest = (m.get("artifacts_dir") or "").strip()
+                where = f" Fichiers reçus dans : {dest}." if dest else ""
+                lines.append(f"- ✅ « {obj} » ({peer}) : TERMINÉ.{where} Résultat : {res}")
+            else:
+                # Statut terminal non-« completed » (refused, failed, timeout…) :
+                # message RICHE et actionnable (pourquoi + comment débloquer + qui),
+                # pas juste le mot brut. Sinon A doit DEVINER la raison du refus.
+                from src.runtime.peer_mission_tracker import _build_completion_text
+                lines.append("- " + _build_completion_text(m))
+        for m in running[:5]:
+            obj = (m.get("objective") or "").strip()[:120]
+            peer = m.get("peer_name") or "un autre Lumena"
+            # W2 — vrai dossier de réception (pas le placeholder « <pair> »).
+            try:
+                from src.runtime.peer_artifacts import reception_dir_for
+                where = reception_dir_for(m.get("peer_name") or peer).name
+            except Exception:
+                where = "recu-de-<pair>"
+            lines.append(
+                f"- ⏳ « {obj} » ({peer}) : ENCORE EN COURS chez le pair. "
+                "NE relance PAS, NE recrée PAS toi-même : les fichiers arriveront seuls "
+                f"dans workspace/{where}/. Dis simplement que c'est en cours."
+            )
+        note = (
+            "[NOTE SYSTÈME — état des missions confiées à d'autres Lumena. Mentionne-le "
+            "naturellement et brièvement au début de ta réponse, avant de traiter sa demande. "
+            "Ne re-délègue pas et ne refais pas une mission déjà confiée :]\n"
+            + "\n".join(lines) + "\n---\n"
+        )
+        ack_web_reminders([i for i in ids if i])  # n'acquitte QUE les terminées
+        return note + message
+    except Exception:
+        return message
+
+
 def _request_task_cancel(task_id: Optional[str], reason: str) -> None:
     tid = str(task_id or "").strip()
     if not tid or not _task_orchestrator_enabled():
@@ -1788,6 +1848,8 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
 
         # Envoyer le debut
         effective_message = _build_effective_message(request.message, request.attachments)
+        # Polish web : rappel des missions inter-Lumena terminées (au prochain message).
+        effective_message = _inject_mission_reminders(effective_message)
         yield _emit({"type": "start", "content": "Debut de la reflexion..."})
         yield _emit({"type": "stream_id", "stream_id": stream_id})
 

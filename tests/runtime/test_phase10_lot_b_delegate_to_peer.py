@@ -572,7 +572,14 @@ class TestDelegateSanitizationEnforced:
         """Prompt normal → envelope présente dans context['peer_message']."""
         captured = {}
 
-        async def _capture_post(self_client, url, *, json=None, headers=None, **kw):
+        async def _capture_post(self_client, url, *, json=None, headers=None, content=None, **kw):
+            if json is None and content is not None:
+                import json as _json
+                raw = content.decode("utf-8") if isinstance(content, (bytes, bytearray)) else content
+                try:
+                    json = _json.loads(raw)
+                except Exception:
+                    json = None
             captured.update(json or {})
             mock_resp = MagicMock()
             mock_resp.status_code = 200

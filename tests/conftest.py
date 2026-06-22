@@ -325,6 +325,23 @@ def temp_memory(temp_data_dir):
 
 
 # ============================================================================
+# Déterminisme env — interrupteur maître réseau P2P
+# ============================================================================
+
+@pytest.fixture(autouse=True)
+def _neutralize_peer_master(monkeypatch):
+    """Neutralise `LUMENA_PEER_ENABLED` pour CHAQUE test.
+
+    Le maître réseau (OR-fallback) rallume toutes les capacités P2P. S'il fuit du
+    `.env` du dev (qui peut l'avoir activé via l'UI), les tests « flag OFF → refuse »
+    échouent à tort. On le retire par défaut ; les tests qui veulent le maître ON
+    l'activent explicitement via monkeypatch.setenv.
+    """
+    monkeypatch.delenv("LUMENA_PEER_ENABLED", raising=False)
+    monkeypatch.delenv("LUMENA_PEER_HALT", raising=False)
+
+
+# ============================================================================
 # Fixtures - Async
 # ============================================================================
 

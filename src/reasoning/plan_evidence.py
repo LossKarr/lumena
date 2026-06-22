@@ -320,6 +320,15 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "data_aggregate":              frozenset({ProofCapability.GENERIC_READONLY}),
     "data_unique_values":          frozenset({ProofCapability.GENERIC_READONLY}),
     "data_join":                   frozenset({ProofCapability.GENERIC_READONLY}),
+    # ── P2P : confier/envoyer une mission à un pair = un ENVOI (DELIVERY) ──
+    # Défaut catégorie 'peers' = GENERIC_MUTATION, qui ne satisfait pas une tâche
+    # « envoyer la mission… » (kind DELIVERY → MESSAGE_SEND) → le PlanGuard bloquait
+    # le FINAL. On accorde MESSAGE_SEND (l'accusé « ✅ Mission lancée » fait preuve).
+    "submit_peer_task":        frozenset({ProofCapability.MESSAGE_SEND, ProofCapability.GENERIC_MUTATION}),
+    "peer_team_request":       frozenset({ProofCapability.MESSAGE_SEND, ProofCapability.GENERIC_MUTATION}),
+    "run_peer_task_sync":      frozenset({ProofCapability.MESSAGE_SEND, ProofCapability.GENERIC_MUTATION}),
+    "orchestrate_peer_request": frozenset({ProofCapability.MESSAGE_SEND, ProofCapability.GENERIC_MUTATION}),
+    "delegate_to_peer":        frozenset({ProofCapability.MESSAGE_SEND, ProofCapability.GENERIC_MUTATION}),
 }
 
 
@@ -427,6 +436,8 @@ _CAPABILITY_OBS_MARKERS: Dict[str, tuple] = {
     ProofCapability.MESSAGE_SEND: (
         "envoyé", "sent", "✅", "delivered", "ok",
         "message_id", "message id", "msg_", "id:",
+        # P2P — accusé de délégation de mission à un pair
+        "mission bien lancée", "mission lancée", "réf. ta-", "ref. ta-",
     ),
     ProofCapability.PAYMENT_MUTATION: (
         "✅", "créé", "stripe", "success", "created",
@@ -565,6 +576,13 @@ def has_sufficient_proof(
     failed, overridden = classify_observation(observation)
     if failed and not overridden:
         return False
+    # P2P : une délégation de mission à un pair est prouvée par l'ACCUSÉ du pair
+    # (« ✅ Mission lancée, réf. ta-… »), indépendamment du kind détecté. Le travail
+    # s'exécute à distance/async : on ne peut pas exiger une preuve d'exécution
+    # LOCALE (PROCESS_LAUNCH) alors que l'objectif parle de « coder un script ».
+    # Sans ça, le PlanGuard bloque le FINAL → l'agent re-délègue en boucle (doublons).
+    if is_peer_delegation_success(tool_name, observation):
+        return True
     caps = get_tool_capabilities(tool_name, module_category, semantic_category)
     kind = detect_verification_kind(task_desc)
     if tool_name == "process_status" and not _is_runtime_status_task_desc(task_desc):
@@ -590,6 +608,33 @@ def has_sufficient_proof(
         if markers and any(m in obs_l for m in markers):
             return True
     return False
+
+
+# ── P2P — preuve de délégation de mission à un pair ───────────────────────────
+# Le nom de tâche contient souvent « via submit_peer_task » → le mot « submit »
+# faisait croire au PlanGuard à une soumission de FORMULAIRE (marqueurs jamais
+# réunis → FINAL bloqué → l'agent re-soumet en boucle → 429 → doublon local).
+# Ici on prouve la délégation par l'ACCUSÉ du pair, indépendamment de ce mot.
+_PEER_DELEGATION_TOOLS: frozenset[str] = frozenset({
+    "submit_peer_task", "peer_team_request", "run_peer_task_sync",
+    "orchestrate_peer_request", "delegate_to_peer",
+})
+_PEER_DELEGATION_SUCCESS_MARKERS: tuple = (
+    "mission bien lancée", "mission lancée", "réf. ta-", "ref. ta-",
+    "mission accomplie", "terminé avec succès", "termine avec succes",
+)
+
+
+def is_peer_delegation_success(tool_name: str, observation: str) -> bool:
+    """True si `observation` est l'accusé de SUCCÈS d'une délégation à un pair.
+
+    Fail-closed : un échec (« HTTP 429 », « pair inconnu », « ReadTimeout »…) ne
+    contient aucun marqueur de succès → False → la tâche n'est pas cochée.
+    """
+    if tool_name not in _PEER_DELEGATION_TOOLS:
+        return False
+    obs_l = (observation or "").lower()
+    return any(m in obs_l for m in _PEER_DELEGATION_SUCCESS_MARKERS)
 
 
 # ── Fonctions pures Phase 1 ────────────────────────────────────────────────────

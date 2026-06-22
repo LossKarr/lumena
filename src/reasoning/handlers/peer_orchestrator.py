@@ -96,6 +96,16 @@ def infer_peer_team_routes(
 
 
 def _is_collaboration_enabled() -> bool:
+    # Kill-switch SOFT : le halt veto toute NOUVELLE collaboration (in/out).
+    # OR-fallback : le MAÎTRE (LUMENA_PEER_ENABLED) allume aussi la collaboration.
+    try:
+        from src.runtime.peer_network_autonomy import is_peer_halt_enabled, is_peer_master_enabled
+        if is_peer_halt_enabled():
+            return False
+        if is_peer_master_enabled():
+            return True
+    except Exception:
+        pass
     return os.getenv("LUMENA_PEER_COLLABORATION", "0").strip() == "1"
 
 
@@ -347,12 +357,13 @@ async def orchestrate_peer_request_handler(
             _audit("peer_orchestration_started", candidate.instance_id, task_id, scope, "running")
 
             import httpx as _httpx
+            from src.runtime.peer_signing import build_signed_request
+            _content, _headers = build_signed_request(
+                payload, from_id=_OWN_ID, to_id=candidate.instance_id,
+                peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+            )
             async with _httpx.AsyncClient(timeout=float(safe_timeout)) as client:
-                r = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Authorization": f"Bearer {outbound_token}"},
-                )
+                r = await client.post(url, content=_content, headers=_headers)
             if r.status_code != 200:
                 failures.append(f"{peer_name}: HTTP {r.status_code}")
                 _audit("peer_orchestration_failed", candidate.instance_id, task_id, scope, "error",
@@ -482,12 +493,15 @@ def get_peer_orchestrator_handler_defs() -> List:
         HandlerDef(
             name="peer_team_request",
             description=(
-                "Entrée principale pour les demandes naturelles de collaboration entre Lumena. "
-                "À utiliser quand l'utilisateur dit 'demande à l'autre Lumena', 'demande lui', "
-                "'fais vérifier par le salon', 'répartis', ou demande une tâche à une autre "
-                "instance. Le tool choisit automatiquement chat, knowledge.query ou "
-                "task.delegate, la capacité utile (browser/documents), le meilleur pair, et "
-                "fallback proprement."
+                "Collaboration RAPIDE et SYNCHRONE avec un autre Lumena : poser une question, "
+                "faire vérifier/relire, obtenir un avis — quand il n'y a PAS de fichiers à "
+                "rapatrier. Le tool choisit auto chat/knowledge.query, le meilleur pair, et "
+                "fallback proprement. "
+                "⚠️ Pour CONFIER UNE MISSION qui PRODUIT DES FICHIERS (créer un site, des "
+                "documents, du code…), n'utilise PAS cet outil : utilise `submit_peer_task` "
+                "(asynchrone) — c'est lui seul qui rapatrie automatiquement les livrables dans "
+                "ton workspace. Ne JAMAIS l'utiliser non plus pour vérifier l'état d'une mission "
+                "déjà confiée (cela relance une délégation)."
             ),
             parameters={
                 "properties": {

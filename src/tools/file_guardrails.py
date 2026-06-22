@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -217,6 +218,12 @@ class WorkspaceFileGuardrails:
     """Workspace-aware path resolver + strict post-write validation."""
 
     _current_project: Optional[str] = None
+    # Projet ÉPINGLÉ pour la durée d'une mission/d'un lot : quand il est posé,
+    # TOUS les fichiers (web ou non) vont dans CE seul `projet-…` au lieu de
+    # dériver un dossier par nom de fichier (`projet-notes`, `projet-readme`…).
+    # Évite le scatter d'un même livrable + la boucle de réécriture de l'agent.
+    # Garde la convention date/projet du reste du système.
+    _pinned_project: Optional[str] = None
     _project_extensions = {
         ".html",
         ".htm",
@@ -471,12 +478,29 @@ class WorkspaceFileGuardrails:
 
         return True
 
-    def _normalize_project_name(self, value: str) -> str:
-        clean = value.strip().lower().replace(" ", "-").replace("_", "-")
+    @staticmethod
+    def _normalize_project_name(value: str) -> str:
+        clean = (value or "").strip().lower().replace(" ", "-").replace("_", "-")
         clean = clean.strip("-")
         if not clean:
             clean = "default"
         return clean if clean.startswith("projet-") else f"projet-{clean}"
+
+    @classmethod
+    def pin_project(cls, name: Optional[str]) -> None:
+        """Épingle un projet unique pour le lot courant (None = relâche)."""
+        cls._pinned_project = cls._normalize_project_name(name) if name else None
+
+    @classmethod
+    @contextmanager
+    def pinned_project(cls, name: Optional[str]):
+        """Contexte : tous les fichiers écrits dedans vont au même projet épinglé."""
+        prev = cls._pinned_project
+        cls.pin_project(name)
+        try:
+            yield
+        finally:
+            cls._pinned_project = prev
 
     def get_workspace_path(self, original_path: str, project_name: Optional[str] = None) -> Path:
         """Compute workspace target path while preserving relative subfolders."""
@@ -484,7 +508,10 @@ class WorkspaceFileGuardrails:
         today = datetime.now().strftime("%Y-%m-%d")
         ext = original.suffix.lower()
 
-        if ext in self._project_extensions:
+        if WorkspaceFileGuardrails._pinned_project and not project_name:
+            # Mission/lot épinglé : un seul dossier pour TOUT le livrable.
+            project_folder = WorkspaceFileGuardrails._pinned_project
+        elif ext in self._project_extensions:
             if project_name:
                 project_folder = self._normalize_project_name(project_name)
                 WorkspaceFileGuardrails._current_project = project_folder

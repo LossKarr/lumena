@@ -48,6 +48,13 @@ def _make_app() -> FastAPI:
 def autonomy(tmp_path, monkeypatch):
     from src.runtime import peer_network_autonomy as mod
 
+    # Isolation : pas de vrai browse mDNS réseau pendant les tests de découverte
+    # (le .env de dev peut avoir LUMENA_MDNS_DISCOVERY=1 → résultats non
+    # déterministes). La découverte mDNS est testée séparément (test_phase8_mdns).
+    monkeypatch.setenv("LUMENA_MDNS_DISCOVERY", "0")
+    # Pas d'auto-jumelage de flotte involontaire (pas d'appel réseau réel).
+    monkeypatch.delenv("LUMENA_FLEET_KEY", raising=False)
+
     reg = tmp_path / "peer_registry.json"
     monkeypatch.setattr(mod, "_PEER_REGISTRY_FILE", reg)
     monkeypatch.setattr(peers_module, "_PEER_REGISTRY_FILE", reg)
@@ -117,7 +124,7 @@ class TestPeerNetworkAutonomy:
                 "instance_name": "Salon",
                 "host": "192.168.1.100",
                 "port": 8081,
-                "version": "1.0.45",
+                "version": "1.0.46",
                 "role": "standalone",
                 "capabilities": ["chat", "browser"],
                 "requires_pairing": True,

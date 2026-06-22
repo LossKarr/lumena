@@ -130,7 +130,7 @@ class TestFuzzyRoutingThreshold:
     def test_name_in_desc_lowers_threshold(self):
         """Si le nom du projet est dans la description, conf 0.80 suffit."""
         from pathlib import Path as P
-        matched = str(P(r"C:\Users\charl\Desktop\lumena\workspace\2026-04-26\echo-drift"))
+        matched = str(P(r"C:\Users\user\Desktop\lumena\workspace\2026-04-26\echo-drift"))
         project_name = P(matched).name.lower()
         description = "Corrige le bug d'affichage dans echo-drift, le jeu ne démarre pas"
         assert project_name in description.lower()
@@ -139,7 +139,7 @@ class TestFuzzyRoutingThreshold:
     def test_name_not_in_desc_keeps_strict(self):
         """Si le nom n'est pas dans la description, on reste à 0.90."""
         from pathlib import Path as P
-        matched = str(P(r"C:\Users\charl\Desktop\lumena\workspace\2026-04-26\echo-drift"))
+        matched = str(P(r"C:\Users\user\Desktop\lumena\workspace\2026-04-26\echo-drift"))
         project_name = P(matched).name.lower()
         description = "Crée un jeu 3D complet avec Three.js"
         assert project_name not in description.lower()
@@ -191,7 +191,7 @@ from web.routes.chat import _extract_dated_workspace
 class TestExtractDatedWorkspace:
     """Tests pour l'extraction de date depuis le message utilisateur."""
 
-    WS = r"C:\Users\charl\Desktop\lumena\workspace"
+    WS = r"C:\Users\user\Desktop\lumena\workspace"
 
     def test_du_dd_mm(self, tmp_path):
         dated = tmp_path / "2026-04-26"

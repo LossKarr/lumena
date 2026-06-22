@@ -121,7 +121,11 @@ async def query_peer_knowledge_handler(
 
     # 6. Peer dans le registre
     peers = _load_peers()
-    peer = peers.get(instance_id)
+    from src.runtime.peer_awareness import resolve_peer_identifier
+    _resolved_id = resolve_peer_identifier(peers, instance_id)
+    if _resolved_id:
+        instance_id = _resolved_id
+    peer = peers.get(_resolved_id) if _resolved_id else None
     if peer is None:
         _audit("knowledge_query_refused", instance_id, task_id,
                "knowledge.query", "refused", "Pair absent du registre")
@@ -227,15 +231,16 @@ async def query_peer_knowledge_handler(
     _audit("knowledge_query_started", instance_id, task_id,
            "knowledge.query", "running")
 
-    # 13. Appel HTTP
+    # 13. Appel HTTP (Bearer + signature de flotte A2 si pair fleet)
     try:
         import httpx as _httpx
+        from src.runtime.peer_signing import build_signed_request
+        _content, _headers = build_signed_request(
+            payload, from_id=_OWN_ID, to_id=peer.get("instance_id", instance_id),
+            peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=float(safe_timeout)) as client:
-            r = await client.post(
-                url,
-                json=payload,
-                headers={"Authorization": f"Bearer {outbound_token}"},
-            )
+            r = await client.post(url, content=_content, headers=_headers)
 
         if r.status_code != 200:
             _audit("knowledge_query_failed", instance_id, task_id,
@@ -329,7 +334,11 @@ async def propose_peer_knowledge_handler(
     instance_id = instance_id.strip()
     safe_timeout = max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, int(timeout_sec)))
     peers = _load_peers()
-    peer = peers.get(instance_id)
+    from src.runtime.peer_awareness import resolve_peer_identifier
+    _resolved_id = resolve_peer_identifier(peers, instance_id)
+    if _resolved_id:
+        instance_id = _resolved_id
+    peer = peers.get(_resolved_id) if _resolved_id else None
     if not peer:
         return HandlerResult.fail(f"Pair {instance_id!r} inconnu.", handler_name="propose_peer_knowledge")
     peer_name = peer.get("instance_name") or instance_id[:12]
@@ -377,12 +386,16 @@ async def propose_peer_knowledge_handler(
 
     try:
         import httpx as _httpx
+        from src.runtime.peer_signing import build_signed_request
         _audit("knowledge_share_started", instance_id, task_id, "knowledge.share", "running")
+        _content, _headers = build_signed_request(
+            payload, from_id=_OWN_ID, to_id=peer.get("instance_id", instance_id),
+            peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=float(safe_timeout)) as client:
             r = await client.post(
                 f"http://{host}:{port}/api/peer/knowledge/propose",
-                json=payload,
-                headers={"Authorization": f"Bearer {outbound_token}"},
+                content=_content, headers=_headers,
             )
         if r.status_code != 200:
             _audit("knowledge_share_failed", instance_id, task_id, "knowledge.share", "error", f"HTTP {r.status_code}")

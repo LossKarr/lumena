@@ -275,3 +275,57 @@ class TestAntiDriftClassification:
             f"{len(unclassified)} outil(s) natif(s) non classé(s) — "
             f"ajoute-les à READONLY ou à une famille d'action : {sorted(unclassified)}"
         )
+
+
+class TestPeerDelegationProof:
+    """P2P — « envoyer/confier une mission à un pair » est une preuve valide.
+
+    Régression du faux positif vu en runtime (log A 08:40:00) : l'agent dit
+    « j'ai envoyé la mission à l'autre Lumena » après submit_peer_task /
+    peer_team_request → ne doit PAS déclencher de retry d'hallucination.
+    """
+
+    def _q(self, text, tools):
+        from src.reasoning.hallucination_guard import hallucination_retry_query
+        q, _ = hallucination_retry_query(text, "orig", set(tools), 0)
+        return q
+
+    def test_peer_in_any_send(self):
+        from src.reasoning.hallucination_guard import _HC_TOOLS_ANY_SEND, _HC_TOOLS_PEER
+        assert _HC_TOOLS_PEER <= _HC_TOOLS_ANY_SEND
+
+    def test_envoye_mission_avec_submit_peer_task_ok(self):
+        assert self._q("J'ai envoyé la mission à l'autre Lumena", {"submit_peer_task"}) is None
+
+    def test_envoye_mission_avec_peer_team_request_ok(self):
+        assert self._q("J'ai bien envoyé la mission à l'autre Lumena", {"peer_team_request"}) is None
+
+    def test_confie_mission_a_un_pair_avec_outil_peer_ok(self):
+        assert self._q("J'ai confié la mission à l'autre Lumena", {"peer_team_request"}) is None
+
+    def test_recall_confie_mission_sans_outil_courant_pas_de_faux_positif(self):
+        # Régression runtime (log A 11:17:23) : au tour « alors ? », l'agent SE
+        # SOUVIENT d'avoir confié la mission (tour précédent) mais n'utilise que
+        # des outils de lecture ce tour-ci. NE DOIT PAS déclencher de retry
+        # (sinon il se renie et re-délègue). Pas de pattern dédié « confié ».
+        assert self._q("J'ai confié la mission à l'autre Lumena", {"list_directory"}) is None
+        assert self._q("la mission que j'ai confiée à l'autre Lumena", set()) is None
+
+    def test_delegation_locale_codeagent_pas_de_faux_positif(self):
+        # « délégué … au CodeAgent » (local) ne doit pas exiger d'outil peer.
+        assert self._q("J'ai délégué la tâche au CodeAgent", {"delegate_task"}) is None
+
+    # ── Lot 3 : tour « alors ?/vérifie » — rappel d'une mission async ──────────
+    def test_recall_cest_fait_mission_pair_pas_de_faux_positif(self):
+        # Régression log A 02:35:25 : « c'est fait » (mission déléguée) + outils de
+        # LECTURE seulement → ne doit PAS déclencher de retry (travail fait en async).
+        txt = "C'est fait : la mission déléguée à l'autre Lumena est terminée."
+        assert self._q(txt, {"list_directory"}) is None
+
+    def test_recall_la_tache_confiee_au_pair_terminee(self):
+        txt = "La tâche que j'ai confiée au pair est terminée, les fichiers sont là."
+        assert self._q(txt, {"list_directory", "find_files"}) is None
+
+    def test_cest_fait_hors_contexte_pair_reste_strict(self):
+        # « c'est fait » SANS contexte pair + aucune action → reste une hallucination.
+        assert self._q("Voilà, c'est fait !", set()) is not None

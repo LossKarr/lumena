@@ -55,6 +55,7 @@ def _payload(task_id: str = "e3-task-1", objective: str = "Fais un resume court.
 def _lumena_ok(result: str = "OK") -> MagicMock:
     lumena = MagicMock()
     lumena.chat = AsyncMock(return_value=result)
+    lumena.think_and_act_silent = AsyncMock(return_value=result)
     return lumena
 
 
@@ -133,6 +134,7 @@ class TestRateLimit:
             return "done"
 
         lumena.chat = AsyncMock(side_effect=_slow)
+        lumena.think_and_act_silent = AsyncMock(side_effect=_slow)
         with _client(tmp_path, monkeypatch, lumena=lumena) as client:
             first = client.post("/api/peer/tasks/submit", json=_payload("e3-par-1"))
             second = client.post("/api/peer/tasks/submit", json=_payload("e3-par-2"))

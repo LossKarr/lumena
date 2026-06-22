@@ -149,18 +149,27 @@ def advertise_service(
         txt = build_txt_records(instance_id, instance_name, role, version, capabilities, port)
         service_name = f"{SERVICE_NAME_PREFIX}{instance_id}.{SERVICE_TYPE}"
 
+        # Nom d'hôte mDNS sûr : seuls [a-z0-9-] (les UUID/IDs avec d'autres
+        # caractères font échouer register_service sur les zeroconf récents).
+        safe_host = "".join(c if (c.isalnum() or c == "-") else "-" for c in str(instance_id).lower())[:40] or "lumena"
         info = ServiceInfo(
             SERVICE_TYPE,
             service_name,
             addresses=[socket.inet_aton(ip)],
             port=port,
             properties=txt,
-            server=f"{instance_id}.local.",
+            server=f"{safe_host}.local.",
         )
         zc = Zeroconf()
-        zc.register_service(info)
+        # allow_name_change : évite NonUniqueNameException si déjà annoncé.
+        zc.register_service(info, allow_name_change=True)
         return (zc, info)
-    except Exception:
+    except Exception as exc:
+        try:
+            from loguru import logger as _lg
+            _lg.warning("[mDNS] advertise_service échoué ({}): {}", type(exc).__name__, str(exc)[:200])
+        except Exception:
+            pass
         return None
 
 
@@ -225,6 +234,46 @@ def stop_service(handle: Optional[Tuple[Any, Any]]) -> None:
         zc.close()
     except Exception:
         pass
+
+
+# ── A1.5 — Annonce mDNS automatique au boot (singleton géré ici) ─────────────
+
+_ADVERTISE_HANDLE: Optional[Tuple[Any, Any]] = None
+
+
+def start_mdns_advertise_from_env() -> bool:
+    """Annonce cette instance sur le LAN (`_lumena._tcp.local`) à partir de l'env.
+
+    Idempotent. Retourne True si l'annonce est active. No-op si mDNS indisponible
+    (flag off ou zeroconf absent) → Lumena fonctionne normalement.
+    """
+    global _ADVERTISE_HANDLE
+    if not is_mdns_available() or _ADVERTISE_HANDLE is not None:
+        return _ADVERTISE_HANDLE is not None
+    try:
+        from src.utils.paths import INSTANCE_ID, INSTANCE_NAME
+        role = os.getenv("LUMENA_INSTANCE_ROLE", "standalone")
+        version = os.getenv("LUMENA_VERSION", "") or "1.0"
+        port = int(os.getenv("LUMENA_PORT", "8080"))
+        caps = ["chat"]
+        extra = os.getenv("LUMENA_EXTRA_CAPABILITIES", "").strip()
+        if extra:
+            caps.extend(c.strip() for c in extra.split(",") if c.strip())
+        handle = advertise_service(INSTANCE_ID, INSTANCE_NAME, role, version, caps, port)
+        if handle is not None:
+            _ADVERTISE_HANDLE = handle
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def stop_mdns_advertise() -> None:
+    """Arrête l'annonce mDNS de cette instance (singleton)."""
+    global _ADVERTISE_HANDLE
+    if _ADVERTISE_HANDLE is not None:
+        stop_service(_ADVERTISE_HANDLE)
+        _ADVERTISE_HANDLE = None
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

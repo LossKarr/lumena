@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from web.routes import deps
@@ -204,6 +204,8 @@ def _sanitize_peer(entry: dict) -> dict:
     """Retire les tokens bruts et ajoute has_peer_token pour l'UI."""
     safe = {k: v for k, v in entry.items() if k not in ("peer_token_outbound", "peer_token_hash")}
     safe["has_peer_token"] = bool(entry.get("peer_token_hash"))
+    safe.setdefault("capability_level", "chat")  # A3 brique 2 : défaut explicite pour l'UI
+    safe.setdefault("alias", "")  # Bloc A : nom personnalisé du pair (vide = nom d'origine)
     return safe
 
 
@@ -464,11 +466,11 @@ async def discover_peers(req: DiscoverRequest) -> Dict[str, Any]:
     Les pairs découverts sont automatiquement ajoutés au registre avec trust='unknown'.
     Aucun pair unknown ne peut recevoir de délégation.
     """
-    from src.runtime.peer_discovery import PEER_DISCOVERY_ENABLED, scan_lan_for_peers
-    if not PEER_DISCOVERY_ENABLED:
+    from src.runtime.peer_discovery import is_peer_discovery_enabled, scan_lan_for_peers
+    if not is_peer_discovery_enabled():
         raise HTTPException(
             status_code=403,
-            detail="Découverte LAN désactivée. Activez LUMENA_PEER_DISCOVERY=1.",
+            detail="Découverte LAN désactivée. Activez LUMENA_PEER_DISCOVERY=1 (ou l'interrupteur réseau).",
         )
 
     # Validation réseau — uniquement plages privées RFC1918 + loopback
@@ -497,15 +499,34 @@ async def discover_peers(req: DiscoverRequest) -> Dict[str, Any]:
     # Timeout borné
     safe_timeout = max(_TIMEOUT_MIN, min(_TIMEOUT_MAX, req.timeout))
 
-    # Timeout global : le scan ne peut jamais bloquer plus de 12s côté serveur
-    _GLOBAL_SCAN_TIMEOUT = 12.0
-    try:
-        found = await asyncio.wait_for(
-            scan_lan_for_peers(network=req.network, ports=req.ports, timeout=safe_timeout),
-            timeout=_GLOBAL_SCAN_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        found = []
+    # Timeout global élargi : couvrir un /24 complet (jusqu'à 2540 sondes) sans
+    # tronquer (l'ancien 12s ratait les hôtes "lointains", ex: .57).
+    _GLOBAL_SCAN_TIMEOUT = 30.0
+    # "Auto" (network=None) → scanner TOUS les sous-réseaux privés, pas seulement
+    # la route par défaut (qui peut tomber sur un adaptateur VIRTUEL ex 192.168.80.x).
+    _networks = [req.network]
+    if req.network is None:
+        try:
+            from src.runtime.network_diagnostics import get_network_interfaces
+            _nets = [i.get("network") for i in get_network_interfaces() if i.get("network")]
+            _networks = _nets[:4] if _nets else [None]
+        except Exception:
+            _networks = [None]
+    found = []
+    _seen_ids: set = set()
+    for _net in _networks:
+        try:
+            _part = await asyncio.wait_for(
+                scan_lan_for_peers(network=_net, ports=req.ports, timeout=safe_timeout),
+                timeout=_GLOBAL_SCAN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            _part = []
+        for _p in _part:
+            _pid = _p.get("instance_id")
+            if _pid and _pid not in _seen_ids:
+                _seen_ids.add(_pid)
+                found.append(_p)
     # Persist les pairs découverts (trust=unknown — ne peuvent pas recevoir de délégation)
     with _PEER_LOCK:
         data = _load_peers()
@@ -519,14 +540,72 @@ async def discover_peers(req: DiscoverRequest) -> Dict[str, Any]:
 
 # ── Phase 8.5 — Auth peer token (défini ici car utilisé par receive_delegation) ──
 
+async def _enforce_peer_signature(request: Request, peer: dict) -> None:
+    """A2 — Vérifie la signature HMAC d'un message reçu d'un pair de **flotte**.
+
+    Ne s'applique QUE si : clé de flotte présente, pair `pairing_method=="fleet"`,
+    et signing actif. Sinon (pairs jumelés par code) → Bearer seul, inchangé.
+
+    Vérifie dans l'ordre : présence en-têtes → fraîcheur horodatage → validité
+    crypto (sur le **body brut**, bytes exacts émis) → non-rejeu du nonce. Le
+    nonce n'est consommé qu'APRÈS validation crypto (un message invalide ne peut
+    pas « brûler » le nonce d'un message légitime). Tout rejet est audité.
+    """
+    from src.runtime.peer_fleet import get_fleet_key
+    from src.runtime.peer_signing import (
+        is_signing_enabled, is_timestamp_fresh, seen_nonce, verify_envelope_signature,
+        SIG_HEADER, TS_HEADER, NONCE_HEADER,
+    )
+    from src.runtime.peer_protocol import write_audit_log
+    from src.utils.paths import INSTANCE_ID as OWN_ID
+
+    fleet_key = get_fleet_key()
+    if not (fleet_key and peer.get("pairing_method") == "fleet" and is_signing_enabled()):
+        return  # pair non-flotte / signing désactivé → Bearer seul (compat ascendante)
+
+    peer_id = peer.get("instance_id", "")
+    sig = request.headers.get(SIG_HEADER, "").strip()
+    ts = request.headers.get(TS_HEADER, "").strip()
+    nonce = request.headers.get(NONCE_HEADER, "").strip()
+
+    def _reject(reason: str, http_detail: str) -> None:
+        try:
+            write_audit_log(
+                event=reason, from_instance_id=peer_id, task_id="",
+                scope="", status="refused", detail=http_detail,
+            )
+        except Exception:
+            pass
+        raise HTTPException(status_code=401, detail=http_detail)
+
+    if not sig or not ts or not nonce:
+        _reject("signature_missing", "Signature de flotte requise (X-Lumena-Sig/Ts/Nonce manquant).")
+    if not is_timestamp_fresh(ts):
+        _reject("signature_stale", "Horodatage hors fenêtre — message rejeté (anti-rejeu).")
+
+    body = await request.body()
+    canonical = body.decode("utf-8", "replace")
+    if not verify_envelope_signature(
+        sig, canonical, from_id=peer_id, to_id=OWN_ID, ts=ts, nonce=nonce, fleet_key=fleet_key
+    ):
+        _reject("signature_invalid", "Signature de flotte invalide — intégrité non vérifiée.")
+    # Crypto valide → on peut consommer le nonce sans risque de DoS sur les légitimes.
+    if seen_nonce(nonce):
+        _reject("signature_replay", "Nonce déjà utilisé — rejeu détecté.")
+
+
 async def verify_peer_token(
+    request: Request,
     authorization: Optional[str] = Header(None),
 ) -> dict:
-    """Vérifie le peer token sur la route /api/peer/delegate.
+    """Vérifie le peer token (+ signature de flotte A2) sur les routes pair.
 
     Le token présenté est haché (SHA-256) et comparé aux peer_token_hash stockés
     dans le registre de pairs. Seul un pair trusted avec un hash valide est accepté.
     Le token admin ne traverse jamais le réseau entre pairs.
+
+    A2 : pour un pair de flotte, la signature HMAC du message est en plus
+    exigée et vérifiée (intégrité + authenticité + anti-rejeu).
     """
     from src.runtime.peer_tokens import verify_peer_token as _verify
 
@@ -541,6 +620,7 @@ async def verify_peer_token(
         token_hash = peer.get("peer_token_hash")
         if token_hash and peer.get("trust") == "trusted":
             if _verify(candidate, token_hash):
+                await _enforce_peer_signature(request, peer)
                 with _PEER_LOCK:
                     fresh = _load_peers()
                     if peer["instance_id"] in fresh:
@@ -574,6 +654,37 @@ class TaskStatusResponse(BaseModel):
 # Stockage en mémoire des tâches délégées (task_id → résultat)
 _delegated_tasks: Dict[str, dict] = {}
 _tasks_lock = threading.Lock()
+
+
+def _peer_execution_allowed_tools(peer: dict):
+    """(allowed_tools, level) pour exécuter une requête de ce pair (A3 — brique 2).
+
+    Le **niveau de capacité accordé** au pair (défaut `chat`) borne le jeu
+    d'outils de l'agent qui traite la demande. `chat` = liste blanche
+    lecture/savoir ; `mission` = `None` (**tous les outils**, CodeAgent inclus).
+    """
+    from src.runtime.peer_capability import normalize_level, resolve_allowed_tools
+
+    level = normalize_level((peer or {}).get("capability_level"))
+    return resolve_allowed_tools(level), level
+
+
+def _capability_prompt_note(level: str) -> str:
+    """Note de capacité à injecter dans le prompt de délégation.
+
+    Aligne ce que l'agent CROIT pouvoir faire sur ce qui est réellement enforced
+    (filtre A4 Couche 0). Sans ça, le prompt affichait « Scope : task.delegate »
+    alors que le niveau était `chat` → l'agent retentait write_file en boucle.
+    """
+    from src.runtime.peer_capability import normalize_level as _nl
+    if _nl(level) == "mission":
+        return "Capacité accordée : MISSION (tous tes outils sont disponibles)."
+    return (
+        "⚠️ CAPACITÉ ACCORDÉE : CHAT — LECTURE SEULE. Aucune écriture ni action "
+        "(write_file, create_project, mail, etc.) n'est possible ; seuls les outils "
+        "de lecture/recherche fonctionnent. Si la demande exige une action, réponds "
+        "honnêtement que ton niveau ne te permet que la lecture."
+    )
 
 
 @router.post("/api/peer/delegate")
@@ -655,6 +766,20 @@ async def receive_delegation(
         raise HTTPException(status_code=403, detail=str(exc))
 
     # 3. Exécution (scope=chat → appel deps.lumena.chat)
+    # A4 Couche 2 — refus fail-closed si tentative d'injection dans le prompt du pair.
+    from src.runtime.peer_messages import detect_prompt_injection as _detect_inj
+    _inj = _detect_inj(req.prompt)
+    if _inj:
+        write_audit_log(
+            event="delegate_refused", from_instance_id=req.from_instance_id,
+            task_id=req.task_id, scope=req.scope, status="refused",
+            detail=f"Injection détectée ({_inj}).",
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=f"Demande refusée : tentative d'injection détectée ({_inj}).",
+        )
+
     write_audit_log(
         event="delegate_accepted",
         from_instance_id=req.from_instance_id,
@@ -664,30 +789,40 @@ async def receive_delegation(
     )
     # Phase 8.7 — Préfixe de contexte inter-instance pour éviter que le LLM
     # nie la délégation faute de savoir qu'il est appelé via le protocole pair.
+    # A4 Couche 1 — on retire l'ancien préambule « délégation autorisée, réponds
+    # normalement » (amplificateur d'injection, G3) et on encadre le prompt du pair
+    # comme DONNÉE.
+    from src.runtime.peer_messages import frame_external_request as _frame
+    _, _lvl = _peer_execution_allowed_tools(_peer)
     _delegation_ctx = (
         f"[CONTEXTE SYSTÈME — DÉLÉGATION INTER-LUMENA]\n"
-        f"Tu es une instance Lumena appelée par une autre instance Lumena "
-        f"via le protocole inter-instance. Cette délégation est active, "
-        f"autorisée et vérifiée.\n"
+        f"Tu es appelée par une autre instance Lumena via le protocole inter-instance "
+        f"(authentifié).\n"
         f"Instance appelante : {req.from_instance_id}\n"
-        f"Scope autorisé : {req.scope}\n"
-        f"Réponds à la tâche demandée normalement.\n\n"
+        f"{_capability_prompt_note(_lvl)}\n\n"
     )
-    _augmented_prompt = _delegation_ctx + req.prompt
+    _augmented_prompt = _delegation_ctx + _frame(req.prompt)
     try:
         if deps.lumena is None:
             raise RuntimeError("Lumena non initialisée sur cette instance")
-        response = await deps.lumena.chat(
+        # A3 — brique 2 : exécution BORNÉE par le niveau de capacité accordé au
+        # pair (défaut `chat`). Toolset restreint → l'agent n'a entre les mains
+        # que les outils du niveau. `allow_when_busy` : honorer la requête pair
+        # même si l'utilisateur local discute.
+        _allowed, _level = _peer_execution_allowed_tools(_peer)
+        response = await deps.lumena.think_and_act_silent(
             _augmented_prompt,
-            source_channel="peer_delegation",
-            sender={"id": req.from_instance_id, "name": req.actor_id},
+            timeout=120.0,
+            allowed_tools=(list(_allowed) if _allowed is not None else None),
+            allow_when_busy=True,
+            allowed_tools_hard=(_allowed is not None),  # A4 — chat = filtre DUR
         )
         result = {
             "task_id": req.task_id,
             "status": "completed",
             "response": response or "",
-            "evidence": [f"scope={req.scope}", f"from={req.from_instance_id}"],
-            "logs": [f"Délégation acceptée — task_id={req.task_id}"],
+            "evidence": [f"scope={req.scope}", f"from={req.from_instance_id}", f"level={_level}"],
+            "logs": [f"Délégation acceptée — task_id={req.task_id} (niveau {_level})"],
         }
     except Exception as exc:
         result = {
@@ -727,6 +862,339 @@ async def get_peer_audit_log(limit: int = 100) -> Dict[str, Any]:
     from src.runtime.peer_protocol import read_audit_log
     entries = read_audit_log(limit=limit)
     return {"entries": entries, "count": len(entries)}
+
+
+@router.get("/api/peer/history", dependencies=[Depends(deps.verify_admin_token)])
+async def get_peer_history(limit: int = 200) -> Dict[str, Any]:
+    """Vue produit **READ-ONLY** : historique des échanges inter-Lumena.
+
+    Agrège les sources persistées (audit inter-instances + événements de tâches
+    + connaissances partagées) en **fils lisibles** groupés par tâche/savoir.
+    Ne mute RIEN (pas d'import, pas de nettoyage, pas d'action). Sanitizé :
+    aucun token/secret/payload brut ne ressort (cf. `peer_history`).
+    """
+    from src.runtime.peer_protocol import read_audit_log
+    from src.runtime.peer_history import build_peer_history, history_stats
+    from src.utils.paths import INSTANCE_ID as _own_id
+
+    safe_limit = max(10, min(2000, int(limit)))
+
+    audit = read_audit_log(limit=safe_limit * 4)
+    task_events = _read_task_events(task_id=None, limit=safe_limit * 4)
+
+    knowledge: List[dict] = []
+    try:
+        from src.runtime.shared_knowledge import load_shared_knowledge, public_knowledge_view
+        raw = load_shared_knowledge()
+        if isinstance(raw, dict):
+            for kid, rec in raw.items():
+                view = public_knowledge_view(rec)
+                view["id"] = kid
+                knowledge.append(view)
+    except Exception:
+        knowledge = []
+
+    with _PEER_LOCK:
+        peers = _load_peers()
+    peer_names = {
+        pid: (p.get("instance_name") or pid[:12])
+        for pid, p in peers.items()
+    }
+
+    # Missions SORTANTES suivies par cette instance (tracker côté A).
+    missions: List[dict] = []
+    try:
+        from src.runtime.peer_mission_tracker import list_all_missions
+        missions = list_all_missions()
+    except Exception:
+        missions = []
+
+    exchanges = build_peer_history(
+        audit=audit,
+        task_events=task_events,
+        knowledge=knowledge,
+        own_id=_own_id,
+        peer_names=peer_names,
+        missions=missions,
+        limit=safe_limit,
+    )
+    return {"exchanges": exchanges, "count": len(exchanges), "stats": history_stats(exchanges)}
+
+
+@router.get("/api/peer/missions/active", dependencies=[Depends(deps.verify_admin_token)])
+async def get_active_peer_missions() -> Dict[str, Any]:
+    """Vue **READ-ONLY** des missions sortantes encore en cours (Cran 1 — UI live).
+
+    Wrap de `list_pending()` (statuts non terminaux). Sanitizé : aucun token ni
+    payload brut ne ressort, uniquement de quoi afficher un suivi visuel.
+    """
+    try:
+        from src.runtime.peer_mission_tracker import list_pending
+        pending = list_pending()
+    except Exception:
+        pending = []
+
+    missions = [
+        {
+            "task_id": m.get("task_id", ""),
+            "peer_id": m.get("peer_id", ""),
+            "peer_name": m.get("peer_name") or (str(m.get("peer_id") or "")[:12]),
+            "objective": str(m.get("objective") or "")[:200],
+            "status": m.get("status") or "queued",
+            "submitted_at": m.get("submitted_at", ""),
+            "last_poll": m.get("last_poll", ""),
+        }
+        for m in pending
+    ]
+    missions.sort(key=lambda x: x.get("submitted_at", ""), reverse=True)
+    return {"missions": missions, "count": len(missions)}
+
+
+@router.get("/api/peer/events")
+async def peer_events_stream(token: Optional[str] = None, _auth=Depends(deps.verify_admin_token)):
+    """Cran 2 — Flux SSE temps réel des événements pairs (missions, refus).
+
+    Pousse instantanément l'état des missions inter-Lumena (queued → running →
+    completed/failed) au lieu d'attendre le poll. Lecture seule : aucun secret ne
+    transite (le bus ne publie que des métadonnées d'affichage).
+    """
+    from fastapi.responses import StreamingResponse
+    from src.runtime.peer_event_bus import get_peer_event_bus
+
+    bus = get_peer_event_bus()
+    heartbeat_sec = max(3, int(bus.get_stats().get("heartbeat_sec", 15)))
+
+    async def generate():
+        subscriber_id = None
+        queue = None
+        try:
+            subscriber_id, queue = bus.subscribe(max_queue=200)
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=heartbeat_sec)
+                    yield f"event: peer\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    hb = {"type": "heartbeat", "ts": datetime.now(timezone.utc).isoformat()}
+                    yield f"event: heartbeat\ndata: {json.dumps(hb, ensure_ascii=False)}\n\n"
+        finally:
+            if subscriber_id:
+                bus.unsubscribe(subscriber_id)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+class HaltRequest(BaseModel):
+    halt: bool
+
+
+@router.get("/api/peer/halt", dependencies=[Depends(deps.verify_admin_token)])
+async def get_peer_halt() -> Dict[str, Any]:
+    """État du kill-switch réseau (urgence)."""
+    from src.runtime.peer_network_autonomy import is_peer_halt_enabled
+    return {"halt": is_peer_halt_enabled()}
+
+
+@router.post("/api/peer/halt", dependencies=[Depends(deps.verify_admin_token)])
+async def set_peer_halt(req: HaltRequest) -> Dict[str, Any]:
+    """Kill-switch SOFT du réseau (urgence, effet immédiat + persistant).
+
+    halt=True → veto toute NOUVELLE activité réseau (délégations in/out, découverte,
+    conscience). NE coupe PAS les missions EN COURS (Lumena 24/7) : drain gracieux.
+    halt=False → reprise.
+    """
+    value = "1" if req.halt else "0"
+    os.environ["LUMENA_PEER_HALT"] = value  # live immédiat
+    try:
+        from web.routes.config import _write_env_values
+        _write_env_values({"LUMENA_PEER_HALT": value})  # persistant
+    except Exception as exc:
+        from loguru import logger as _logger
+        _logger.warning("[peer.halt] écriture .env échouée (live appliqué quand même): {}", exc)
+
+    from src.runtime.peer_protocol import write_audit_log
+    write_audit_log(
+        event="peer_halt_set", from_instance_id="local", task_id="kill-switch",
+        scope="", status="halted" if req.halt else "resumed",
+        detail="Kill-switch SOFT activé (missions en cours préservées)" if req.halt else "Réseau repris",
+    )
+    try:
+        from src.runtime.peer_event_bus import publish_peer_event
+        publish_peer_event("halt", halt=req.halt)
+    except Exception:
+        pass
+    return {"ok": True, "halt": req.halt}
+
+
+class RelaunchRequest(BaseModel):
+    task_id: str
+    escalate_capability: bool = False
+
+
+@router.post("/api/peer/missions/relaunch", dependencies=[Depends(deps.verify_admin_token)])
+async def relaunch_mission(req: RelaunchRequest) -> Dict[str, Any]:
+    """C2.2c — Relance une mission passée (échouée/refusée/annulée) à l'identique.
+
+    Réutilise l'objectif + le pair de la mission. `escalate_capability=True` passe
+    d'abord le pair en niveau « mission » (refus→approuver). La relance repasse par
+    TOUT le filet (collaboration, halt, quarantaine, anti-SSRF) → un réseau coupé
+    ou un pair isolé ne sera PAS relancé.
+    """
+    from src.runtime.peer_mission_tracker import get_mission
+
+    mission = get_mission(req.task_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail=f"Mission {req.task_id!r} inconnue.")
+    objective = str(mission.get("objective") or "").strip()
+    peer_id = str(mission.get("peer_id") or "").strip()
+    if not objective or not peer_id:
+        raise HTTPException(status_code=400, detail="Mission sans objectif ou pair exploitable.")
+
+    if req.escalate_capability:
+        # Refus→approuver : passe le pair en « mission » (auto-accorde les scopes).
+        await update_peer_capability(peer_id, CapabilityUpdateRequest(level="mission"))
+
+    from src.reasoning.handlers.peer_tasks import submit_peer_task_handler
+    res = await submit_peer_task_handler(None, peer_id, objective)
+    if not getattr(res, "success", False):
+        return {"ok": False, "error": getattr(res, "error", None) or getattr(res, "output", "Échec de la relance")}
+
+    from src.runtime.peer_protocol import write_audit_log
+    write_audit_log(event="mission_relaunched", from_instance_id=peer_id, task_id=req.task_id,
+                    scope="task.delegate", status="running",
+                    detail=f"Relance (escalate={req.escalate_capability})")
+    return {"ok": True, "message": getattr(res, "output", "Mission relancée."), "source_task_id": req.task_id}
+
+
+@router.get("/api/peer/deliverables", dependencies=[Depends(deps.verify_admin_token)])
+async def list_peer_deliverables(task_id: str) -> Dict[str, Any]:
+    """C2.2a — Liste (lecture seule) les fichiers reçus d'une mission inter-Lumena.
+
+    Path-safe : on ne sert QUE des chemins résolus sous `WORKSPACE_DIR`. Aucun
+    contenu de fichier ici (juste nom + taille) — pure lecture de métadonnées.
+    """
+    from src.runtime.peer_mission_tracker import get_mission
+    from src.utils.paths import WORKSPACE_DIR
+
+    mission = get_mission(task_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail=f"Mission {task_id!r} inconnue.")
+    raw_dir = str(mission.get("artifacts_dir") or "").strip()
+    if not raw_dir:
+        return {"task_id": task_id, "dir": "", "files": [], "count": 0}
+
+    try:
+        base = Path(WORKSPACE_DIR).resolve()
+        target = Path(raw_dir).resolve()
+        # Anti-traversal : le dossier DOIT être sous le workspace.
+        if base != target and base not in target.parents:
+            raise HTTPException(status_code=403, detail="Chemin hors workspace refusé.")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Chemin de livrables invalide.")
+
+    files: List[Dict[str, Any]] = []
+    if target.exists() and target.is_dir():
+        for p in sorted(target.rglob("*")):
+            if p.is_file():
+                try:
+                    files.append({"name": str(p.relative_to(target)), "size": p.stat().st_size})
+                except Exception:
+                    continue
+            if len(files) >= 200:
+                break
+    return {"task_id": task_id, "dir": str(target), "files": files, "count": len(files)}
+
+
+async def _outbound_cancel_mission(peer: dict, task_id: str) -> Dict[str, Any]:
+    """C2.2b — Appel SORTANT signé pour annuler une mission chez le pair.
+
+    Anti-SSRF + Bearer/signature flotte réutilisés. Best-effort : si le pair est
+    injoignable, l'appelant marque quand même la mission annulée localement.
+    """
+    import httpx as _httpx
+    from src.runtime.peer_host_validation import validate_peer_host
+    from src.runtime.peer_signing import build_signed_request
+    from src.utils.paths import INSTANCE_ID as _OWN_ID
+
+    host = str(peer.get("host") or "")
+    port = int(peer.get("port") or 8080)
+    token = peer.get("peer_token_outbound", "")
+    if not token:
+        return {"ok": False, "error": "token_sortant_absent"}
+    validate_peer_host(host)  # anti-SSRF (lève si refusé)
+    content, headers = build_signed_request(
+        None, from_id=_OWN_ID, to_id=peer.get("instance_id", ""),
+        peer_token=token, pairing_method=peer.get("pairing_method", ""),
+    )
+    url = f"http://{host}:{port}/api/peer/tasks/{task_id}"
+    async with _httpx.AsyncClient(timeout=8.0) as client:
+        r = await client.request("DELETE", url, content=content, headers=headers)
+    return {"ok": r.status_code == 200, "status_code": r.status_code}
+
+
+@router.delete("/api/peer/missions/{task_id}", dependencies=[Depends(deps.verify_admin_token)])
+async def cancel_outbound_mission(task_id: str) -> Dict[str, Any]:
+    """C2.2b — Annule (acte humain explicite) une mission SORTANTE en cours.
+
+    Relais sortant signé vers le pair + marque la mission `cancelled` localement.
+    C'est la SEULE action qui stoppe une mission (la sécurité auto ne coupe que le futur).
+    """
+    from src.runtime.peer_mission_tracker import get_mission, update_status, _TERMINAL
+
+    mission = get_mission(task_id)
+    if not mission:
+        raise HTTPException(status_code=404, detail=f"Mission {task_id!r} inconnue.")
+    if mission.get("status") in _TERMINAL:
+        return {"ok": True, "task_id": task_id, "status": mission.get("status"), "note": "Déjà terminée."}
+
+    peer_id = mission.get("peer_id", "")
+    with _PEER_LOCK:
+        peer = _load_peers().get(peer_id)
+
+    outbound: Dict[str, Any] = {"ok": False, "error": "pair_inconnu"}
+    if peer:
+        try:
+            outbound = await _outbound_cancel_mission(peer, task_id)
+        except Exception as exc:
+            outbound = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
+    update_status(task_id, "cancelled")  # retire des « en cours » + publie SSE
+
+    from src.runtime.peer_protocol import write_audit_log
+    write_audit_log(event="mission_cancelled", from_instance_id=peer_id, task_id=task_id,
+                    scope="task.delegate", status="cancelled",
+                    detail=f"Annulée par l'humain ; relais pair ok={outbound.get('ok')}")
+    return {"ok": True, "task_id": task_id, "status": "cancelled", "outbound": outbound}
+
+
+@router.get("/api/peer/quarantine", dependencies=[Depends(deps.verify_admin_token)])
+async def list_peer_quarantine() -> Dict[str, Any]:
+    """Liste des pairs en quarantaine automatique (C-1.b), enrichie du nom."""
+    from src.runtime.peer_quarantine import list_quarantined
+    items = list_quarantined()
+    with _PEER_LOCK:
+        peers = _load_peers()
+    for it in items:
+        p = peers.get(it.get("peer_id", "")) or {}
+        it["peer_name"] = p.get("alias") or p.get("instance_name") or str(it.get("peer_id", ""))[:12]
+    return {"quarantined": items, "count": len(items)}
+
+
+@router.post("/api/peer/quarantine/release/{instance_id}", dependencies=[Depends(deps.verify_admin_token)])
+async def release_peer_quarantine(instance_id: str) -> Dict[str, Any]:
+    """Lève la quarantaine d'un pair (acte humain) + reset du compteur."""
+    from src.runtime.peer_quarantine import release
+    release(instance_id)
+    return {"ok": True, "instance_id": instance_id}
 
 
 @router.get("/api/peer/metrics", dependencies=[Depends(deps.verify_admin_token)])
@@ -1110,11 +1578,15 @@ async def test_delegation(req: TestDelegationRequest) -> Dict[str, Any]:
 
     t0 = time.monotonic()
     try:
+        from src.runtime.peer_signing import build_signed_request
+        _content, _headers = build_signed_request(
+            payload, from_id=OWN_ID, to_id=peer.get("instance_id", req.instance_id),
+            peer_token=peer_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=15.0) as client:
             r = await client.post(
                 f"http://{host}:{port}/api/peer/delegate",
-                json=payload,
-                headers={"Authorization": f"Bearer {peer_token}"},
+                content=_content, headers=_headers,
             )
         latency_ms = int((time.monotonic() - t0) * 1000)
 
@@ -1272,6 +1744,171 @@ async def validate_pairing_code(req: ValidatePairingRequest) -> Dict[str, Any]:
         "port": port,
         "capabilities": _compute_capabilities(),
     }
+
+
+# ── A1 — Identité de flotte : auto-jumelage par preuve HMAC (sans code) ───────
+# Deux instances avec le même LUMENA_FLEET_KEY s'auto-jumellent. La clé ne
+# traverse jamais le réseau (preuves HMAC + nonces). Tokens dérivés, jamais
+# transmis. Si la clé est absente → endpoints désactivés (jumelage manuel seul).
+
+_FLEET_PENDING_TTL = 30  # secondes — fenêtre entre init et confirm
+_fleet_pending: Dict[str, dict] = {}
+_fleet_lock = threading.Lock()
+
+
+def _cleanup_fleet_pending() -> None:
+    now = time.monotonic()
+    for k in [k for k, v in _fleet_pending.items() if v["expires_at"] < now]:
+        _fleet_pending.pop(k, None)
+
+
+def _own_lan_host_port() -> tuple:
+    port = int(os.getenv("LUMENA_PORT", "8080"))
+    try:
+        from src.runtime.network_diagnostics import get_local_lan_ips
+        ips = get_local_lan_ips()
+        return (ips[0] if ips else "0.0.0.0"), port
+    except Exception:
+        return "0.0.0.0", port
+
+
+class FleetPairInitRequest(BaseModel):
+    from_instance_id: str
+    from_instance_name: str = ""
+    from_host: str
+    from_port: int = 8080
+    from_capabilities: List[str] = []
+    nonce_init: str
+
+
+class FleetPairConfirmRequest(BaseModel):
+    from_instance_id: str
+    nonce_init: str
+    nonce_resp: str
+    proof_a: str
+
+
+@router.post("/api/peer/fleet-pair-init")
+async def fleet_pair_init(req: FleetPairInitRequest) -> Dict[str, Any]:
+    """A1 — Répondeur, étape 1 : reçoit le challenge d'un initiateur de la flotte.
+
+    Prouve qu'on connaît la clé de flotte (proof_b), mémorise un pending TTL,
+    attend le confirm. Auth = preuve HMAC (pas de token admin)."""
+    from src.runtime.peer_fleet import is_fleet_pairing_enabled, generate_nonce, compute_proof
+    from src.utils.paths import INSTANCE_ID, INSTANCE_NAME
+
+    if not is_fleet_pairing_enabled():
+        raise HTTPException(status_code=403, detail="Auto-jumelage de flotte désactivé (LUMENA_FLEET_KEY absent).")
+    _validate_peer_host(req.from_host)
+    if req.from_instance_id == INSTANCE_ID:
+        raise HTTPException(status_code=400, detail="Auto-jumelage avec soi-même refusé.")
+
+    nonce_resp = generate_nonce()
+    proof_b = compute_proof(INSTANCE_ID, req.from_instance_id, req.nonce_init, nonce_resp)
+
+    with _fleet_lock:
+        _cleanup_fleet_pending()
+        _fleet_pending[req.from_instance_id] = {
+            "nonce_init": req.nonce_init,
+            "nonce_resp": nonce_resp,
+            "meta": {
+                "instance_name": req.from_instance_name,
+                "host": req.from_host,
+                "port": req.from_port,
+                "capabilities": req.from_capabilities,
+            },
+            "expires_at": time.monotonic() + _FLEET_PENDING_TTL,
+        }
+
+    host, port = _own_lan_host_port()
+    return {
+        "instance_id": INSTANCE_ID,
+        "instance_name": INSTANCE_NAME,
+        "host": host,
+        "port": port,
+        "capabilities": _compute_capabilities(),
+        "nonce_resp": nonce_resp,
+        "proof_b": proof_b,
+    }
+
+
+@router.post("/api/peer/fleet-pair-confirm")
+async def fleet_pair_confirm(req: FleetPairConfirmRequest) -> Dict[str, Any]:
+    """A1 — Répondeur, étape 2 : valide la preuve de l'initiateur et l'enregistre trusted."""
+    from src.runtime.peer_fleet import is_fleet_pairing_enabled, verify_proof, get_fleet_key, derive_peer_token
+    from src.runtime.peer_tokens import hash_peer_token
+    from src.runtime.peer_protocol import write_audit_log
+    from src.utils.paths import INSTANCE_ID, INSTANCE_NAME
+
+    if not is_fleet_pairing_enabled():
+        raise HTTPException(status_code=403, detail="Auto-jumelage de flotte désactivé.")
+
+    with _fleet_lock:
+        _cleanup_fleet_pending()
+        pending = _fleet_pending.pop(req.from_instance_id, None)
+
+    if (not pending
+            or pending["nonce_init"] != req.nonce_init
+            or pending["nonce_resp"] != req.nonce_resp):
+        write_audit_log(event="fleet_pair_refused", from_instance_id=req.from_instance_id,
+                        task_id="fleet", scope="pairing", status="refused", detail="pending absent/expiré ou nonces incohérents")
+        raise HTTPException(status_code=403, detail="Aucun jumelage de flotte en attente ou nonces invalides.")
+
+    # Vérifier la preuve de l'initiateur (prouveur = lui, autre = nous).
+    if not verify_proof(req.proof_a, req.from_instance_id, INSTANCE_ID, req.nonce_init, req.nonce_resp):
+        write_audit_log(event="fleet_pair_refused", from_instance_id=req.from_instance_id,
+                        task_id="fleet", scope="pairing", status="refused", detail="preuve invalide (clé de flotte différente)")
+        raise HTTPException(status_code=403, detail="Preuve de flotte invalide.")
+
+    fk = get_fleet_key()
+    meta = pending["meta"]
+    now = datetime.now(timezone.utc).isoformat()
+    with _PEER_LOCK:
+        data = _load_peers()
+        data[req.from_instance_id] = {
+            **data.get(req.from_instance_id, {}),
+            "instance_id": req.from_instance_id,
+            "instance_name": meta.get("instance_name") or req.from_instance_id[:12],
+            "host": meta.get("host", ""),
+            "port": meta.get("port", 8080),
+            "capabilities": meta.get("capabilities", []),
+            "trust": "trusted",
+            "pairing_method": "fleet",
+            "paired_at": now,
+            "last_seen": now,
+            # hash du token que l'initiateur présentera (A→B) → valide ses appels entrants
+            "peer_token_hash": hash_peer_token(derive_peer_token(req.from_instance_id, INSTANCE_ID, fleet_key=fk)),
+            # token que nous présentons à l'initiateur (B→A)
+            "peer_token_outbound": derive_peer_token(INSTANCE_ID, req.from_instance_id, fleet_key=fk),
+            "allowed_scopes": ["chat"],
+        }
+        _save_peers(data)
+
+    write_audit_log(event="fleet_pair_completed", from_instance_id=req.from_instance_id,
+                    task_id="fleet", scope="pairing", status="completed")
+    host, port = _own_lan_host_port()
+    return {"ok": True, "instance_id": INSTANCE_ID, "instance_name": INSTANCE_NAME,
+            "host": host, "port": port, "capabilities": _compute_capabilities()}
+
+
+class FleetPairTrigger(BaseModel):
+    host: str
+    port: int = 8080
+
+
+@router.post("/api/peer/fleet-pair", dependencies=[Depends(deps.verify_admin_token)])
+async def fleet_pair_trigger(req: FleetPairTrigger) -> Dict[str, Any]:
+    """A1 — Déclencheur explicite (admin) : auto-jumelle ce pair par preuve de flotte.
+
+    L'auto-jumelage CONTINU/autonome (toute la flotte, en boucle) sera C1.
+    """
+    from src.runtime.peer_fleet import is_fleet_pairing_enabled
+    from src.runtime.peer_discovery import attempt_fleet_pair
+
+    if not is_fleet_pairing_enabled():
+        return {"ok": False, "error": "LUMENA_FLEET_KEY absent — pose la clé de flotte (panneau config) sur les deux instances."}
+    _validate_peer_host(req.host)
+    return await attempt_fleet_pair(req.host, int(req.port))
 
 
 class AcceptPairingRequest(BaseModel):
@@ -1443,6 +2080,105 @@ async def update_peer_scopes(instance_id: str, req: ScopesUpdateRequest) -> Dict
     )
 
     return {"ok": True, "instance_id": instance_id, "allowed_scopes": new_scopes}
+
+
+# ── A3 brique 2 — Niveau de capacité accordé par pair ────────────────────────
+
+class CapabilityUpdateRequest(BaseModel):
+    level: str   # "chat" | "mission"
+
+
+@router.get("/api/peers/{instance_id}/capability", dependencies=[Depends(deps.verify_admin_token)])
+async def get_peer_capability(instance_id: str) -> Dict[str, Any]:
+    """Retourne le niveau de capacité accordé à un pair (défaut `chat`)."""
+    from src.runtime.peer_capability import LEVELS, normalize_level, describe_level
+    with _PEER_LOCK:
+        peer = _load_peers().get(instance_id)
+    if peer is None:
+        raise HTTPException(status_code=404, detail=f"Pair {instance_id!r} inconnu")
+    level = normalize_level(peer.get("capability_level"))
+    return {"instance_id": instance_id, "level": level,
+            "label": describe_level(level), "valid_levels": sorted(LEVELS)}
+
+
+@router.put("/api/peers/{instance_id}/capability", dependencies=[Depends(deps.verify_admin_token)])
+async def update_peer_capability(instance_id: str, req: CapabilityUpdateRequest) -> Dict[str, Any]:
+    """Accorde un niveau de capacité à un pair (`chat` sûr / `mission` complet).
+
+    **Accordé explicitement par l'humain**, par pair. `mission` donne à ce pair
+    le droit de faire exécuter une mission à pleine puissance (agent complet).
+    Auditée.
+    """
+    from src.runtime.peer_capability import LEVELS, normalize_level
+    from src.runtime.peer_protocol import write_audit_log
+
+    level = (req.level or "").strip().lower()
+    if level not in LEVELS:
+        raise HTTPException(status_code=422, detail=f"Niveau inconnu : {req.level!r}. Valides : {sorted(LEVELS)}")
+
+    # Passer en « mission » auto-accorde les scopes nécessaires pour confier ET
+    # recevoir une mission async + ses livrables (sinon l'utilisateur devait
+    # cocher « + tâches » à part — piège du double réglage).
+    _MISSION_SCOPES = ["task.delegate", "artifact.share", "knowledge.query", "knowledge.share"]
+    granted: List[str] = []
+    with _PEER_LOCK:
+        data = _load_peers()
+        if instance_id not in data:
+            raise HTTPException(status_code=404, detail=f"Pair {instance_id!r} inconnu")
+        old = normalize_level(data[instance_id].get("capability_level"))
+        data[instance_id]["capability_level"] = level
+        if level == "mission":
+            scopes = set(data[instance_id].get("allowed_scopes") or ["chat"])
+            scopes.add("chat")
+            for s in _MISSION_SCOPES:
+                if s not in scopes:
+                    scopes.add(s)
+                    granted.append(s)
+            data[instance_id]["allowed_scopes"] = sorted(scopes)
+        data[instance_id]["last_seen"] = datetime.now(timezone.utc).isoformat()
+        _save_peers(data)
+
+    write_audit_log(
+        event="capability_updated", from_instance_id=instance_id, task_id="",
+        scope=level, status="ok",
+        detail=f"Niveau : {old} → {level}" + (f" ; scopes auto-accordés : {granted}" if granted else ""),
+    )
+    return {"ok": True, "instance_id": instance_id, "level": level, "auto_granted_scopes": granted}
+
+
+# ── Bloc A — Alias (nom personnalisé) accordé par pair ───────────────────────
+
+class AliasUpdateRequest(BaseModel):
+    alias: str
+
+
+@router.put("/api/peers/{instance_id}/alias", dependencies=[Depends(deps.verify_admin_token)])
+async def update_peer_alias(instance_id: str, req: AliasUpdateRequest) -> Dict[str, Any]:
+    """Renomme un pair pour l'affichage (alias). Vide = retour au nom d'origine.
+
+    N'altère aucun droit ni token — purement cosmétique. Borné à 60 caractères.
+    Auditée.
+    """
+    from src.runtime.peer_protocol import write_audit_log
+
+    alias = (req.alias or "").strip()[:60]
+    with _PEER_LOCK:
+        data = _load_peers()
+        if instance_id not in data:
+            raise HTTPException(status_code=404, detail=f"Pair {instance_id!r} inconnu")
+        old = data[instance_id].get("alias") or ""
+        if alias:
+            data[instance_id]["alias"] = alias
+        else:
+            data[instance_id].pop("alias", None)
+        _save_peers(data)
+
+    write_audit_log(
+        event="alias_updated", from_instance_id=instance_id, task_id="",
+        scope="", status="ok",
+        detail=f"Alias : {old!r} → {alias!r}",
+    )
+    return {"ok": True, "instance_id": instance_id, "alias": alias}
 
 
 # ── Phase 8.2 — Réparation pare-feu assistée ─────────────────────────────────
@@ -2127,6 +2863,19 @@ _TASK_SYNC_MAX_TIMEOUT = 300
 _TASK_SYNC_DEFAULT_TIMEOUT = 120
 _TASK_SYNC_MAX_RESULT_CHARS = 8000
 
+# M2 — les MISSIONS async peuvent durer bien plus qu'une tâche sync (gros projet,
+# longue analyse). Plafond séparé, réglable dans le panneau Configuration.
+_MISSION_DEFAULT_MAX_TIMEOUT = 1800  # 30 min
+
+
+def _get_mission_max_timeout() -> int:
+    """Plafond de durée d'une mission async (s). Réglable via le panel config."""
+    try:
+        return max(_TASK_SYNC_MIN_TIMEOUT,
+                   int(os.getenv("LUMENA_PEER_MISSION_MAX_TIMEOUT", str(_MISSION_DEFAULT_MAX_TIMEOUT))))
+    except (ValueError, TypeError):
+        return _MISSION_DEFAULT_MAX_TIMEOUT
+
 
 class TaskSyncRequest(BaseModel):
     task_id: str
@@ -2216,7 +2965,7 @@ async def peer_task_run_sync(
 
     # 3. Secrets dans tous les champs qui partent dans le prompt local
     # context["peer_message"] est exclu du contrôle secrets (contient des UUIDs hex32).
-    from src.runtime.peer_messages import has_secret_pattern
+    from src.runtime.peer_messages import has_secret_pattern, detect_prompt_injection
     if has_secret_pattern(req.objective):
         _refused(
             "L'objective contient un pattern identifié comme secret. Retirez-le.",
@@ -2227,6 +2976,10 @@ async def peer_task_run_sync(
             "expected_output contient un pattern identifié comme secret. Retirez-le.",
             status_code=422,
         )
+    # A4 Couche 2 — refus fail-closed si tentative d'injection détectée.
+    _inj = detect_prompt_injection(req.objective) or detect_prompt_injection(req.expected_output)
+    if _inj:
+        _refused(f"Demande refusée : tentative d'injection détectée ({_inj}).", status_code=422)
     _ctx_no_envelope = (
         {k: v for k, v in req.context.items() if k != "peer_message"}
         if isinstance(req.context, dict) else req.context
@@ -2268,6 +3021,23 @@ async def peer_task_run_sync(
         min(_TASK_SYNC_MAX_TIMEOUT, int(req.timeout_sec)),
     )
 
+    # 5b. P4 — Pair OCCUPÉ : si une mission async tourne déjà, répondre « busy »
+    # vite et proprement au lieu de bloquer jusqu'au timeout (l'appelant croyait
+    # à un échec/ReadTimeout). Mieux vaut un « réessaie » net qu'une attente morte.
+    try:
+        from src.runtime.peer_mission_worker import mission_load as _mission_load
+        if int(_mission_load().get("running", 0)) > 0:
+            return TaskSyncResponse(
+                task_id=req.task_id,
+                status="busy",
+                result="Le pair est occupé par une autre mission en cours — réessaie dans un instant.",
+                duration_ms=_ms(),
+                origin_instance_id=_OWN_INSTANCE_ID,
+                created_at=_created_at,
+            )
+    except Exception:
+        pass
+
     # 6. Audit démarrage
     write_audit_log(
         event="task_sync_started",
@@ -2277,15 +3047,19 @@ async def peer_task_run_sync(
         status="running",
     )
 
-    # 7. Exécution locale bornée — jamais de redélégation inter-peer
+    # 7. Exécution locale bornée — A4 Couche 1 : contenu pair encadré (donnée, pas ordre)
+    from src.runtime.peer_messages import frame_external_request as _frame
+    _allowed, _level = _peer_execution_allowed_tools(_peer)  # niveau pour le prompt + l'exécution
     _task_ctx = (
         f"[TÂCHE BORNÉE — DÉLÉGATION INTER-LUMENA]\n"
         f"Instance appelante : {req.from_instance_id}\n"
-        f"Scope : task.delegate\n"
-        f"Résultat attendu : {req.expected_output}\n"
-        f"Contexte fourni : {json.dumps(req.context, ensure_ascii=False)[:500]}\n\n"
-        f"Objectif : {req.objective}\n\n"
-        f"Réponds directement. Ne délègue pas à d'autres instances."
+        f"{_capability_prompt_note(_level)}\n\n"
+        + _frame(
+            req.objective,
+            expected_output=req.expected_output,
+            context_json=json.dumps(req.context, ensure_ascii=False)[:500],
+        )
+        + "\n\nRéponds directement. Ne délègue pas à d'autres instances."
     )
 
     status = "failed"
@@ -2295,13 +3069,16 @@ async def peer_task_run_sync(
             raise RuntimeError("Lumena non initialisée sur cette instance.")
 
         import asyncio as _asyncio
+        # A3 — brique 2 : exécution bornée par le niveau (déjà résolu plus haut).
         response = await _asyncio.wait_for(
-            deps.lumena.chat(
+            deps.lumena.think_and_act_silent(
                 _task_ctx,
-                source_channel="peer_task_sync",
-                sender={"id": req.from_instance_id, "name": req.actor_id},
+                timeout=float(safe_timeout),
+                allowed_tools=(list(_allowed) if _allowed is not None else None),
+                allow_when_busy=True,
+                allowed_tools_hard=(_allowed is not None),  # A4 — chat = filtre DUR
             ),
-            timeout=float(safe_timeout),
+            timeout=float(safe_timeout) + 5.0,
         )
         result = (response or "").strip()
         if len(result) > _TASK_SYNC_MAX_RESULT_CHARS:
@@ -2556,7 +3333,7 @@ class TaskSubmitResponse(BaseModel):
 
 class AsyncTaskStatusResponse(BaseModel):
     task_id: str
-    status: str          # queued | running | completed | failed | timeout | cancelled
+    status: str          # queued | running | completed | failed | timeout | cancelled | refused
     result: Optional[str] = None
     duration_ms: Optional[float] = None
     origin_instance_id: str
@@ -2572,6 +3349,51 @@ class PeerMaintenanceCleanupRequest(BaseModel):
     cleanup_terminal_memory_tasks: bool = False
 
 
+# ── Brique 4 — bundles d'artefacts produits par les missions (côté B) ─────────
+_artifact_bundles: Dict[str, dict] = {}   # task_id -> {manifest, bundle, from_instance_id, created_mono}
+_artifact_lock = threading.Lock()
+_ARTIFACT_TTL = 3600  # 1h
+
+
+def _store_mission_bundle(task_id: str, from_instance_id: str, artifact_paths: list) -> int:
+    """Construit le manifeste + le bundle (ZIP/brut) des fichiers produits et l'indexe.
+
+    Retourne le nombre de fichiers empaquetés (0 si rien). Jamais fatal.
+    """
+    try:
+        if not artifact_paths:
+            return 0
+        from src.runtime.peer_artifacts import build_manifest, prepare_bundle, public_manifest
+        from src.utils.paths import WORKSPACE_DIR, DATA_DIR
+        manifest = build_manifest(artifact_paths, base_dir=WORKSPACE_DIR)
+        if not manifest:
+            return 0
+        bundle = prepare_bundle(manifest, task_id=task_id, out_dir=DATA_DIR / "peer_artifacts" / task_id)
+        if not bundle:
+            return 0
+        with _artifact_lock:
+            # purge TTL paresseuse
+            _now = time.monotonic()
+            for _tid in [t for t, e in _artifact_bundles.items()
+                         if _now - e.get("created_mono", 0) > _ARTIFACT_TTL]:
+                _artifact_bundles.pop(_tid, None)
+            _artifact_bundles[task_id] = {
+                "manifest": public_manifest(manifest),
+                "bundle": bundle,
+                "from_instance_id": from_instance_id,
+                "created_mono": _now,
+            }
+        return int(bundle.get("count", 0))
+    except Exception:
+        return 0
+
+
+def _get_artifact_bundle(task_id: str) -> Optional[dict]:
+    with _artifact_lock:
+        entry = _artifact_bundles.get(task_id)
+        return dict(entry) if entry else None
+
+
 async def _execute_async_task(
     task_id: str,
     task_ctx: str,
@@ -2584,49 +3406,104 @@ async def _execute_async_task(
     import asyncio as _asyncio
     from src.runtime.peer_protocol import write_audit_log
 
-    _t0 = _time.monotonic()
+    from src.runtime.peer_mission_worker import mission_slot
 
-    with _async_tasks_lock:
-        if task_id not in _async_task_store:
-            return
-        _async_task_store[task_id]["status"] = "running"
-        _origin_instance_id = _async_task_store[task_id].get("origin_instance_id")
-
-    _write_task_event(
-        task_id=task_id,
-        from_instance_id=from_instance_id,
-        event="task_async_running",
-        status="running",
-        origin_instance_id=_origin_instance_id,
-    )
-
+    _origin_instance_id = None
     status = "failed"
     result = ""
-    try:
-        if deps.lumena is None:
-            raise RuntimeError("Lumena non initialisée.")
-        response = await _asyncio.wait_for(
-            deps.lumena.chat(
-                task_ctx,
-                source_channel="peer_task_async",
-                sender={"id": from_instance_id, "name": actor_id},
-            ),
-            timeout=float(safe_timeout),
-        )
-        result = (response or "").strip()
-        if len(result) > _TASK_SYNC_MAX_RESULT_CHARS:
-            result = result[:_TASK_SYNC_MAX_RESULT_CHARS - 1] + "…"
-        status = "completed"
-    except _asyncio.TimeoutError:
-        status = "timeout"
-        result = f"Tâche interrompue : timeout de {safe_timeout}s atteint."
-    except _asyncio.CancelledError:
-        status = "cancelled"
-        result = "Tâche annulée."
-    except Exception as exc:
-        status = "failed"
-        result = f"Erreur : {type(exc).__name__}"
 
+    # M1 — file d'attente : la mission patiente (statut 'queued') jusqu'à obtenir
+    # un créneau, puis passe 'running'. Évite de saturer le LLM/l'agent local.
+    async with mission_slot():
+        _t0 = _time.monotonic()
+        with _async_tasks_lock:
+            if task_id not in _async_task_store:
+                return
+            _async_task_store[task_id]["status"] = "running"
+            _origin_instance_id = _async_task_store[task_id].get("origin_instance_id")
+
+        _write_task_event(
+            task_id=task_id,
+            from_instance_id=from_instance_id,
+            event="task_async_running",
+            status="running",
+            origin_instance_id=_origin_instance_id,
+        )
+
+        try:
+            if deps.lumena is None:
+                raise RuntimeError("Lumena non initialisée.")
+            # A3 — brique 2 : exécution async bornée par le niveau de capacité du pair.
+            with _PEER_LOCK:
+                _peer_async = _load_peers().get(from_instance_id) or {}
+            _allowed, _level = _peer_execution_allowed_tools(_peer_async)
+            # A4 — préfixe la capacité RÉELLE (résolue à l'exécution) pour éviter la
+            # contradiction « task.delegate » vs niveau `chat` → plus de boucle.
+            task_ctx = f"{_capability_prompt_note(_level)}\n\n{task_ctx}"
+            # Brique 4 — capture par **snapshot disque avant/après** (indépendant des
+            # outils : marche pour write_file, parallel_tools, CodeAgent, MCP…).
+            from src.runtime.peer_artifacts import snapshot_workspace, diff_workspace
+            from src.utils.paths import WORKSPACE_DIR as _WS_DIR
+            from src.tools.file_guardrails import WorkspaceFileGuardrails as _WFG
+            _ws_before = snapshot_workspace(_WS_DIR)
+            # Projet ÉPINGLÉ : tous les fichiers de la mission dans UN seul
+            # `projet-…` (anti-scatter + anti-boucle de réécriture). Convention
+            # date/projet conservée ; relâché automatiquement à la sortie.
+            _refusals: list = []  # A4 — rempli si le pair (chat) a refusé une action
+            with _WFG.pinned_project(f"mission-{task_id}"):
+                response = await _asyncio.wait_for(
+                    deps.lumena.think_and_act_silent(
+                        task_ctx,
+                        timeout=float(safe_timeout),
+                        allowed_tools=(list(_allowed) if _allowed is not None else None),
+                        allow_when_busy=True,
+                        allowed_tools_hard=(_allowed is not None),  # A4 — chat = filtre DUR
+                        refusals_out=_refusals,
+                    ),
+                    timeout=float(safe_timeout) + 5.0,
+                )
+            result = (response or "").strip()
+            if len(result) > _TASK_SYNC_MAX_RESULT_CHARS:
+                result = result[:_TASK_SYNC_MAX_RESULT_CHARS - 1] + "…"
+            status = "completed"
+            # Diff = fichiers produits par la mission → empaquetés pour le pair
+            # demandeur (endpoints /artifact). Jamais fatal.
+            _mission_artifacts = diff_workspace(_ws_before, snapshot_workspace(_WS_DIR))
+            _nb_art = _store_mission_bundle(task_id, from_instance_id, _mission_artifacts)
+            if _nb_art:
+                result = f"{result}\n\n📦 {_nb_art} fichier(s) produit(s) — disponibles au transfert."
+            elif _allowed is not None:
+                # Pair niveau `chat` (lecture seule) SANS aucun livrable → mission NON
+                # aboutie. Déterministe : on marque « refused » (jamais un faux succès),
+                # que le pair ait tenté un outil (filtre A4 → `_refusals`) ou décliné
+                # poliment dès le prompt. On conserve sa réponse (lecture utile éventuelle).
+                status = "refused"
+                if _refusals:
+                    _why = (
+                        "⛔ Ce pair (niveau « chat », lecture seule) a tenté d'agir mais a "
+                        "été bloqué : aucune écriture/action n'est permise à ce niveau."
+                    )
+                else:
+                    _why = (
+                        "⛔ Ce pair est en niveau « chat » (lecture seule) : il ne peut rien "
+                        "écrire, créer ni envoyer — aucun livrable produit."
+                    )
+                _why += (
+                    " Pour l'autoriser, l'humain doit le passer en niveau « mission » "
+                    "(panneau Pairs) ; une IA ne peut pas changer ce réglage."
+                )
+                result = f"{_why}\n\n{result}".strip() if result else _why
+        except _asyncio.TimeoutError:
+            status = "timeout"
+            result = f"Tâche interrompue : timeout de {safe_timeout}s atteint."
+        except _asyncio.CancelledError:
+            status = "cancelled"
+            result = "Tâche annulée."
+        except Exception as exc:
+            status = "failed"
+            result = f"Erreur : {type(exc).__name__}"
+
+    # ── Créneau libéré : journalisation + store (hors file d'attente) ──
     duration_ms = round((_time.monotonic() - _t0) * 1000, 1)
 
     write_audit_log(
@@ -2707,11 +3584,15 @@ async def peer_task_submit(
     # 3. Secrets dans les champs qui partent dans le prompt local
     # context["peer_message"] est exclu du contrôle secrets : il contient des UUIDs
     # hex32 qui déclencheraient des faux positifs. Il est validé séparément au 3b.
-    from src.runtime.peer_messages import has_secret_pattern
+    from src.runtime.peer_messages import has_secret_pattern, detect_prompt_injection
     if has_secret_pattern(req.objective):
         _refused("L'objective contient un pattern identifié comme secret. Retirez-le.", status_code=422)
     if has_secret_pattern(req.expected_output):
         _refused("expected_output contient un pattern identifié comme secret. Retirez-le.", status_code=422)
+    # A4 Couche 2 — refus fail-closed si tentative d'injection détectée.
+    _inj = detect_prompt_injection(req.objective) or detect_prompt_injection(req.expected_output)
+    if _inj:
+        _refused(f"Demande refusée : tentative d'injection détectée ({_inj}).", status_code=422)
     _ctx_no_envelope = (
         {k: v for k, v in req.context.items() if k != "peer_message"}
         if isinstance(req.context, dict) else req.context
@@ -2745,21 +3626,25 @@ async def peer_task_submit(
     # 4. Rate limiting per peer/scope. Invalid payloads above do not consume quota.
     _enforce_peer_rate_limit(req.from_instance_id, "task.delegate", req.task_id)
 
-    # 5. Timeout borné
+    # 5. Timeout borné — M2 : les missions async ont un plafond élargi (réglable).
     safe_timeout = max(
         _TASK_SYNC_MIN_TIMEOUT,
-        min(_TASK_SYNC_MAX_TIMEOUT, int(req.timeout_sec)),
+        min(_get_mission_max_timeout(), int(req.timeout_sec)),
     )
 
-    # 6. Contexte prompt local
+    # 6. Contexte prompt local — A4 Couche 1 : contenu pair encadré (donnée, pas ordre)
+    from src.runtime.peer_messages import frame_external_request as _frame
+    # NB : la CAPACITÉ réelle (chat/mission) est préfixée à l'exécution dans
+    # _execute_async_task (résolue au bon moment) — pas de « Scope » trompeur ici.
     _task_ctx = (
         f"[TÂCHE ASYNC — DÉLÉGATION INTER-LUMENA]\n"
-        f"Instance appelante : {req.from_instance_id}\n"
-        f"Scope : task.delegate\n"
-        f"Résultat attendu : {req.expected_output}\n"
-        f"Contexte fourni : {json.dumps(req.context, ensure_ascii=False)[:500]}\n\n"
-        f"Objectif : {req.objective}\n\n"
-        f"Réponds directement. Ne délègue pas à d'autres instances."
+        f"Instance appelante : {req.from_instance_id}\n\n"
+        + _frame(
+            req.objective,
+            expected_output=req.expected_output,
+            context_json=json.dumps(req.context, ensure_ascii=False)[:500],
+        )
+        + "\n\nRéponds directement. Ne délègue pas à d'autres instances."
     )
 
     # 7. Enregistrement queued + collision check + nettoyage TTL
@@ -2961,6 +3846,51 @@ async def peer_task_status(
         origin_instance_id=entry["origin_instance_id"],
         created_at=entry["created_at"],
     )
+
+
+# ── Brique 4 — Service des artefacts produits par une mission (côté B) ─────────
+
+def _check_artifact_owner(entry: dict, peer_id: str) -> None:
+    """Seul le pair qui a soumis la tâche peut récupérer ses artefacts."""
+    if entry.get("from_instance_id") != peer_id:
+        raise HTTPException(status_code=403, detail="Accès refusé : ces artefacts ne vous appartiennent pas.")
+
+
+@router.get("/api/peer/artifact/{task_id}/manifest")
+async def get_peer_artifact_manifest(
+    task_id: str,
+    _auth_peer: dict = Depends(verify_peer_token),
+) -> Dict[str, Any]:
+    """Manifeste des fichiers produits par une mission (signé A2, propriété vérifiée)."""
+    entry = _get_artifact_bundle(task_id)
+    if not entry:
+        return {"task_id": task_id, "available": False, "manifest": [], "count": 0}
+    _check_artifact_owner(entry, _auth_peer["instance_id"])
+    b = entry["bundle"]
+    return {
+        "task_id": task_id, "available": True,
+        "manifest": entry["manifest"],
+        "kind": b["kind"], "filename": b["filename"],
+        "sha256": b["sha256"], "count": b["count"],
+    }
+
+
+@router.get("/api/peer/artifact/{task_id}/file")
+async def get_peer_artifact_file(
+    task_id: str,
+    _auth_peer: dict = Depends(verify_peer_token),
+):
+    """Bytes du bundle (ZIP ou fichier brut) — signé A2, propriété vérifiée."""
+    from fastapi.responses import FileResponse
+    entry = _get_artifact_bundle(task_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Aucun artefact pour cette tâche.")
+    _check_artifact_owner(entry, _auth_peer["instance_id"])
+    b = entry["bundle"]
+    path = b.get("path", "")
+    if not path or not os.path.isfile(path):
+        raise HTTPException(status_code=410, detail="Artefact expiré ou indisponible.")
+    return FileResponse(path, filename=b["filename"], media_type="application/octet-stream")
 
 
 @router.delete("/api/peer/tasks/{task_id}")

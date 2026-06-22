@@ -65,11 +65,14 @@ import {
   loadInstancesNetwork, discoverLanPeers, pairSelectedPeer, blockSelectedPeer,
   generatePairingCode, acceptPairing, loadFirewallCommand, applyFirewallRule,
   loadNetworkSimple, toggleNetworkAdvanced, showSimplePairingForm, blockPeerSimple,
+  loadPeerHistory, filterPeerHistory, selectPeerExchange,
+  showNetworkHistory, backToNetworkSimple, togglePeerMaster, togglePeerHalt, releasePeerQuarantine, loadDeliverables, cancelPeerMission, relaunchPeerMission,
   deletePeerSimple, deleteLocalInstance, cleanupLocalInstances,
   testDelegation, loadNetworkDiagnostic, hideNetworkDiagnostic,
   loadCollaborationPanel, createSharedKnowledgeFromUi, shareKnowledgeFromUi,
-  revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope,
-  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi
+  revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope, setPeerCapability,
+  setPeerAlias, setPeerScopesBulk, revokePeerToken, probePeer,
+  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive
 } from './panels.js';
 
 // ── Stripe ──
@@ -148,11 +151,14 @@ Object.assign(window, {
   loadInstancesNetwork, discoverLanPeers, pairSelectedPeer, blockSelectedPeer,
   generatePairingCode, acceptPairing, loadFirewallCommand, applyFirewallRule,
   loadNetworkSimple, toggleNetworkAdvanced, showSimplePairingForm, blockPeerSimple,
+  loadPeerHistory, filterPeerHistory, selectPeerExchange,
+  showNetworkHistory, backToNetworkSimple, togglePeerMaster, togglePeerHalt, releasePeerQuarantine, loadDeliverables, cancelPeerMission, relaunchPeerMission,
   deletePeerSimple, deleteLocalInstance, cleanupLocalInstances,
   testDelegation, loadNetworkDiagnostic, hideNetworkDiagnostic,
   loadCollaborationPanel, createSharedKnowledgeFromUi, shareKnowledgeFromUi,
-  revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope,
-  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi,
+  revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope, setPeerCapability,
+  setPeerAlias, setPeerScopesBulk, revokePeerToken, probePeer,
+  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive,
   // stripe
   loadStripeOverview, loadStripePayments,
   loadStripeSubscriptions, loadStripeProducts,

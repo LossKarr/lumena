@@ -228,6 +228,10 @@ _HC_TOOLS_PEER = frozenset({
     "delegate_to_peer", "orchestrate_peer_request", "peer_team_request",
     "propose_peer_knowledge", "run_peer_task_sync", "submit_peer_task"
 })
+# « Confier/envoyer une mission à un pair » est une forme d'ENVOI légitime :
+# un claim « j'ai envoyé/confié la mission à l'autre Lumena » doit accepter les
+# outils peer comme preuve (sinon faux positif d'hallucination → retry inutile).
+_HC_TOOLS_ANY_SEND = _HC_TOOLS_ANY_SEND | _HC_TOOLS_PEER
 # Config Lumena/heartbeat
 _HC_TOOLS_CONFIG = frozenset({
     "heartbeat_manage", "update_lumena_config"
@@ -403,6 +407,20 @@ _HC_TOOLS_ANY_ACTION = frozenset({
 # par n'IMPORTE quelle action réelle, ou un outil MCP/runtime réussi.
 _HC_GENERIC_FAMILIES = (_HC_TOOLS_ANY_CREATE, _HC_TOOLS_ANY_ACTION)
 
+# RAPPEL d'une mission déléguée à un PAIR : sur un tour « alors ?/vérifie »,
+# l'agent dit « c'est fait / j'ai envoyé / la mission est terminée » en parlant
+# d'un travail fait EN ASYNCHRONE par l'autre Lumena, avec seulement des outils
+# de LECTURE ce tour-ci. Le travail réel n'est pas local → on ne doit pas exiger
+# un outil d'action local (sinon faux positif → l'agent se renie / reboucle).
+# Quand ce contexte est détecté, on relâche UNIQUEMENT les familles vagues
+# (ANY_CREATE/ANY_ACTION/ANY_SEND) ; les claims PRÉCIS (mail/discord/…) restent stricts.
+_PEER_MISSION_RECALL_RE = re.compile(
+    r"(?:\b(?:mission|t[âa]che|projet|livrable|site|fichiers?)\b.{0,60}"
+    r"(?:confi|d[ée]l[ée]gu|\bpair\b|autre\s+lumena|autre\s+instance|l['’]autre))"
+    r"|(?:(?:confi|d[ée]l[ée]gu).{0,60}(?:\blumena\b|\bpair\b|\binstance\b))",
+    re.IGNORECASE,
+)
+
 # Familles « bureau/login » : pour elles, un outil MCP réussi (quel qu'il soit)
 # compte comme preuve plausible (on ne peut pas connaître la sémantique d'un MCP
 # installé dynamiquement). Le cas pur (claim SANS aucun outil) reste bloqué.
@@ -414,6 +432,13 @@ _HC_CU_FAMILIES = (_HC_TOOLS_TYPE, _HC_TOOLS_OPEN_APP, _HC_TOOLS_CLICK, _HC_TOOL
 _HALLUCINATION_CLAIM_PATTERNS = [
     (r"\bj[''`]ai (créé|crée|planifié|planifie|enregistré|enregistre|configuré|configure|programmé|programme|ajouté|ajoute|sauvegardé|sauvegarde)\b", _HC_TOOLS_ANY_CREATE),
     (r"\bj[''`]ai (envoyé|envoye|expedié|expedie)\b", _HC_TOOLS_ANY_SEND),
+    # NB : PAS de pattern dédié « confié/délégué … pair » → il causait un FAUX
+    # POSITIF cross-tour : au tour « alors ? » (status), l'agent SE SOUVIENT
+    # d'avoir confié la mission (au tour précédent) mais n'utilise que des outils
+    # de lecture ce tour-ci ; le guard ne voyant que les outils du tour courant
+    # croyait à une hallucination et forçait l'agent à se renier + re-déléguer.
+    # Le couplage `_HC_TOOLS_ANY_SEND |= _HC_TOOLS_PEER` (plus haut) suffit pour
+    # le cas légitime « j'ai envoyé la mission » + outil peer dans LE MÊME tour.
     (r"\bla tâche a été (créée|planifiée|enregistrée|programmée)\b", _HC_TOOLS_TASK),
     (r"\bj[''`]ai bien (enregistré|planifié|créé|configuré)\b", _HC_TOOLS_ANY_CREATE),
     (r"\bj[''`]ai bien (envoyé|envoye)\b", _HC_TOOLS_ANY_SEND),
@@ -550,6 +575,8 @@ def hallucination_retry_query(
     tools = successful_tools
     browser_used = any(t.startswith("browser_") for t in tools)
     runtime_proof = _has_runtime_server_claim_proof(combined_text, tools)
+    # Rappel d'une mission déléguée à un pair (travail fait en async, pas localement)
+    peer_recall = bool(_PEER_MISSION_RECALL_RE.search(combined_text))
     for _pattern, _expected in _HALLUCINATION_CLAIM_PATTERNS:
         m = re.search(_pattern, combined_text, re.IGNORECASE)
         if not m:
@@ -557,6 +584,10 @@ def hallucination_retry_query(
         if claim_match_is_negated(combined_text, m.start(), m.end()):
             continue
         if _expected in _HC_GENERIC_FAMILIES and runtime_proof:
+            continue
+        # Contexte « mission déléguée à un pair » → relâche les familles VAGUES
+        # (le livrable a été produit par l'autre Lumena, pas par un outil local).
+        if peer_recall and (_expected in _HC_GENERIC_FAMILIES or _expected is _HC_TOOLS_ANY_SEND):
             continue
         if browser_used and any(
             kw in _pattern for kw in (

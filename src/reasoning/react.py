@@ -424,6 +424,7 @@ from .plan_evidence import (
     tool_capabilities_are_known_readonly,
     detect_verification_kind,
     VerificationKind,
+    is_peer_delegation_success as _is_peer_delegation_success,
 )
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3498,6 +3499,12 @@ Maintenant, reflechis et reponds:"""
 
         def _has_strict_plan_proof(_desc_lower: str, _obs_lower: str) -> bool:
             _desc_guard = _strip_plan_prefix(_desc_lower)
+            # P2P — une délégation de mission à un pair est prouvée par SON accusé
+            # (« mission lancée / réf. ta- »), même si le nom de tâche contient le
+            # mot « submit » (« via submit_peer_task ») qui sinon la ferait passer
+            # pour une soumission de formulaire → FINAL bloqué → re-soumissions.
+            if _is_peer_delegation_success(tool_name, observation_content or ""):
+                return True
             if _browser_observation_is_auxiliary_action(tool_name, observation_content or ""):
                 return False
             if _is_final_only_task(_desc_guard):
@@ -7326,6 +7333,14 @@ Maintenant, reflechis et reponds:"""
                 # N'ajouter aux outils réussis que si l'observation indique un succès réel
                 if observation.success:
                     self._successful_session_tools.add(action.tool_name)
+                    # parallel_tools agrège des sous-outils : propager les sous-outils
+                    # RÉUSSIS (format obs « ✅ N. <tool>: … ») — sinon le guard
+                    # anti-hallucination ne voit que « parallel_tools » et croit que
+                    # mail_send/telegram_send_document n'ont pas tourné → faux positif
+                    # → double-envoi (cf log 21/06).
+                    if action.tool_name == "parallel_tools" and observation.content:
+                        for _sub in re.findall(r"✅\s*\d+\.\s*([A-Za-z_]\w*)", observation.content):
+                            self._successful_session_tools.add(_sub)
             self.history.append(step)
 
             # 6.1 Guard: progression du plan TODO

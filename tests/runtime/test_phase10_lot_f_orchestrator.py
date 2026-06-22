@@ -100,7 +100,14 @@ class _FakeAsyncClient:
     async def __aexit__(self, *_args):
         return None
 
-    async def post(self, url: str, json: dict, headers: dict):
+    async def post(self, url: str, json: dict = None, headers: dict = None, content=None, **kw):
+        if json is None and content is not None:
+            import json as _json
+            raw = content.decode("utf-8") if isinstance(content, (bytes, bytearray)) else content
+            try:
+                json = _json.loads(raw)
+            except Exception:
+                json = None
         self.calls.append({"url": url, "json": json, "headers": headers, "timeout": self.timeout})
         if self.responses:
             return self.responses.pop(0)

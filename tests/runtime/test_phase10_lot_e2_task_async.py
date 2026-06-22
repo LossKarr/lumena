@@ -121,6 +121,8 @@ def _client_with_peer(tmp_path, monkeypatch, peer: dict,
 def _lumena_ok(result: str = "Voici le résultat async.") -> MagicMock:
     lumena = MagicMock()
     lumena.chat = AsyncMock(return_value=result)
+    # A3 brique 2 : l'exécution pair passe par think_and_act_silent (bornée par niveau).
+    lumena.think_and_act_silent = AsyncMock(return_value=result)
     return lumena
 
 
@@ -549,16 +551,17 @@ class TestSubmitPeerTaskHandler:
 
         with patch.dict("os.environ", {"LUMENA_PEER_COLLABORATION": "1"}):
             with patch("src.reasoning.handlers.peer_tasks._PEER_REGISTRY_FILE", reg_file):
-                with patch("httpx.AsyncClient") as mock_cls:
-                    mock_client = AsyncMock()
-                    mock_client.post = AsyncMock(return_value=mock_resp)
-                    mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-                    mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-                    result = asyncio.get_event_loop().run_until_complete(
-                        submit_peer_task_handler(
-                            None, TRUSTED_PEER["instance_id"], "Résume les logs d'hier."
+                with patch("src.runtime.peer_mission_tracker._TRACKER_FILE", tmp_path / "missions.json"):
+                    with patch("httpx.AsyncClient") as mock_cls:
+                        mock_client = AsyncMock()
+                        mock_client.post = AsyncMock(return_value=mock_resp)
+                        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+                        result = asyncio.get_event_loop().run_until_complete(
+                            submit_peer_task_handler(
+                                None, TRUSTED_PEER["instance_id"], "Résume les logs d'hier."
+                            )
                         )
-                    )
         assert result.success
         assert "ta-resp001" in result.output
 

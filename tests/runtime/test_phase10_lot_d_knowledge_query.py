@@ -516,6 +516,14 @@ async def _call_propose_handler(
         mock_resp.json.return_value = http_response.get("json", {})
 
         async def _ok(*args, **kwargs):
+            if kwargs.get("json") is None and kwargs.get("content") is not None:
+                import json as _json
+                raw = kwargs["content"]
+                raw = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                try:
+                    kwargs["json"] = _json.loads(raw)
+                except Exception:
+                    pass
             calls.append({"args": args, "kwargs": kwargs})
             return mock_resp
         monkeypatch.setattr("httpx.AsyncClient.post", _ok)

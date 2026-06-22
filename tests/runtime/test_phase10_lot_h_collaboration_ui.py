@@ -49,14 +49,18 @@ def _clean_task_state():
 
 
 class TestCollaborationUiStatic:
-    def test_simple_view_has_collaboration_targets(self):
+    def test_simple_view_has_history_targets(self):
+        """Refonte 2026-06-17 : la vue simple expose l'HISTORIQUE des échanges
+        (maître-détail), qui remplace les widgets bruts connaissances/tâches."""
         html = INDEX.read_text(encoding="utf-8")
-        assert 'id="net-knowledge-list"' in html
-        assert 'id="net-task-list"' in html
-        assert 'id="net-knowledge-title"' in html
-        assert 'id="net-knowledge-summary"' in html
-        assert 'id="net-knowledge-peer"' in html
-        assert 'createSharedKnowledgeFromUi()' in html
+        assert 'id="net-history-list"' in html
+        assert 'id="net-history-detail"' in html
+        assert 'id="net-history-search"' in html
+        assert 'id="net-history-type-filter"' in html
+        assert 'loadPeerHistory()' in html
+        # Les anciens widgets bruts ne sont plus dans la vue simple.
+        assert 'id="net-knowledge-title"' not in html
+        assert 'id="net-task-list"' not in html
 
     def test_panels_loads_shared_knowledge_and_local_tasks(self):
         js = PANELS.read_text(encoding="utf-8")
@@ -87,16 +91,20 @@ class TestCollaborationUiStatic:
         ):
             assert name in js
 
-    def test_simple_view_has_team_request_entrypoint(self):
+    def test_history_functions_wired(self):
+        """L'historique read-only est branché : fonctions exportées (panels) et
+        exposées au window (main). L'« envoi » se fait depuis le chat normal —
+        plus de formulaire « Demander à l'équipe » dans le panel."""
         html = INDEX.read_text(encoding="utf-8")
         js = PANELS.read_text(encoding="utf-8")
         main = MAIN.read_text(encoding="utf-8")
-        assert 'id="net-team-prompt"' in html
-        assert 'id="net-team-msg"' in html
-        assert "sendTeamPromptFromUi()" in html
-        assert "export function sendTeamPromptFromUi" in js
-        assert "window.quickSend" in js
-        assert "sendTeamPromptFromUi" in main
+        assert "export async function loadPeerHistory()" in js
+        assert "export function filterPeerHistory()" in js
+        assert "export function selectPeerExchange(" in js
+        for name in ("loadPeerHistory", "filterPeerHistory", "selectPeerExchange"):
+            assert name in main
+        # Le formulaire « Demander à l'équipe » a été retiré de la vue simple.
+        assert 'id="net-team-prompt"' not in html
 
 
 class TestLocalPeerTasksAdminRoute:

@@ -7,6 +7,7 @@ aux attributs partagés (llm, memory, emotion_manager, personality…).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -383,6 +384,39 @@ class AgentService:
                 return value
         return "general"
 
+    def _targets_a_peer(self, label: str) -> bool:
+        """Vrai si l'étiquette de délégation vise un AUTRE Lumena (inter-instance).
+
+        Dans ce cas, `_try_natural_delegation` ne doit PAS router vers un
+        sous-agent local : on relâche la requête pour que le flux ReAct +
+        `peer_awareness` gère la délégation au pair. N'affecte JAMAIS les
+        délégations locales classiques (« agent code », « code-moi un jeu »…).
+        """
+        lab = (label or "").strip().lower()
+        if not lab:
+            return False
+        # (a) mot-clé explicite d'instance/pair.
+        if re.search(r"\b(?:lumena|instance|pair|peer)\b", lab):
+            return True
+        # (b) correspondance avec un pair connu du registre (nom / host / uuid / alias).
+        try:
+            from src.utils import paths as _paths
+            reg = _paths.DATA_DIR / "peer_registry.json"
+            if reg.exists():
+                data = json.loads(reg.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data:
+                    from src.runtime.peer_awareness import resolve_peer_identifier
+                    if resolve_peer_identifier(data, lab):
+                        return True
+                    for peer in data.values():
+                        if isinstance(peer, dict):
+                            alias = str(peer.get("alias") or "").strip().lower()
+                            if alias and alias == lab:
+                                return True
+        except Exception:
+            pass
+        return False
+
     async def _try_natural_delegation(self, message: str) -> Optional[str]:
         """Détecte et exécute une délégation naturelle."""
         text = (message or "").strip()
@@ -406,6 +440,14 @@ class AgentService:
 
         raw_agent = (match.group("agent") or "general").strip()
         task = (match.group("task") or "").strip()
+
+        # Bug 2 (P2P) : ne PAS happer une délégation vers un AUTRE Lumena.
+        # « demande à ma Lumena salon de coder… » doit suivre le rail peer
+        # (boucle ReAct + conscience pair → peer_team_request / submit_peer_task),
+        # surtout PAS le CodeAgent local. On relâche en renvoyant None.
+        if self._targets_a_peer(raw_agent):
+            return None
+
         if len(task) < 4:
             return "⚠️ Délégation détectée, mais la tâche est trop courte."
 
@@ -2129,18 +2171,36 @@ Conversations et apprentissages de la journée.
         task: str,
         timeout: float = 120.0,
         allowed_tools: Optional[list] = None,
+        allow_when_busy: bool = False,
+        artifacts_out: Optional[list] = None,
+        allowed_tools_hard: bool = False,
+        refusals_out: Optional[list] = None,
     ) -> str:
-        """Boucle ReAct silencieuse pour les tâches autonomes internes."""
+        """Boucle ReAct silencieuse pour les tâches autonomes internes.
+
+        `artifacts_out` (liste) : si fournie, on y ajoute les chemins des fichiers
+        produits pendant la tâche (Brique 4 — retour des livrables de mission).
+
+        `refusals_out` (liste) : si fournie, on y ajoute un marqueur quand le filtre
+        A4 (pair niveau `chat`) a refusé un outil d'action — permet à l'émetteur
+        d'une mission de savoir que le pair était en lecture seule (race-safe : une
+        liste par appel, lue depuis `react.history`, aucun état partagé).
+
+        `allow_when_busy=True` : ne PAS différer la tâche si l'agent user est
+        actif (utilisé pour les délégations inter-Lumena, qui sont des requêtes
+        entrantes à honorer, pas des initiatives de fond).
+        """
         c = self.core
 
         # ── Guard : ne pas lancer de boucle ReAct autonome si l'agent user est actif ──
-        try:
-            from src.autonomy.scheduler import is_agent_busy as _is_busy
-            if _is_busy():
-                logger.debug("think_and_act_silent: agent user actif, tâche différée")
-                return ""
-        except Exception:
-            pass
+        if not allow_when_busy:
+            try:
+                from src.autonomy.scheduler import is_agent_busy as _is_busy
+                if _is_busy():
+                    logger.debug("think_and_act_silent: agent user actif, tâche différée")
+                    return ""
+            except Exception:
+                pass
 
         if not REASONING_AVAILABLE:
             logger.debug("think_and_act_silent: ReAct non disponible, fallback llm.chat")
@@ -2178,6 +2238,7 @@ Conversations et apprentissages de la journée.
         tools._tools_desc_cache = None
         tools._observation_cache.clear()
         tools._caller_set_allowed = False
+        tools._allowed_tools_hard = False  # A4 — réinitialisé à chaque exécution
         tools._outside_access_grant = OutsideAccessGrant.none() if _OUTSIDE_GRANT_AVAILABLE else None
         if hasattr(tools, '_v2_context') and tools._v2_context is not None:
             tools._v2_context.outside_access_grant = None  # Mode autonome — verrou total
@@ -2185,6 +2246,8 @@ Conversations et apprentissages de la journée.
             tools._allowed_tools = set(allowed_tools)
             tools._tools_desc_cache = None
             tools._caller_set_allowed = True
+            # A4 Couche 0 — filtre DUR si demandé (délégation pair niveau chat).
+            tools._allowed_tools_hard = bool(allowed_tools_hard)
         runtime_ctx = None
         if hasattr(c.llm, 'build_runtime_snapshot'):
             runtime_ctx = c.llm.build_runtime_snapshot(mode="agent")
@@ -2204,6 +2267,29 @@ Conversations et apprentissages de la journée.
                 "think_and_act_silent: tâche terminée ({} chars)",
                 len(result) if result else 0,
             )
+            # Brique 4 — capture des fichiers produits (out-param, race-safe car
+            # une liste par appel). Utilisé par l'exécution de mission inter-Lumena.
+            if artifacts_out is not None:
+                try:
+                    from src.runtime.peer_artifacts import extract_created_files
+                    from src.utils.paths import WORKSPACE_DIR
+                    artifacts_out.extend(
+                        extract_created_files(getattr(react, "history", []), base_dir=WORKSPACE_DIR)
+                    )
+                except Exception as _ex_art:
+                    logger.debug("capture artefacts échouée: {}", _ex_art)
+            # A4 — signal « pair en lecture seule » : un outil d'action a-t-il été
+            # refusé pendant ce run ? Lecture depuis react.history (per-call, sûr).
+            if refusals_out is not None:
+                try:
+                    from src.reasoning.tool_registry import A4_CHAT_REFUSAL_MARKER
+                    for _h in getattr(react, "history", []) or []:
+                        _obs = getattr(getattr(_h, "observation", None), "content", "") or ""
+                        if A4_CHAT_REFUSAL_MARKER in _obs:
+                            refusals_out.append("chat_read_only")
+                            break
+                except Exception as _ex_ref:
+                    logger.debug("détection refus A4 échouée: {}", _ex_ref)
             return result or ""
         except asyncio.TimeoutError:
             logger.warning(

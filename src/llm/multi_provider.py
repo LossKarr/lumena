@@ -38,7 +38,7 @@ def _get_provider_semaphore(provider_name: str) -> asyncio.Semaphore:
     return _provider_semaphores[provider_name]
 
 from .providers import (
-    ProviderType, ModelConfig, get_model_config, 
+    ProviderType, ModelConfig, get_model_config,
     get_api_key, check_api_key, AVAILABLE_MODELS,
     get_default_model_for_provider, get_model_fallbacks,
 )
@@ -48,6 +48,94 @@ try:
     TELEMETRY_AVAILABLE = True
 except Exception:
     TELEMETRY_AVAILABLE = False  # telemetry non disponible
+
+
+# ── Résolution du contenu assistant (lecture de reasoning_content) ─────────────
+# Fidèle au comportement historique DeepSeek, généralisé aux 6 providers OpenAI-
+# compatibles à reasoning_content (deepseek/nvidia/moonshot/xai/minimax/zai) :
+#   • content non-vide → prioritaire, toujours retourné.
+#   • content vide + reasoning_content → on EXTRAIT seulement un protocole exploitable :
+#       1) bloc ReAct THOUGHT/ACTION/ACTION_INPUT (borné, FINAL/CLARIFY exclus) ;
+#       2) sinon le DERNIER JSON d'action CodeAgent.
+#   • rien d'exploitable → on renvoie "" (JAMAIS la prose brute = anti-fuite).
+# Le resolver ne LÈVE jamais et ne déclenche AUCUNE cascade : un "" laisse les systèmes
+# de retry existants (ReAct `retry_on_empty`, CodeAgent `_process_llm_response`) reprendre
+# la main sur le MÊME provider. Le fallback provider reste réservé aux pannes réelles
+# (provider mort / plus de crédit = exceptions réseau).
+
+# Bloc ReAct BORNÉ : ACTION_INPUT s'arrête au prochain marqueur de protocole (ou fin)
+# → on n'injecte JAMAIS le raisonnement interne qui suivrait l'action.
+_PROTOCOL_MARKER = r'(?:THOUGHT|ACTION|ACTION_INPUT|OBSERVATION)\s*:'
+_REACT_PROTOCOL_RE = re.compile(
+    r'(THOUGHT:\s*.+?\n'
+    r'ACTION:\s*(?P<action>[^\n]+?)\s*\n'
+    r'ACTION_INPUT:\s*.+?)'
+    r'(?=\n[ \t]*' + _PROTOCOL_MARKER + r'|\Z)',
+    re.DOTALL,
+)
+# Actions « système » dont l'ACTION_INPUT est du texte LIBRE non borné : on ne les
+# extrait PAS du raisonnement (risque de fuite du suffixe privé) → "".
+_NON_EXTRACTABLE_ACTIONS = frozenset({"FINAL", "CLARIFY"})
+
+
+def _extract_last_action_json(reasoning_content: str) -> Optional[dict]:
+    """Dernier objet JSON contenant `action` dans le raisonnement (= décision finale).
+
+    Réutilise `extract_json_object()` (qui appelle `fix_json_text()`), parcourt tous
+    les `{` pour garder le DERNIER candidat valide avec une clé `action`. Aucun
+    fallback texte/code — uniquement un JSON d'action structuré.
+    """
+    try:
+        from src.llm.output_normalizer import extract_json_object as _ejson
+    except Exception:
+        return None
+    candidates = []
+    pos = 0
+    while True:
+        brace = reasoning_content.find("{", pos)
+        if brace < 0:
+            break
+        parsed = _ejson(reasoning_content[brace:])
+        if parsed and isinstance(parsed, dict) and "action" in parsed:
+            candidates.append(parsed)
+        pos = brace + 1
+    return candidates[-1] if candidates else None
+
+
+def _resolve_assistant_text(message: Any, *, provider: str = "", model: str = "") -> str:
+    """content prioritaire ; sinon extraction protocole/JSON depuis reasoning_content ;
+    sinon "". Ne lève JAMAIS, n'expose JAMAIS la prose brute (anti-fuite)."""
+    if isinstance(message, str):
+        message = {"content": message, "role": "assistant"}
+    # Normalisation TYPE : un provider peut renvoyer une liste/dict/int au lieu d'une
+    # str → on ne fait .strip() que sur du texte (sinon AttributeError).
+    _raw_content = message.get("content") if isinstance(message, dict) else None
+    content = _raw_content if isinstance(_raw_content, str) else ""
+    if content.strip():
+        return content
+
+    _raw_reasoning = message.get("reasoning_content") if isinstance(message, dict) else None
+    reasoning = _raw_reasoning if isinstance(_raw_reasoning, str) else ""
+    if reasoning.strip():
+        # 1) bloc ReAct borné (hors FINAL/CLARIFY = texte libre non borné)
+        m = _REACT_PROTOCOL_RE.search(reasoning)
+        if m and (m.group("action") or "").strip().upper() not in _NON_EXTRACTABLE_ACTIONS:
+            logger.warning(
+                "⚠️ {} ({}): content vide → bloc THOUGHT/ACTION (borné) extrait de reasoning_content",
+                provider, model,
+            )
+            return m.group(1)
+        # 2) dernier JSON d'action CodeAgent
+        last = _extract_last_action_json(reasoning)
+        if last is not None:
+            logger.warning(
+                "⚠️ {} ({}): content vide → dernier JSON d'action extrait de reasoning_content",
+                provider, model,
+            )
+            return json.dumps(last)
+
+    # rien d'exploitable → "" (jamais la prose brute) ; les retry existants prennent le relais
+    return ""
 
 
 # ── Ollama (local) : num_ctx STABLE ──────────────────────────────────────────
@@ -995,7 +1083,7 @@ class MultiProviderLLM:
     ) -> str:
         """
         Envoie un message au LLM et retourne la réponse.
-        
+
         Routing automatique selon le provider.
         Fallback vers Ollama si erreur avec provider cloud.
         """
@@ -1767,7 +1855,10 @@ class MultiProviderLLM:
             choice = data["choices"][0]
             _usage = data.get("usage") or {}
             return {
-                "text": choice.get("message", {}).get("content", "") or "",
+                "text": _resolve_assistant_text(
+                    choice.get("message", {}) or {},
+                    provider=ProviderType.MOONSHOT.value, model=payload["model"],
+                ),
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.MOONSHOT.value,
                 "model_used": payload["model"],
@@ -1854,10 +1945,12 @@ class MultiProviderLLM:
             response.raise_for_status()
             data = response.json()
             choice = data["choices"][0]
-            content = choice.get("message", {}).get("content", "") or ""
             _usage = data.get("usage") or {}
             return {
-                "text": content,
+                "text": _resolve_assistant_text(
+                    choice.get("message", {}) or {},
+                    provider=ProviderType.XAI.value, model=target_model,
+                ),
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.XAI.value,
                 "model_used": target_model,
@@ -2009,11 +2102,13 @@ class MultiProviderLLM:
                 raise ValueError(f"NVIDIA NIM: réponse vide (pas de choices) pour {target_model}")
             choice = choices[0]
             message = choice.get("message") or {}
-            content = message.get("content", "") or ""
-            reasoning_content = message.get("reasoning_content", "") or ""
+            # Robuste : message peut être une str (réponse partielle/erreur) → pas de .get dessus
+            reasoning_content = (message.get("reasoning_content", "") or "") if isinstance(message, dict) else ""
             _usage = data.get("usage") or {}
             result = {
-                "text": content,
+                "text": _resolve_assistant_text(
+                    message, provider=ProviderType.NVIDIA.value, model=target_model,
+                ),
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.NVIDIA.value,
                 "model_used": target_model,
@@ -2073,80 +2168,11 @@ class MultiProviderLLM:
 
         choice = data["choices"][0]
         message = choice.get("message") or {}
-        # Defensive: certaines réponses DeepSeek (rate limit, erreur partielle)
-        # retournent message comme str au lieu de dict
-        if isinstance(message, str):
-            message = {"content": message, "role": "assistant"}
-        content = message.get("content", "") or ""
-
-        # FIX: DeepSeek Reasoner met la réponse dans reasoning_content quand content est vide
-        reasoning_content = message.get("reasoning_content", "")
-
-        if not content.strip() and reasoning_content:
-            # Essayer d'extraire un bloc THOUGHT/ACTION valide depuis reasoning_content
-            import re as _re
-            _thought_match = _re.search(
-                r'(THOUGHT:\s*.+?\nACTION:\s*.+?\nACTION_INPUT:\s*.+)',
-                reasoning_content,
-                _re.DOTALL
-            )
-            if _thought_match:
-                logger.warning("⚠️ DeepSeek: content vide, extraction THOUGHT/ACTION depuis reasoning_content")
-                content = _thought_match.group(1)
-            else:
-                # Chercher le DERNIER bloc JSON CodeAgent dans le raisonnement
-                # (le dernier = la décision finale, pas les étapes de réflexion intermédiaires)
-                # Utilise brace-depth pour gérer les JSON imbriqués (write_file avec code HTML etc.)
-                try:
-                    from src.llm.output_normalizer import extract_json_object as _ejson
-                    # Chercher toutes les occurrences de { en ordre inverse pour prendre la dernière
-                    _last_json = None
-                    _search_text = reasoning_content
-                    _pos = 0
-                    _candidates = []
-                    while True:
-                        _brace = _search_text.find("{", _pos)
-                        if _brace < 0:
-                            break
-                        _sub = _search_text[_brace:]
-                        _parsed = _ejson(_sub)
-                        if _parsed and "action" in _parsed:
-                            _candidates.append(_parsed)
-                        _pos = _brace + 1
-                    if _candidates:
-                        _last_json = _candidates[-1]  # dernière décision du LLM
-                        import json as _json_mod
-                        content = _json_mod.dumps(_last_json)
-                        logger.warning("⚠️ DeepSeek: content vide, extraction JSON action depuis reasoning_content ({} candidats, dernier retenu)", len(_candidates))
-                    else:
-                        # FIX: Ne pas utiliser du texte descriptif comme code
-                        _fence = _re.search(r'```(?:\w*)\n(.+?)```', reasoning_content, _re.DOTALL)
-                        if _fence:
-                            content = _fence.group(1).strip()
-                            logger.warning("⚠️ DeepSeek: content vide, code fenced extrait de reasoning_content")
-                        elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
-                            content = reasoning_content
-                            logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (contient du code)")
-                        elif len(reasoning_content.strip()) >= 30:
-                            content = reasoning_content.strip()
-                            logger.warning("⚠️ DeepSeek: content vide, reasoning_content descriptif accepté comme fallback ({} chars)", len(content))
-                        else:
-                            logger.error("🚨 DeepSeek: content vide, reasoning_content trop court ({} chars) → rejeté", len(reasoning_content.strip()))
-                            content = ""
-                except Exception:
-                    _fence = _re.search(r'```(?:\w*)\n(.+?)```', reasoning_content, _re.DOTALL)
-                    if _fence:
-                        content = _fence.group(1).strip()
-                        logger.warning("⚠️ DeepSeek: content vide, code fenced extrait (exception)")
-                    elif any(m in reasoning_content for m in ('import ', 'export ', 'function ', 'const ', 'def ', 'THOUGHT:', 'ACTION:')):
-                        content = reasoning_content
-                        logger.warning("⚠️ DeepSeek: content vide, reasoning_content utilisé (exception)")
-                    elif len(reasoning_content.strip()) >= 30:
-                        content = reasoning_content.strip()
-                        logger.warning("⚠️ DeepSeek: content vide, reasoning_content descriptif accepté (exception, {} chars)", len(content))
-                    else:
-                        content = ""
-                        logger.error("🚨 DeepSeek: content vide, reasoning_content trop court ({} chars) → rejeté (exception)", len(reasoning_content.strip()))
+        # content prioritaire ; si vide → extraction THOUGHT/ACTION (borné) ou dernier
+        # JSON d'action depuis reasoning_content ; sinon "". Jamais de prose brute (fuite).
+        content = _resolve_assistant_text(
+            message, provider=ProviderType.DEEPSEEK.value, model=(model or self.model),
+        )
 
         # FIX: Détecter les réponses tronquées par limite de tokens
         finish_reason = choice.get("finish_reason", "")
@@ -2219,10 +2245,12 @@ class MultiProviderLLM:
         response.raise_for_status()
         data = response.json()
         choice = data["choices"][0]
-        content = choice.get("message", {}).get("content", "") or ""
         _usage = data.get("usage") or {}
         return {
-            "text": content,
+            "text": _resolve_assistant_text(
+                choice.get("message", {}) or {},
+                provider=ProviderType.MINIMAX.value, model=model_id,
+            ),
             "finish_reason": choice.get("finish_reason"),
             "provider_used": ProviderType.MINIMAX.value,
             "model_used": model_id,
@@ -2289,10 +2317,12 @@ class MultiProviderLLM:
             response.raise_for_status()
             data = response.json()
             choice = data["choices"][0]
-            content = choice.get("message", {}).get("content", "") or ""
             _usage = data.get("usage") or {}
             return {
-                "text": content,
+                "text": _resolve_assistant_text(
+                    choice.get("message", {}) or {},
+                    provider=ProviderType.ZAI.value, model=model_id,
+                ),
                 "finish_reason": choice.get("finish_reason"),
                 "provider_used": ProviderType.ZAI.value,
                 "model_used": model_id,
@@ -2351,7 +2381,7 @@ class MultiProviderLLM:
             if provider not in (ProviderType.OPENAI, ProviderType.ANTHROPIC,
                                 ProviderType.GOOGLE, ProviderType.XAI,
                                 ProviderType.MOONSHOT, ProviderType.NVIDIA,
-                                ProviderType.OLLAMA):
+                                ProviderType.ZAI, ProviderType.OLLAMA):
                 return ""
             vision_provider = provider
             vision_model_id = self.model_name
@@ -2519,6 +2549,33 @@ class MultiProviderLLM:
                 }
                 resp = await self._http.post(
                     url,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload,
+                    timeout=60.0,
+                )
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"] or ""
+
+            elif vision_provider == ProviderType.ZAI:
+                api_key = get_api_key(ProviderType.ZAI)
+                if not api_key:
+                    return ""
+                base_url = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4").rstrip("/")
+                payload = {
+                    "model": vision_model_id,
+                    "max_tokens": 1024,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                                {"type": "text", "text": user_prompt},
+                            ],
+                        }
+                    ],
+                }
+                resp = await self._http.post(
+                    f"{base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json=payload,
                     timeout=60.0,
@@ -3508,9 +3565,13 @@ class MultiProviderLLM:
                 tool_calls = message.get("tool_calls", [])
 
                 if not tool_calls:
-                    # Pas d'appel d'outil, retourner la réponse
+                    # Pas d'appel d'outil = réponse finale. Kimi thinking peut la mettre
+                    # dans reasoning_content (content vide) → resolver (content prioritaire,
+                    # sinon extraction THOUGHT/ACTION/JSON, sinon ""). Jamais de prose brute.
                     self._update_last_response_meta(finish_reason=finish_reason)
-                    return message.get("content", "")
+                    return _resolve_assistant_text(
+                        message, provider=ProviderType.MOONSHOT.value, model=self.model,
+                    )
 
                 # Exécuter les outils
                 augmented_messages.append(message)

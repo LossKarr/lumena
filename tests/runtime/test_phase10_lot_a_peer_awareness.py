@@ -210,6 +210,16 @@ class TestBuildPeerAwarenessContext:
         assert "chat" in ctx
         assert "Délégation inter-instance disponible" in ctx
 
+    def test_mission_uses_submit_peer_task(self, tmp_path, monkeypatch):
+        """Bug 1 : la consigne doit orienter une mission produisant des fichiers
+        vers submit_peer_task (async + artefacts), pas peer_team_request."""
+        pa = _patch(monkeypatch, tmp_path, "1", {"p": TRUSTED_FULL})
+        ctx = pa.build_peer_awareness_context()
+        assert "submit_peer_task" in ctx
+        assert "recu-de-" in ctx
+        # ET on conserve peer_team_request pour les Q/R rapides
+        assert "peer_team_request" in ctx
+
     def test_outbound_no_scope_not_delegable(self, tmp_path, monkeypatch):
         """trusted + outbound + allowed_scopes=[] -> connecté mais aucun scope utilisable."""
         peer = {**TRUSTED_FULL, "allowed_scopes": []}
@@ -382,13 +392,13 @@ class TestReactPromptInjection:
 class TestEnvExample:
 
     def test_env_example_contains_peer_awareness(self):
-        env_path = Path("c:/Users/charl/Desktop/lumena/.env.example")
+        env_path = Path(__file__).resolve().parents[2] / ".env.example"
         assert env_path.exists(), ".env.example introuvable"
         content = env_path.read_text(encoding="utf-8")
         assert "LUMENA_PEER_AWARENESS" in content
 
     def test_peer_awareness_default_is_zero(self):
-        env_path = Path("c:/Users/charl/Desktop/lumena/.env.example")
+        env_path = Path(__file__).resolve().parents[2] / ".env.example"
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith("LUMENA_PEER_AWARENESS="):
                 assert line.strip() == "LUMENA_PEER_AWARENESS=0"

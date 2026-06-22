@@ -4,13 +4,13 @@
 Raisonne, agit, apprend, s'améliore seul.
 
 ![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
-![Tests](https://img.shields.io/badge/tests-10678%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-15000%20passed-brightgreen)
 ![License](https://img.shields.io/badge/license-AGPL--3.0%20%2F%20Commercial-blue)
 ![Version](https://img.shields.io/badge/version-v1.0.41-orange)
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
-> **⚠️ Version Bêta — v1.0.45**
+> **⚠️ Version Bêta — v1.0.46**
 > Lumena est en bêta active. Fonctionnelle pour un usage personnel quotidien, certaines fonctionnalités (voix, agents spécialisés) sont encore en développement actif. Des comportements inattendus peuvent survenir ponctuellement.
 
 > **👤 Projet solo**
@@ -46,7 +46,7 @@ Sous le capot : boucle **ReAct** (Think → Act → Observe), **560 outils** org
 | **Multi-Lumena LAN** | Jumelage sécurisé par code court (6 cars, TTL 5 min), peer tokens révocables stockés hashés, délégation de tâches inter-instances, découverte LAN + mDNS/Zeroconf optionnel (`_lumena._tcp.local`) |
 | **Sécurité** | Sandbox Docker (auto/always/never), sanitizer commandes, SSRF guard RFC1918 strict, rate limiter, path traversal guard, peer tokens liés à l'instance (anti-usurpation) |
 | **Fiabilité** | Cancel coopératif parent→agent, audit structurel des outcomes, tâches bg annulables, TaskProofDecision annotation (evidence + confidence par tâche complétée) |
-| **Tests** | **10 678 tests**, 0 failed, ~4 min suite complète |
+| **Tests** | **+15K tests**, 0 failed, ~5 min suite complète |
 
 ### Intégration MCP (Model Context Protocol) — autonomie conversationnelle
 
@@ -285,7 +285,7 @@ web/
 
 assets/templates/           # 13 templates Jinja2 (documents pro)
 models/                     # Modèles TTS Piper + pipeline fine-tuning
-tests/                      # 10 678 tests pytest
+tests/                      # +15K tests pytest
 ```
 
 ---

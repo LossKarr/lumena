@@ -55,6 +55,12 @@ _PUBLIC_ROUTES = frozenset({
     # Phase 8.4/8.5 — Validation code de jumelage (le code à 6 chiffres fait office d'auth,
     # usage unique, TTL 5 min). Appelé par l'instance distante, pas par l'admin local.
     "POST /api/peer/validate-pairing-code",
+    # A1 — Auto-jumelage de flotte (l'auth est la PREUVE HMAC de connaissance du
+    # LUMENA_FLEET_KEY ; la clé ne transite jamais, nonces anti-rejeu). Appelés par
+    # l'instance distante de la flotte, pas par l'admin local. Désactivés si la clé
+    # de flotte est absente. Le déclencheur /api/peer/fleet-pair reste admin-only.
+    "POST /api/peer/fleet-pair-init",
+    "POST /api/peer/fleet-pair-confirm",
 })
 
 

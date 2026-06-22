@@ -61,8 +61,10 @@ class TestMdnsAvailability:
         assert not is_mdns_available()
 
     def test_flag_enabled_but_lib_absent(self, monkeypatch):
+        import sys
         monkeypatch.setenv("LUMENA_MDNS_DISCOVERY", "1")
-        # zeroconf n'est pas installé dans l'environnement de test
+        # Simule zeroconf absent (robuste que la lib soit installée ou non).
+        monkeypatch.setitem(sys.modules, "zeroconf", None)
         from src.runtime.mdns_discovery import is_mdns_available
         # Sans lib → False (ImportError capturé)
         assert not is_mdns_available()
@@ -264,8 +266,10 @@ class TestAdvertiseService:
         assert result is None
 
     def test_returns_none_when_lib_absent(self, monkeypatch):
+        import sys
         monkeypatch.setenv("LUMENA_MDNS_DISCOVERY", "1")
-        # zeroconf n'est pas installé → is_mdns_available() = False → None
+        # Simule zeroconf absent → is_mdns_available() = False → None
+        monkeypatch.setitem(sys.modules, "zeroconf", None)
         from src.runtime.mdns_discovery import advertise_service
         result = advertise_service("id", "name", "standalone", "1.0", ["chat"], 8080)
         assert result is None

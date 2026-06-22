@@ -51,6 +51,7 @@ httpx==0.28.1
 huggingface_hub==1.10.2
 hyperframe==6.1.0
 idna==3.11
+ifaddr==0.2.0
 importlib_metadata==8.7.1
 importlib_resources==7.1.0
 iniconfig==2.3.0
@@ -197,5 +198,6 @@ websockets==16.0
 win32_setctime==1.2.0
 xlsxwriter==3.2.9
 yarl==1.23.0
+zeroconf==0.149.16
 zipp==3.23.1
 zopfli==0.4.1

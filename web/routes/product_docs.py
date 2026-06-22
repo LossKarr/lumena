@@ -518,10 +518,10 @@ gère des serveurs, envoie des emails, écrit du code et corrige ses bugs — de
 <div class="doc-cap-card">
   <h4>Génération d'images</h4>
   <ul>
-    <li>12 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax, Z.AI (CogView-4)</li>
-    <li>39 modèles — de gratuits (Gemini Flash, HuggingFace SDXL, CogView-4-Flash) à ultra (Flux 2 Max, Imagen 4 Ultra)</li>
+    <li>12 providers : Gemini, OpenAI (GPT-Image), Flux (BFL), Stability AI, Imagen (Google), Ideogram, Recraft, Replicate, Hugging Face, xAI (Grok), MiniMax et Z.AI (CogView-4, GLM-Image)</li>
+    <li>44 modèles — des modèles cloud gratuits (Gemini Flash, HuggingFace SDXL) aux rendus premium (Flux 2 Max, Imagen 4 Ultra)</li>
     <li>15 handlers ReAct : generate, edit (inpaint/outpaint/erase), compose (multi-images), thumbnail, thumbnail-pro (pipeline LLM), headlines, logo, upscale, remove/replace background, sketch-to-image, SVG vectoriel</li>
-    <li>Mode <code>auto</code> : sélection automatique du meilleur modèle disponible (fallback par tier de qualité Q10→Q5)</li>
+    <li>Mode <code>auto</code> : modèles cloud gratuits puis modèles payants classés par coût croissant</li>
     <li>8 templates de prompt : <code>photo</code>, <code>illustration</code>, <code>3d_render</code>, <code>pixel_art</code>, <code>watercolor</code>, <code>anime</code>, <code>logo</code>, <code>icon</code></li>
     <li>Édition avancée : inpainting (masque), outpainting (extension), search-and-replace, erase object</li>
     <li>Upscale 2×/4× (modes fast, conservative, creative) via Stability AI</li>

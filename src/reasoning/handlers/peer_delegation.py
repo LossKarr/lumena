@@ -21,6 +21,16 @@ _MAX_TIMEOUT = 300
 
 
 def _is_collaboration_enabled() -> bool:
+    # Kill-switch SOFT : le halt veto toute NOUVELLE collaboration (in/out).
+    # OR-fallback : le MAÎTRE (LUMENA_PEER_ENABLED) allume aussi la collaboration.
+    try:
+        from src.runtime.peer_network_autonomy import is_peer_halt_enabled, is_peer_master_enabled
+        if is_peer_halt_enabled():
+            return False
+        if is_peer_master_enabled():
+            return True
+    except Exception:
+        pass
     return os.getenv("LUMENA_PEER_COLLABORATION", "0").strip() == "1"
 
 
@@ -99,9 +109,13 @@ async def delegate_to_peer_handler(
     # 4. Timeout borné — jamais de délégation infinie
     safe_timeout = max(_MIN_TIMEOUT, min(_MAX_TIMEOUT, int(timeout_sec)))
 
-    # 5. Peer dans le registre
+    # 5. Peer dans le registre (résolution flexible : UUID / host:port / nom)
     peers = _load_peers()
-    peer = peers.get(instance_id)
+    from src.runtime.peer_awareness import resolve_peer_identifier
+    _resolved_id = resolve_peer_identifier(peers, instance_id)
+    if _resolved_id:
+        instance_id = _resolved_id
+    peer = peers.get(_resolved_id) if _resolved_id else None
     if peer is None:
         _audit("delegate_tool_refused", instance_id, task_id, scope, "refused",
                "Pair absent du registre")
@@ -226,16 +240,17 @@ async def delegate_to_peer_handler(
     # 11. Audit démarrage
     _audit("delegate_tool_started", instance_id, task_id, scope, "running")
 
-    # 12. Appel HTTP — outbound_token transmis via Authorization: Bearer (standard Phase 8)
-    # verify_peer_token() côté pair attend "Bearer <token>" — ne pas changer ce schéma.
+    # 12. Appel HTTP — Bearer (Phase 8) + signature de flotte A2 (si pair fleet).
+    # Le body signé EST le contenu envoyé (content=) → aucune divergence de sérialisation.
     try:
         import httpx as _httpx
+        from src.runtime.peer_signing import build_signed_request
+        _content, _headers = build_signed_request(
+            payload, from_id=_OWN_ID, to_id=peer.get("instance_id", instance_id),
+            peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=float(safe_timeout)) as client:
-            r = await client.post(
-                url,
-                json=payload,
-                headers={"Authorization": f"Bearer {outbound_token}"},
-            )
+            r = await client.post(url, content=_content, headers=_headers)
 
         if r.status_code != 200:
             _audit("delegate_tool_failed", instance_id, task_id, scope, "error",

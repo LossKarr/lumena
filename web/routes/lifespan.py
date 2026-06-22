@@ -1105,6 +1105,27 @@ async def lifespan(app: FastAPI):
         except Exception as _peer_auto_err:
             logger.warning("[PEERS] Autonomie reseau non demarree: {}", _peer_auto_err)
 
+        # ── A1.5 — Annonce mDNS automatique (être découvrable sans config) ──
+        # Diagnostic explicite : on dit POURQUOI si l'annonce ne démarre pas.
+        # NB: l'API zeroconf synchrone lève EventLoopBlocked si appelée DANS la
+        # boucle asyncio → on l'exécute dans un thread (executor).
+        try:
+            from src.runtime.mdns_discovery import (
+                start_mdns_advertise_from_env, is_mdns_enabled, is_mdns_available,
+            )
+            _loop = asyncio.get_event_loop()
+            _mdns_ok = await _loop.run_in_executor(None, start_mdns_advertise_from_env)
+            if _mdns_ok:
+                print("[PEERS] Annonce mDNS active (_lumena._tcp.local)")
+            elif not is_mdns_enabled():
+                print("[PEERS] mDNS desactive (LUMENA_MDNS_DISCOVERY != 1)")
+            elif not is_mdns_available():
+                print("[PEERS] mDNS active mais zeroconf ABSENT du venv (pip install zeroconf)")
+            else:
+                print("[PEERS] mDNS: annonce non demarree (erreur reseau/interface)")
+        except Exception as _mdns_err:
+            print(f"[PEERS] mDNS erreur au demarrage: {_mdns_err}")
+
         _instance_registry = None
         if MULTI_INSTANCE_ENABLED:
             try:
@@ -2112,6 +2133,13 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     pass
             _SERVING_WORKSPACES.clear()
+        except Exception:
+            pass
+
+        # A1.5 — Arrêt de l'annonce mDNS (executor : API zeroconf sync)
+        try:
+            from src.runtime.mdns_discovery import stop_mdns_advertise
+            await asyncio.get_event_loop().run_in_executor(None, stop_mdns_advertise)
         except Exception:
             pass
 

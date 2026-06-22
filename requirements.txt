@@ -50,6 +50,11 @@ python-telegram-bot>=20.0
 # Discord
 discord.py>=2.7.1
 
+# Peer-to-Peer (découverte mDNS/Zeroconf des autres Lumena — auto-jumelage zéro-config).
+# Optionnel à l'exécution : le code dégrade proprement si absent (fallback scan LAN),
+# mais présent par défaut pour l'expérience "tout seul" out-of-the-box.
+zeroconf>=0.131.0
+
 # Perception
 Pillow>=10.0.0
 mss>=9.0.0

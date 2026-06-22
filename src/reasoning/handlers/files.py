@@ -1585,7 +1585,17 @@ async def create_directory_handler(
                 stripped = path_posix[len("workspace/"):]
                 if stripped:
                     target = _Path(stripped)
-            target = ctx.runtime_root / target
+            # P3 — en mission (projet épinglé), aligner create_directory sur le
+            # routage de write_file (workspace/<date>/<projet>/…) pour éviter le
+            # piège « dossier vide » (création à la racine pendant que les fichiers
+            # vont dans le sous-dossier épinglé).
+            from src.tools.file_guardrails import WorkspaceFileGuardrails as _WFG
+            if _WFG._pinned_project:
+                from datetime import datetime as _dt
+                from src.utils.paths import WORKSPACE_DIR as _WS_DIR
+                target = _WS_DIR / _dt.now().strftime("%Y-%m-%d") / _WFG._pinned_project / target
+            else:
+                target = ctx.runtime_root / target
         try:
             _assert_write_boundary(target, ctx)
         except PathSecurityError as sec_err:

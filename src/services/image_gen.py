@@ -127,6 +127,9 @@ _MODEL_PROVIDER: Dict[str, str] = {
     "gemini-3.1-flash-image": "gemini",
     "gemini-3-pro-image": "gemini",
     "gemini-2.5-flash-image": "gemini",
+    # Z.AI
+    "cogview-4": "zai",
+    "glm-image": "zai",
     # OpenAI
     "gpt-image-2": "openai",
     "gpt-image-1.5": "openai",
@@ -225,6 +228,25 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
         weaknesses="Qualité inférieure aux modèles v3",
         capabilities=["text-to-image", "image-edit"],
         best_for="Fallback rapide et gratuit",
+    ),
+    # ── Z.AI ──
+    "cogview-4": ModelInfo(
+        name="CogView-4", provider="zai", quality=7, speed=7,
+        cost_per_image=0.01, free=False, max_resolution="2048x2048",
+        styles=["illustration", "publicite", "bilingue"],
+        strengths="Bon suivi de prompt en anglais et chinois a faible cout",
+        weaknesses="Pas de retouche image et moins precise que GLM-Image pour les affiches",
+        capabilities=["text-to-image"],
+        best_for="Illustrations et visuels publicitaires a petit budget",
+    ),
+    "glm-image": ModelInfo(
+        name="GLM-Image", provider="zai", quality=8, speed=6,
+        cost_per_image=0.015, free=False, max_resolution="2048x2048",
+        styles=["affiche", "diagramme", "typographie", "illustration"],
+        strengths="Excellent suivi des instructions et rendu de texte dans les images",
+        weaknesses="Generation uniquement, pas de retouche image ni de seed exposee",
+        capabilities=["text-to-image"],
+        best_for="Affiches, diagrammes, visuels explicatifs et contenus avec texte",
     ),
     # ── OpenAI GPT-Image ──
     "gpt-image-2": ModelInfo(
@@ -607,56 +629,56 @@ def get_model_catalog_summary() -> str:
     return "\n".join(lines)
 
 
-# Fallback auto coût-first: local/gratuit -> cheap -> mid -> premium.
-# Lumena n'a pas encore de générateur d'image local câblé dans ce service;
-# le slot local reste réservé pour une future intégration Stable Diffusion/ComfyUI.
+# Fallback auto cost-first: local (when a real local backend exists) -> free
+# -> paid models in ascending cost order. Lumena has no local image generator
+# in this service yet, so the executable cascade starts with cloud free tiers.
 _PROVIDER_FALLBACK_ORDER: List[str] = [
-    # Tier 0 — gratuit / quasi-gratuit.
+    # Tier 0 — free tiers.
     "gemini-3.1-flash-image",
     "gemini-3-pro-image",
     "gemini-2.5-flash-image",
     "huggingface-sdxl",
-    # Tier 1 — cheap / brouillon.
+    # Paid, strictly ascending by current per-image list price.
     "flux-schnell",
+    "cogview-4",
     "flux-2-klein-4b",
+    "glm-image",
     "flux-2-klein-9b",
     "gpt-image-1-mini",
-    "ideogram-v4-turbo",
     "ideogram-v3-turbo",
-    "stable-image-core",
     "sd3.5-flash",
-    "sd3.5-large-turbo",
-    "sd3.5-medium",
     "minimax-image-01",
-    # Tier 2 — production standard.
-    "flux-2-flex",
-    "flux-2-pro",
     "imagen-4-fast",
-    "imagen-4",
-    "ideogram-v4",
-    "ideogram-v3-balanced",
-    "recraft-v4",
-    "recraft-v4-svg",
     "grok-imagine-image",
-    "grok-imagine-image-quality",
+    "ideogram-v4-turbo",
+    "stable-image-core",
     "seedream-5-lite",
     "seedream-4.5",
     "qwen-image",
+    "flux-2-flex",
+    "sd3.5-medium",
+    "sd3.5-large-turbo",
+    "imagen-4",
+    "ideogram-v3-balanced",
+    "recraft-v4",
     "wan-2.7-image-pro",
     "hunyuan-image-3",
-    # Tier 3 — premium / rendu final.
+    "flux-2-pro",
+    "ideogram-v4",
+    "grok-imagine-image-quality",
+    "recraft-v4-svg",
+    "flux-kontext-pro",
+    "flux-1.1-pro-ultra",
+    "imagen-4-ultra",
+    "sd3.5-large",
+    "grok-imagine-image-pro",
     "gpt-image-1.5",
-    "gpt-image-2",
     "ideogram-v4-quality",
     "ideogram-v3-quality",
     "stable-image-ultra",
-    "sd3.5-large",
-    "flux-kontext-pro",
     "flux-kontext-max",
-    "flux-1.1-pro-ultra",
     "flux-2-max",
-    "imagen-4-ultra",
-    "grok-imagine-image-pro",
+    "gpt-image-2",
 ]
 
 # Provider → env var clé API
@@ -672,6 +694,7 @@ _PROVIDER_API_KEY: Dict[str, str] = {
     "huggingface": "HUGGINGFACE_TOKEN",
     "xai": "XAI_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "zai": "ZAI_API_KEY",
 }
 
 # Stability AI edit endpoints
@@ -1022,6 +1045,7 @@ class ImageGenService:
             "huggingface": self._generate_huggingface,
             "xai": self._generate_xai,
             "minimax": self._generate_minimax,
+            "zai": self._generate_zai,
         }
         fn = dispatch.get(provider)
         if fn is None:
@@ -1703,6 +1727,58 @@ class ImageGenService:
         img_bytes = base64.b64decode(b64)
         w, h = _parse_size(size)
         return img_bytes, "png", w, h, 0.03, None
+
+    async def _generate_zai(
+        self, prompt: str, *, model: str, size: str, quality: str, style: str,
+    ) -> tuple[bytes, str, int, int, float, Optional[int]]:
+        """Z.AI Image API for the documented CogView-4 and GLM-Image models."""
+        key = self._get_api_key("zai")
+        api_model = {
+            "cogview-4": "cogview-4-250304",
+            "glm-image": "glm-image",
+        }.get(model)
+        if not api_model:
+            raise ImageGenError(f"Z.AI image model unsupported: {model}")
+
+        zai_quality = "hd" if model == "glm-image" else "standard"
+        if quality in ("hd", "standard"):
+            zai_quality = quality
+
+        body: Dict[str, Any] = {
+            "model": api_model,
+            "prompt": prompt,
+            "size": size,
+            "quality": zai_quality,
+        }
+        base_url = os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4").rstrip("/")
+        client = await self._get_client()
+        resp = await client.post(
+            f"{base_url}/images/generations",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json=body,
+        )
+        resp.raise_for_status()
+        images = resp.json().get("data", [])
+        if not images or not isinstance(images[0], dict):
+            raise ImageGenError("Z.AI did not return an image")
+        image_url = images[0].get("url")
+        if not isinstance(image_url, str) or not image_url.startswith("https://"):
+            raise ImageGenError("Z.AI returned an invalid image URL")
+
+        image_response = await client.get(image_url)
+        image_response.raise_for_status()
+        content_type = image_response.headers.get("content-type", "").split(";", 1)[0].lower()
+        if not content_type.startswith("image/"):
+            raise ImageGenError("Z.AI image download returned a non-image response")
+        fmt = content_type.split("/", 1)[1]
+        if fmt == "jpeg":
+            fmt = "jpg"
+        if fmt not in _IMAGE_EXTS:
+            raise ImageGenError(f"Z.AI returned an unsupported image format: {fmt}")
+
+        w, h = _parse_size(size)
+        cost = 0.01 if model == "cogview-4" else 0.015
+        return image_response.content, fmt, w, h, cost, None
 
     # ── Edit with Stability ───────────────────────────────────────────────
 

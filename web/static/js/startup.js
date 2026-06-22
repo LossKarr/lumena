@@ -355,6 +355,10 @@ export function startLiveRefreshLoops(){
       const scrollY=panelEl?panelEl.scrollTop:0;
       loadPanelData(p);
       if(panelEl)requestAnimationFrame(()=>{panelEl.scrollTop=scrollY});
+    }else if(p==='infra-network'){
+      // Cran 1 : rafraîchissement CIBLÉ (présence + missions) — ne re-render PAS
+      // les cartes de pairs (préserve les tiroirs de config ouverts). Auto-throttlé.
+      if(typeof window.refreshNetworkLive==='function')window.refreshNetworkLive();
     }
   },4000);
   document.addEventListener('visibilitychange',()=>scheduleStatusRefresh(true));

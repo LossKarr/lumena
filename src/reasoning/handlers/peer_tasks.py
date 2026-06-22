@@ -24,6 +24,16 @@ _DEFAULT_TIMEOUT = 120
 
 
 def _is_collaboration_enabled() -> bool:
+    # Kill-switch SOFT : le halt veto toute NOUVELLE collaboration (in/out).
+    # OR-fallback : le MAÎTRE (LUMENA_PEER_ENABLED) allume aussi la collaboration.
+    try:
+        from src.runtime.peer_network_autonomy import is_peer_halt_enabled, is_peer_master_enabled
+        if is_peer_halt_enabled():
+            return False
+        if is_peer_master_enabled():
+            return True
+    except Exception:
+        pass
     return os.getenv("LUMENA_PEER_COLLABORATION", "0").strip() == "1"
 
 
@@ -48,6 +58,24 @@ def _audit(event: str, instance_id: str, task_id: str, scope: str,
             status=status,
             detail=detail,
         )
+    except Exception:
+        pass
+
+
+def _q_anomaly(peer_id: str, kind: str) -> None:
+    """C-1.b — compte un échec de SANTÉ du pair (injoignable/HTTP). Best-effort."""
+    try:
+        from src.runtime.peer_quarantine import record_anomaly
+        record_anomaly(peer_id, kind)
+    except Exception:
+        pass
+
+
+def _q_success(peer_id: str) -> None:
+    """C-1.b — le pair a répondu (joignable) → reset le compteur d'échecs."""
+    try:
+        from src.runtime.peer_quarantine import record_success
+        record_success(peer_id)
     except Exception:
         pass
 
@@ -107,7 +135,11 @@ async def run_peer_task_sync_handler(
 
     # 5. Peer dans le registre
     peers = _load_peers()
-    peer = peers.get(instance_id)
+    from src.runtime.peer_awareness import resolve_peer_identifier
+    _resolved_id = resolve_peer_identifier(peers, instance_id)
+    if _resolved_id:
+        instance_id = _resolved_id
+    peer = peers.get(_resolved_id) if _resolved_id else None
     if peer is None:
         _audit("task_sync_refused", instance_id, task_id,
                "task.delegate", "refused", "Pair absent du registre")
@@ -136,6 +168,21 @@ async def run_peer_task_sync_handler(
             "Jumelez ce pair via le panneau réseau.",
             handler_name="run_peer_task_sync",
         )
+
+    # 6b. Quarantaine (C-1.b) : un pair qui enchaîne les échecs est isolé. On REFUSE
+    # une NOUVELLE délégation, sans jamais toucher aux missions DÉJÀ en cours.
+    try:
+        from src.runtime.peer_quarantine import is_quarantined
+        if is_quarantined(instance_id):
+            _audit("task_sync_refused", instance_id, task_id,
+                   "task.delegate", "refused", "Pair en quarantaine")
+            return HandlerResult.fail(
+                f"{peer_name!r} est en quarantaine (trop d'échecs récents). "
+                "Lève la quarantaine dans le panneau réseau pour réessayer.",
+                handler_name="run_peer_task_sync",
+            )
+    except Exception:
+        pass
 
     # 7. Token sortant
     outbound_token = peer.get("peer_token_outbound", "")
@@ -214,17 +261,19 @@ async def run_peer_task_sync_handler(
     _audit("task_sync_started", instance_id, task_id,
            "task.delegate", "running")
 
-    # 12. Appel HTTP
+    # 12. Appel HTTP (Bearer + signature de flotte A2 si pair fleet)
     try:
         import httpx as _httpx
+        from src.runtime.peer_signing import build_signed_request
+        _content, _headers = build_signed_request(
+            payload, from_id=_OWN_ID, to_id=peer.get("instance_id", instance_id),
+            peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=float(safe_timeout)) as client:
-            r = await client.post(
-                url,
-                json=payload,
-                headers={"Authorization": f"Bearer {outbound_token}"},
-            )
+            r = await client.post(url, content=_content, headers=_headers)
 
         if r.status_code != 200:
+            _q_anomaly(instance_id, f"http_{r.status_code}")
             _audit("task_sync_failed", instance_id, task_id,
                    "task.delegate", "error", f"HTTP {r.status_code}")
             return HandlerResult.fail(
@@ -234,6 +283,7 @@ async def run_peer_task_sync_handler(
             )
 
         data = r.json()
+        _q_success(instance_id)  # pair joignable (200) → reset compteur d'échecs
         status_val = data.get("status", "unknown")
         result = str(data.get("result", "") or "")
         duration_ms = data.get("duration_ms", 0)
@@ -275,6 +325,7 @@ async def run_peer_task_sync_handler(
 
     except Exception as exc:
         err = str(exc)
+        _q_anomaly(instance_id, "unreachable")  # injoignable/timeout réseau → santé KO
         _audit("task_sync_failed", instance_id, task_id,
                "task.delegate", "error", err)
         if "timeout" in err.lower() or "timed out" in err.lower():
@@ -287,6 +338,20 @@ async def run_peer_task_sync_handler(
             "Vérifiez que le pair est démarré.",
             handler_name="run_peer_task_sync",
         )
+
+
+def _detect_origin_channel(ctx: Any) -> str:
+    """Canal d'où vient la demande (telegram/web/…), pour router la notification.
+
+    Lu depuis le runtime_ctx ; défaut `web` si indéterminable.
+    """
+    try:
+        lum = getattr(ctx, "lumena", None)
+        rt = getattr(ctx, "runtime_ctx", None) or (getattr(lum, "runtime_ctx", None) if lum else None)
+        ch = (getattr(rt, "channel", None) or getattr(rt, "source_channel", None)) if rt else None
+        return str(ch).strip().lower() if ch else "web"
+    except Exception:
+        return "web"
 
 
 async def submit_peer_task_handler(
@@ -335,7 +400,11 @@ async def submit_peer_task_handler(
 
     # 5. Peer dans le registre
     peers = _load_peers()
-    peer = peers.get(instance_id)
+    from src.runtime.peer_awareness import resolve_peer_identifier
+    _resolved_id = resolve_peer_identifier(peers, instance_id)
+    if _resolved_id:
+        instance_id = _resolved_id
+    peer = peers.get(_resolved_id) if _resolved_id else None
     if peer is None:
         _audit("task_async_refused", instance_id, task_id, "task.delegate", "refused",
                "Pair absent du registre")
@@ -358,6 +427,21 @@ async def submit_peer_task_handler(
         return HandlerResult.fail(
             f"{peer_name!r} n'est pas trusted (trust={trust!r}).", handler_name="submit_peer_task",
         )
+
+    # 6b. Quarantaine (C-1.b) : un pair isolé ne reçoit pas de NOUVELLE mission async
+    # (les missions en cours ne sont pas touchées). Couvre aussi « Relancer » (C2.2c).
+    try:
+        from src.runtime.peer_quarantine import is_quarantined
+        if is_quarantined(instance_id):
+            _audit("task_async_refused", instance_id, task_id, "task.delegate", "refused",
+                   "Pair en quarantaine")
+            return HandlerResult.fail(
+                f"{peer_name!r} est en quarantaine (trop d'échecs récents). "
+                "Lève la quarantaine dans le panneau réseau pour réessayer.",
+                handler_name="submit_peer_task",
+            )
+    except Exception:
+        pass
 
     # 7. Token sortant
     outbound_token = peer.get("peer_token_outbound", "")
@@ -430,11 +514,13 @@ async def submit_peer_task_handler(
     # 11. POST submit (timeout court — on attend juste l'accusé de réception)
     try:
         import httpx as _httpx
+        from src.runtime.peer_signing import build_signed_request
+        _content, _headers = build_signed_request(
+            payload, from_id=_OWN_ID, to_id=peer.get("instance_id", instance_id),
+            peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(
-                url, json=payload,
-                headers={"Authorization": f"Bearer {outbound_token}"},
-            )
+            r = await client.post(url, content=_content, headers=_headers)
 
         if r.status_code != 200:
             _audit("task_async_failed", instance_id, task_id, "task.delegate", "error",
@@ -447,9 +533,22 @@ async def submit_peer_task_handler(
         data = r.json()
         queued_task_id = data.get("task_id", task_id)
         _audit("task_async_queued", instance_id, queued_task_id, "task.delegate", "queued")
+        # M4 — enregistre la mission au tracker (suivi de fond + notification auto)
+        # avec le canal d'origine, pour pouvoir prévenir l'utilisateur à la fin.
+        try:
+            from src.runtime.peer_mission_tracker import register_outbound_mission
+            register_outbound_mission(
+                task_id=queued_task_id,
+                peer_id=peer.get("instance_id", instance_id),
+                peer_name=peer_name, host=host, port=port,
+                objective=objective, channel=_detect_origin_channel(ctx),
+            )
+        except Exception:
+            pass
         return HandlerResult.ok(
-            f"Tâche soumise à {peer_name} (task_id={queued_task_id}, status=queued). "
-            "Utilisez get_peer_task_status pour vérifier le résultat.",
+            f"✅ Mission bien lancée chez {peer_name} (réf. {queued_task_id}). "
+            "Ça va prendre un peu de temps — je te préviens dès que c'est terminé. "
+            "Tu peux continuer à me parler en attendant.",
             handler_name="submit_peer_task",
         )
 
@@ -460,6 +559,29 @@ async def submit_peer_task_handler(
             f"{peer_name!r} est injoignable ({host}:{port}).",
             handler_name="submit_peer_task",
         )
+
+
+def _local_reception_suffix(task_id: str) -> str:
+    """Info de RÉCEPTION locale (tracker) : les fichiers sont-ils déjà rapatriés ?
+
+    Rend le « alors ? » fiable : on ne se fie pas qu'au statut distant, on dit
+    aussi où les livrables ont atterri dans le workspace (ou qu'ils arrivent).
+    """
+    try:
+        from src.runtime import peer_mission_tracker as _tr
+        m = _tr.get_mission(task_id)
+        if not m:
+            return ""
+        n = int(m.get("artifacts_count") or 0)
+        dest = m.get("artifacts_dir") or ""
+        if n and dest:
+            return f"\n📦 {n} fichier(s) déjà reçu(s) dans ton workspace : {dest}"
+        if m.get("status") == "completed":
+            return ("\n⏳ Terminée chez le pair ; les fichiers sont en cours de "
+                    "rapatriement automatique (vérifie dans workspace/inbound/).")
+    except Exception:
+        pass
+    return ""
 
 
 async def get_peer_task_status_handler(
@@ -490,7 +612,11 @@ async def get_peer_task_status_handler(
 
     # 3. Peer dans le registre
     peers = _load_peers()
-    peer = peers.get(instance_id)
+    from src.runtime.peer_awareness import resolve_peer_identifier
+    _resolved_id = resolve_peer_identifier(peers, instance_id)
+    if _resolved_id:
+        instance_id = _resolved_id
+    peer = peers.get(_resolved_id) if _resolved_id else None
     if peer is None:
         return HandlerResult.fail(
             f"Pair {instance_id!r} inconnu.", handler_name="get_peer_task_status",
@@ -525,14 +651,18 @@ async def get_peer_task_status_handler(
             handler_name="get_peer_task_status",
         )
 
-    # 7. GET status
+    # 7. GET status (Bearer + signature de flotte A2 sur body vide si pair fleet)
     url = f"http://{host}:{port}/api/peer/tasks/{task_id}/status"
     try:
         import httpx as _httpx
+        from src.runtime.peer_signing import build_signed_request
+        from src.utils.paths import INSTANCE_ID as _OWN_ID
+        _content, _headers = build_signed_request(
+            None, from_id=_OWN_ID, to_id=peer.get("instance_id", instance_id),
+            peer_token=outbound_token, pairing_method=peer.get("pairing_method", ""),
+        )
         async with _httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(
-                url, headers={"Authorization": f"Bearer {outbound_token}"},
-            )
+            r = await client.get(url, headers=_headers)
 
         if r.status_code == 404:
             return HandlerResult.fail(
@@ -561,14 +691,24 @@ async def get_peer_task_status_handler(
         _duration_str = f" ({duration_ms:.0f}ms)" if duration_ms is not None else ""
         _result_str = f"\nRésultat : {result}" if result else ""
         return HandlerResult.ok(
-            f"Tâche {task_id} chez {peer_name} — statut : {status_val}{_duration_str}.{_result_str}",
+            f"Tâche {task_id} chez {peer_name} — statut : {status_val}{_duration_str}."
+            f"{_result_str}{_local_reception_suffix(task_id)}",
             handler_name="get_peer_task_status",
         )
 
     except Exception as exc:
         err = str(exc)
+        # Pair injoignable : si on a DÉJÀ rapatrié les fichiers localement, c'est
+        # une réussite, pas un échec — on répond avec l'info locale.
+        _local = _local_reception_suffix(task_id)
+        if "📦" in _local:
+            return HandlerResult.ok(
+                f"Tâche {task_id} — pair {peer_name!r} momentanément injoignable, "
+                f"mais les livrables sont déjà là.{_local}",
+                handler_name="get_peer_task_status",
+            )
         return HandlerResult.fail(
-            f"{peer_name!r} est injoignable ({host}:{port}) : {err}",
+            f"{peer_name!r} est injoignable ({host}:{port}) : {err}{_local}",
             handler_name="get_peer_task_status",
         )
 
@@ -625,9 +765,13 @@ def get_peer_tasks_handler_defs() -> List:
         HandlerDef(
             name="submit_peer_task",
             description=(
-                "Soumet une tâche à une instance Lumena trusted en mode asynchrone et retourne "
-                "immédiatement un task_id. Le pair exécute la tâche en background. "
-                "Utiliser get_peer_task_status pour vérifier le résultat."
+                "Confie une mission à une instance Lumena trusted en mode asynchrone et retourne "
+                "IMMÉDIATEMENT (le pair exécute en arrière-plan, les fichiers produits reviennent "
+                "tout seuls dans ton workspace). "
+                "IMPORTANT : après l'appel, donne directement ta réponse FINAL "
+                "(« mission lancée, je te préviens quand c'est fini ») — NE re-vérifie PAS le statut, "
+                "n'appelle PAS get_peer_task_status en boucle, ne refais PAS le travail toi-même : "
+                "tu seras notifié AUTOMATIQUEMENT à la fin."
             ),
             parameters={
                 "properties": {
@@ -657,8 +801,10 @@ def get_peer_tasks_handler_defs() -> List:
         HandlerDef(
             name="get_peer_task_status",
             description=(
-                "Interroge le statut d'une tâche async soumise à un pair Lumena via submit_peer_task. "
-                "Retourne le statut (queued/running/completed/failed/timeout/cancelled) et le résultat."
+                "(Rarement utile — la fin de mission est notifiée AUTOMATIQUEMENT, n'utilise PAS "
+                "cet outil pour poller en boucle.) Interroge ponctuellement le statut d'une tâche "
+                "async soumise via submit_peer_task. Retourne le statut "
+                "(queued/running/completed/failed/timeout/cancelled) et le résultat."
             ),
             parameters={
                 "properties": {

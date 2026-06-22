@@ -445,7 +445,14 @@ class TestDelegatePeerMessageIntegration:
     async def test_context_peer_message_present(self, monkeypatch, tmp_path):
         captured_payload = {}
 
-        async def _capture_post(self_client, url, *, json=None, headers=None, **kw):
+        async def _capture_post(self_client, url, *, json=None, headers=None, content=None, **kw):
+            if json is None and content is not None:
+                import json as _json
+                raw = content.decode("utf-8") if isinstance(content, (bytes, bytearray)) else content
+                try:
+                    json = _json.loads(raw)
+                except Exception:
+                    json = None
             captured_payload.update(json or {})
             mock_resp = MagicMock()
             mock_resp.status_code = 200

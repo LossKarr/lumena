@@ -2521,13 +2521,86 @@ function _peerStatusInfo(p) {
 
 function _peerScopesHtml(p) {
   const scopes = Array.isArray(p.allowed_scopes) ? p.allowed_scopes : [];
-  if (!scopes.length) {
-    return '<span class="pill muted" style="font-size:10px">scope: aucun</span>';
-  }
-  return scopes.map(s => `<span class="pill" style="font-size:10px">${esc(s)}</span>`).join(' ');
+  // Pastille de NIVEAU (lecture seule ici ; la config se fait en vue avancée).
+  const isMission = p.capability_level === 'mission';
+  const levelPill = `<span class="pill" style="font-size:10px;${isMission ? 'color:var(--accent);border-color:var(--accent)' : ''}" title="Niveau de capacité (configurable en mode avancé)">${isMission ? '🚀 mission' : 'chat'}</span>`;
+  const scopePills = scopes.length
+    ? scopes.map(s => `<span class="pill" style="font-size:10px">${esc(s)}</span>`).join(' ')
+    : '<span class="pill muted" style="font-size:10px">scope: aucun</span>';
+  return `${levelPill} ${scopePills}`;
 }
 
-function _peerActionsHtml(p) {
+// Bloc A — définition des 7 scopes (libellés + palier mission).
+// missionTier=true → grisé tant que le pair est en niveau « chat ».
+const _PEER_SCOPE_DEFS = [
+  {scope:'chat',            label:'Discuter (chat)',        missionTier:false},
+  {scope:'knowledge.query', label:'Lire la mémoire',        missionTier:false},
+  {scope:'knowledge.share', label:'Partager un savoir',     missionTier:false},
+  {scope:'task.delegate',   label:'Confier une mission',    missionTier:true},
+  {scope:'task.status',     label:'Suivre une mission',     missionTier:true},
+  {scope:'task.cancel',     label:'Annuler une mission',    missionTier:true},
+  {scope:'artifact.share',  label:'Échanger des fichiers',  missionTier:true},
+];
+
+function _peerConfigDrawer(p) {
+  const iid = esc(p.instance_id);
+  const scopes = Array.isArray(p.allowed_scopes) ? p.allowed_scopes : [];
+  const isMission = p.capability_level === 'mission';
+  const alias = esc(p.alias || '');
+  const origin = esc(p.instance_name || p.instance_id);
+
+  // Cases à cocher pour chaque scope (lecture de l'état au moment du bulk-update).
+  const scopeRows = _PEER_SCOPE_DEFS.map(d => {
+    const checked = scopes.includes(d.scope) ? ' checked' : '';
+    const locked = d.missionTier && !isMission;
+    const dis = locked ? ' disabled' : '';
+    const op = locked ? 'opacity:.45;' : '';
+    const hint = locked ? ' title="Passe ce pair en « Mission » pour accorder ce droit"' : '';
+    return `<label style="display:flex;align-items:center;gap:6px;font-size:11px;${op}cursor:${locked?'not-allowed':'pointer'}"${hint}>
+      <input type="checkbox" data-scope="${d.scope}"${checked}${dis} onchange="setPeerScopesBulk('${iid}')" style="margin:0">
+      ${esc(d.label)} <span style="color:var(--muted);font-size:9px">${d.scope}</span></label>`;
+  }).join('');
+
+  return `<details class="peer-cfg" style="width:100%;margin-top:6px">
+    <summary style="cursor:pointer;font-size:11px;color:var(--accent);list-style:none;user-select:none"><i data-lucide="settings-2" style="width:11px;height:11px;vertical-align:-1px"></i> Configurer</summary>
+    <div id="peer-cfg-${iid}" style="margin-top:8px;display:flex;flex-direction:column;gap:10px;padding:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px">
+
+      <div>
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Nom</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input id="peer-alias-${iid}" value="${alias}" placeholder="${origin}" style="flex:1;font-size:11px;padding:3px 6px;background:var(--bg,#111);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+          <button class="btn" style="font-size:10px;padding:2px 8px" onclick="setPeerAlias('${iid}')">Renommer</button>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Niveau de capacité</div>
+        <div style="display:flex;gap:12px;font-size:11px">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="radio" name="lvl-${iid}" value="chat"${isMission?'':' checked'} onchange="setPeerCapability('${iid}','chat')" style="margin:0">🛡️ Chat (lecture)</label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="radio" name="lvl-${iid}" value="mission"${isMission?' checked':''} onchange="setPeerCapability('${iid}','mission')" style="margin:0">🚀 Mission (complet)</label>
+        </div>
+      </div>
+
+      <div>
+        <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Droits accordés</div>
+        <div style="display:flex;flex-direction:column;gap:4px">${scopeRows}</div>
+      </div>
+
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn" style="font-size:10px;padding:2px 8px" onclick="probePeer('${iid}','${esc(p.host||'')}',${p.port||8080})"><i data-lucide="radar" style="width:10px;height:10px"></i> Sonder</button>
+        <button class="btn" style="font-size:10px;padding:2px 8px" onclick="revokePeerToken('${iid}')"><i data-lucide="key-round" style="width:10px;height:10px"></i> Révoquer le token</button>
+        <span id="peer-cfg-msg-${iid}" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+
+      <div style="display:flex;gap:6px;border-top:1px solid var(--border);padding-top:8px">
+        <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple('${iid}')">Bloquer</button>
+        <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple('${iid}')">Supprimer</button>
+      </div>
+    </div>
+  </details>`;
+}
+
+function _peerActionsHtml(p, advanced=false) {
   const iid = esc(p.instance_id);
   const host = esc(p.host||'');
   const port = p.port||8080;
@@ -2540,22 +2613,19 @@ function _peerActionsHtml(p) {
     const testBtn = canChat
       ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="testDelegation('${iid}','ns-test-${iid}')"><i data-lucide="zap" style="width:10px;height:10px"></i> Tester</button>`
       : '';
-    const shareBtn = !scopes.includes('knowledge.share')
-      ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="setPeerScope(${_jsArg(p.instance_id)},'knowledge.share',true)">+ savoir</button>`
-      : '';
-    const taskBtn = !scopes.includes('task.delegate')
-      ? `<button class="btn" style="font-size:10px;padding:2px 8px" onclick="setPeerScope(${_jsArg(p.instance_id)},'task.delegate',true)">+ tâches</button>`
-      : '';
+    // Vue avancée → tiroir de config complet (alias, niveau, 7 scopes, token, sonde).
+    if (advanced) {
+      return `<div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;width:100%">${testBtn}</div>${_peerConfigDrawer(p)}`;
+    }
+    // Vue simple → minimal (Tester / Bloquer).
     return `${testBtn}
-            ${shareBtn}
-            ${taskBtn}
-            <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple(${_jsArg(p.instance_id)})">Bloquer</button>
-            <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple(${_jsArg(p.instance_id)})">Supprimer</button>`;
+            <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple('${iid}')">Bloquer</button>
+            <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple('${iid}')">Supprimer</button>`;
   }
   // trusted sans token, ou unknown → proposer jumelage par code
   return `<button class="btn primary" style="font-size:10px;padding:2px 8px" onclick="showSimplePairingForm('${host}',${port})"><i data-lucide="key-round" style="width:10px;height:10px"></i> Jumeler</button>
-          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple(${_jsArg(p.instance_id)})">Bloquer</button>
-          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple(${_jsArg(p.instance_id)})">Supprimer</button>`;
+          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="blockPeerSimple('${iid}')">Bloquer</button>
+          <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger)" onclick="deletePeerSimple('${iid}')">Supprimer</button>`;
 }
 
 function _jsArg(value) {
@@ -2579,7 +2649,7 @@ function _refreshNetworkPanels() {
   const simple = document.getElementById('net-simple-view');
   const advanced = document.getElementById('net-advanced-view');
   const isAdvanced = advanced && advanced.style.display !== 'none';
-  const jobs = [loadCollaborationPanel()];
+  const jobs = [];
   if (isAdvanced) jobs.push(loadInstancesNetwork());
   else if (simple) jobs.push(loadNetworkSimple());
   return Promise.allSettled(jobs);
@@ -2690,6 +2760,9 @@ export async function loadCollaborationPanel() {
   const knowledgeEl = document.getElementById('net-knowledge-list');
   const tasksEl = document.getElementById('net-task-list');
   const peerSelect = document.getElementById('net-knowledge-peer');
+  // Refonte UI : ces widgets bruts ont été remplacés par l'historique unifié.
+  // Si aucun n'est présent, on délègue au nouvel historique et on s'arrête.
+  if (!knowledgeEl && !tasksEl && !peerSelect) { try { loadPeerHistory(); } catch(_){} return; }
   const h = {'Authorization': `Bearer ${ADMIN_TOKEN}`};
 
   if (knowledgeEl) knowledgeEl.innerHTML = loadingDots('Chargement...');
@@ -2905,6 +2978,115 @@ export async function setPeerScope(instanceId, scope, enabled) {
   }
 }
 
+export async function setPeerCapability(instanceId, level) {
+  // A3 brique 2 : accorde/retire le mode mission (pleine puissance) à un pair.
+  if (level === 'mission' && !confirm(
+      "Autoriser ce pair à exécuter une MISSION à pleine puissance (agent complet) ?\n\n" +
+      "Le pair pourra agir comme si tu lui parlais directement. À n'accorder qu'à une Lumena de confiance (ta flotte).")) {
+    return;
+  }
+  _showNetworkActionMessage('Mise à jour du niveau du pair…', 'muted');
+  try {
+    const r = await fetch(`${API_BASE}/api/peers/${encodeURIComponent(instanceId)}/capability`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({level}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Mise à jour du niveau impossible');
+    _showNetworkActionMessage(level === 'mission' ? 'Mode mission accordé.' : 'Repassé en lecture (chat).', 'ok');
+    await _refreshNetworkPanels();
+  } catch (e) {
+    _showNetworkActionMessage(`Erreur: ${e.message}`, 'danger');
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+// ── Bloc A — Tiroir de config par pair : alias / scopes bulk / token / sonde ──
+function _peerCfgMsg(iid, text, tone='muted') {
+  const el = document.getElementById(`peer-cfg-msg-${iid}`);
+  if (el) { el.textContent = text; el.style.color = `var(--${tone})`; }
+}
+
+export async function setPeerAlias(instanceId) {
+  const input = document.getElementById(`peer-alias-${instanceId}`);
+  const alias = (input?.value || '').trim();
+  _peerCfgMsg(instanceId, 'Renommage…');
+  try {
+    const r = await fetch(`${API_BASE}/api/peers/${encodeURIComponent(instanceId)}/alias`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({alias}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Renommage impossible');
+    _peerCfgMsg(instanceId, alias ? `Renommé en « ${alias} ».` : 'Nom d’origine rétabli.', 'ok');
+    await _refreshNetworkPanels();
+  } catch (e) {
+    _peerCfgMsg(instanceId, `Erreur: ${e.message}`, 'danger');
+  }
+}
+
+export async function setPeerScopesBulk(instanceId) {
+  // Lit l'état des cases du tiroir et envoie le SET COMPLET (permet le retrait).
+  const box = document.getElementById(`peer-cfg-${instanceId}`);
+  if (!box) return;
+  const next = Array.from(box.querySelectorAll('input[type="checkbox"][data-scope]'))
+    .filter(cb => cb.checked && !cb.disabled)
+    .map(cb => cb.getAttribute('data-scope'));
+  _peerCfgMsg(instanceId, 'Mise à jour des droits…');
+  try {
+    const r = await fetch(`${API_BASE}/api/peers/${encodeURIComponent(instanceId)}/scopes`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({allowed_scopes: next}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Mise à jour des droits impossible');
+    // Pas de refresh complet : on garde le tiroir ouvert.
+    _peerCfgMsg(instanceId, `Droits : ${(d.allowed_scopes||next).join(', ') || 'aucun'}.`, 'ok');
+  } catch (e) {
+    _peerCfgMsg(instanceId, `Erreur: ${e.message}`, 'danger');
+  }
+}
+
+export async function revokePeerToken(instanceId) {
+  if (!confirm('Révoquer le token de ce pair ?\n\nIl ne pourra plus déléguer jusqu’à un nouveau jumelage.')) return;
+  _peerCfgMsg(instanceId, 'Révocation…');
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/revoke-token/${encodeURIComponent(instanceId)}`, {
+      method:'POST',
+      headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Révocation impossible');
+    _peerCfgMsg(instanceId, 'Token révoqué — re-jumelage requis.', 'ok');
+    await _refreshNetworkPanels();
+  } catch (e) {
+    _peerCfgMsg(instanceId, `Erreur: ${e.message}`, 'danger');
+  }
+}
+
+export async function probePeer(instanceId, host, port) {
+  if (!host) { _peerCfgMsg(instanceId, 'Adresse du pair inconnue.', 'danger'); return; }
+  _peerCfgMsg(instanceId, 'Sonde en cours…');
+  const t0 = performance.now();
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/probe`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body:JSON.stringify({host, port: Number(port)||8080, timeout: 3.0}),
+    });
+    const ms = Math.round(performance.now() - t0);
+    if (r.status === 404) { _peerCfgMsg(instanceId, `Injoignable sur ${host}:${port}.`, 'danger'); return; }
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Sonde impossible');
+    _peerCfgMsg(instanceId, `En ligne — ${ms}ms (${esc(d.instance_name || d.instance_id || 'Lumena')}).`, 'ok');
+  } catch (e) {
+    _peerCfgMsg(instanceId, `Erreur: ${e.message}`, 'danger');
+  }
+}
+
 export function sendTeamPromptFromUi() {
   const input = document.getElementById('net-team-prompt');
   const msgEl = document.getElementById('net-team-msg');
@@ -2938,7 +3120,104 @@ export function sendTeamPromptFromUi() {
   }
 }
 
+// ── Onboarding : interrupteur maître du réseau (LUMENA_PEER_ENABLED) ─────────
+async function _fetchPeerMasterOn() {
+  try {
+    const r = await fetch(`${API_BASE}/api/config`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if (!r.ok) return false;
+    const d = await r.json();
+    const item = (d.items||[]).find(i => i.key === 'LUMENA_PEER_ENABLED');
+    return item ? String(item.value) === '1' : false;
+  } catch(_) { return false; }
+}
+
+function _applyMasterUI(on) {
+  const cards   = document.getElementById('net-simple-cards');
+  const onboard = document.getElementById('net-onboarding');
+  const dot     = document.getElementById('net-master-dot');
+  const state   = document.getElementById('net-master-state');
+  const btn     = document.getElementById('net-master-btn');
+  if (cards)   cards.style.display   = on ? 'block' : 'none';
+  if (onboard) onboard.style.display = on ? 'none' : 'block';
+  if (dot)     { dot.textContent = '●'; dot.style.color = on ? 'var(--ok)' : 'var(--muted)'; }
+  if (state)   { state.textContent = on ? '— activé' : '— désactivé'; state.style.color = on ? 'var(--ok)' : 'var(--muted)'; }
+  if (btn)     { btn.textContent = on ? 'Désactiver' : 'Activer le réseau'; btn.className = on ? 'btn' : 'btn primary'; }
+}
+
+// ── Kill-switch SOFT (urgence) — LUMENA_PEER_HALT ───────────────────────────
+async function _fetchPeerHalt() {
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/halt`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if (!r.ok) return false;
+    const d = await r.json();
+    return !!d.halt;
+  } catch(_) { return false; }
+}
+
+function _applyHaltUI(halted) {
+  const banner = document.getElementById('net-halt-banner');
+  const btn = document.getElementById('net-halt-btn');
+  if (banner) banner.style.display = halted ? 'block' : 'none';
+  if (btn) { btn.style.display = halted ? 'none' : 'inline-flex'; }
+}
+
+export async function togglePeerHalt() {
+  const cur = await _fetchPeerHalt();
+  const next = !cur;
+  if (next && !confirm('Couper le réseau Lumena (urgence) ?\n\nStoppe TOUTE nouvelle activité réseau (délégations entrantes ET sortantes, découverte).\nLes missions EN COURS ne sont PAS interrompues — elles se terminent normalement.')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/halt`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body: JSON.stringify({halt: next}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) throw new Error('Échec du kill-switch');
+    _applyHaltUI(next);
+  } catch(e) {
+    alert(`Erreur: ${e.message}`);
+  }
+}
+
+export async function togglePeerMaster() {
+  const msgEl = document.getElementById('net-master-msg');
+  const cur = await _fetchPeerMasterOn();
+  const next = !cur;
+  if (!next && !confirm('Désactiver le réseau Lumena ?\n\nTes instances ne se découvriront plus et ne pourront plus collaborer.')) return;
+  if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--muted)'; msgEl.textContent='Mise à jour…'; }
+  try {
+    const r = await fetch(`${API_BASE}/api/config`, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body: JSON.stringify({updates: {LUMENA_PEER_ENABLED: next ? '1' : '0'}}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.success) throw new Error(d.error || 'Échec de la mise à jour');
+    _applyMasterUI(next);
+    if (msgEl) {
+      msgEl.style.color = next ? 'var(--ok)' : 'var(--muted)';
+      msgEl.textContent = next
+        ? (d.needs_restart
+            ? 'Réseau activé — chat & collaboration actifs maintenant. Redémarre Lumena pour finaliser la découverte LAN et l’autonomie.'
+            : 'Réseau activé.')
+        : 'Réseau désactivé.';
+    }
+    if (next) loadNetworkSimple();
+  } catch(e) {
+    if (msgEl) { msgEl.style.display='block'; msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; }
+  }
+}
+
 export async function loadNetworkSimple() {
+  // Onboarding : si le réseau maître est éteint, on affiche l'accueil et on s'arrête.
+  const masterOn = await _fetchPeerMasterOn();
+  _applyMasterUI(masterOn);
+  _fetchPeerHalt().then(_applyHaltUI);  // reflète le kill-switch
+  if (!masterOn) { closePeerEventStream(); return; }
+
+  initPeerEventStream();  // Cran 2 : push temps réel des missions (poll Cran 1 = filet)
+  _loadQuarantine();      // C-1.b : pairs en quarantaine auto
+
   const statusEl = document.getElementById('net-simple-status');
   const peersEl  = document.getElementById('net-simple-peers');
   const h = {'Authorization': `Bearer ${ADMIN_TOKEN}`};
@@ -2991,8 +3270,8 @@ export async function loadNetworkSimple() {
         return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
           <span style="font-size:16px;color:${color};flex-shrink:0">${dot}</span>
           <div style="flex:1;min-width:0">
-            <div style="font-size:13px;font-weight:500">${esc(p.instance_name||p.instance_id)}</div>
-            <div style="font-size:11px;color:${color}">${label}</div>
+            <div style="font-size:13px;font-weight:500">${esc(p.alias||p.instance_name||p.instance_id)}</div>
+            <div style="font-size:11px;color:${color}">${label} <span id="peer-presence-${iid}" style="margin-left:4px"></span></div>
             <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${_peerScopesHtml(p)}</div>
             <div id="ns-test-${iid}" style="font-size:10px;margin-top:2px"></div>
           </div>
@@ -3005,20 +3284,227 @@ export async function loadNetworkSimple() {
   // Charge le sélecteur d'interface dans le mode avancé (8.10)
   _loadNetworkInterfaces();
   loadNetworkObservability();
-  loadCollaborationPanel();
+  refreshNetworkLive(true);  // Cran 1 : présence réelle + missions en cours (immédiat)
+  // L'historique vit dans sa propre vue (bouton « Historique ») — pas chargé ici.
+}
+
+// ── Bascule entre les 3 vues réseau : simple / avancé / historique ───────────
+function _setNetView(name){
+  const views = {
+    simple:   document.getElementById('net-simple-view'),
+    advanced: document.getElementById('net-advanced-view'),
+    history:  document.getElementById('net-history-view'),
+  };
+  for (const [k, el] of Object.entries(views)) {
+    if (el) el.style.display = (k === name) ? 'block' : 'none';
+  }
 }
 
 export function toggleNetworkAdvanced() {
-  const simple   = document.getElementById('net-simple-view');
   const advanced = document.getElementById('net-advanced-view');
-  if (!simple || !advanced) return;
+  if (!advanced) return;
   const showAdv = advanced.style.display === 'none';
-  simple.style.display   = showAdv ? 'none' : 'block';
-  advanced.style.display = showAdv ? 'block' : 'none';
+  _setNetView(showAdv ? 'advanced' : 'simple');
   if (showAdv) loadInstancesNetwork();
 }
 
+export function showNetworkHistory() {
+  _setNetView('history');
+  loadPeerHistory();
+}
+
+export function backToNetworkSimple() {
+  _setNetView('simple');
+  loadNetworkSimple();
+}
+
+// ── Cran 1 — Liveness par poll (présence réelle + missions en cours) ─────────
+let _lastNetLive = 0;
+
+// Pastille de présence à partir du statut santé (/api/peers/health).
+function _presenceHtml(hp) {
+  const st = hp?.status || 'unknown';
+  const lat = hp?.latency_ms;
+  if (st === 'healthy') return `<span class="pill ok" style="font-size:9px" title="Joignable"><span style="color:var(--ok)">●</span> en ligne${lat!=null?` · ${lat}ms`:''}</span>`;
+  if (st === 'blocked') return `<span class="pill danger" style="font-size:9px"><span style="color:var(--danger)">●</span> bloqué</span>`;
+  if (st === 'invalid_host') return `<span class="pill" style="font-size:9px;color:var(--warning,#f59e0b)" title="${esc(hp?.last_error||'')}"><span style="color:var(--warning,#f59e0b)">●</span> adresse</span>`;
+  if (st === 'down' || st === 'mismatch_or_down') return `<span class="pill" style="font-size:9px;color:var(--muted)" title="${esc(hp?.last_error||'')}"><span style="color:var(--muted)">○</span> injoignable</span>`;
+  return `<span class="pill" style="font-size:9px;color:var(--muted)"><span style="color:var(--muted)">○</span> inconnu</span>`;
+}
+
+function _patchPresence(healthPeers) {
+  for (const hp of (healthPeers || [])) {
+    const el = document.getElementById(`peer-presence-${hp.instance_id}`);
+    if (el) el.innerHTML = _presenceHtml(hp);
+  }
+}
+
+function _missionElapsed(submittedAt) {
+  if (!submittedAt) return '';
+  const t = new Date(submittedAt).getTime();
+  if (isNaN(t)) return '';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}min`;
+  return `${Math.floor(s/3600)}h${String(Math.floor((s%3600)/60)).padStart(2,'0')}`;
+}
+
+function _renderActiveMissions(missions) {
+  const card = document.getElementById('net-missions-card');
+  const listEl = document.getElementById('net-active-missions');
+  if (!card || !listEl) return;
+  if (!missions || !missions.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  listEl.innerHTML = missions.map(m => {
+    const color = (m.status === 'running') ? 'accent' : 'muted';
+    const tid = esc(m.task_id || '');
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
+      <i data-lucide="rocket" style="width:14px;height:14px;color:var(--accent);flex-shrink:0"></i>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(m.objective||'(mission)')}</div>
+        <div style="font-size:10px;color:var(--muted)">→ ${esc(m.peer_name||'?')} · <span class="pill ${color}" style="font-size:9px">${esc(m.status)}</span> · ${_missionElapsed(m.submitted_at)}</div>
+      </div>
+      <button class="btn" style="font-size:10px;padding:2px 8px;color:var(--danger);flex-shrink:0" onclick="cancelPeerMission('${tid}')" title="Annule cette mission (acte explicite)">Annuler</button>
+    </div>`;
+  }).join('');
+  if (window.lucide) lucide.createIcons();
+}
+
+export async function cancelPeerMission(taskId) {
+  if (!taskId) return;
+  if (!confirm('Annuler cette mission ?\n\nC\'est la seule action qui stoppe une mission en cours. Le pair est prévenu si joignable.')) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/missions/${encodeURIComponent(taskId)}`, {
+      method:'DELETE', headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) throw new Error(d.detail || 'Échec de l\'annulation');
+    _refreshActiveMissions();  // la mission sort des « en cours »
+  } catch(e) { alert(`Erreur: ${e.message}`); }
+}
+
+export async function refreshNetworkLive(immediate=false) {
+  // Throttle : la santé SONDE le réseau → max ~1 fois / 7 s même si appelé toutes les 4 s.
+  const now = Date.now();
+  if (!immediate && (now - _lastNetLive) < 7000) return;
+  _lastNetLive = now;
+  const h = {'Authorization': `Bearer ${ADMIN_TOKEN}`};
+  try {
+    const [healthRes, missionsRes] = await Promise.allSettled([
+      fetch(`${API_BASE}/api/peers/health?timeout=1.5`, {headers:h}),
+      fetch(`${API_BASE}/api/peer/missions/active`, {headers:h}),
+    ]);
+    if (healthRes.status === 'fulfilled' && healthRes.value.ok) {
+      const d = await healthRes.value.json();
+      _patchPresence(d.peers || []);
+    }
+    if (missionsRes.status === 'fulfilled' && missionsRes.value.ok) {
+      const d = await missionsRes.value.json();
+      _renderActiveMissions(d.missions || []);
+    }
+  } catch(_) {}
+}
+
+// Rafraîchit UNIQUEMENT la carte « Missions en cours » (léger — pas de sonde santé).
+async function _refreshActiveMissions() {
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/missions/active`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if (!r.ok) return;
+    const d = await r.json();
+    _renderActiveMissions(d.missions || []);
+  } catch(_) {}
+}
+
+// ── C-1.b — Quarantaine auto : carte + levée ────────────────────────────────
+async function _loadQuarantine() {
+  const card = document.getElementById('net-quarantine-card');
+  const listEl = document.getElementById('net-quarantine-list');
+  if (!card || !listEl) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/quarantine`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if (!r.ok) { card.style.display='none'; return; }
+    const d = await r.json();
+    const items = d.quarantined || [];
+    if (!items.length) { card.style.display='none'; return; }
+    card.style.display = 'block';
+    listEl.innerHTML = items.map(q => `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
+      <span style="color:var(--danger);font-size:14px">●</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500">${esc(q.peer_name||q.peer_id)}</div>
+        <div style="font-size:10px;color:var(--muted)">${esc(q.reason||'')}</div>
+      </div>
+      <button class="btn" style="font-size:10px;padding:2px 8px" onclick="releasePeerQuarantine('${esc(q.peer_id)}')">Lever</button>
+    </div>`).join('');
+  } catch(_) { card.style.display='none'; }
+}
+
+export async function releasePeerQuarantine(instanceId) {
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/quarantine/release/${encodeURIComponent(instanceId)}`, {
+      method:'POST', headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) throw new Error('Échec de la levée');
+    _loadQuarantine();
+  } catch(e) { alert(`Erreur: ${e.message}`); }
+}
+
+// ── Cran 2 — Flux SSE temps réel des événements pairs (push, pas de poll) ────
+let _peerEvtAbort = null;
+let _peerEvtDebounce = null;
+
+export function initPeerEventStream() {
+  if (_peerEvtAbort) return;  // déjà connecté
+  _peerEvtAbort = new AbortController();
+  const h = {}; if (ADMIN_TOKEN) h['Authorization'] = `Bearer ${ADMIN_TOKEN}`;
+  fetch(`${API_BASE}/api/peer/events`, {headers:h, signal:_peerEvtAbort.signal})
+    .then(res => {
+      if (!res.ok) throw new Error(res.status);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '', evtType = 'peer';
+      function pump() {
+        reader.read().then(({done, value}) => {
+          if (done) { _peerEvtAbort = null; return; }
+          buf += decoder.decode(value, {stream:true});
+          const lines = buf.split('\n'); buf = lines.pop();
+          for (const line of lines) {
+            if (line.startsWith('event:')) evtType = line.slice(6).trim();
+            else if (line.startsWith('data:')) {
+              const raw = line.slice(5).trim();
+              if (evtType === 'heartbeat') { evtType = 'peer'; continue; }
+              try {
+                const ev = JSON.parse(raw);
+                if (ev && ev.type === 'mission') {
+                  // Débounce : un burst d'événements → un seul refresh.
+                  if (_peerEvtDebounce) clearTimeout(_peerEvtDebounce);
+                  _peerEvtDebounce = setTimeout(() => _refreshActiveMissions(), 250);
+                } else if (ev && ev.type === 'halt') {
+                  _applyHaltUI(!!ev.halt);  // kill-switch live
+                } else if (ev && ev.type === 'quarantine') {
+                  _loadQuarantine();        // quarantaine auto live
+                }
+              } catch(_) {}
+              evtType = 'peer';
+            }
+          }
+          pump();
+        }).catch(() => { _peerEvtAbort = null; });
+      }
+      pump();
+    })
+    .catch(() => { _peerEvtAbort = null; });
+}
+
+export function closePeerEventStream() {
+  if (_peerEvtAbort) { try { _peerEvtAbort.abort(); } catch(_){} _peerEvtAbort = null; }
+}
+
 export function showSimplePairingForm(host='', port=8080) {
+  // Le jumelage par code vit désormais en vue avancée → on y bascule puis on
+  // met en évidence le formulaire.
+  const advanced = document.getElementById('net-advanced-view');
+  if (advanced && advanced.style.display === 'none') toggleNetworkAdvanced();
   const form = document.getElementById('net-simple-pairing-form');
   if (!form) return;
   form.style.display = 'block';
@@ -3026,7 +3512,219 @@ export function showSimplePairingForm(host='', port=8080) {
   const portEl = document.getElementById('net-pairing-port');
   if (host && hostEl) hostEl.value = host;
   if (port && portEl) portEl.value = port;
-  form.scrollIntoView({behavior:'smooth', block:'nearest'});
+  setTimeout(() => form.scrollIntoView({behavior:'smooth', block:'nearest'}), 60);
+}
+
+// ── Historique des échanges Lumena (vue simple, read-only) ──────────────────
+let _peerHistoryCache = [];
+let _peerHistorySelected = null;
+
+const _PEER_EX_META = {
+  delegation:     {icon:'message-square', label:'Question/réponse'},
+  knowledge:      {icon:'brain',          label:'Savoir'},
+  knowledge_query:{icon:'search',         label:'Savoir demandé'},
+  task:           {icon:'list-checks',    label:'Tâche'},
+  mission:        {icon:'package',        label:'Mission'},
+};
+
+function _peerExMeta(type){ return _PEER_EX_META[type] || {icon:'activity', label:type||'échange'}; }
+
+function _peerExStatusColor(status){
+  if (status === 'completed' || status === 'shared') return 'ok';
+  if (['failed','timeout','cancelled','refused','error','interrupted'].includes(status)) return 'danger';
+  if (['running','queued'].includes(status)) return 'accent';
+  return 'muted';
+}
+
+function _peerExTime(ts){
+  if (!ts) return '';
+  try { const d = new Date(ts); if (!isNaN(d)) return d.toLocaleString(); } catch(_){}
+  return ts;
+}
+
+export async function loadPeerHistory(){
+  const listEl = document.getElementById('net-history-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<div style="color:var(--muted)">Chargement…</div>';
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/history?limit=200`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const data = r.ok ? await r.json() : {exchanges:[], stats:{}};
+    _peerHistoryCache = Array.isArray(data.exchanges) ? data.exchanges : [];
+    _renderPeerHistoryStats(data.stats || {});
+  } catch(_) {
+    _peerHistoryCache = [];
+  }
+  filterPeerHistory();
+}
+
+function _renderPeerHistoryStats(stats){
+  const el = document.getElementById('net-history-stats');
+  if (!el) return;
+  const card = (label, val) => `<div class="card" style="padding:8px 10px"><div style="font-size:18px;font-weight:700;color:var(--accent)">${val||0}</div><div style="font-size:10px;color:var(--muted)">${label}</div></div>`;
+  el.innerHTML = card('Échanges', stats.total) + card('Terminés', stats.completed) + card('Savoirs', stats.knowledge);
+}
+
+// Statuts considérés comme « bruit » (propositions non finalisées) → masquables.
+const _PEER_EX_NOISE = new Set(['proposed']);
+
+export function filterPeerHistory(){
+  const listEl = document.getElementById('net-history-list');
+  if (!listEl) return;
+  const q = (document.getElementById('net-history-search')?.value || '').toLowerCase().trim();
+  const typeF = document.getElementById('net-history-type-filter')?.value || '';
+  const hideNoise = !!document.getElementById('net-history-hide-noise')?.checked;
+  const rows = _peerHistoryCache.filter(ex => {
+    const t = ex.type === 'knowledge_query' ? 'knowledge' : ex.type;
+    if (typeF && t !== typeF) return false;
+    if (hideNoise && _PEER_EX_NOISE.has(ex.status)) return false;
+    if (q) {
+      const hay = `${ex.title||''} ${ex.peer_name||''} ${ex.type||''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  if (!rows.length) {
+    listEl.innerHTML = '<div style="color:var(--muted);padding:12px;font-size:12px">Aucun échange pour l\'instant. Quand tes Lumena se parleront, l\'historique s\'affichera ici.</div>';
+    const d = document.getElementById('net-history-detail');
+    if (d) d.innerHTML = '<div class="sessions-empty-detail"><i data-lucide="message-square-text"></i><div>Aucun échange à afficher.</div></div>';
+    if (window.lucide) lucide.createIcons();
+    return;
+  }
+
+  // Sélection par défaut : si rien de valide n'est sélectionné, on prend le plus récent.
+  if (!rows.some(ex => ex.id === _peerHistorySelected)) {
+    _peerHistorySelected = rows[0].id;
+    _renderExchangeDetail(_peerHistorySelected);
+  }
+
+  // Regroupement par Lumena (les rows sont déjà triées du plus récent au plus ancien).
+  const groups = new Map();
+  for (const ex of rows) {
+    const name = ex.peer_name || '?';
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(ex);
+  }
+  const rowHtml = (ex) => {
+    const m = _peerExMeta(ex.type);
+    const color = _peerExStatusColor(ex.status);
+    const dir = ex.direction === 'outbound' ? '→' : '←';
+    const sel = _peerHistorySelected === ex.id ? 'background:var(--surface);' : '';
+    return `<div onclick="selectPeerExchange('${esc(ex.id)}')" style="cursor:pointer;padding:8px 10px;border-bottom:1px solid var(--border);${sel}border-radius:6px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <i data-lucide="${m.icon}" style="width:14px;height:14px;color:var(--accent);flex-shrink:0"></i>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.title||m.label)}</div>
+          <div style="font-size:10px;color:var(--muted)">${dir} ${esc(ex.peer_name||'?')} · <span style="color:var(--${color})">${esc(ex.status||'')}</span></div>
+        </div>
+      </div>
+    </div>`;
+  };
+  listEl.innerHTML = Array.from(groups.entries()).map(([name, exs]) => {
+    const done = exs.filter(e => e.status === 'completed' || e.status === 'shared').length;
+    return `<div style="margin-bottom:4px">
+      <div style="display:flex;align-items:center;gap:6px;padding:6px 10px;font-size:11px;color:var(--muted);background:var(--surface);border-radius:6px;position:sticky;top:0">
+        <i data-lucide="bot" style="width:12px;height:12px;color:var(--accent)"></i>
+        <b style="color:var(--text)">${esc(name)}</b> · ${exs.length} échange${exs.length>1?'s':''} · ${done} ✅
+      </div>
+      ${exs.map(rowHtml).join('')}
+    </div>`;
+  }).join('');
+  if (window.lucide) lucide.createIcons();
+}
+
+function _renderExchangeDetail(id){
+  const ex = _peerHistoryCache.find(e => e.id === id);
+  const detailEl = document.getElementById('net-history-detail');
+  if (!detailEl) return;
+  if (!ex) { detailEl.innerHTML = '<div class="sessions-empty-detail"><div>Échange introuvable.</div></div>'; return; }
+  const m = _peerExMeta(ex.type);
+  const dirLabel = ex.direction === 'outbound' ? 'Envoyé à' : 'Reçu de';
+  const items = (ex.items||[]).map(it => {
+    const color = _peerExStatusColor(it.status);
+    return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">
+      <div style="font-size:11px;color:var(--muted)">${_peerExTime(it.ts)} · <span style="color:var(--${color})">${esc(it.status||it.event||'')}</span></div>
+      ${it.detail ? `<div style="font-size:12px;margin-top:2px">${esc(it.detail)}</div>` : ''}
+    </div>`;
+  }).join('');
+  // Mission sortante → bouton « Voir les livrables » (C2.2a).
+  const taskId = (ex.type === 'mission' && typeof ex.id === 'string' && ex.id.indexOf('mission:') === 0)
+    ? ex.id.slice('mission:'.length) : '';
+  const artifactsHint = (ex.type === 'mission' && ex.direction === 'outbound' && taskId)
+    ? `<div style="margin-top:10px">
+         <button class="btn" style="font-size:11px" onclick="loadDeliverables('${esc(taskId)}','net-deliv-${esc(taskId)}')"><i data-lucide="package" style="width:12px;height:12px"></i> Voir les livrables</button>
+         <div id="net-deliv-${esc(taskId)}" style="margin-top:8px;font-size:11px"></div>
+       </div>`
+    : '';
+  // C2.2c — relancer une mission échouée / refus→approuver.
+  let relaunchSection = '';
+  if (ex.type === 'mission' && ex.direction === 'outbound' && taskId) {
+    if (ex.status === 'refused') {
+      relaunchSection = `<div style="margin-top:8px"><button class="btn primary" style="font-size:11px" onclick="relaunchPeerMission('${esc(taskId)}', true)"><i data-lucide="rocket" style="width:12px;height:12px"></i> Passer en mission & relancer</button></div>`;
+    } else if (['failed','cancelled','timeout','interrupted'].includes(ex.status)) {
+      relaunchSection = `<div style="margin-top:8px"><button class="btn" style="font-size:11px" onclick="relaunchPeerMission('${esc(taskId)}', false)"><i data-lucide="rotate-cw" style="width:12px;height:12px"></i> Relancer</button></div>`;
+    }
+  }
+  detailEl.innerHTML = `<div style="padding:12px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <i data-lucide="${m.icon}" style="width:16px;height:16px;color:var(--accent)"></i>
+      <div style="font-size:13px;font-weight:600">${esc(ex.title||m.label)}</div>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">${m.label} · ${dirLabel} <b>${esc(ex.peer_name||'?')}</b> · ${_peerExTime(ex.last_ts)}</div>
+    <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px">Déroulé</div>
+    ${items || '<div style="color:var(--muted);font-size:12px">Aucun détail.</div>'}
+    ${artifactsHint}
+    ${relaunchSection}
+  </div>`;
+  if (window.lucide) lucide.createIcons();
+}
+
+export async function relaunchPeerMission(taskId, escalate) {
+  if (!taskId) return;
+  const msg = escalate
+    ? 'Passer ce pair en MISSION (pleine puissance) et relancer la mission ?\n\nLe pair pourra agir comme si tu lui parlais directement.'
+    : 'Relancer cette mission (pleine puissance) ?';
+  if (!confirm(msg)) return;
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/missions/relaunch`, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body: JSON.stringify({task_id: taskId, escalate_capability: !!escalate}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.ok) throw new Error(d.error || d.detail || 'Échec de la relance');
+    alert('Mission relancée — elle apparaît dans « Missions en cours ».');
+    _refreshActiveMissions();
+  } catch(e) { alert(`Erreur: ${e.message}`); }
+}
+
+function _fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return `${n} o`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} Ko`;
+  return `${(n / (1024 * 1024)).toFixed(1)} Mo`;
+}
+
+export async function loadDeliverables(taskId, containerId) {
+  const el = document.getElementById(containerId);
+  if (!el || !taskId) return;
+  el.innerHTML = '<span style="color:var(--muted)">Chargement…</span>';
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/deliverables?task_id=${encodeURIComponent(taskId)}`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || 'Erreur');
+    const files = d.files || [];
+    if (!files.length) { el.innerHTML = '<span style="color:var(--muted)">Aucun fichier reçu (ou dossier vide).</span>'; return; }
+    el.innerHTML = `<div style="color:var(--muted);margin-bottom:4px">${files.length} fichier(s) — <code style="font-size:10px">${esc(d.dir||'')}</code></div>`
+      + files.map(f => `<div style="display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid var(--border)"><span style="word-break:break-all">${esc(f.name)}</span><span style="color:var(--muted);flex-shrink:0">${_fmtBytes(f.size)}</span></div>`).join('');
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span>`;
+  }
+}
+
+export function selectPeerExchange(id){
+  _peerHistorySelected = id;
+  _renderExchangeDetail(id);
+  filterPeerHistory(); // rafraîchit la surbrillance de la liste (sans re-sélectionner)
 }
 
 export async function blockPeerSimple(instanceId) {
@@ -3136,11 +3834,9 @@ export async function loadInstancesNetwork(){
   const selfEl=document.getElementById('net-self-content');
   const localEl=document.getElementById('net-local-list');
   const peersEl=document.getElementById('net-peers-list');
-  const auditEl=document.getElementById('net-audit-list');
   if(selfEl)selfEl.innerHTML=loadingDots('Chargement...');
   if(localEl)localEl.innerHTML=loadingDots('Chargement...');
   if(peersEl)peersEl.innerHTML=loadingDots('Chargement...');
-  if(auditEl)auditEl.innerHTML=loadingDots('Chargement...');
   const h={'Authorization':`Bearer ${ADMIN_TOKEN}`};
 
   // Instance courante + instances locales + diagnostic réseau (en parallèle)
@@ -3233,13 +3929,14 @@ export async function loadInstancesNetwork(){
           <div style="flex:1;min-width:0;font-size:12px">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
               <span class="pill ${tc[p.trust]||'muted'}" style="font-size:10px">${esc(p.trust)}</span>
-              <strong>${esc(p.instance_name||p.instance_id)}</strong>
+              <strong>${esc(p.alias||p.instance_name||p.instance_id)}</strong>
               <span style="color:var(--muted)">— ${esc(p.host)}:${p.port}</span>
+              <span id="peer-presence-${esc(p.instance_id)}"></span>
             </div>
             <div style="color:var(--muted)">${esc(p.instance_id)}</div>
             <div>${(p.capabilities||[]).map(c=>`<span class="pill" style="font-size:10px">${esc(c)}</span>`).join(' ')||''}</div>
             <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap">${_peerScopesHtml(p)}</div>
-            <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap">${_peerActionsHtml(p)}</div>
+            <div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;align-items:center">${_peerActionsHtml(p, true)}</div>
           </div>
         </div>`).join('');
       }
@@ -3247,32 +3944,8 @@ export async function loadInstancesNetwork(){
   }catch(e){
     if(peersEl)peersEl.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
   }
-
-  // Audit inter-instances (20 derniers)
-  try{
-    const r=await fetch(`${API_BASE}/api/peer/audit?limit=20`,{headers:h});
-    const d=await r.json();
-    const entries=d.entries||[];
-    if(auditEl){
-      if(!entries.length){
-        auditEl.innerHTML='<div style="color:var(--muted)">Aucun événement inter-instances enregistré.</div>';
-      }else{
-        const ec={delegate_accepted:'ok',delegate_refused:'danger',delegate_completed:'accent'};
-        auditEl.innerHTML=entries.slice().reverse().map(e=>`<div class="list-item" style="padding:6px 0">
-          <div style="flex:1;min-width:0;font-size:11px">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">
-              <span class="pill ${ec[e.event]||'muted'}" style="font-size:10px">${esc(e.event)}</span>
-              <span style="color:var(--muted)">${esc((e.ts||'').substring(0,19).replace('T',' '))}</span>
-            </div>
-            <div style="color:var(--text)">${esc(e.from_instance_id)} → scope:${esc(e.scope)} [${esc(e.status)}]</div>
-            ${e.detail?`<div style="color:var(--danger);font-size:10px">${esc(e.detail)}</div>`:''}
-          </div>
-        </div>`).join('');
-      }
-    }
-  }catch(e){
-    if(auditEl)auditEl.innerHTML=`<div style="color:var(--danger)">Erreur: ${esc(e.message)}</div>`;
-  }
+  // L'audit inter-instances est désormais agrégé dans la vue « Historique ».
+  refreshNetworkLive(true);  // Cran 1 : présence réelle des pairs (immédiat)
 }
 
 export async function discoverLanPeers(){
@@ -3299,7 +3972,7 @@ export async function discoverLanPeers(){
       if(!d.peers?.length){
         resultEl.textContent='Aucune instance Lumena trouvée sur le réseau local.';
       }else{
-        resultEl.innerHTML=d.peers.map(p=>`<div style="margin-bottom:4px"><strong>${esc(p.instance_name||p.instance_id)}</strong> — ${esc(p.host)}:${p.port} <span class="pill muted" style="font-size:10px">${esc(p.trust)}</span></div>`).join('');
+        resultEl.innerHTML=d.peers.map(p=>`<div style="margin-bottom:4px"><strong>${esc(p.alias||p.instance_name||p.instance_id)}</strong> — ${esc(p.host)}:${p.port} <span class="pill muted" style="font-size:10px">${esc(p.trust)}</span></div>`).join('');
       }
     }
     // Recharge uniquement la liste des pairs (pas toutes les cartes)
@@ -3330,7 +4003,7 @@ async function _reloadPeersList(){
           <div style="flex:1;min-width:0;font-size:12px">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;flex-wrap:wrap">
               <span class="pill ${tc[p.trust]||'muted'}" style="font-size:10px">${esc(p.trust)}</span>
-              <strong>${esc(p.instance_name||p.instance_id)}</strong>
+              <strong>${esc(p.alias||p.instance_name||p.instance_id)}</strong>
               <span style="color:var(--muted)">— ${esc(p.host)}:${p.port}</span>
               ${testBtn}
             </div>

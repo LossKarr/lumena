@@ -47,8 +47,45 @@ _STATE: Dict[str, Any] = {
 }
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def is_peer_master_enabled() -> bool:
+    """Interrupteur MAÎTRE du réseau Lumena (`LUMENA_PEER_ENABLED`, défaut 0).
+
+    Quand activé, il allume d'un coup les 4 capacités P2P (découverte, conscience,
+    autonomie réseau, collaboration) via un OR-fallback dans chaque garde. Les flags
+    unitaires restent souverains : maître OFF → ils commandent ; maître ON → tout on.
+    Lu en live (effet immédiat pour chat/collaboration ; découverte/autonomie au reboot).
+    """
+    return os.getenv("LUMENA_PEER_ENABLED", "0").strip().lower() in _TRUTHY
+
+
+def is_peer_halt_enabled() -> bool:
+    """Kill-switch « panic » SOFT (`LUMENA_PEER_HALT`, défaut 0). Lu en live.
+
+    Quand actif, il VETO toute NOUVELLE activité sortante/entrante : nouvelles
+    délégations (in & out), découverte, conscience. C'est un veto absolu qui gagne
+    sur le maître ET les flags unitaires.
+
+    IMPORTANT (Lumena 24/7) : il NE coupe PAS les missions EN COURS. Il ne touche
+    PAS la boucle d'autonomie (poll/health) → les missions déjà parties continuent
+    et leurs résultats reviennent. On gate le FUTUR, jamais le PRÉSENT.
+    """
+    return os.getenv("LUMENA_PEER_HALT", "0").strip().lower() in _TRUTHY
+
+
 def is_peer_network_autonomy_enabled() -> bool:
-    return os.getenv("LUMENA_PEER_NETWORK_AUTONOMY", "0").strip().lower() in {"1", "true", "yes", "on"}
+    # NOTE : volontairement PAS gardé par le halt — la boucle poll/health doit
+    # continuer à récupérer les résultats des missions en cours (drain gracieux).
+    return (
+        is_peer_master_enabled()
+        or os.getenv("LUMENA_PEER_NETWORK_AUTONOMY", "0").strip().lower() in _TRUTHY
+    )
+    return (
+        is_peer_master_enabled()
+        or os.getenv("LUMENA_PEER_NETWORK_AUTONOMY", "0").strip().lower() in _TRUTHY
+    )
 
 
 def _now_iso() -> str:
@@ -177,35 +214,60 @@ async def _probe_known_peers(timeout: float) -> List[dict]:
     return results
 
 
+def _mdns_browse_available() -> bool:
+    try:
+        from src.runtime.mdns_discovery import is_mdns_available
+        return is_mdns_available()
+    except Exception:
+        return False
+
+
 async def _scan_for_new_peers(timeout: float, max_hosts: int) -> List[dict]:
-    if os.getenv("LUMENA_PEER_DISCOVERY", "0").strip() != "1":
+    lan_on = is_peer_master_enabled() or os.getenv("LUMENA_PEER_DISCOVERY", "0").strip() == "1"
+    mdns_on = _mdns_browse_available()
+    if not lan_on and not mdns_on:
         return []
 
-    from src.runtime.network_diagnostics import get_network_interfaces
-    from src.runtime.peer_discovery import scan_lan_for_peers
-
-    networks = [i.get("network") for i in get_network_interfaces() if i.get("network")]
-    if not networks:
-        networks = [None]
-
     found: List[dict] = []
-    ports = _ports_from_env()
-    for network in networks[:4]:
+
+    # ── Découverte par scan LAN (port-scan) ──────────────────────────────────
+    if lan_on:
+        from src.runtime.network_diagnostics import get_network_interfaces
+        from src.runtime.peer_discovery import scan_lan_for_peers
+
+        networks = [i.get("network") for i in get_network_interfaces() if i.get("network")]
+        if not networks:
+            networks = [None]
+        ports = _ports_from_env()
+        for network in networks[:4]:
+            try:
+                part = await asyncio.wait_for(
+                    scan_lan_for_peers(
+                        network=network,
+                        ports=ports,
+                        timeout=timeout,
+                        max_hosts=max_hosts,
+                    ),
+                    timeout=30.0,  # couvrir un /24 complet (ex: pair en .57)
+                )
+                found.extend(part)
+            except asyncio.TimeoutError:
+                continue
+            except Exception:
+                continue
+
+    # ── Découverte mDNS/Zeroconf (zéro-config) ───────────────────────────────
+    if mdns_on:
         try:
-            part = await asyncio.wait_for(
-                scan_lan_for_peers(
-                    network=network,
-                    ports=ports,
-                    timeout=timeout,
-                    max_hosts=max_hosts,
-                ),
-                timeout=12.0,
+            from src.runtime.mdns_discovery import browse_services
+            from src.utils.paths import INSTANCE_ID as _own
+            loop = asyncio.get_event_loop()
+            mdns_found = await loop.run_in_executor(
+                None, lambda: browse_services(timeout=3.0, self_instance_id=_own)
             )
-            found.extend(part)
-        except asyncio.TimeoutError:
-            continue
+            found.extend(mdns_found or [])
         except Exception:
-            continue
+            pass
 
     unique: Dict[str, dict] = {}
     for peer in found:
@@ -265,6 +327,90 @@ def _build_summary(discovered_count: int = 0) -> Dict[str, Any]:
     }
 
 
+# ── A1.5 — Auto-jumelage de flotte (confiance uniquement, gated par la clé) ──
+
+_MAX_AUTOPAIR_PER_CYCLE = 5
+
+
+def is_fleet_autopair_enabled() -> bool:
+    """True si une clé de flotte est posée ET l'auto-jumelage non désactivé."""
+    try:
+        from src.runtime.peer_fleet import is_fleet_pairing_enabled
+    except Exception:
+        return False
+    if not is_fleet_pairing_enabled():
+        return False
+    return os.getenv("LUMENA_FLEET_AUTOPAIR", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _autopair_cooldown() -> int:
+    return _clamp_int(os.getenv("LUMENA_FLEET_AUTOPAIR_COOLDOWN_SEC", "600"), 600, 30, 86400)
+
+
+def _audit_autopair(event: str, instance_id: str, status: str, detail: str = "") -> None:
+    try:
+        from src.runtime.peer_protocol import write_audit_log
+        write_audit_log(event=event, from_instance_id=instance_id, task_id="fleet-autopair",
+                        scope="pairing", status=status, detail=detail)
+    except Exception:
+        pass
+
+
+def _select_autopair_candidates(peers: Dict[str, dict], now: float, cooldown: int) -> List[tuple]:
+    """Pairs à auto-jumeler : unknown + host connu + hors cooldown. Pur (testable)."""
+    out: List[tuple] = []
+    for iid, peer in peers.items():
+        if not isinstance(peer, dict):
+            continue
+        if peer.get("trust", "unknown") != "unknown":
+            continue  # déjà trusted/blocked → on ne touche pas
+        host = str(peer.get("host") or "").strip()
+        if not host:
+            continue
+        last_fail = peer.get("fleet_autopair_failed_at")
+        if isinstance(last_fail, (int, float)) and now < last_fail + cooldown:
+            continue  # en cooldown après un échec récent
+        out.append((iid, host, int(peer.get("port") or 8080)))
+    return out[:_MAX_AUTOPAIR_PER_CYCLE]
+
+
+async def _auto_pair_fleet_peers() -> int:
+    """Tente l'auto-jumelage des pairs unknown de la flotte. Retourne le nb réussi.
+
+    Sûr : verrouillé par la preuve de clé de flotte (un pair sans la clé échoue
+    et passe en cooldown). N'exécute aucun code distant — établit la confiance.
+    """
+    import time as _time
+    if not is_fleet_autopair_enabled():
+        return 0
+    from src.runtime.peer_discovery import attempt_fleet_pair
+
+    with _PEER_LOCK:
+        peers = _load_peers()
+    now = _time.time()
+    candidates = _select_autopair_candidates(peers, now, _autopair_cooldown())
+
+    paired = 0
+    for iid, host, port in candidates:
+        try:
+            result = await attempt_fleet_pair(host, port)
+        except Exception as exc:  # pragma: no cover - best effort
+            result = {"ok": False, "error": f"exc:{type(exc).__name__}"}
+        if result.get("ok"):
+            paired += 1
+            _audit_autopair("fleet_autopair_completed", iid, "completed")
+        else:
+            # Marquer un cooldown sur échec (évite de marteler un pair non-flotte).
+            with _PEER_LOCK:
+                data = _load_peers()
+                if iid in data and data[iid].get("trust", "unknown") == "unknown":
+                    data[iid]["fleet_autopair_failed_at"] = now
+                    data[iid]["fleet_autopair_last_error"] = str(result.get("error", ""))[:120]
+                    _save_peers(data)
+            _audit_autopair("fleet_autopair_failed", iid, "error", str(result.get("error", "")))
+    return paired
+
+
 async def run_peer_network_autonomy_once(*, scan: bool = True, health: bool = True) -> Dict[str, Any]:
     """Run one bounded maintenance pass and return a compact summary."""
     timeout = _clamp_float(os.getenv("LUMENA_PEER_AUTONOMY_TIMEOUT", "1.5"), 1.5, 0.2, 5.0)
@@ -276,7 +422,21 @@ async def run_peer_network_autonomy_once(*, scan: bool = True, health: bool = Tr
             await _probe_known_peers(timeout=timeout)
         if scan:
             discovered = await _scan_for_new_peers(timeout=timeout, max_hosts=max_hosts)
+        # A1.5 — auto-jumelage de flotte (après découverte). Confiance uniquement.
+        autopaired = 0
+        try:
+            autopaired = await _auto_pair_fleet_peers()
+        except Exception:
+            autopaired = 0
+        # M3 — suivi des missions sortantes : poll des statuts + notification.
+        # Jamais bloquant ni fatal (coupure réseau tolérée → retry au cycle suivant).
+        try:
+            from src.runtime.peer_mission_tracker import poll_outbound_missions
+            await poll_outbound_missions(timeout=timeout)
+        except Exception:
+            pass
         summary = _build_summary(discovered_count=len(discovered))
+        summary["autopaired"] = autopaired
         now = _now_iso()
         with _STATE_LOCK:
             _STATE.update({
@@ -297,17 +457,44 @@ async def run_peer_network_autonomy_once(*, scan: bool = True, health: bool = Tr
         return get_peer_network_autonomy_status()
 
 
+async def _poll_pending_missions_tick(*, timeout: float = 5.0) -> bool:
+    """Tick léger : rapatrie le statut des missions sortantes EN ATTENTE.
+
+    Retourne True si un poll a été lancé (au moins une mission en attente). Extrait
+    en fonction pour rester testable. Jamais bloquant ni fatal.
+    """
+    try:
+        from src.runtime.peer_mission_tracker import poll_outbound_missions, list_pending
+        if not list_pending():
+            return False
+        await poll_outbound_missions(timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+
 async def _autonomy_loop() -> None:
     health_interval = _clamp_int(os.getenv("LUMENA_PEER_AUTOHEALTH_INTERVAL_SEC", "60"), 60, 15, 3600)
     scan_interval = _clamp_int(os.getenv("LUMENA_PEER_AUTOSCAN_INTERVAL_SEC", "300"), 300, 60, 86400)
+    # Poll RAPIDE des missions sortantes : tant qu'il y en a en attente, on rapatrie
+    # leur statut toutes les ~8 s (au lieu d'attendre le cycle santé 60 s) → le verdict
+    # du pair (refused / completed) revient quasi tout de suite à l'émetteur.
+    mission_interval = _clamp_int(os.getenv("LUMENA_PEER_MISSION_POLL_SEC", "8"), 8, 3, 120)
     last_scan = 0.0
+    last_health = 0.0
     while True:
         now = time.monotonic()
-        do_scan = (now - last_scan) >= scan_interval
-        await run_peer_network_autonomy_once(scan=do_scan, health=True)
-        if do_scan:
-            last_scan = now
-        await asyncio.sleep(health_interval)
+        if (now - last_health) >= health_interval:
+            # Cycle complet : santé + scan (+ poll des missions inclus dans `once`).
+            do_scan = (now - last_scan) >= scan_interval
+            await run_peer_network_autonomy_once(scan=do_scan, health=True)
+            last_health = now
+            if do_scan:
+                last_scan = now
+        else:
+            # Tick léger entre deux cycles complets : juste le poll des missions.
+            await _poll_pending_missions_tick()
+        await asyncio.sleep(mission_interval)
 
 
 def start_peer_network_autonomy() -> Optional[asyncio.Task]:

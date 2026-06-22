@@ -33,6 +33,12 @@ from .tool_categories import get_category_contract, get_semantic_category
 
 # Outils qui MUTENT l'état (écriture fichier, exécution shell, suppression).
 # Leur appel par ReAct sur un fichier code/config de projet doit être refusé.
+# A4 Couche 0 — fragment STABLE du message de refus « pair niveau chat ». Sert à la
+# fois au message (DRY) et à la détection en aval (mission inter-Lumena : faire
+# remonter « pair en lecture seule » à l'émetteur). Ne pas modifier sans adapter
+# le détecteur dans agent_service.think_and_act_silent.
+A4_CHAT_REFUSAL_MARKER: str = "n'a que le niveau 'chat'"
+
 _MUTATE_TOOLS_CODE: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit_file", "apply_patch", "apply_patches",
     "insert_at_anchor", "edit_by_lines", "str_replace",
@@ -438,6 +444,10 @@ class ToolRegistry:
         self._allowed_tools: Optional[set] = None
         # True quand _allowed_tools a été défini par l'appelant (pas le filtre contextuel)
         self._caller_set_allowed: bool = False
+        # A4 Couche 0 — filtre DUR : un outil hors liste est REFUSÉ (pas soft-exécuté).
+        # Activé uniquement pour une exécution déléguée par un pair niveau `chat`
+        # (lecture seule). Défaut False → l'agent LOCAL garde le soft-filter.
+        self._allowed_tools_hard: bool = False
         # Contexte issu du filtre: une demande BDD IONOS doit rester sur ionos_db_*.
         self._ionos_db_context: bool = False
         self._ionos_db_context_query: str = ""
@@ -2297,7 +2307,25 @@ class ToolRegistry:
                     success=False
                 )
         if self._allowed_tools is not None and name not in self._allowed_tools:
-            # P1.1: Soft filter — log + auto-expand, jamais de blocage
+            # A4 Couche 0 — mode DUR (exécution déléguée par un pair niveau `chat`) :
+            # refuser tout outil hors liste, SAUF les outils de contrôle (final/ask/
+            # plan_*) qui permettent à l'agent de conclure. Le soft-filter local
+            # (ci-dessous) reste inchangé pour l'agent de l'utilisateur.
+            if getattr(self, "_allowed_tools_hard", False) and not (
+                name in ("final_answer", "ask_user") or name.startswith("plan_")
+            ):
+                logger.warning(
+                    f"⛔ [A4] Outil '{name}' REFUSÉ — pair niveau 'chat' (lecture seule)"
+                )
+                return Observation(
+                    content=(
+                        f"⛔ Outil '{name}' non autorisé : l'instance appelante "
+                        f"{A4_CHAT_REFUSAL_MARKER} (lecture seule). Aucune action n'est "
+                        "possible. Réponds uniquement avec les informations en lecture."
+                    ),
+                    success=False,
+                )
+            # P1.1: Soft filter — log + auto-expand, jamais de blocage (agent local)
             logger.info(f"🔧 Tool '{name}' hors filtre prompt — exécution soft-filter")
             self._allowed_tools.add(name)
             self._tools_desc_cache = None

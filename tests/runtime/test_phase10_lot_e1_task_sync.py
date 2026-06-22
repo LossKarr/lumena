@@ -113,6 +113,8 @@ def _client_with_peer(tmp_path, monkeypatch, peer: dict,
 def _lumena_ok(result: str = "Voici le résumé Redis.") -> MagicMock:
     lumena = MagicMock()
     lumena.chat = AsyncMock(return_value=result)
+    # A3 brique 2 : l'exécution pair passe par think_and_act_silent (bornée par niveau).
+    lumena.think_and_act_silent = AsyncMock(return_value=result)
     return lumena
 
 
@@ -372,6 +374,7 @@ class TestTaskSyncResponse:
             raise asyncio.TimeoutError()
 
         lumena.chat = _slow
+        lumena.think_and_act_silent = _slow
         client = _client_with_peer(tmp_path, monkeypatch, TRUSTED_PEER_TASK, lumena)
         r = client.post("/api/peer/tasks/run-sync", json=PAYLOAD_BASE)
         assert r.status_code == 200
@@ -418,6 +421,7 @@ class TestTaskSyncAudit:
         )
         lumena = MagicMock()
         lumena.chat = AsyncMock(side_effect=asyncio.TimeoutError())
+        lumena.think_and_act_silent = AsyncMock(side_effect=asyncio.TimeoutError())
         client = _client_with_peer(tmp_path, monkeypatch, TRUSTED_PEER_TASK, lumena)
         r = client.post("/api/peer/tasks/run-sync", json=PAYLOAD_BASE)
         assert r.status_code == 200
@@ -634,3 +638,29 @@ class TestRunPeerTaskSyncHandler:
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)
 # https://github.com/Losskarr/lumena
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+# ── P4 : pair OCCUPÉ → réponse « busy » propre (pas de ReadTimeout) ───────────
+
+class TestTaskSyncBusy:
+
+    def test_pair_occupe_repond_busy(self, tmp_path, monkeypatch):
+        client = _client_with_peer(tmp_path, monkeypatch, TRUSTED_PEER_TASK, _lumena_ok())
+        import src.runtime.peer_mission_worker as worker
+        monkeypatch.setattr(worker, "mission_load",
+                            lambda: {"running": 1, "waiting": 0, "concurrency": 1})
+        r = client.post("/api/peer/tasks/run-sync", json=PAYLOAD_BASE)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] == "busy"
+        assert "occupé" in body["result"]
+
+    def test_pair_libre_execute_normalement(self, tmp_path, monkeypatch):
+        client = _client_with_peer(tmp_path, monkeypatch, TRUSTED_PEER_TASK,
+                                   _lumena_ok("résumé ok"))
+        import src.runtime.peer_mission_worker as worker
+        monkeypatch.setattr(worker, "mission_load",
+                            lambda: {"running": 0, "waiting": 0, "concurrency": 1})
+        r = client.post("/api/peer/tasks/run-sync", json=PAYLOAD_BASE)
+        assert r.status_code == 200
+        assert r.json()["status"] == "completed"
