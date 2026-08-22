@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+@page { size: A4; margin: 0.4in 0.5in; }
+body { font-family: 'Calibri', 'Arial', sans-serif; font-size: 9pt; line-height: 1.25; color: #1a1a1a; }
+h1 { font-size: 14pt; text-align: center; color: {{ accent or '#e8892f' }}; margin-bottom: 6px; }
+h2 { font-size: 11pt; color: {{ accent or '#e8892f' }}; margin: 14px 0 4px 0; border-bottom: 1px solid #ccc; padding-bottom: 2px; }
+p { margin: 3px 0; }
+.info-block { margin: 8px 0; }
+.info-block table { width: 100%; border-collapse: collapse; }
+.info-block td { padding: 2px 6px; vertical-align: top; border: 1px solid #ddd; }
+.info-block td:first-child { font-weight: bold; width: 160px; background: #f5f5f5; }
+.clause { margin: 6px 0; }
+.clause h3 { font-size: 10pt; margin: 8px 0 2px 0; color: #333; }
+.clause p { margin: 1px 0 3px 20px; text-align: justify; }
+.signatures { margin-top: 24px; }
+.signatures table { width: 100%; border-collapse: collapse; }
+.signatures td { width: 50%; padding: 10px; text-align: center; border-top: 1px solid #999; }
+.footer { text-align: center; font-size: 8pt; color: #888; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 4px; }
+</style>
+</head>
+<body>
+
+<h1>CONTRAT DE TRAVAIL À DURÉE INDÉTERMINÉE</h1>
+<p style="text-align:center;"><strong>Entre les soussignés :</strong></p>
+
+<div class="info-block">
+<table>
+<tr><td>Employeur</td><td><strong>{{ employeur.name }}</strong><br>{{ employeur.address }}<br>{{ employeur.city }}<br>Email : {{ employeur.email }}<br>Tél : {{ employeur.phone }}<br>SIRET : {{ employeur.siret }}</td></tr>
+<tr><td>Salarié</td><td><strong>{{ salarie.name }}</strong><br>Né(e) le : {{ salarie.birth_date }}<br>{{ salarie.address }}<br>{{ salarie.city }}<br>Email : {{ salarie.email }}<br>Tél : {{ salarie.phone }}</td></tr>
+</table>
+</div>
+
+<h2>Préambule</h2>
+<p>L'employeur, {{ employeur.name }}, société par actions simplifiée au capital de ... , immatriculée au RCS de ... sous le numéro {{ employeur.siret }}, dont le siège social est situé {{ employeur.address }}, {{ employeur.city }}, représentée par ... , dûment habilité, ci-après dénommée « l'Employeur »,</p>
+<p>Et {{ salarie.name }}, né(e) le {{ salarie.birth_date }}, demeurant {{ salarie.address }}, {{ salarie.city }}, ci-après dénommé(e) « le Salarié »,</p>
+<p>Il a été convenu et arrêté ce qui suit :</p>
+
+<h2>Article 1 – Engagement et fonctions</h2>
+<p>L'Employeur engage le Salarié en qualité de <strong>{{ poste }}</strong> à compter du <strong>{{ date_debut }}</strong>. Le Salarié exercera ses fonctions sous l'autorité et la direction de l'Employeur. Il devra consacrer l'intégralité de son activité professionnelle à l'Employeur et exécuter les missions qui lui sont confiées avec diligence, loyauté et dans le respect des instructions de sa hiérarchie.</p>
+
+<h2>Article 2 – Période d'essai</h2>
+<p>Le présent contrat est conclu pour une durée indéterminée. Il est assorti d'une période d'essai de <strong>{{ periode_essai }}</strong>. Pendant cette période, chacune des parties peut mettre fin au contrat sans préavis ni indemnité, par lettre recommandée avec accusé de réception. La période d'essai pourra être renouvelée une fois par accord exprès des parties.</p>
+
+<h2>Article 3 – Rémunération</h2>
+<p>En contrepartie de ses fonctions, le Salarié percevra une rémunération brute annuelle de <strong>{{ remuneration }}</strong>, versée en douze mensualités. La rémunération pourra être révisée annuellement selon les dispositions de la convention collective et/ou les accords d'entreprise. Le bulletin de paie sera remis chaque mois.</p>
+
+<h2>Article 4 – Temps de travail</h2>
+<p>Le Salarié est soumis à un temps de travail de <strong>{{ temps_travail }}</strong>. Les horaires de travail sont déterminés par l'Employeur en fonction des nécessités du service et dans le respect des dispositions légales. Des heures supplémentaires pourront être effectuées à la demande de l'Employeur et seront rémunérées conformément à la législation en vigueur.</p>
+
+<h2>Article 5 – Congés payés</h2>
+<p>Le Salarié bénéficie de 25 jours ouvrables de congés payés par année complète de travail, conformément aux dispositions légales et conventionnelles. La période de référence s'étend du 1er juin au 31 mai. La prise des congés est soumise à l'approbation préalable de l'Employeur, dans le respect des nécessités du service.</p>
+
+<h2>Article 6 – Confidentialité</h2>
+<p>Le Salarié s'engage à ne divulguer aucune information confidentielle relative à l'Employeur, ses clients, ses partenaires, ses procédés techniques, ses stratégies commerciales ou tout autre aspect de son activité, pendant toute la durée du contrat et après sa cessation. Toute violation pourra entraîner des sanctions disciplinaires et/ou des poursuites judiciaires.</p>
+
+<h2>Article 7 – Propriété intellectuelle</h2>
+<p>Tous les travaux, études, créations, inventions, logiciels, documents et autres réalisations effectués par le Salarié dans le cadre de ses fonctions sont la propriété exclusive de l'Employeur. Le Salarié cède à l'Employeur, à titre exclusif, tous les droits de propriété intellectuelle afférents, sans limitation de territoire ni de durée.</p>
+
+<h2>Article 8 – Sécurité</h2>
+<p>Le Salarié est tenu de respecter les règles de sécurité en vigueur au sein de l'entreprise et d'utiliser correctement les équipements de protection individuelle mis à sa disposition. Tout manquement grave pourra entraîner une sanction disciplinaire.</p>
+
+<h2>Article 9 – Formation professionnelle</h2>
+<p>Le Salarié bénéficie d'un accès à la formation professionnelle continue, conformément aux dispositions légales et conventionnelles. L'Employeur veille à l'adaptation du Salarié à son poste de travail et à l'évolution de ses compétences. Un entretien professionnel est organisé tous les deux ans.</p>
+
+<h2>Article 10 – Mobilité</h2>
+<p>Le Salarié accepte, en fonction des nécessités de l'entreprise, d'être muté sur tout autre site de l'Employeur situé dans un périmètre géographique raisonnable (50 km autour du lieu de travail principal). En cas de déménagement du lieu de travail, les frais de déménagement seront pris en charge par l'Employeur selon les modalités définies par accord d'entreprise.</p>
+
+<h2>Article 11 – Non-concurrence</h2>
+<p>Compte tenu de la nature des fonctions exercées et des informations confidentielles auxquelles le Salarié a accès, une clause de non-concurrence est stipulée. Après la rupture du contrat, le Salarié s'interdit, pendant une durée de 12 mois et dans un rayon de 50 km du dernier lieu de travail, d'exercer une activité concurrente à celle de l'Employeur. En contrepartie, le Salarié percevra une indemnité mensuelle égale à 30 % de sa rémunération mensuelle brute moyenne.</p>
+
+<h2>Article 12 – Absences et maladies</h2>
+<p>Le Salarié doit informer l'Employeur de toute absence dans les meilleurs délais et fournir un justificatif médical en cas de maladie, accident du travail ou maternité. Pendant les arrêts de travail, le Salarié perçoit des indemnités complémentaires selon les dispositions légales et conventionnelles, après un délai de carence.</p>
+
+<h2>Article 13 – Discipline</h2>
+<p>Le Salarié est soumis au règlement intérieur de l'entreprise. Tout manquement aux obligations contractuelles ou aux règles disciplinaires pourra donner lieu à des sanctions allant de l'avertissement au licenciement, dans le respect de la procédure légale.</p>
+
+<h2>Article 14 – Rupture du contrat</h2>
+<p>Le contrat de travail pourra être rompu à l'initiative de l'une ou l'autre des parties dans les conditions prévues par la loi et la convention collective applicable (démission, licenciement, rupture conventionnelle, retraite). Les préavis applicables sont fixés par la convention collective et par l'article L. 1234-1 du Code du travail.</p>
+
+<h2>Article 15 – Convention collective</h2>
+<p>Les relations de travail entre les parties sont régies par la convention collective nationale de la <strong>{{ convention }}</strong> (IDCC ...), ainsi que par les accords d'entreprise applicables. Tout avenant ultérieur à cette convention collective s'appliquera de plein droit au présent contrat.</p>
+
+<h2>Article 16 – Droit applicable et attribution de compétence</h2>
+<p>Le présent contrat est soumis au droit français. En cas de litige, les parties s'engagent à rechercher une solution amiable préalablement à toute action judiciaire. À défaut d'accord amiable, le tribunal compétent sera celui du ressort du siège social de l'Employeur.</p>
+
+<h2>Article 17 – Élection de domicile</h2>
+<p>Pour l'exécution du présent contrat, les parties font élection de domicile aux adresses mentionnées en tête des présentes. Tout changement d'adresse doit être notifié à l'autre partie par lettre recommandée avec accusé de réception.</p>
+
+<h2>Article 18 – Renonciation et intégralité</h2>
+<p>Le fait pour l'une des parties de ne pas se prévaloir d'un manquement par l'autre partie à l'une quelconque des obligations visées dans le présent contrat ne saurait être interprété comme une renonciation à s'en prévaloir ultérieurement. Le présent contrat constitue l'intégralité de l'accord entre les parties et annule tous accords antérieurs, écrits ou oraux.</p>
+
+<h2>Clauses complémentaires (détail des 18 dispositions)</h2>
+{% for clause in clauses %}
+<div class="clause">
+<h3>{{ clause.title }}</h3>
+<p>{{ clause.content }}</p>
+</div>
+{% endfor %}
+
+<h2>Fait à {{ lieu }}, le {{ date }}</h2>
+
+<div class="signatures">
+<table>
+<tr>
+<td>
+<p><strong>Pour l'Employeur</strong></p>
+<p style="margin-top:30px;">_____________________________</p>
+<p>Nom et qualité</p>
+</td>
+<td>
+<p><strong>Le Salarié</strong></p>
+<p style="margin-top:30px;">_____________________________</p>
+<p>{{ salarie.name }}</p>
+</td>
+</tr>
+</table>
+</div>
+
+<div class="footer">
+<p>Contrat de travail – {{ employeur.name }} – {{ salarie.name }} – Date : {{ date }}</p>
+</div>
+
+</body>
+</html>

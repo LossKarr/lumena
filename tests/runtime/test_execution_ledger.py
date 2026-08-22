@@ -158,6 +158,36 @@ class TestExecutionLedger:
         assert led.size == 0
         assert not led.has_any_mutation()
 
+    def test_green_test_proof_becomes_stale_after_source_mutation(self):
+        led = ExecutionLedger()
+        green = {"is_test_cmd": True, "green": True, "passed": 3, "failed": 0}
+        led.append(iteration=1, action="run_command", target="workspace/app", success=True,
+                   meta={"test_outcome": green})
+        assert led.has_fresh_green_test_run() is True
+        led.append(iteration=2, action="edit_file", target="workspace/app/app.py", success=True)
+        assert led.has_green_test_run() is True
+        assert led.has_fresh_green_test_run() is False
+        led.append(iteration=3, action="run_command", target="workspace/app", success=True,
+                   meta={"test_outcome": green})
+        assert led.has_fresh_green_test_run() is True
+
+    def test_browser_proof_becomes_stale_after_source_mutation(self):
+        led = ExecutionLedger()
+        led.append(iteration=1, action="browser_navigate", target="http://localhost", success=True)
+        assert led.has_fresh_browser_action() is True
+        led.append(iteration=2, action="write_file", target="static/app.js", success=True)
+        assert led.has_browser_action() is True
+        assert led.has_fresh_browser_action() is False
+        led.append(iteration=3, action="browser_evaluate", target="http://localhost", success=True)
+        assert led.has_fresh_browser_action() is True
+
+    def test_document_mutation_does_not_stale_code_proofs(self):
+        led = ExecutionLedger()
+        green = {"is_test_cmd": True, "green": True, "passed": 1, "failed": 0}
+        led.append(iteration=1, action="run_command", success=True, meta={"test_outcome": green})
+        led.append(iteration=2, action="write_file", target="README.md", success=True)
+        assert led.has_fresh_green_test_run() is True
+
 
 # ── _extract_target ──────────────────────────────────────────────────────────
 

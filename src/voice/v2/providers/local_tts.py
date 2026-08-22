@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import inspect
 from typing import Any, AsyncIterator, List, Optional
 
 from .base import TTSProvider, AudioResult, TTSAudioChunk, CancelToken
@@ -53,6 +54,23 @@ class LocalTTSAdapter(TTSProvider):
         except Exception:
             return False
 
+    async def _synthesize_for_profile(self, tts: Any, text: str, voice: Any, *, local_only: bool):
+        kwargs = {"local_only": local_only}
+        try:
+            parameters = inspect.signature(tts._synthesize).parameters
+            if "allow_xtts" in parameters:
+                kwargs["allow_xtts"] = bool(
+                    voice is not None
+                    and getattr(voice, "reference_consent_confirmed", False)
+                )
+            if "piper_model" in parameters and voice is not None:
+                kwargs["piper_model"] = getattr(
+                    getattr(voice, "local", None), "piper_model", None
+                )
+        except (TypeError, ValueError):
+            pass
+        return await tts._synthesize(text, **kwargs)
+
     async def synthesize(self, text: str, voice: Any, cancel: Optional[CancelToken] = None) -> AudioResult:
         if cancel and cancel.cancelled:
             return AudioResult(ok=False, text=text)
@@ -65,7 +83,9 @@ class LocalTTSAdapter(TTSProvider):
                                chunk_count=0, audio_format="", duration_ms=0)
         # SYNTHÈSE SEULE : `_synthesize` produit le fichier SANS jouer (V2 possède le playback).
         # local-first : interdit Edge-TTS (cloud) tant que LUMENA_VOICE_CLOUD_ALLOWED != 1.
-        path = await tts._synthesize(text, local_only=not _cloud_allowed())
+        path = await self._synthesize_for_profile(
+            tts, text, voice, local_only=not _cloud_allowed()
+        )
         provider = getattr(tts, "_last_provider", "") or ""
         return AudioResult(
             ok=path is not None,
@@ -90,7 +110,7 @@ class LocalTTSAdapter(TTSProvider):
         for i, seg in enumerate(_segments(text)):
             if cancel is not None and getattr(cancel, "cancelled", False):
                 return
-            path = await tts._synthesize(seg, local_only=local_only)
+            path = await self._synthesize_for_profile(tts, seg, voice, local_only=local_only)
             provider = getattr(tts, "_last_provider", "") or ""
             if path is None:
                 continue  # segment non synthétisable -> on saute (best-effort)
@@ -113,7 +133,9 @@ class LocalTTSAdapter(TTSProvider):
             return {"component": "tts", "ok": False, "latency_ms": 0,
                     "provider": "", "degraded": False, "detail": str(e)}
         try:
-            path = await tts._synthesize(text, local_only=not _cloud_allowed())
+            path = await self._synthesize_for_profile(
+                tts, text, None, local_only=not _cloud_allowed()
+            )
         except Exception as e:
             return {"component": "tts", "ok": False,
                     "latency_ms": int((time.perf_counter() - t0) * 1000),

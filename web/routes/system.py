@@ -37,7 +37,8 @@ _UPLOAD_MAX_SIZE = 20 * 1024 * 1024  # 20MB
 _UPLOAD_ALLOWED_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
     ".pdf", ".txt", ".md", ".py", ".js", ".ts", ".html",
-    ".css", ".json", ".xml", ".csv", ".doc", ".docx",
+    ".css", ".json", ".xml", ".csv", ".doc", ".docx", ".xlsx",
+    ".pptx", ".rtf", ".odt", ".ods",
 }
 
 # ── Module-level SLO monitor cache ──────────────────────────────────────────
@@ -976,13 +977,29 @@ async def upload_files(files: List[UploadFile] = File(...), _auth=Depends(deps.v
         unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         dest = _UPLOAD_DIR / unique_name
         dest.write_bytes(content)
-        results.append({
+        uploaded = {
             "name": file.filename,
             "url": f"/api/uploads/{unique_name}",
             "path": str(dest),
             "size": len(content),
             "type": file.content_type or "",
-        })
+        }
+        try:
+            from src.documents.studio import get_document_studio
+
+            record, duplicate = get_document_studio().importer.import_file(
+                dest,
+                source_kind="chat_upload",
+                source_uri=f"/api/uploads/{unique_name}",
+                metadata={"original_filename": file.filename},
+            )
+            uploaded["document_id"] = record.id
+            uploaded["document_duplicate"] = duplicate
+        except Exception as exc:
+            # The historical chat upload remains available even when a file is not a
+            # supported/safe document. Indexing is an additive best-effort mirror.
+            logger.debug("[document-studio] chat upload not indexed: {}", exc)
+        results.append(uploaded)
     return {"files": results}
 
 

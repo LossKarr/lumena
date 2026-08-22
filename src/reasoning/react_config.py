@@ -94,6 +94,10 @@ class Observation:
     success: bool = True
     timestamp: datetime = field(default_factory=datetime.now)
     sub_results: tuple = ()  # tuple[SubToolResult] — peuplé par parallel_tools via ToolRegistry
+    # Provenance additive. ``tool`` preserve le comportement historique ; les
+    # refus produits avant execution peuvent ainsi etre exclus des compteurs
+    # de panne sans etre confondus avec une vraie erreur d'outil.
+    origin: str = "tool"
 
 
 @dataclass
@@ -180,6 +184,11 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     "write_file": ["cré", "creer", "create", "génér", "gener", "écri", "ecri", "write"],
     "create_file": ["cré", "creer", "create", "génér", "gener", "écri", "ecri", "write"],
     "create_pdf": ["cré", "creer", "create", "pdf", "document", "rapport", "génér", "gener"],
+    "generate_studio_document": ["cré", "creer", "create", "pdf", "document", "modèle", "modele", "factur", "devis", "contrat", "attestation", "commande", "génér", "gener"],
+    "revise_studio_document": ["modif", "corrig", "chang", "remplac", "ajust", "révis", "revis", "document", "factur", "devis", "contrat"],
+    "apply_document_edit": ["modif", "corrig", "chang", "remplac", "edit", "docx", "xlsx", "pptx"],
+    "convert_library_document": ["convert", "transform", "format", "pdf", "docx", "xlsx", "pptx", "csv", "html"],
+    "export_library_document": ["export", "copi", "livr", "document", "fichier"],
     "create_invoice_pdf": ["factur", "invoice", "facture", "devis", "prestat", "ttc", "tva", "hors taxe", "ht", "note de frais", "facturer"],
     "create_docx": ["cré", "creer", "create", "docx", "word", "document", "rapport"],
     "create_pptx": ["cré", "creer", "create", "pptx", "présent", "present", "diapo"],

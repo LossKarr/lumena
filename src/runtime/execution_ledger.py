@@ -12,6 +12,7 @@ au lieu de seulement *croire* l'avoir fait.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, asdict
 from time import perf_counter
 from typing import Any, Dict, List, Optional
@@ -46,7 +47,8 @@ MUTATION_TOOLS: frozenset[str] = frozenset({
     "create_project", "create_skill", "update_skill", "delete_skill",
     # ── Documents ────────────────────────────────────────────────────────────
     "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv",
-    "create_invoice_pdf", "create_from_template",
+    "create_invoice_pdf", "create_from_template", "generate_studio_document",
+    "generate_studio_documents",
     "create_html", "create_markdown", "create_email_html",
     "create_ics", "create_vcard", "create_meeting_report",
     "create_zip", "create_batch_documents",
@@ -186,6 +188,16 @@ INTENT_TO_MUTATION_FAMILY: Dict[str, frozenset] = {
 }
 
 
+# LOT Z28 — un chemin dans du texte : entre backticks, absolu (C:\… ou /…),
+# ou relatif au workspace. Sert à récupérer le dossier d'un livrable quand
+# l'outil ne l'expose pas dans ses arguments.
+_PATH_IN_TEXT_RE = re.compile(
+    r"`([^`\n]{3,})`"
+    r"|([A-Za-z]:[\\/][^\s`'\"]{3,})"
+    r"|((?:^|\s)workspace[\\/][^\s`'\"]{3,})"
+)
+
+
 def _extract_proof(tool_name: str, observation_text: str, success: bool) -> Optional[str]:
     """Extrait une preuve simple depuis l'observation d'un outil.
 
@@ -213,6 +225,21 @@ def _extract_proof(tool_name: str, observation_text: str, success: bool) -> Opti
                       "mail_send", "send_email"):
         for line in text.split("\n")[:3]:
             if "✅" in line or "envoyé" in line.lower() or "sent" in line.lower():
+                return line[:200]
+        return None
+
+    # LOT Z28 — les outils qui produisent un DOSSIER entier n'avaient ni cible
+    # ni preuve : `create_project` reçoit `description`/`project_name`, jamais un
+    # `path`, donc `_extract_target` renvoie None. Résultat mesuré sur le run
+    # « Papier Cousu » (2026-08-19) : le lead avait créé 6 fichiers, et RIEN au
+    # ledger ne permettait de retrouver où. L'observation, elle, contient le
+    # chemin absolu (« Projet créé via CodeAgent dans `C:\\…\\papier-cousu` ») —
+    # le fait était affiché puis jeté. On le range.
+    if tool_name in ("create_project", "generate_website", "create_website",
+                      "write_website_files", "publish_mission_workspace"):
+        for line in text.split("\n")[:4]:
+            line = line.strip()
+            if line and _PATH_IN_TEXT_RE.search(line):
                 return line[:200]
         return None
 
@@ -276,6 +303,164 @@ class ExecutionLedger:
     def has_successful_action(self, action: str) -> bool:
         """True si au moins une exécution réussie de cet outil existe."""
         return any(e.action == action and e.success for e in self._entries)
+
+    # ── Preuve d'exécution de tests (VERROU DE VÉRITÉ mission) ────────────────
+    # La méta `test_outcome` est posée à l'append par react.py (parseur pur
+    # test_proof.parse_test_outcome) pour les commandes de test. Voir run
+    # bibliotech 2026-07-01 : sans ce signal, une mission pouvait clamer
+    # « tests verts » alors que le dernier pytest réel échouait.
+
+    def has_green_test_run(self) -> bool:
+        """True SSI un run de tests VERT probant a réellement eu lieu.
+
+        « Vert probant » = `test_outcome.green` (≥1 passed, 0 failed, 0 error,
+        pas d'erreur de collecte, exit 0, SANS `--ignore` inventé).
+        """
+        return any(
+            e.success and bool((e.meta or {}).get("test_outcome", {}).get("green"))
+            for e in self._entries
+        )
+
+    @staticmethod
+    def _is_source_mutation(entry: LedgerEntry) -> bool:
+        if not entry.success or entry.action not in {
+            "write_file", "edit_file", "create_file", "apply_patch", "apply_patches",
+            "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
+            "write_website_files", "edit_website",
+        }:
+            return False
+        target = str(entry.target or "").lower().split("?", 1)[0]
+        return target.endswith((
+            ".py", ".js", ".mjs", ".jsx", ".ts", ".tsx", ".html", ".htm", ".css",
+        ))
+
+    def has_source_mutation(self) -> bool:
+        return any(self._is_source_mutation(entry) for entry in self._entries)
+
+    def _latest_source_mutation_timestamp(self) -> float:
+        stamps = [e.timestamp for e in self._entries if self._is_source_mutation(e)]
+        return max(stamps, default=-1.0)
+
+    def has_fresh_green_test_run(self) -> bool:
+        """True when a green test run happened after the latest source mutation."""
+        last_mutation = self._latest_source_mutation_timestamp()
+        return any(
+            e.timestamp > last_mutation
+            and e.success
+            and bool((e.meta or {}).get("test_outcome", {}).get("green"))
+            for e in self._entries
+        )
+
+    def last_test_outcome(self) -> Optional[Dict[str, Any]]:
+        """Dernière issue de tests connue (dict test_outcome) ou None.
+
+        Sert au message honnête de rétrogradation : « dernier pytest réel :
+        X passed / Y errors ». Prend la plus récente commande de test.
+        """
+        for e in reversed(self._entries):
+            outcome = (e.meta or {}).get("test_outcome")
+            if isinstance(outcome, dict) and outcome.get("is_test_cmd"):
+                return outcome
+        return None
+
+    def written_basenames(self) -> set:
+        """Basenames (minuscule) des fichiers réellement écrits/modifiés avec succès.
+
+        Sert au croisement artefact↔ledger. NB : ne contient PAS les fichiers
+        produits par des SOUS-agents (ledgers distincts) — à utiliser avec
+        prudence côté mission-lead (cf. react: on n'infère un artefact fantôme
+        que de façon conservatrice).
+        """
+        import os as _os
+        write_tools = {
+            "write_file", "edit_file", "create_file", "apply_patch", "apply_patches",
+            "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
+            "create_markdown", "create_html",
+        }
+        out: set = set()
+        for e in self._entries:
+            if e.success and e.action in write_tools and e.target:
+                out.add(_os.path.basename(str(e.target)).lower())
+        return out
+
+    def writes_after_last_publish(self) -> List[LedgerEntry]:
+        """LOT Z24 — ecritures REUSSIES posterieures a la derniere publication.
+
+        Run « jeu 3D » (2026-08-19), les deux faits sont persistes COTE A COTE
+        dans le meme enregistrement de tache, et personne ne les croise :
+
+            published_files : ['CONTRAT.md','contract.json','index.html',
+                               'script.js','style.css']
+            ledger          : write_file -> 'jeu-3d-monde-ouvert/README.md'
+                              success=True, iteration 26  (APRES la publication)
+            terminal_reason : completed — « toutes les portes de cloture ont
+                              autorise le resultat »
+
+        Le README que l'objectif demandait (« index.html, styles, scripts,
+        instructions ») n'a jamais rejoint le livrable, et rien ne l'a dit.
+
+        Publier fige un instantane : tout ce qui s'ecrit APRES est, par
+        construction, hors du livrable tant qu'on ne republie pas. Liste vide
+        s'il n'y a pas eu de publication reussie — inerte par defaut.
+        """
+        last_pub = -1.0
+        for e in self._entries:
+            if e.success and e.action == "publish_mission_workspace":
+                last_pub = max(last_pub, e.timestamp)
+        if last_pub < 0:
+            return []
+        write_tools = {
+            "write_file", "edit_file", "create_file", "apply_patch", "apply_patches",
+            "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
+            "create_markdown", "create_html",
+        }
+        return [
+            e for e in self._entries
+            if e.success and e.action in write_tools and e.target
+            and e.timestamp > last_pub
+        ]
+
+    def has_published(self) -> bool:
+        """LOT E (run FidéliBar 2026-07-04) — True si `publish_mission_workspace`
+        a réussi dans CE run. Sert au verrou de vérité : « publié / livrable final
+        publié / succès complet livré » n'est licite qu'avec cette preuve
+        déterministe. Publier ≠ écrire des fichiers : FidéliBar a écrit des fichiers
+        (has_any_mutation=True) mais n'a JAMAIS publié, et a pourtant annoncé
+        « Publié ✅ dans workspace/fidelibar/ »."""
+        return self.has_successful_action("publish_mission_workspace")
+
+    def has_browser_action(self) -> bool:
+        """LOT 2.10 — True si une VRAIE action navigateur (browser_*) a réussi dans
+        CE run. Sert au verrou de vérité : « vérifié au navigateur » n'est licite
+        qu'avec cette preuve (run StockPilot : claim fabriqué passé sans elle).
+        NB : les actions navigateur d'un SOUS-agent (CodeAgent) ne sont pas ici —
+        rétrogradation conservatrice assumée (jamais fabriquer une vérif)."""
+        return any(e.success and str(e.action).startswith("browser_") for e in self._entries)
+
+    def has_fresh_browser_action(self) -> bool:
+        """True when browser proof happened after the latest source mutation."""
+        last_mutation = self._latest_source_mutation_timestamp()
+        return any(
+            e.timestamp > last_mutation
+            and e.success
+            and str(e.action).startswith("browser_")
+            for e in self._entries
+        )
+
+    def has_js_syntax_check(self) -> bool:
+        """LOT 2.4 (run MotDuJour 2026-07-06) — True si un contrôle de syntaxe JS
+        (`node --check`) a RÉUSSI dans ce run. Preuve du JS GATE : pytest vert ne
+        dit rien du JS (deux runs de suite : script.js invalide/CSS non chargé
+        avec 4/4 pytest verts)."""
+        for e in self._entries:
+            if not e.success:
+                continue
+            hay = " ".join(
+                str(x) for x in (e.action, e.target, (e.meta or {}).get("command")) if x
+            ).lower()
+            if "node --check" in hay or "node-check" in hay:
+                return True
+        return False
 
     def has_any_mutation(self) -> bool:
         """True si au moins une mutation réussie a été enregistrée."""

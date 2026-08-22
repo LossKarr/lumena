@@ -146,6 +146,49 @@ async def test_api_chat_stream_done_event_contains_same_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_api_chat_stream_forwards_codex_deltas_before_done(monkeypatch):
+    fake_meta = {
+        "provider_requested": "openai-codex",
+        "provider_used": "openai-codex",
+        "model_requested": "auto",
+        "model_used": "account-model",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "continuation_used": False,
+        "continuation_steps": 0,
+        "finish_reason": "stop",
+    }
+
+    class _StreamingFakeLumena(_FakeLumena):
+        async def chat(self, _message: str):
+            from src.llm.codex_chat import _DELTA_SINK
+
+            sink = _DELTA_SINK.get()
+            assert sink is not None
+            sink("Bonjour ")
+            await __import__("asyncio").sleep(0.12)
+            sink("depuis Codex")
+            return "Bonjour depuis Codex"
+
+    monkeypatch.setattr(server_module, "lumena", _StreamingFakeLumena(fake_meta))
+    stream_response = await server_module.chat_stream(
+        server_module.ChatRequest(message="stream-codex", use_agent=False)
+    )
+    payloads = []
+    async for chunk in stream_response.body_iterator:
+        text = chunk.decode("utf-8") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+        for line in text.splitlines():
+            if line.startswith("data: "):
+                payloads.append(json.loads(line[6:]))
+
+    tokens = [item["content"] for item in payloads if item.get("type") == "token"]
+    done_index = next(i for i, item in enumerate(payloads) if item.get("type") == "done")
+    token_indices = [i for i, item in enumerate(payloads) if item.get("type") == "token"]
+    assert "".join(tokens) == "Bonjour depuis Codex"
+    assert token_indices and max(token_indices) < done_index
+
+
+@pytest.mark.asyncio
 async def test_api_chat_agent_returns_agent_metadata(monkeypatch):
     fake_meta = {
         "provider_requested": "deepseek",
@@ -172,6 +215,84 @@ async def test_api_chat_agent_returns_agent_metadata(monkeypatch):
     assert response.agent_output_incomplete is True
     assert response.agent_output_warning == "final_answer_potentially_incomplete"
     assert response.agent_repair_attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_api_chat_agent_prefers_request_local_codex_attribution(monkeypatch):
+    stale_api_meta = {
+        "provider_requested": "deepseek",
+        "provider_used": "deepseek",
+        "model_requested": "deepseek-chat",
+        "model_used": "deepseek-chat",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "continuation_used": False,
+        "continuation_steps": 0,
+        "finish_reason": "stop",
+    }
+
+    class _CodexAgentLumena(_FakeLumena):
+        async def think_and_act(self, _message: str):
+            from src.llm.execution_router import _record_codex_response_meta
+
+            _record_codex_response_meta(
+                configured_model="gpt-5.6-sol",
+                selected_model="gpt-5.6-sol",
+            )
+            return "reponse-codex-agent"
+
+    monkeypatch.setattr(server_module, "lumena", _CodexAgentLumena(stale_api_meta))
+    response = await server_module.chat(
+        server_module.ChatRequest(message="lumi", use_agent=True)
+    )
+
+    assert response.response == "reponse-codex-agent"
+    assert response.provider_requested == "openai-codex"
+    assert response.provider_used == "openai-codex"
+    assert response.model_requested == "gpt-5.6-sol"
+    assert response.model_used == "gpt-5.6-sol"
+    assert response.fallback_used is False
+
+
+@pytest.mark.asyncio
+async def test_api_chat_stream_agent_emits_request_local_codex_attribution(monkeypatch):
+    stale_api_meta = {
+        "provider_requested": "deepseek",
+        "provider_used": "deepseek",
+        "model_requested": "deepseek-chat",
+        "model_used": "deepseek-chat",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "continuation_used": False,
+        "continuation_steps": 0,
+        "finish_reason": "stop",
+    }
+
+    class _CodexAgentLumena(_FakeLumena):
+        async def think_and_act(self, _message: str):
+            from src.llm.execution_router import _record_codex_response_meta
+
+            _record_codex_response_meta(
+                configured_model="gpt-5.6-sol",
+                selected_model="gpt-5.6-sol",
+            )
+            return "reponse-codex-agent"
+
+    monkeypatch.setattr(server_module, "lumena", _CodexAgentLumena(stale_api_meta))
+    stream_response = await server_module.chat_stream(
+        server_module.ChatRequest(message="lumi", use_agent=True)
+    )
+    payloads = []
+    async for chunk in stream_response.body_iterator:
+        text = chunk.decode("utf-8") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+        for line in text.splitlines():
+            if line.startswith("data: "):
+                payloads.append(json.loads(line[6:]))
+
+    done_event = next(item for item in payloads if item.get("type") == "done")
+    assert done_event["provider_used"] == "openai-codex"
+    assert done_event["model_used"] == "gpt-5.6-sol"
+    assert done_event["fallback_used"] is False
 
 
 @pytest.mark.asyncio

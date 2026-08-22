@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from src.documents.document_intent import resolve_document_route
 from src.prompts.services.agent_service_prompts import (
     _LLM_FACT_EXTRACT_PROMPT,
 )
@@ -234,6 +235,90 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
+def _should_auto_speak(auto_speak: bool, source_channel: str) -> bool:
+    """VoiceRuntime possède exclusivement l'audio du canal Voice V2."""
+    return bool(auto_speak) and (source_channel or "").strip().lower() != "voice"
+
+
+def _effective_agent_llm_meta(
+    api_meta: Optional[Dict[str, Any]],
+    codex_meta: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Prefer the request-local execution rail over the configured API client."""
+
+    result = dict(api_meta or {})
+    if codex_meta:
+        result.update(codex_meta)
+    return result
+
+
+def _resolve_agent_document_route(query: str, *, mission_run: bool = False):
+    """Resolve builtins cheaply, then consult custom models only if needed."""
+    from src.documents.document_intent import might_be_custom_document_request
+
+    route = resolve_document_route(query, mode="agent")
+    if route.requires_document_tools or might_be_custom_document_request(query):
+        try:
+            from src.documents.studio import get_document_studio
+            vocabulary = get_document_studio().catalog.intent_vocabulary()
+            catalog_route = resolve_document_route(query, mode="agent", vocabulary=vocabulary)
+            if catalog_route.kind or catalog_route.requires_document_tools:
+                route = catalog_route
+        except Exception as exc:
+            logger.debug("Document custom vocabulary unavailable: {}", exc)
+    # Creating a background mission is an orchestration turn, never a
+    # document-only turn. Preserve the detected kinds so the future mission can
+    # use Studio, but do not let that route block create_mission or replace its
+    # acknowledgement.
+    try:
+        from dataclasses import replace
+        from src.reasoning.prompt_builder import is_explicit_mission_request
+
+        if mission_run and route.requires_studio:
+            route = replace(route, owns_run=False)
+        elif is_explicit_mission_request(query) and route.requires_studio:
+            route = replace(route, requires_studio=False, owns_run=False)
+    except Exception:
+        pass
+    if route.kind or route.requires_document_tools:
+        logger.info(
+            "[DOCUMENT ROUTE] mode={} operation={} kind={} confidence={:.2f} "
+            "alias={!r} reason={} owns_run={} ambiguous={}",
+            route.ui_mode,
+            route.operation,
+            route.kind or "-",
+            route.confidence,
+            route.matched_alias,
+            route.reason,
+            route.owns_run,
+            list(route.ambiguous_kinds),
+        )
+    return route
+
+
+def _mission_semantic_query(
+    task: str,
+    *,
+    task_orchestrator: Optional[Any] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Return mission business intent without injected protocol prompts."""
+    if task_id and task_orchestrator is not None:
+        try:
+            record = task_orchestrator.get_task(task_id) or {}
+            metadata = record.get("metadata") or {}
+            for key in ("routing_objective", "objective"):
+                value = str(metadata.get(key) or "").strip()
+                if value:
+                    return value
+            preview = str(record.get("message_preview") or "").strip()
+            if preview:
+                return preview
+        except Exception:
+            pass
+    return str(task or "").strip()
+
+
 class AgentService:
     """Service agent : méthodes de conversation / raisonnement de LumenaCore."""
 
@@ -300,16 +385,34 @@ class AgentService:
             "gpt-4": "gpt-4o",
             "claude": "claude-sonnet-4.6",
             "opus": "claude-opus-4.8",
+            "opus 5": "claude-opus-5",
+            "claude opus 5": "claude-opus-5",
             "gemini": "gemini-2.5-flash",
+            "gemini 3.6": "gemini-3.6-flash",
+            "gemini 3.6 flash": "gemini-3.6-flash",
+            "gemini 3.5 lite": "gemini-3.5-flash-lite",
+            "gemini 3.5 flash lite": "gemini-3.5-flash-lite",
+            "gemini 3.1 lite": "gemini-3.1-flash-lite",
+            "gemini 3.1 flash lite": "gemini-3.1-flash-lite",
+            "gemini 2.5 lite": "gemini-2.5-flash-lite",
+            "gemini 2.5 flash lite": "gemini-2.5-flash-lite",
             "kimi": "kimi-k2.5",
+            "kimi 3": "kimi-k3",
+            "kimi k3": "kimi-k3",
             "kimi 2.6": "kimi-k2.6",
             "kimi k2.6": "kimi-k2.6",
             "grok": "grok-4.3",
             "grok 4.3": "grok-4.3",
             "grok4.3": "grok-4.3",
-            "grok fast": "grok-4-1-fast-non-reasoning",
-            "grok reasoning": "grok-4-1-fast-reasoning",
-            "grok 4": "grok-4-1-fast-reasoning",
+            "grok 4.6": "grok-4.6",
+            "grok4.6": "grok-4.6",
+            "grok 4.5": "grok-4.5",
+            "grok4.5": "grok-4.5",
+            "grok build": "grok-build-0.1",
+            "grok build 0.1": "grok-build-0.1",
+            "grok fast": "grok-4.3",
+            "grok reasoning": "grok-4.3",
+            "grok 4": "grok-4.3",
             "nvidia deepseek": "nvidia-deepseek-v4-flash",
             "nvidia gpt oss": "nvidia-gpt-oss-120b",
             "gpt oss nvidia": "nvidia-gpt-oss-120b",
@@ -732,8 +835,16 @@ class AgentService:
 
     _FACT_EXTRACT_COOLDOWN = 30  # secondes entre deux extractions LLM
 
-    async def _llm_extract_facts(self, user_message: str, response: str):
+    async def _llm_extract_facts(
+        self,
+        user_message: str,
+        response: str,
+        *,
+        allow_llm: bool = True,
+    ):
         """Extraction sémantique de faits via LLM, appelée en background après le chat."""
+        if not allow_llm:
+            return
         if not self.core.memory or not self.core.llm:
             return
         if os.environ.get("LUMENA_IDENTITY_LEARNING", "1") == "0":
@@ -912,7 +1023,13 @@ class AgentService:
             except Exception as e:
                 logger.warning(f"Auto-dispatch image {source_channel} failed: {e}")
 
-    async def _save_conversation_to_memory(self, user_message: str, response: str):
+    async def _save_conversation_to_memory(
+        self,
+        user_message: str,
+        response: str,
+        *,
+        allow_llm_summary: bool = True,
+    ):
         """Sauvegarde la conversation en mémoire persistante ChromaDB."""
         if not self.core.memory:
             return
@@ -953,7 +1070,7 @@ class AgentService:
         response_summary = response[:500] + "..." if len(response) > 500 else response
         # M-3: Résumé LLM pour toutes les conversations (abaissement seuil 0.8→0.5)
         # Toujours mieux qu'un texte brut tronqué, même pour les échanges ordinaires
-        if self.core.llm and (importance >= 0.5 or len(response) > 100):
+        if allow_llm_summary and self.core.llm and (importance >= 0.5 or len(response) > 100):
             try:
                 summary_prompt = (
                     f"Résume en 1-3 phrases concises ce qui est important à retenir de cet échange:\n"
@@ -1100,6 +1217,147 @@ Conversations et apprentissages de la journée.
     # chat()
     # ──────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _codex_chat_selected(source_channel: str) -> bool:
+        """Return whether this local text channel explicitly opted into Codex."""
+
+        if str(source_channel or "").strip().lower() not in {"web", "ide"}:
+            return False
+        try:
+            from src.llm.codex_chat import should_route_chat_to_codex
+            from src.llm.codex_subscription import load_codex_subscription_settings
+
+            return should_route_chat_to_codex(load_codex_subscription_settings())
+        except Exception as exc:
+            logger.debug("Codex chat selection unavailable: %s", exc)
+            return False
+
+    @staticmethod
+    def _codex_chat_action_uses_agent(user_message: str, source_channel: str) -> bool:
+        """Keep Codex Chat capability-compatible with Lumena's API chat rail.
+
+        Historical API chat may execute Lumena tools.  Codex's conversational
+        thread is intentionally read-only, so actionable local requests are
+        delegated to the existing Lumena Agent rail when that Codex surface is
+        explicitly enabled.  External channels and disabled surfaces are exact
+        no-ops.
+        """
+
+        if str(source_channel or "").strip().lower() not in {"web", "ide"}:
+            return False
+        try:
+            from src.llm.codex_chat import codex_chat_requires_agent
+            from src.llm.codex_subscription import (
+                CodexSurface,
+                load_codex_subscription_settings,
+            )
+
+            settings = load_codex_subscription_settings()
+            return (
+                settings.surface_requested(CodexSurface.CHAT)
+                and settings.surface_requested(CodexSurface.AGENT)
+                and codex_chat_requires_agent(user_message)
+            )
+        except Exception:
+            return False
+
+    @staticmethod
+    def _chat_trace_identity(core: Any, codex_selected: bool) -> tuple[str, str]:
+        """Return the provider/model labels for the selected chat rail."""
+
+        if codex_selected:
+            try:
+                from src.llm.codex_subscription import load_codex_subscription_settings
+
+                configured = load_codex_subscription_settings().default_model
+            except Exception:
+                configured = ""
+            return "openai-codex", configured or "account-default"
+        provider = getattr(getattr(core.llm, "provider", None), "value", "unknown")
+        model = getattr(core.llm, "model_name", getattr(core.llm, "model", "unknown"))
+        return str(provider), str(model)
+
+    async def _run_chat_model(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        user_message: str,
+        source_channel: str,
+    ) -> tuple[str, Dict[str, Any], bool]:
+        """Run the selected chat rail without changing the historical API path."""
+
+        c = self.core
+        use_codex = self._codex_chat_selected(source_channel)
+        if use_codex:
+            from src.llm.codex_app_server import get_shared_codex_app_server
+            from src.llm.codex_chat import (
+                CodexChatUnavailable,
+                run_chat_with_codex_subscription,
+            )
+            from src.llm.codex_subscription import load_codex_subscription_settings
+            from src.runtime.context import get_current_runtime_context
+            from src.utils.paths import ROOT_DIR
+
+            settings = load_codex_subscription_settings()
+            runtime = get_current_runtime_context()
+            conversation_id = (
+                getattr(runtime, "conversation_id", None) or "local:web-default"
+            )
+            cwd = (
+                getattr(runtime, "resolved_workspace", None)
+                or getattr(runtime, "workspace_path", None)
+                or ROOT_DIR
+            )
+            supervisor = get_shared_codex_app_server()
+            try:
+                result = await run_chat_with_codex_subscription(
+                    messages,
+                    user_message=user_message,
+                    conversation_id=conversation_id,
+                    cwd=cwd,
+                    settings=settings,
+                    supervisor=supervisor,
+                )
+                response = result.response
+                meta = dict(result.meta)
+            except CodexChatUnavailable as exc:
+                response = str(exc)
+                meta = {
+                    "provider_requested": "openai-codex",
+                    "provider_used": "openai-codex",
+                    "model_requested": settings.default_model or "auto",
+                    "model_used": settings.default_model or "unavailable",
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "continuation_used": False,
+                    "continuation_steps": 0,
+                    "finish_reason": "codex_unavailable",
+                    "prompt_tokens": None,
+                    "completion_tokens": None,
+                }
+            publish_meta = getattr(c.llm, "set_external_response_meta", None)
+            if callable(publish_meta):
+                publish_meta(**meta)
+            return response, meta, True
+
+        if c.tool_system and hasattr(c.llm, "chat_with_tools"):
+            response = await c.llm.chat_with_tools(
+                messages,
+                tool_system=c.tool_system,
+                temperature=0.7,
+                max_tokens=getattr(c.llm, "max_output_tokens", 65536),
+            )
+        else:
+            response = await c.llm.chat(messages)
+        meta: Dict[str, Any] = {}
+        if hasattr(c.llm, "get_last_response_meta"):
+            try:
+                raw_meta = c.llm.get_last_response_meta()
+                meta = raw_meta if isinstance(raw_meta, dict) else {}
+            except Exception:
+                meta = {}
+        return response, meta, False
+
     async def chat(
         self,
         user_message: str,
@@ -1113,10 +1371,19 @@ Conversations et apprentissages de la journée.
             await c.initialize()
 
         source_channel = (source_channel or "web").strip().lower()
+        _codex_chat_selected = self._codex_chat_selected(source_channel)
 
         runtime_control = await self._handle_runtime_controls(user_message, source_channel=source_channel)
         if runtime_control is not None:
             return runtime_control
+
+        if self._codex_chat_action_uses_agent(user_message, source_channel):
+            logger.info("[Chat/Codex] demande actionnable -> rail Agent Lumena")
+            return await self.think_and_act(
+                user_message,
+                source_channel=source_channel,
+                sender=sender,
+            )
 
         sender_info = c._resolve_sender_identity(sender, source_channel)
         if not sender_info and source_channel == "whatsapp":
@@ -1223,26 +1490,42 @@ Conversations et apprentissages de la journée.
         if skills_context:
             system_prompt = system_prompt + "\n\n" + skills_context
 
-        system_prompt += (
-            "\n\n## 💬 MODE ACTUEL : CONVERSATION (chat)\n"
-            "Tu es en mode conversation — tu écoutes, tu réfléchis, tu réponds. "
-            "Tu as accès aux outils si l'utilisateur te demande d'agir (mail, web, fichiers…).\n"
-            "C'est le mode naturel pour échanger librement, mais tu peux aussi exécuter des actions."
-        )
+        if _codex_chat_selected:
+            system_prompt += (
+                "\n\n## 💬 MODE ACTUEL : CONVERSATION CODEX (lecture seule)\n"
+                "Tu écoutes, tu réfléchis et tu réponds avec l'identité Lumena. "
+                "N'exécute aucune action et ne prétends pas utiliser d'outil dans ce mode. "
+                "Pour agir sur le web, les fichiers ou le système, invite clairement "
+                "l'utilisateur à passer en mode Agent."
+            )
+        else:
+            system_prompt += (
+                "\n\n## 💬 MODE ACTUEL : CONVERSATION (chat)\n"
+                "Tu es en mode conversation — tu écoutes, tu réfléchis, tu réponds. "
+                "Tu as accès aux outils si l'utilisateur te demande d'agir (mail, web, fichiers…).\n"
+                "C'est le mode naturel pour échanger librement, mais tu peux aussi exécuter des actions."
+            )
 
         # ── Hint naturel si un fait essentiel manque ─────────────────────────
         identity_hint = self._get_missing_identity_hint()
         if identity_hint:
             system_prompt += identity_hint
 
-        history = active_context.get_history_for_llm()
+        history = active_context.get_history_for_llm(
+            model_name=getattr(c.llm, "model", getattr(c.llm, "model_name", None))
+        )
 
         _is_ollama_provider = (
             hasattr(c.llm, 'provider') and
             str(getattr(c.llm.provider, 'value', c.llm.provider)) == "ollama"
         )
 
-        if c._compactor and not _is_ollama_provider and estimate_messages_tokens:
+        if (
+            c._compactor
+            and not _is_ollama_provider
+            and not _codex_chat_selected
+            and estimate_messages_tokens
+        ):
             try:
                 _model_ctx = getattr(getattr(c.llm, "_config", None), "context_window", 128_000)
                 _trigger_at = int(_model_ctx * 0.75)
@@ -1323,11 +1606,12 @@ Conversations et apprentissages de la journée.
             )
 
         if TELEMETRY_AVAILABLE:
-            llm_provider = getattr(getattr(c.llm, "provider", None), "value", "unknown")
-            llm_model = getattr(c.llm, "model_name", getattr(c.llm, "model", "unknown"))
+            llm_provider, llm_model = self._chat_trace_identity(
+                c, _codex_chat_selected
+            )
             publish_trace(
                 stage="llm_request_start", status="start", mode="chat",
-                provider=str(llm_provider), model=str(llm_model),
+                provider=llm_provider, model=llm_model,
             )
         llm_started = perf_counter()
 
@@ -1336,7 +1620,12 @@ Conversations et apprentissages de la journée.
             str(getattr(c.llm.provider, 'value', c.llm.provider)) == "ollama"
         )
         # P1.2: activer le shim V1→V2 pour le mode chat (binding ToolRegistry)
-        if c.tool_system and hasattr(c.tool_system, 'bind_tool_registry') and TOOL_REGISTRY_AVAILABLE:
+        if (
+            not _codex_chat_selected
+            and c.tool_system
+            and hasattr(c.tool_system, 'bind_tool_registry')
+            and TOOL_REGISTRY_AVAILABLE
+        ):
             if not getattr(c, '_tool_registry', None):
                 _chat_tr = ToolRegistry(lumena=c)
                 c._tool_registry = _chat_tr
@@ -1351,13 +1640,11 @@ Conversations et apprentissages de la journée.
                         print(f"[MCP attach] EXCEPTION (chat): {exc}")
 
         try:
-            if c.tool_system and hasattr(c.llm, 'chat_with_tools'):
-                response = await c.llm.chat_with_tools(
-                    messages, tool_system=c.tool_system, temperature=0.7,
-                    max_tokens=getattr(c.llm, "max_output_tokens", 65536),
-                )
-            else:
-                response = await c.llm.chat(messages)
+            response, llm_meta, _used_codex_chat = await self._run_chat_model(
+                messages,
+                user_message=user_message,
+                source_channel=source_channel,
+            )
         except Exception as e:
             # Signal négatif avant de relancer l'exception
             try:
@@ -1371,7 +1658,7 @@ Conversations et apprentissages de la journée.
                 publish_trace(stage="pipeline_error", status="error", mode="chat", error=str(e))
             raise
 
-        if hasattr(c.llm, "get_last_response_meta"):
+        if not _used_codex_chat and hasattr(c.llm, "get_last_response_meta"):
             try:
                 _meta_raw = c.llm.get_last_response_meta()
                 llm_meta = _meta_raw if isinstance(_meta_raw, dict) else {}
@@ -1398,10 +1685,20 @@ Conversations et apprentissages de la journée.
             if formality == "vouvoiement":
                 response = self._convert_tu_to_vous(response)
 
-        await self._save_conversation_to_memory(user_message, response)
+        await self._save_conversation_to_memory(
+            user_message,
+            response,
+            allow_llm_summary=not _used_codex_chat,
+        )
 
         # Extraction LLM sémantique en background (ne bloque pas le chat)
-        asyncio.create_task(self._llm_extract_facts(user_message, response))
+        asyncio.create_task(
+            self._llm_extract_facts(
+                user_message,
+                response,
+                allow_llm=not _used_codex_chat,
+            )
+        )
 
         try:
             from src.learning.conversation_logger import queue_conversation
@@ -1431,7 +1728,15 @@ Conversations et apprentissages de la journée.
             response = f"{_intro_confirmation}\n\n{response}"
 
         active_context.add_message("user", user_message)
-        active_context.add_message("assistant", response)
+        _assistant_metadata: Dict[str, Any] = {}
+        if hasattr(c.llm, "get_preserved_assistant_message"):
+            try:
+                _preserved = c.llm.get_preserved_assistant_message()
+                if isinstance(_preserved, dict):
+                    _assistant_metadata["_provider_assistant_message"] = _preserved
+            except Exception:
+                pass
+        active_context.add_message("assistant", response, metadata=_assistant_metadata)
         if sender_info:
             if "tg_id" in sender_info:
                 c._save_tg_context(sender_info["tg_id"], active_context)
@@ -1455,7 +1760,9 @@ Conversations et apprentissages de la journée.
 
         telegram_tts_enabled = _env_flag("LUMENA_TTS_TELEGRAM", False)
         whatsapp_tts_enabled = _env_flag("LUMENA_TTS_WHATSAPP", False)
-        should_speak = c.auto_speak
+        # VoiceRuntime possède l'audio du canal voice. L'auto-TTS historique ici
+        # provoquerait une double lecture de la même réponse.
+        should_speak = _should_auto_speak(c.auto_speak, source_channel)
         if source_channel == "telegram":
             should_speak = should_speak and telegram_tts_enabled
         elif source_channel == "whatsapp":
@@ -1779,7 +2086,9 @@ Conversations et apprentissages de la journée.
             except Exception as _hint_exc:
                 logger.debug(f"chat_stream identity hint: {_hint_exc}")
 
-            _history = active_context.get_history_for_llm()
+            _history = active_context.get_history_for_llm(
+                model_name=getattr(c.llm, "model", getattr(c.llm, "model_name", None))
+            )
             if channel_name and _history:
                 _location_reminder = {
                     "role": "system",
@@ -1812,7 +2121,19 @@ Conversations et apprentissages de la journée.
                 task_completed = any(w in full_response.lower() for w in ["fait", "terminé", "voilà"])
                 await c.emotion_manager.process_own_response(full_response, task_completed)
 
-            active_context.add_message("assistant", full_response)
+            _assistant_metadata: Dict[str, Any] = {}
+            if hasattr(c.llm, "get_preserved_assistant_message"):
+                try:
+                    _preserved = c.llm.get_preserved_assistant_message()
+                    if isinstance(_preserved, dict):
+                        _assistant_metadata["_provider_assistant_message"] = _preserved
+                except Exception:
+                    pass
+            active_context.add_message(
+                "assistant",
+                full_response,
+                metadata=_assistant_metadata,
+            )
             await self._save_conversation_to_memory(user_message, full_response)
             asyncio.create_task(self._llm_extract_facts(user_message, full_response))
 
@@ -1861,6 +2182,9 @@ Conversations et apprentissages de la journée.
         sender: Optional[Dict[str, Any]] = None,
         step_callback=None,
         max_iterations: Optional[int] = None,
+        final_ready_callback=None,
+        task_orchestrator=None,
+        task_id: Optional[str] = None,
     ) -> str:
         """Utilise la boucle ReAct pour réfléchir et agir."""
         c = self.core
@@ -1873,11 +2197,15 @@ Conversations et apprentissages de la journée.
 
         # ── Phase 3 : routage intelligent (déterministe, sans LLM) ──────────
         _detected_intent: str = "react"  # Phase 7.2 : capturé pour conditionner MEMORY.md
+        _document_route = _resolve_agent_document_route(
+            query,
+            mission_run=bool(task_id and task_orchestrator),
+        )
         if INTENT_CLASSIFIER_AVAILABLE and os.getenv("LUMENA_DISABLE_INTENT_ROUTING", "").lower() not in ("1", "true"):
             _runtime_ctx_pre = None
             if hasattr(c.llm, "build_runtime_snapshot"):
-                _runtime_ctx_pre = c.llm.build_runtime_snapshot(source_channel=source_channel)
-            intent = classify_intent(query, _runtime_ctx_pre)
+                _runtime_ctx_pre = c.llm.build_runtime_snapshot(source_channel=source_channel, mode="agent")
+            intent = classify_intent(query, _runtime_ctx_pre, document_route=_document_route)
             _detected_intent = intent.value if hasattr(intent, "value") else str(intent)
             if intent == RequestMode.CHAT:
                 logger.debug(f"Intent router: CHAT → ReAct (outils toujours disponibles)")
@@ -1931,7 +2259,10 @@ Conversations et apprentissages de la journée.
                 content = (msg.content if hasattr(msg, 'content') else "")[:800]
                 if role and content:
                     conversation_context += f"{role}: {content}\n"
-        active_skills_context = c._build_active_skills_context_for_query(query)
+        active_skills_context = c._build_active_skills_context_for_query(
+            query,
+            document_route=_document_route,
+        )
 
         if TELEMETRY_AVAILABLE:
             publish_trace(
@@ -1993,10 +2324,12 @@ Conversations et apprentissages de la journée.
             llm_meta_getter=llm_meta_getter,
             max_final_repair_attempts=(1 if c.agent_final_repair_enabled else 0),
             is_weak_model=_is_ollama,
-            task_orchestrator=c.task_orchestrator,
+            task_orchestrator=(task_orchestrator if task_orchestrator is not None else c.task_orchestrator),
             step_callback=step_callback,
             runtime_ctx=runtime_ctx,
             max_iterations=max_iterations,
+            task_id=task_id,
+            document_route=_document_route,
         )
 
         try:
@@ -2005,8 +2338,30 @@ Conversations et apprentissages de la journée.
         except Exception as e:
             logger.debug(f"Set agent busy: {e}")
 
+        _codex_run_meta: Dict[str, Any] = {}
+        _used_codex_agent = False
+        # Web requests already reset this request-local attribution at the route
+        # boundary. Missions and other background Agent callers do not cross that
+        # boundary and may inherit a parent task's ContextVar snapshot, so make
+        # every Agent run authoritative for its own execution rail.
+        try:
+            from src.llm.execution_router import reset_codex_response_meta
+
+            reset_codex_response_meta()
+        except Exception:
+            pass
         try:
             result = await react.run(query)
+            try:
+                from src.llm.execution_router import peek_codex_response_meta
+
+                _codex_run_meta = peek_codex_response_meta()
+                _used_codex_agent = (
+                    _codex_run_meta.get("provider_used") == "openai-codex"
+                )
+            except Exception:
+                _codex_run_meta = {}
+                _used_codex_agent = False
             if hasattr(react, "get_run_meta"):
                 # FT-1: Enrichir avec les champs utiles pour le fine-tuning
                 # get_run_meta() contient plan + run_meta de base
@@ -2025,6 +2380,14 @@ Conversations et apprentissages de la journée.
                     "success": _plan_total > 0 and _plan_done == _plan_total,
                     "plan_completion_pct": round(100 * _plan_done / _plan_total) if _plan_total > 0 else 0,
                 }
+                if _used_codex_agent:
+                    c._last_agent_meta.update(
+                        {
+                            "provider_used": _codex_run_meta.get("provider_used"),
+                            "model_used": _codex_run_meta.get("model_used"),
+                            "execution_rail": "chatgpt_codex",
+                        }
+                    )
 
             if TELEMETRY_AVAILABLE:
                 publish_trace(stage="final_assembly_start", status="start", mode="agent")
@@ -2052,6 +2415,7 @@ Conversations et apprentissages de la journée.
                         llm_meta = _raw_meta if isinstance(_raw_meta, dict) else {}
                     except Exception:
                         llm_meta = {}
+                llm_meta = _effective_agent_llm_meta(llm_meta, _codex_run_meta)
                 publish_trace(stage="final_assembly_done", status="ok", mode="agent")
                 publish_trace(
                     stage="output_sent", status="ok", mode="agent",
@@ -2078,17 +2442,42 @@ Conversations et apprentissages de la journée.
             except Exception as e:
                 logger.debug(f"Vouvoiement: {e}")
 
+            # Voice V2 only: the canonical ReAct result is truth-locked and its
+            # formality is final. Let audio start while memory/learning hooks run.
+            # Default None preserves every existing caller and channel.
+            if final_ready_callback is not None and result:
+                try:
+                    _ready_result = final_ready_callback(result)
+                    if asyncio.iscoroutine(_ready_result):
+                        asyncio.create_task(_ready_result)
+                except Exception as _voice_ready_exc:
+                    logger.debug("Voice final_ready_callback: %s", _voice_ready_exc)
+
             try:
-                await self._save_conversation_to_memory(query, result)
-                asyncio.create_task(self._llm_extract_facts(query, result))
+                await self._save_conversation_to_memory(
+                    query,
+                    result,
+                    allow_llm_summary=not _used_codex_agent,
+                )
+                asyncio.create_task(
+                    self._llm_extract_facts(
+                        query,
+                        result,
+                        allow_llm=not _used_codex_agent,
+                    )
+                )
                 logger.debug("💾 Conversation agent sauvegardée en mémoire")
             except Exception as e:
                 logger.warning(f"Erreur sauvegarde mémoire agent: {e}")
 
             try:
                 from src.learning.conversation_logger import queue_conversation
-                _model = getattr(c.llm, "model_name", getattr(c.llm, "model", "unknown"))
-                _provider = getattr(getattr(c.llm, "provider", None), "value", "unknown")
+                _model = _codex_run_meta.get("model_used") or getattr(
+                    c.llm, "model_name", getattr(c.llm, "model", "unknown")
+                )
+                _provider = _codex_run_meta.get("provider_used") or getattr(
+                    getattr(c.llm, "provider", None), "value", "unknown"
+                )
                 queue_conversation(
                     user_message=query, response=result,
                     model_used=_model, provider=_provider,
@@ -2123,7 +2512,7 @@ Conversations et apprentissages de la journée.
             except Exception as _me:
                 logger.debug(f"M-2 mémoire procédurale: {_me}")
 
-            if c.auto_speak and c.tts:
+            if _should_auto_speak(c.auto_speak, source_channel) and c.tts:
                 try:
                     await c._speak_response(result)
                 except Exception as e:
@@ -2175,8 +2564,18 @@ Conversations et apprentissages de la journée.
         artifacts_out: Optional[list] = None,
         allowed_tools_hard: bool = False,
         refusals_out: Optional[list] = None,
+        tool_registry: Optional[Any] = None,
+        task_orchestrator: Optional[Any] = None,
+        task_id: Optional[str] = None,
+        proof_out: Optional[dict] = None,
     ) -> str:
         """Boucle ReAct silencieuse pour les tâches autonomes internes.
+
+        Lot 1 (sous-agents) — params optionnels, 100% additifs :
+        - `tool_registry` : registre ISOLÉ (factory mission) au lieu de `c._tool_registry`
+          partagé → pas de course mission ⇄ chat. None = comportement actuel (registre partagé).
+        - `task_orchestrator` + `task_id` : transmis à la boucle pour les checkpoints et
+          l'annulation coopérative d'une mission. None = comportement actuel.
 
         `artifacts_out` (liste) : si fournie, on y ajoute les chemins des fichiers
         produits pendant la tâche (Brique 4 — retour des livrables de mission).
@@ -2189,6 +2588,18 @@ Conversations et apprentissages de la journée.
         `allow_when_busy=True` : ne PAS différer la tâche si l'agent user est
         actif (utilisé pour les délégations inter-Lumena, qui sont des requêtes
         entrantes à honorer, pas des initiatives de fond).
+
+        `proof_out` (dict) — F1.a : si fourni, on y dépose les PREUVES du run
+        (projection compacte du ledger + drapeaux du truth-lock). Motif identique
+        à `artifacts_out`/`refusals_out` : out-param optionnel, race-safe (un dict
+        par appel), **fail-open** (toute erreur de collecte est avalée).
+
+        Raison d'être (AUD-012 / AUD-014) : le chat conserve `react.get_run_meta()`
+        dans `_last_agent_meta`, la mission le JETAIT — le runner ne recevait qu'une
+        chaîne et ne pouvait donc juger que sa FORME (non vide), jamais les EFFETS.
+        Un fallback conversationnel non vide passait la porte `empty_result`, et un
+        `overclaim` détecté par le truth-lock ne changeait pas l'état terminal.
+        Ce paramètre rétablit la symétrie. `None` ⇒ comportement inchangé.
         """
         c = self.core
 
@@ -2203,6 +2614,8 @@ Conversations et apprentissages de la journée.
                 pass
 
         if not REASONING_AVAILABLE:
+            if task_id is not None:
+                raise RuntimeError("mission_react_unavailable")
             logger.debug("think_and_act_silent: ReAct non disponible, fallback llm.chat")
             return await c.llm.chat([{"role": "user", "content": task}])
 
@@ -2222,7 +2635,8 @@ Conversations et apprentissages de la journée.
             hasattr(c.llm, "provider")
             and str(getattr(c.llm.provider, "value", c.llm.provider)) == "ollama"
         )
-        tools = c._tool_registry
+        # Lot 1 — registre ISOLÉ si fourni (mission), sinon le registre partagé (chat/daemon).
+        tools = tool_registry if tool_registry is not None else c._tool_registry
         if tools is None:
             tools = ToolRegistry(lumena=c)
             c._tool_registry = tools
@@ -2251,14 +2665,41 @@ Conversations et apprentissages de la journée.
         runtime_ctx = None
         if hasattr(c.llm, 'build_runtime_snapshot'):
             runtime_ctx = c.llm.build_runtime_snapshot(mode="agent")
+        # A mission is a full Lumena run. Activate skills from the stored
+        # business objective, not from protocol prose prepended by its runner.
+        # Non-mission silent jobs keep their historical empty context.
+        active_skills_context = ""
+        document_route = None
+        if task_id is not None:
+            semantic_query = _mission_semantic_query(
+                task,
+                task_orchestrator=task_orchestrator,
+                task_id=task_id,
+            )
+            try:
+                document_route = _resolve_agent_document_route(
+                    semantic_query,
+                    mission_run=True,
+                )
+                active_skills_context = c._build_active_skills_context_for_query(
+                    semantic_query,
+                    document_route=document_route,
+                )
+            except Exception as exc:
+                # Skill loading is additive. A missing/corrupt skill must not
+                # make the mission engine unavailable.
+                logger.debug("Mission skills activation unavailable: {}", exc)
         react = ReActLoop(
             _llm_chat, tools,
             conversation_context="",
-            active_skills_context="",
+            active_skills_context=active_skills_context,
             llm_meta_getter=_llm_meta,
             max_final_repair_attempts=1,
             is_weak_model=_is_ollama,
             runtime_ctx=runtime_ctx,
+            task_orchestrator=task_orchestrator,  # Lot 1 — checkpoints + annulation coopérative
+            task_id=task_id,
+            document_route=document_route,
         )
 
         try:
@@ -2290,15 +2731,58 @@ Conversations et apprentissages de la journée.
                             break
                 except Exception as _ex_ref:
                     logger.debug("détection refus A4 échouée: {}", _ex_ref)
+            # F1.a — PREUVES du run (out-param, race-safe : un dict par appel).
+            # Le chat conserve son run_meta ; la mission le jetait → le runner ne
+            # pouvait juger que la FORME du résultat, jamais les EFFETS.
+            # FAIL-OPEN STRICT : une erreur de collecte ne doit JAMAIS faire échouer
+            # une mission qui a réussi — la preuve est un bonus, pas une dépendance.
+            if proof_out is not None:
+                try:
+                    _led = getattr(react, "execution_ledger", None)
+                    if _led is not None:
+                        # Projection COMPACTE déjà existante — on ne réinvente pas
+                        # de sérialisation et on ne duplique pas le ledger entier.
+                        proof_out["ledger"] = _led.checkpoint_projection()
+                        proof_out["successful_actions"] = _led.successful_actions()[:40]
+                        proof_out["has_any_mutation"] = _led.has_any_mutation()
+                        proof_out["has_published"] = _led.has_published()
+                        proof_out["has_green_test_run"] = _led.has_green_test_run()
+                        proof_out["has_browser_action"] = _led.has_browser_action()
+                        proof_out["written_basenames"] = sorted(_led.written_basenames())[:40]
+                        proof_out["last_test_outcome"] = _led.last_test_outcome()
+                    _meta = getattr(react, "_run_meta", None)
+                    if isinstance(_meta, dict):
+                        # Drapeaux du truth-lock : `..._overclaim` est posé par F1.b ;
+                        # lu défensivement ici pour que F1.a reste autonome.
+                        for _k in (
+                            "mission_truth_lock_applied",
+                            "mission_truth_lock_overclaim",
+                            "agent_output_incomplete",
+                        ):
+                            if _k in _meta:
+                                proof_out[_k] = _meta[_k]
+                except Exception as _ex_proof:
+                    logger.debug("collecte des preuves (F1.a) échouée: {}", _ex_proof)
             return result or ""
         except asyncio.TimeoutError:
+            # f-string PRÉ-RENDUE (pas de placeholder différé) : ce warning tombe pendant
+            # l'unwinding du timeout/annulation et peut transiter par un handler stdlib qui
+            # ferait `msg % args` → un template `{}` y crashait (TypeError) et MASQUAIT le
+            # vrai statut mission. Rendu en amont = crash-proof quel que soit le backend.
             logger.warning(
-                "think_and_act_silent: timeout {}s dépassé — tâche: {}",
-                timeout, task[:80],
+                f"think_and_act_silent: timeout {timeout}s dépassé — tâche: {task[:80]!r}"
             )
+            if task_id is not None:
+                raise asyncio.TimeoutError(f"mission_timeout:{timeout}s")
             return ""
         except Exception as e:
-            logger.warning("think_and_act_silent: erreur ReAct ({}), fallback llm.chat", e)
+            if task_id is not None:
+                logger.warning(
+                    f"think_and_act_silent: erreur ReAct mission ({e}), "
+                    "aucun fallback sans outils"
+                )
+                raise RuntimeError(f"mission_react_error:{e}") from e
+            logger.warning(f"think_and_act_silent: erreur ReAct ({e}), fallback llm.chat")
             try:
                 return await c.llm.chat([{"role": "user", "content": task}])
             except Exception:

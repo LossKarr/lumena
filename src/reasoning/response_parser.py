@@ -86,8 +86,159 @@ def extract_action_input(response: str, action_start: int, action_name: str) -> 
     return response[start:].strip()
 
 
-def parse_action_args(action_input: str) -> Dict[str, Any]:
-    """Parse tool arguments from ACTION_INPUT with robust fallbacks."""
+# Clés « sœurs » d'un write_file/edit_file. Dans un JSON mal formé (Markdown multi-ligne
+# avec guillemets internes → json.loads échoue), l'ancien fallback glouton `(.+)$` les
+# happait DANS le contenu (content pollué par un `"` de tête + queue `", "force_rewrite":…}`).
+# On s'en sert de FRONTIÈRE pour couper la valeur `content` au bon endroit.
+_WRITE_SIBLING_KEYS = (
+    "force_rewrite", "rewrite_reason", "overwrite", "append", "mode",
+    "encoding", "create_dirs", "make_dirs", "path",
+)
+
+
+def _extract_content_and_siblings(cleaned: str) -> Dict[str, Any]:
+    """Extraction TOLÉRANTE de `content` quand json.loads a échoué (Markdown multi-ligne).
+
+    Coupe la valeur `content` AVANT les clés sœurs (force_rewrite, …) au lieu de tout
+    happer jusqu'à la fin, retire un guillemet de tête isolé et une queue JSON résiduelle,
+    et renvoie les vraies valeurs des clés sœurs séparément. Corrige le bug du fichier
+    pollué (`"# …` + `", "force_rewrite": true, …}`). Retourne {} si aucun `content`.
+    """
+    m = re.search(r'["\']?content["\']?\s*[=:]\s*', cleaned, re.IGNORECASE)
+    if not m:
+        return {}
+    rest = cleaned[m.end():]
+    lead_quote = ""
+    if rest[:1] in ('"', "'"):
+        lead_quote = rest[0]
+        body = rest[1:]
+    else:
+        body = rest
+    # Frontière : fin de la valeur content = un guillemet suivi de  , "clé_sœur":
+    _sib = "|".join(re.escape(k) for k in _WRITE_SIBLING_KEYS)
+    bnd = re.search(r'["\']\s*,\s*["\']?(?:' + _sib + r')["\']?\s*[:=]', body, re.IGNORECASE)
+    if bnd:
+        content = body[:bnd.start()]
+        tail = body[bnd.start():]
+    else:
+        content = body
+        tail = ""
+    # Nettoyage du résidu de fin : guillemet de clôture + éventuels } / ]
+    content = content.rstrip()
+    content = re.sub(r'["\']?\s*[}\]]*\s*$', '', content)
+    if lead_quote and content.endswith(lead_quote):
+        content = content[:-1]
+    content = (content.replace("\\n", "\n").replace("\\t", "\t")
+               .replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\"))
+    out: Dict[str, Any] = {"content": content}
+    # Récupère les vraies valeurs des clés sœurs depuis la queue
+    for key in _WRITE_SIBLING_KEYS:
+        if key == "path":
+            continue
+        vm = re.search(
+            r'["\']?' + re.escape(key) + r'["\']?\s*[:=]\s*(true|false|"[^"]*"|\'[^\']*\'|\d+)',
+            tail, re.IGNORECASE,
+        )
+        if vm:
+            v = vm.group(1)
+            if v.lower() == "true":
+                out[key] = True
+            elif v.lower() == "false":
+                out[key] = False
+            elif v.isdigit():
+                out[key] = int(v)
+            else:
+                out[key] = v.strip("\"'")
+    return out
+
+
+def deliverable_looks_malformed(text: str) -> bool:
+    """Heuristique de sanity-check : un livrable porte-t-il les stigmates d'un `content`
+    mal parsé (guillemet de tête isolé avant `#`/`{`/`[`, ou queue d'args JSON type
+    `force_rewrite`/`rewrite_reason`) ? Sert à NE PAS clamer « vérifié » sur un fichier
+    pollué. Conservateur : n'inspecte la queue que sur les 200 derniers caractères."""
+    if not text:
+        return False
+    lead_bad = bool(re.match(r'^["\']\s*[#{\[]', text.lstrip()))
+    tail = text[-200:]
+    tail_bad = bool(re.search(r'(force_rewrite|rewrite_reason)["\']?\s*[:=]', tail, re.IGNORECASE))
+    return lead_bad or tail_bad
+
+
+# ── Outils à PARAMÈTRE-TEXTE PRIMAIRE (pas de path/content) ───────────────────
+# Bug run taskman (2026-07-01) : un objectif de mission long/multi-ligne avec
+# guillemets internes casse json.loads → parse_action_args (tool-AGNOSTIC) tombait
+# sur les fallbacks path/content/file_match → `create_mission` recevait
+# {'path','content'} au lieu de {'objective'} → mission jamais créée. Pour ces
+# outils, on récupère le paramètre-texte primaire au lieu de supposer un fichier.
+_PRIMARY_TEXT_PARAM: Dict[str, str] = {
+    "create_mission": "objective",
+}
+
+
+def _extract_named_string(cleaned: str, key: str, sibling_keys: tuple = ()) -> Optional[str]:
+    """Extrait TOLÉRAMMENT la valeur string d'une clé donnée quand json.loads a échoué.
+
+    Trouve `"<key>":`, dé-quote la tête, coupe AVANT une clé sœur (`", "deadline":`)
+    ou la queue `}`/`]`, et dé-échappe. Générique (jumeau de _extract_content_and_siblings,
+    mais pour n'importe quelle clé). Retourne None si la clé est absente.
+    """
+    m = re.search(r'["\']?' + re.escape(key) + r'["\']?\s*[:=]\s*', cleaned, re.IGNORECASE)
+    if not m:
+        return None
+    rest = cleaned[m.end():]
+    lead_quote = ""
+    if rest[:1] in ('"', "'"):
+        lead_quote = rest[0]
+        body = rest[1:]
+    else:
+        body = rest
+    val = body
+    if sibling_keys:
+        _sib = "|".join(re.escape(k) for k in sibling_keys)
+        bnd = re.search(r'["\']\s*,\s*["\']?(?:' + _sib + r')["\']?\s*[:=]', body, re.IGNORECASE)
+        if bnd:
+            val = body[:bnd.start()]
+    val = val.rstrip()
+    val = re.sub(r'["\']?\s*[}\]]*\s*$', '', val)  # retire guillemet de clôture + } / ]
+    if lead_quote and val.endswith(lead_quote):
+        val = val[:-1]
+    val = (val.replace("\\n", "\n").replace("\\t", "\t")
+           .replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\"))
+    val = val.strip()
+    return val or None
+
+
+def _recover_primary_text_param(cleaned: str, tool_name: str) -> Dict[str, Any]:
+    """Récupère l'arg d'un outil à texte-primaire (create_mission→objective) quand le JSON
+    est cassé. Court-circuite les fallbacks path/content/file_match. Récupère aussi une
+    `deadline` courte si présente (regex serrée, pour ne pas happer un « deadline » du texte).
+    """
+    key = _PRIMARY_TEXT_PARAM[tool_name]
+    out: Dict[str, Any] = {}
+    val = _extract_named_string(cleaned, key, sibling_keys=("deadline",))
+    if val:
+        out[key] = val
+    _dm = re.search(r'["\']?deadline["\']?\s*[:=]\s*["\']([^"\']{1,60})["\']', cleaned, re.IGNORECASE)
+    if _dm:
+        out["deadline"] = _dm.group(1).strip()
+    if key not in out:
+        # DERNIER RECOURS (uniquement ces outils, garde-fou reviewer) : tout le contenu
+        # dé-wrappé des accolades JSON englobantes → le paramètre primaire.
+        _stripped = re.sub(r'^\s*\{\s*', '', cleaned.strip())
+        _stripped = re.sub(r'\s*\}\s*$', '', _stripped).strip()
+        if _stripped:
+            out[key] = _stripped
+    return out
+
+
+def parse_action_args(action_input: str, tool_name: str = "") -> Dict[str, Any]:
+    """Parse tool arguments from ACTION_INPUT with robust fallbacks.
+
+    `tool_name` (optionnel, rétro-compatible) rend les fallbacks TOOL-AWARE : pour un outil
+    à paramètre-texte primaire (cf. _PRIMARY_TEXT_PARAM), on récupère ce paramètre au lieu
+    des fallbacks path/content (qui supposent une écriture de fichier).
+    """
     if not action_input:
         return {}
 
@@ -109,21 +260,29 @@ def parse_action_args(action_input: str) -> Dict[str, Any]:
         except json.JSONDecodeError:
             pass  # try brace extraction
 
+    # ── TOOL-AWARE (2026-07-01) : outils à paramètre-texte primaire ──
+    # JSON cassé + outil = create_mission (etc.) → récupérer `objective`, PAS path/content.
+    _tn = ""
+    if tool_name:
+        try:
+            from src.llm.output_normalizer import normalize_action_name
+            _tn = normalize_action_name(tool_name.strip()).lower()
+        except Exception:
+            _tn = tool_name.strip().lower()
+    if _tn in _PRIMARY_TEXT_PARAM:
+        return _recover_primary_text_param(cleaned, _tn)
+
     args: Dict[str, Any] = {}
     path_match = re.search(r'["\']?path["\']?\s*[=:]\s*["\']([^"\']+)["\']', cleaned, re.IGNORECASE)
     if path_match:
         args["path"] = path_match.group(1)
 
-    content_match = re.search(r'["\']?content["\']?\s*[=:]\s*(.+)$', cleaned, re.DOTALL | re.IGNORECASE)
-    if content_match:
-        content = content_match.group(1).strip()
-        if (content.startswith('"') and content.endswith('"')) or (
-            content.startswith("'") and content.endswith("'")
-        ):
-            content = content[1:-1]
-        content = content.replace("\\n", "\n").replace("\\t", "\t")
-        content = content.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
-        args["content"] = content
+    # Extraction TOLÉRANTE de content (coupe avant les clés sœurs, dé-quote la tête,
+    # sépare force_rewrite/… du Markdown) — remplace l'ancien fallback glouton `(.+)$`.
+    _cs = _extract_content_and_siblings(cleaned)
+    if _cs:
+        for _k, _v in _cs.items():
+            args.setdefault(_k, _v)
 
     if args:
         return args
@@ -148,6 +307,15 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
     """
     # Retirer le bloc PLAN avant parsing (evite interference regex)
     cleaned_response = _PLAN_RE.sub("", response)
+    # DS-1 (run SkiLoc 2026-07-12) — deepseek émet parfois ses tool-calls au
+    # format DSML natif en texte : on les CONVERTIT en blocs ACTION:/ACTION_INPUT:
+    # canoniques (paramètres préservés) au lieu de les jeter en « halluciné »
+    # (nom récupéré mais params PERDUS → « Paramètre(s) requis manquant(s) » ×8).
+    try:
+        from src.llm.output_normalizer import convert_dsml_tool_calls
+        cleaned_response = convert_dsml_tool_calls(cleaned_response)
+    except Exception:
+        pass  # fail-open : sans conversion, comportement d'avant
     # ── Strip fausses OBSERVATION: hallucilées par le LLM (seul le système en génère)
     _obs_pattern = re.compile(r"(?im)^\s*OBSERVATION:\s*.*?(?=^\s*(?:THOUGHT|ACTION):|\Z)", re.DOTALL | re.MULTILINE)
     _obs_count = len(_obs_pattern.findall(cleaned_response))
@@ -223,7 +391,7 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
             for _extra in _real_actions[1:]:
                 _extra_name = _extra.group(1).strip()
                 _extra_input = extract_action_input(cleaned_response, _extra.start(), _extra_name)
-                _extra_args = parse_action_args(_extra_input)
+                _extra_args = parse_action_args(_extra_input, tool_name=_extra_name)
                 pending_multi_actions.append((_extra_name, _extra_args))
             logger.warning(
                 "⚠️ MULTI-ACTION: {} ACTION: détectés — exécution séquentielle ({} + {} en queue)",
@@ -293,7 +461,7 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
 
         return thought, Action(action_type=ActionType.FINAL_ANSWER, answer=thought_content), halluc_flag, pending_multi_actions
 
-    args = parse_action_args(action_input)
+    args = parse_action_args(action_input, tool_name=action_name)
     if "content" in args and isinstance(args["content"], str):
         logger.info(f"📏 CONTENT LENGTH: {len(args['content'])} chars, ~{len(args['content'])//4} tokens")
 
@@ -318,7 +486,13 @@ def parse_plan(raw_response: str) -> List[TaskItem]:
     for m in _TASK_LINE_RE.finditer(match.group(1)):
         # Forcer completed=False quel que soit le [x] écrit par le modèle.
         # L'état réel sera mis à jour par _update_plan_progress() au fil des outils.
-        tasks.append(TaskItem(description=m.group(2).strip(), completed=False))
+        description = re.split(
+            r"(?i)(?:THOUGHT|ACTION|OBSERVATION)\s*:",
+            m.group(2),
+            maxsplit=1,
+        )[0].strip()
+        if description:
+            tasks.append(TaskItem(description=description, completed=False))
     return tasks[:8]
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project

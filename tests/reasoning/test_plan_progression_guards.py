@@ -125,6 +125,35 @@ class TestGuard5BusinessTaskNotCompletedByExploration:
         )
         assert not loop._task_plan[0].completed
 
+    def test_delegate_report_without_urls_cannot_credit_sourced_research(self):
+        loop = self._make_loop_with_plan([
+            "Étape 3: Rechercher 2 recommandations énergétiques sourcées"
+        ])
+        loop._last_auto_advance_iter = -1
+        loop._update_plan_progress(
+            tool_name="delegate_and_wait",
+            tool_args={"objectives": ["rechercher des recommandations"]},
+            observation_content="Les workers ont trouvé deux recommandations fiables.",
+            iteration=1,
+        )
+        assert not loop._task_plan[0].completed
+
+    def test_delegate_report_with_urls_can_credit_sourced_research(self):
+        loop = self._make_loop_with_plan([
+            "Étape 3: Rechercher 2 recommandations énergétiques sourcées"
+        ])
+        loop._last_auto_advance_iter = -1
+        loop._update_plan_progress(
+            tool_name="delegate_and_wait",
+            tool_args={"objectives": ["rechercher des recommandations"]},
+            observation_content=(
+                "Deux recommandations: https://ademe.fr/guide et "
+                "https://ecologie.gouv.fr/aides"
+            ),
+            iteration=1,
+        )
+        assert loop._task_plan[0].completed
+
     def test_business_action_starters_coverage(self):
         """Les verbes métier clés sont bien dans _BUSINESS_ACTION_STARTERS."""
         for verb in ("déléguer", "corriger", "créer", "envoyer", "modifier", "déployer"):

@@ -52,6 +52,16 @@ class TestMatchDeployOnly:
         assert not _match_deploy_only("améliore et déploie le site")
 
 
+    @pytest.mark.parametrize("query", [
+        "Ne publie pas ce document",
+        "Ne le publie surtout pas",
+        "Analyse le rapport sans publier",
+        "Do not publish this document",
+    ])
+    def test_explicit_deploy_negation_never_matches(self, query):
+        assert not _match_deploy_only(query)
+
+
 class TestMatchEditWebsiteOnly:
     def test_basic(self):
         assert _match_edit_website_only("améliore mon site web")
@@ -59,6 +69,11 @@ class TestMatchEditWebsiteOnly:
     def test_path_alone_not_enough(self):
         # Un path seul sans mention de "site" ne doit PAS matcher
         assert not _match_edit_website_only("modifie C:\\workspace\\monsite les fichiers")
+
+    def test_negative_publish_keeps_edit_only_route(self):
+        query = "ameliore mon site mais ne le publie pas"
+        assert not _match_edit_and_deploy(query)
+        assert _match_edit_website_only(query)
 
     def test_english(self):
         assert _match_edit_website_only("update the website design")

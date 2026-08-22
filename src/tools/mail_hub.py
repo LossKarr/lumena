@@ -1219,14 +1219,27 @@ class MailHub:
                         n += 1
 
                 output_path.write_bytes(payload)
-                saved.append(
-                    {
-                        "filename": output_path.name,
-                        "path": str(output_path),
-                        "size": len(payload),
-                        "content_type": content_type,
-                    }
-                )
+                item = {
+                    "filename": output_path.name,
+                    "path": str(output_path),
+                    "size": len(payload),
+                    "content_type": content_type,
+                }
+                try:
+                    from src.documents.ingest import index_received_document
+
+                    indexed = index_received_document(
+                        output_path,
+                        source_kind="mail",
+                        source_uri=f"imap:{alias}:{folder}:{uid}",
+                        metadata={"alias": alias, "folder": folder, "uid": uid},
+                    )
+                    if indexed.get("indexed"):
+                        item["document_id"] = indexed["document_id"]
+                        item["document_duplicate"] = indexed["duplicate"]
+                except Exception:
+                    pass
+                saved.append(item)
 
             self._emit("mail_download_attachments_done", "Pièces jointes téléchargées", alias=alias, uid=uid, count=len(saved))
             self._append_audit("mail_download_attachments", alias, True, f"uid={uid},count={len(saved)}")

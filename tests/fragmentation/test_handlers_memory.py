@@ -65,10 +65,24 @@ def ctx_with_journal(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def ctx_with_memory(tmp_path):
-    """Contexte avec un mock lumena.memory."""
+def ctx_with_memory(tmp_path, monkeypatch):
+    """Contexte avec un mock lumena.memory.
+
+    `JOURNAL_DIR` est une constante de module : le handler ne consulte PAS
+    `ctx.lumena_root` pour le journal. Sans ce monkeypatch — présent dans la
+    fixture voisine, oublié ici — les tests lisent le journal RÉEL de l'instance.
+    Constaté le 2026-08-16 : `test_no_results` est passé au rouge tout seul
+    pendant la nuit, parce que Lumena avait écrit dans son journal à 23:45 (suite
+    verte à 17:12, aucun code touché entre les deux). Un test qui dépend de
+    l'activité autonome de l'application ne mesure plus rien.
+    """
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    import src.reasoning.handlers.memory as mem_mod
+
+    monkeypatch.setattr(
+        mem_mod, "JOURNAL_DIR", tmp_path / "data" / "memory" / "journal"
+    )
     lumena_mock = MagicMock()
     lumena_mock.memory.recall.return_value = [
         {"content": "L'utilisateur aime Python", "date": "2026-03-01", "tags": ["pref"]},

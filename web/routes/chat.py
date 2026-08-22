@@ -15,6 +15,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from loguru import logger
 
+from src.llm.codex_chat import (
+    pop_codex_chat_delta_sink,
+    push_codex_chat_delta_sink,
+)
+from src.llm.execution_router import (
+    consume_codex_response_meta,
+    reset_codex_response_meta,
+)
 from web.routes import deps
 from web.routes.schemas import ChatRequest, ChatResponse
 from web.routes.lifespan import (
@@ -950,6 +958,7 @@ def _build_runtime_context(
         user_role=request.user_role,
         profile_id=request.profile_id,
         instance_id=request.client_instance_id,
+        mode="agent" if request.use_agent else "chat",
     )
 
 
@@ -1018,8 +1027,21 @@ def _extract_file_content(file_path: str, content_type: str) -> Optional[str]:
         except Exception as e:
             logger.debug("[attachment] PDF extraction failed for {}: {}", p.name, e)
             return None
-    # .doc/.docx — just note presence, no heavy lib
-    if ext in {".doc", ".docx"}:
+    # Reuse the existing bounded reader for modern Office/OpenDocument files.
+    if ext in {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".rtf"}:
+        try:
+            from src.perception.document_reader import DocumentReader
+
+            chunks = DocumentReader().read(p)
+            raw = "\n\n".join(chunk.content for chunk in chunks if chunk.content)
+            if len(raw) > _MAX_INLINE_CHARS:
+                raw = raw[:_MAX_INLINE_CHARS] + f"\n... [tronqué — {len(raw)} chars total]"
+            return raw or None
+        except Exception as e:
+            logger.debug("[attachment] document extraction failed for {}: {}", p.name, e)
+            return None
+    # Legacy binary .doc stays path-only: no deterministic parser is available.
+    if ext == ".doc":
         return None
     return None
 
@@ -1243,6 +1265,7 @@ async def _call_lumena_with_step_timeout_and_retry(
     attempts = 0
     while True:
         attempts += 1
+        reset_codex_response_meta()
         try:
             call_coro = _call_lumena_with_context(
                 method_name,
@@ -1258,13 +1281,30 @@ async def _call_lumena_with_step_timeout_and_retry(
                 "attempts": attempts,
                 "retry_count": max(0, attempts - 1),
                 "step_timeout_sec": step_timeout_sec,
+                "llm_response_meta": consume_codex_response_meta(),
             }
         except asyncio.TimeoutError as exc:
+            consume_codex_response_meta()
             if attempts <= max_retries:
                 continue
             raise TimeoutError(
                 f"step_timeout_after_{attempts}_attempts_{step_timeout_sec:.1f}s"
             ) from exc
+        except BaseException:
+            consume_codex_response_meta()
+            raise
+
+
+def _llm_meta_for_completed_call(
+    fallback_meta: Dict[str, Any], call_meta: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Prefer request-local execution metadata over the historical API client."""
+
+    result = dict(fallback_meta or {})
+    routed = (call_meta or {}).get("llm_response_meta")
+    if isinstance(routed, dict) and routed:
+        result.update(routed)
+    return result
 
 
 async def _call_lumena_with_auto_resume_on_timeout(
@@ -1520,7 +1560,7 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
         mood = None
         if deps.lumena.emotion_manager:
             mood = deps.lumena.emotion_manager.get_mood().value
-        llm_meta = _get_llm_meta()
+        llm_meta = _llm_meta_for_completed_call(_get_llm_meta(), call_meta)
         agent_meta = _get_agent_meta() if request.use_agent else _default_agent_meta()
         trace_id = trace_ctx.get("trace_id")
         file_edits, edit_session_id, undo_available = _safe_file_edits_for_trace(
@@ -2335,6 +2375,11 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
 
                 # Because we cannot yield from a background task, use a shared queue
                 _chat_hb_queue: asyncio.Queue = asyncio.Queue()
+                _chat_delta_queue: asyncio.Queue[str] = asyncio.Queue()
+
+                def _codex_delta_sink(delta: str) -> None:
+                    if delta:
+                        _chat_delta_queue.put_nowait(delta)
 
                 async def _chat_heartbeat_producer():
                     while True:
@@ -2353,6 +2398,7 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                 )
 
                 hb_task = asyncio.ensure_future(_chat_heartbeat_producer())
+                _codex_sink_token = push_codex_chat_delta_sink(_codex_delta_sink)
                 try:
                     if global_timeout_sec > 0:
                         chat_coro_task = asyncio.ensure_future(
@@ -2363,6 +2409,13 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
 
                     while not chat_coro_task.done():
                         await asyncio.sleep(0.1)
+                        while not _chat_delta_queue.empty():
+                            try:
+                                delta = _chat_delta_queue.get_nowait()
+                                yield _emit({"type": "token", "content": delta})
+                                chat_last_emit_ref[0] = time.time()
+                            except asyncio.QueueEmpty:
+                                break
                         # Drain heartbeat queue
                         while not _chat_hb_queue.empty():
                             try:
@@ -2372,9 +2425,18 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                             except asyncio.QueueEmpty:
                                 break
 
+                    # Flush deltas received between the final poll and completion.
+                    while not _chat_delta_queue.empty():
+                        try:
+                            delta = _chat_delta_queue.get_nowait()
+                            yield _emit({"type": "token", "content": delta})
+                        except asyncio.QueueEmpty:
+                            break
+
                     # Retrieve result or re-raise exception
                     response, call_meta = chat_coro_task.result()
                 finally:
+                    pop_codex_chat_delta_sink(_codex_sink_token)
                     hb_task.cancel()
                     try:
                         await hb_task
@@ -2408,7 +2470,7 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
             mood = None
             if deps.lumena.emotion_manager:
                 mood = deps.lumena.emotion_manager.get_mood().value
-            llm_meta = _get_llm_meta()
+            llm_meta = _llm_meta_for_completed_call(_get_llm_meta(), call_meta)
             agent_meta = _get_agent_meta() if request.use_agent else _default_agent_meta()
             file_edits, edit_session_id, undo_available = _safe_file_edits_for_trace(
                 trace_id,

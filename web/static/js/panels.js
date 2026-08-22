@@ -5,6 +5,8 @@
 /* ============================================================
    JOURNAL
    ============================================================ */
+import { mountCodexSubscriptionCard } from './codex-subscription.js?v=3';
+
 let _journalData=null;
 export async function loadJournal(){
   const list=document.getElementById('journal-list');
@@ -700,10 +702,12 @@ const _LEVEL_ORDER=['simple','avancé','expert'];
 
 // P5.1 — Ordre et niveau des groupes
 const _GROUP_ORDER=[
+  {name:'Acces OpenAI',      level:'simple',  icon:'badge-check'},
   {name:'LLM',               level:'simple',  icon:'brain'},
   {name:'Cerveaux Spécialisés',level:'simple', icon:'cpu'},
   {name:'Préférences',       level:'simple',   icon:'heart'},
   {name:'Voix',              level:'simple',   icon:'mic'},
+  {name:'Documents',         level:'simple',   icon:'files'},
   {name:'Autonomie',         level:'simple',   icon:'bot'},
   {name:'Alertes',           level:'simple',   icon:'bell'},
   {name:'Clés API',          level:'simple',   icon:'key'},
@@ -752,6 +756,9 @@ function _renderCfgRow(it){
 function _renderGroupCard(name,items){
   if(!items||!items.length)return'';
   let rows='';
+  if(name==='Documents'){
+    rows+=`<div style="margin:0 0 10px;padding:9px 11px;border-left:2px solid var(--accent);background:rgba(255,165,0,.05);font-size:11px;line-height:1.5;color:var(--muted)"><strong style="color:var(--text)">Garanties toujours actives</strong><br>Preuve catalogue, ordre exact, intégrité des reçus et vérification des révisions.</div>`;
+  }
   if(name==='Instance'){
     const main=items.filter(it=>!_INSTANCE_ISOLATED.has(it.key));
     const iso=items.filter(it=>_INSTANCE_ISOLATED.has(it.key));
@@ -781,7 +788,10 @@ function _switchCfgGroup(name){
   const grp=_GROUP_ORDER.find(g=>g.name===name);
   const iconName=grp?grp.icon:'settings';
   if(title)title.innerHTML=`<i data-lucide="${iconName}"></i> ${esc(name)}`;
-  if(!items.length){
+  if(name==='Acces OpenAI'){
+    box.innerHTML='<div class="cfg-group-content" id="codex-access-mount"></div>';
+    mountCodexSubscriptionCard(document.getElementById('codex-access-mount'),items);
+  }else if(!items.length){
     box.innerHTML=`<div class="cfg-empty">Aucun paramètre dans ce groupe.</div>`;
   }else{
     box.innerHTML=`<div class="cfg-group-content">${_renderGroupCard(name,items)}</div>`;
@@ -3179,6 +3189,107 @@ export async function togglePeerHalt() {
   }
 }
 
+// ── C3 — Autonomie (initiative) : off / shadow / live ───────────────────────
+async function _fetchAutonomyMode() {
+  try {
+    const r = await fetch(`${API_BASE}/api/config`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if (!r.ok) return 'off';
+    const d = await r.json();
+    const item = (d.items||[]).find(i => i.key === 'LUMENA_PEER_AUTONOMY');
+    return item ? String(item.value || 'off') : 'off';
+  } catch(_) { return 'off'; }
+}
+
+export async function setAutonomyMode(mode) {
+  const msgEl = document.getElementById('net-autonomy-msg');
+  if (mode === 'live' && !confirm('Activer l\'autonomie RÉELLE ?\n\nLumena pourra déléguer SEULE, 24/7, dans les limites des scopes accordés et sous le filet (kill-switch + quarantaine). Tu peux couper à tout moment.')) {
+    const sel = document.getElementById('net-autonomy-select'); if (sel) sel.value = await _fetchAutonomyMode();
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/api/config`, {
+      method:'PUT', headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+      body: JSON.stringify({updates: {LUMENA_PEER_AUTONOMY: mode}}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.success) throw new Error(d.error || 'Échec');
+    if (mode === 'live') { _refreshAutonomyBadge('live'); }      // budget restant en direct
+    else if (msgEl) {
+      msgEl.style.color = mode === 'off' ? 'var(--muted)' : 'var(--ok)';
+      msgEl.textContent = mode === 'off' ? 'Autonomie désactivée.'
+        : 'Mode observation : propose sans agir.';
+    }
+  } catch(e) { if (msgEl) { msgEl.style.color='var(--danger)'; msgEl.textContent=`Erreur: ${e.message}`; } }
+}
+
+// Accumulation des suggestions de délégation (mode shadow), poussées par SSE.
+let _peerSuggestions = [];
+function _renderSuggestions() {
+  const card = document.getElementById('net-suggestions-card');
+  const listEl = document.getElementById('net-suggestions-list');
+  if (!card || !listEl) return;
+  if (!_peerSuggestions.length) { card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  listEl.innerHTML = _peerSuggestions.slice(0, 12).map(s => `<div style="padding:7px 0;border-bottom:1px solid var(--border)">
+    <div style="font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.objective||'(tâche)')}</div>
+    <div style="font-size:10px;color:var(--muted)">→ ${esc(s.peer_name||'?')} · ${esc(s.reason||'')}</div>
+  </div>`).join('');
+}
+function _addSuggestion(ev) {
+  _peerSuggestions.unshift({objective: ev.objective, peer_name: ev.peer_name, reason: ev.reason});
+  if (_peerSuggestions.length > 30) _peerSuggestions.length = 30;
+  _renderSuggestions();
+}
+// C3-live : badge d'état (budget restant) quand le mode est « live ».
+async function _refreshAutonomyBadge(mode) {
+  const el = document.getElementById('net-autonomy-msg');
+  if (!el) return;
+  if (mode !== 'live') {
+    el.textContent = mode === 'shadow' ? 'Mode observation : propose sans agir.' : '';
+    el.style.color = 'var(--muted)';
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/autonomy/live-status`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    const d = await r.json();
+    const when = d.when_present ? '24/7' : 'si absent';
+    el.textContent = `Agit seule (${when}) · ${d.remaining}/${d.max_per_hour} délégations restantes cette heure.`;
+    el.style.color = 'var(--ok)';
+  } catch(_) { el.textContent = 'Mode actif.'; el.style.color = 'var(--ok)'; }
+}
+// C3 : recharge les suggestions persistées (visibles même hors flux SSE live).
+async function _loadSuggestions() {
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/suggestions?limit=20`, {headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if (!r.ok) return;
+    const d = await r.json();
+    _peerSuggestions = (d.items||[]).map(s => ({objective:s.objective, peer_name:s.peer_name, reason:s.reason}));
+    _renderSuggestions();
+  } catch(_) {}
+}
+// C3 : force une proposition d'exemple pour PROUVER que le moteur fonctionne.
+export async function testSuggestion() {
+  const msgEl = document.getElementById('net-suggestions-msg');
+  try {
+    const r = await fetch(`${API_BASE}/api/peer/suggestions/test`, {
+      method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},
+    });
+    const d = await r.json().catch(() => ({}));
+    if (d && d.success === false) {
+      if (msgEl) { msgEl.textContent = d.message || 'Autonomie désactivée.'; msgEl.style.color = 'var(--muted)'; }
+      return;
+    }
+    const n = (d && d.proposals) || 0;
+    if (msgEl) {
+      msgEl.textContent = n ? `${n} suggestion(s) générée(s).` : 'Aucun pair délégable joignable pour cette tâche.';
+      msgEl.style.color = n ? 'var(--ok)' : 'var(--muted)';
+    }
+    await _loadSuggestions();  // rafraîchit la carte depuis le store persistant
+  } catch(e) {
+    if (msgEl) { msgEl.textContent = `Erreur : ${e.message}`; msgEl.style.color = 'var(--danger)'; }
+  }
+}
+
 export async function togglePeerMaster() {
   const msgEl = document.getElementById('net-master-msg');
   const cur = await _fetchPeerMasterOn();
@@ -3217,6 +3328,8 @@ export async function loadNetworkSimple() {
 
   initPeerEventStream();  // Cran 2 : push temps réel des missions (poll Cran 1 = filet)
   _loadQuarantine();      // C-1.b : pairs en quarantaine auto
+  _fetchAutonomyMode().then(m => { const s = document.getElementById('net-autonomy-select'); if (s) s.value = m; _refreshAutonomyBadge(m); });  // C3
+  _loadSuggestions();     // C3 : suggestions persistées visibles dès l'ouverture
 
   const statusEl = document.getElementById('net-simple-status');
   const peersEl  = document.getElementById('net-simple-peers');
@@ -3483,6 +3596,8 @@ export function initPeerEventStream() {
                   _applyHaltUI(!!ev.halt);  // kill-switch live
                 } else if (ev && ev.type === 'quarantine') {
                   _loadQuarantine();        // quarantaine auto live
+                } else if (ev && ev.type === 'suggestion') {
+                  _addSuggestion(ev);       // C3 shadow : suggestion de délégation
                 }
               } catch(_) {}
               evtType = 'peer';
@@ -7014,4 +7129,227 @@ async function _mcpDiagLoadCoherence(){
     const checks=(d.checks||[]).map(c=>`<li>${esc(c.name)}: <code>${esc(c.status)}</code> (${c.details_count})</li>`).join('');
     slot.innerHTML=`<div><b>Coherence</b> — overall: <code>${esc(d.overall_status||'?')}</code><ul style="margin:4px 0 0 16px">${checks}</ul></div>`;
   }catch(e){ slot.innerHTML=`<div style="color:var(--danger)">Coherence erreur: ${esc(e.message)}</div>`; }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Lot 4.3 — Panneau Missions : cartes interactives + streaming SSE live.
+// UN SEUL flux /api/trace/stream + dispatcher par ev.task_id (jamais 1 conn/carte).
+// ════════════════════════════════════════════════════════════════════════════
+let _missionAbort = null;
+let _missionStreamOn = false;
+let _missionRefreshT = null;
+const _missionLog = {};   // mission_id → fonction d'append (carte active)
+const _MISSION_ACTIVE = ['running', 'queued', 'checkpointed', 'waiting_io'];
+const _missionOpen = {};  // task_id → bool : choix d'expansion utilisateur (persistant entre refreshs)
+let _missionsCache = [];   // dernier payload missions (pour re-render local sans refetch, ex. toggle)
+
+function _missionElapsedLabel(m) {
+  const ms = (typeof missionElapsedMs === 'function') ? missionElapsedMs(m, Date.now()) : 0;
+  if (ms < 1000) return '';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const mn = Math.floor(s / 60), ss = s % 60;
+  if (mn < 60) return `${mn}m${String(ss).padStart(2, '0')}`;
+  const h = Math.floor(mn / 60);
+  return `${h}h${String(mn % 60).padStart(2, '0')}`;
+}
+
+// Rendu récursif d'un noeud de l'arbre : lead (depth 0) = carte ; worker (depth>0) = ligne imbriquée.
+function _renderMissionNode(node, depth) {
+  const m = node.mission;
+  const meta = m.metadata || {};
+  const id = esc(m.task_id);
+  const obj = esc(meta.objective || m.message_preview || '(mission)');
+  const active = _MISSION_ACTIVE.includes(m.state);
+  const kids = node.children || [];
+  const prog = (typeof workerProgress === 'function') ? workerProgress(node) : { done: 0, total: kids.length };
+  const elapsed = _missionElapsedLabel(m);
+  const cancelBtn = active
+    ? `<button class="mission-cancel" onclick="cancelMissionUi('${id}')" title="Annuler"><i data-lucide="x"></i></button>` : '';
+  const liveLog = active ? `<div id="mission-log-${id}" class="mission-log"></div>` : '';
+
+  if (depth > 0) {
+    // ── Ligne WORKER (imbriquée) ──
+    const sub = (m.state === 'done' && m.result_summary)
+      ? `<div class="mission-sub-result">${esc(String(m.result_summary).slice(0, 160))}</div>` : '';
+    const childRows = kids.map(k => _renderMissionNode(k, depth + 1)).join('');
+    return `<div class="mission-worker" id="mission-card-${id}">
+      <div class="mission-worker-head">
+        ${_missionStateBadge(m.state)}
+        <span class="mission-worker-obj" title="${obj}">${obj}</span>
+        ${elapsed ? `<span class="mission-elapsed">${elapsed}</span>` : ''}
+        ${cancelBtn}
+      </div>${liveLog}${sub}${childRows}</div>`;
+  }
+
+  // ── Carte LEAD ──
+  const defaultOpen = active || kids.some(k => _MISSION_ACTIVE.includes(k.mission.state));
+  const open = (id in _missionOpen) ? !!_missionOpen[id] : defaultOpen;
+  const hasBody = kids.length > 0 || (m.state === 'done' && m.result_summary) || (meta.artifacts || []).length > 0 || active;
+  const toggle = hasBody
+    ? `<button class="mission-toggle" onclick="toggleMissionCard('${id}')" title="${open ? 'Replier' : 'Déplier'}"><i data-lucide="${open ? 'chevron-down' : 'chevron-right'}"></i></button>`
+    : `<span class="mission-toggle-spacer"></span>`;
+  const progPill = kids.length
+    ? `<span class="mission-prog" title="workers terminés / total">${prog.done}/${prog.total}</span>` : '';
+  const arts = meta.artifacts || [];
+  const artTxt = arts.length
+    ? `<div class="mission-arts"><i data-lucide="package"></i> ${arts.length} livrable(s)</div>` : '';
+  const result = (m.state === 'done' && m.result_summary)
+    ? `<div class="mission-result">${esc(String(m.result_summary).slice(0, 400))}</div>` : '';
+  const workers = kids.length
+    ? `<div class="mission-workers"><div class="mission-workers-title"><i data-lucide="users"></i> Workers (${kids.length})</div>${kids.map(k => _renderMissionNode(k, 1)).join('')}</div>` : '';
+  const body = (open && hasBody)
+    ? `<div class="mission-body">${liveLog}${workers}${result}${artTxt}</div>` : '';
+
+  return `<div class="card mission-card${active ? ' is-active' : ''}" id="mission-card-${id}">
+    <div class="mission-head">
+      ${toggle}${_missionStateBadge(m.state)}
+      <span class="mission-obj" title="${obj}">${obj}</span>
+      ${elapsed ? `<span class="mission-elapsed">${elapsed}</span>` : ''}
+      ${progPill}
+      ${cancelBtn}
+    </div>${body}</div>`;
+}
+
+// Enregistre le dispatcher de log live pour un noeud actif (lead OU worker), keyé par task_id.
+function _registerMissionLog(taskId) {
+  const logEl = document.getElementById(`mission-log-${taskId}`);
+  if (!logEl) return;
+  _missionLog[taskId] = (ev) => {
+    const tool = ev.tool_name || ev.stage || '';
+    if (!tool) return;
+    const ok = (ev.status === 'error' || ev.error) ? '✗' : '✓';
+    const dur = ev.duration_ms ? ` · ${Math.round(ev.duration_ms)}ms` : '';
+    const line = document.createElement('div');
+    line.textContent = `\u{1F527} ${tool}${dur} ${ok}`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.childNodes.length > 60) logEl.removeChild(logEl.firstChild);
+  };
+}
+
+// Rendu depuis le cache (utilisé par loadMissions ET par toggle, sans refetch).
+function _renderMissionsFromCache() {
+  const el = document.getElementById('missions-list');
+  if (!el) return;
+  const missions = _missionsCache || [];
+  const roots = (typeof buildMissionTree === 'function')
+    ? buildMissionTree(missions) : missions.map(m => ({ mission: m, children: [] }));
+  const badge = document.getElementById('badge-missions');
+  if (badge) badge.textContent = roots.filter(n => _MISSION_ACTIVE.includes(n.mission.state)).length;
+  if (!missions.length) {
+    el.innerHTML = `<div class="mission-empty">Aucune mission. Demande à Lumena d'enregistrer une mission pour faire quelque chose en arrière-plan.</div>`;
+    return;
+  }
+  for (const k in _missionLog) delete _missionLog[k];   // reset dispatcher avant re-render
+  el.innerHTML = roots.map(n => _renderMissionNode(n, 0)).join('');
+  if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
+  // dispatchers live pour TOUS les noeuds actifs (leads + workers), récursivement
+  const walk = (n) => {
+    if (_MISSION_ACTIVE.includes(n.mission.state)) _registerMissionLog(n.mission.task_id);
+    (n.children || []).forEach(walk);
+  };
+  roots.forEach(walk);
+}
+
+export function toggleMissionCard(id) {
+  const card = document.getElementById(`mission-card-${id}`);
+  const isOpen = !!(card && card.querySelector(':scope > .mission-body'));
+  _missionOpen[id] = !isOpen;
+  _renderMissionsFromCache();   // re-render local, pas de refetch
+}
+
+function _missionStateBadge(state) {
+  const map = {
+    queued:       ['en file', 'var(--muted)'],
+    running:      ['en cours', 'var(--accent)'],
+    checkpointed: ['en cours', 'var(--accent)'],
+    waiting_io:   ['en attente', 'var(--warn)'],
+    done:         ['terminée', 'var(--ok)'],
+    failed:       ['échec', 'var(--danger)'],
+    cancelled:    ['annulée', 'var(--muted)'],
+  };
+  const [label, color] = map[state] || [state, 'var(--muted)'];
+  const dot = _MISSION_ACTIVE.includes(state) ? '●' : '○';
+  return `<span style="color:${color};font-size:11px;font-weight:600;white-space:nowrap">${dot} ${label}</span>`;
+}
+
+export async function loadMissions() {
+  const el = document.getElementById('missions-list');
+  if (!el) return;
+  const h = { 'Authorization': `Bearer ${ADMIN_TOKEN}` };
+  try {
+    const r = await fetch(`${API_BASE}/api/missions?limit=200`, { headers: h });
+    const d = await r.json();
+    _missionsCache = d.missions || [];
+    _renderMissionsFromCache();   // arbre lead→workers (Lot 5.4)
+    _initMissionStream();
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--danger);font-size:12px">Erreur : ${esc(String(e.message || e))}</div>`;
+  }
+}
+
+function _initMissionStream() {
+  if (_missionStreamOn) return;  // un seul flux partagé
+  if (_missionAbort) _missionAbort.abort();
+  _missionAbort = new AbortController();
+  _missionStreamOn = true;
+  const h = { 'Authorization': `Bearer ${ADMIN_TOKEN}` };
+  fetch(`${API_BASE}/api/trace/stream`, { headers: h, signal: _missionAbort.signal })
+    .then(res => {
+      if (!res.ok) throw new Error(res.status);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      (function pump() {
+        reader.read().then(({ done, value }) => {
+          if (done) { _missionStreamOn = false; return; }
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split('\n');
+          buf = lines.pop();
+          let touched = false;
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            try {
+              const ev = JSON.parse(line.slice(5).trim());
+              const fn = (ev && ev.task_id) ? _missionLog[ev.task_id] : null;
+              if (fn) { fn(ev); touched = true; }
+            } catch (_) {}
+          }
+          if (touched) { clearTimeout(_missionRefreshT); _missionRefreshT = setTimeout(_refreshMissionStates, 2500); }
+          pump();
+        }).catch(() => { _missionStreamOn = false; });
+      })();
+    })
+    .catch(() => { _missionStreamOn = false; });
+}
+
+async function _refreshMissionStates() {
+  try {
+    const r = await fetch(`${API_BASE}/api/missions?limit=100`, { headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` } });
+    const d = await r.json();
+    let anyDone = false;
+    for (const m of (d.missions || [])) {
+      if (!_MISSION_ACTIVE.includes(m.state) && _missionLog[m.task_id]) { delete _missionLog[m.task_id]; anyDone = true; }
+    }
+    const badge = document.getElementById('badge-missions');
+    if (badge) badge.textContent = (d.missions || []).filter(m => _MISSION_ACTIVE.includes(m.state)).length;
+    if (anyDone) loadMissions();  // une mission a fini → re-rendu (résultat/livrables)
+  } catch (_) {}
+}
+
+export function closeMissionStream() {
+  if (_missionAbort) _missionAbort.abort();
+  _missionAbort = null;
+  _missionStreamOn = false;
+}
+
+export async function cancelMissionUi(missionId) {
+  if (!confirm("Annuler cette mission ? Elle s arretera au prochain checkpoint.")) return;
+  try {
+    await fetch(`${API_BASE}/api/missions/${encodeURIComponent(missionId)}`, {
+      method: 'DELETE', headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` },
+    });
+  } catch (_) {}
+  loadMissions();
 }

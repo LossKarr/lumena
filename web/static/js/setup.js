@@ -876,6 +876,11 @@ function _renderVoiceStep(cont, step) {
       <h2>${_esc(step.title)} <span class="setup-optional">optionnel</span></h2>
       <p class="setup-subtitle">${_esc(step.subtitle || '')}</p>
       ${fieldsHtml}
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">
+        <button type="button" class="btn" id="setup-test-micro"><i data-lucide="mic"></i> Tester le micro</button>
+        <button type="button" class="btn" id="setup-test-voice"><i data-lucide="audio-lines"></i> Tester la voix</button>
+        <span id="setup-voice-test-status" class="setup-hint" style="align-self:center"></span>
+      </div>
       ${_navHtml(true, 'Passer')}
     </div>`;
 
@@ -884,6 +889,10 @@ function _renderVoiceStep(cont, step) {
     const el = cont.querySelector(`[data-voice-key="${f.key}"]`);
     if (el) el.oninput = () => { _config[f.key] = el.tagName === 'SELECT' ? el.value : el.value; };
   }
+  const status=cont.querySelector('#setup-voice-test-status');
+  const auth=()=>{const h={};if(window.ADMIN_TOKEN)h.Authorization=`Bearer ${window.ADMIN_TOKEN}`;return h;};
+  cont.querySelector('#setup-test-micro').onclick=async()=>{status.textContent='Test micro en cours…';try{const r=await fetch('/api/voice/test-micro',{method:'POST',headers:auth()});const d=await r.json();status.textContent=r.ok&&d.ok?'Micro opérationnel':'Micro indisponible ou trop silencieux';}catch(e){status.textContent='Test micro impossible';}};
+  cont.querySelector('#setup-test-voice').onclick=async()=>{status.textContent='Test voix en cours…';try{const r=await fetch('/api/voice/test-output',{method:'POST',headers:auth()});status.textContent=r.ok?'Phrase de test jouée':'Démarre Voice V2 puis réessaie';}catch(e){status.textContent='Test voix impossible';}};
 }
 
 // ─── Integrations step ───────────────────────────────────────────

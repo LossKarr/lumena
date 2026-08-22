@@ -77,6 +77,7 @@ export async function startLumena(){
 const _PROVIDER_META = {
   deepseek: { label: 'DeepSeek',  color: '#4f8ef7' },
   openai:   { label: 'OpenAI',    color: '#10a37f' },
+  codex:    { label: 'Codex · Abonnement ChatGPT', color: '#f59f4a' },
   anthropic:{ label: 'Anthropic', color: '#e2812a' },
   google:   { label: 'Google',    color: '#ea4335' },
   nvidia:   { label: 'NVIDIA',    color: '#76b900' },
@@ -94,11 +95,16 @@ const _PROVIDER_META = {
   replicate:{ label: 'Replicate', color: '#64748b' },
   huggingface:{ label: 'HF',      color: '#f59e0b' },
 };
-const _PROVIDER_ORDER = ['deepseek','openai','anthropic','google','nvidia','xai','minimax','moonshot','zai','ollama','gemini','imagen','flux','stability','ideogram','recraft','replicate','huggingface'];
+const _PROVIDER_ORDER = ['deepseek','openai','codex','anthropic','google','nvidia','xai','minimax','moonshot','zai','ollama','gemini','imagen','flux','stability','ideogram','recraft','replicate','huggingface'];
 
 let _mpFilter = 'all';
 let _mpSearch = '';
 let _mpPanel = 'text';
+let _mpSource = 'api';
+let _mpAccessMode = '';
+let _mpApiModelId = '';
+let _mpCodexModelId = '';
+let _mpSourceSwitching = false;
 
 export function toggleModelDropdown(){
   const m = document.getElementById('model-picker-modal');
@@ -109,6 +115,7 @@ export function toggleModelDropdown(){
     _mpSearch = '';
     loadImageModels();
     setTimeout(()=>document.getElementById('model-picker-search').focus(), 50);
+    _renderModelSourceControl();
     _renderModelFilters();
     _renderModelPicker();
     if(typeof lucide!=='undefined') lucide.createIcons({el:m});
@@ -127,11 +134,65 @@ export function setModelFilter(provider){
 
 export function setModelPanel(panel){
   _mpPanel = ['text','vision','image'].includes(panel) ? panel : 'text';
+  if(_mpPanel==='image')_mpSource='api';
   _mpFilter = 'all';
   document.querySelectorAll('.mpicker-tab').forEach(t=>t.classList.toggle('active', t.dataset.panel===_mpPanel));
   if(_mpPanel==='image') loadImageModels();
+  _renderModelSourceControl();
   _renderModelFilters();
   _renderModelPicker();
+}
+
+function _preferredSelectionForSource(source){
+  if(source==='codex'){
+    if(_mpCodexModelId)return `codex:${_mpCodexModelId}`;
+    return allModels.find(model=>model.provider==='codex'&&model.available)?.name||'';
+  }
+  if(_mpApiModelId)return _mpApiModelId;
+  return allModels.find(model=>model.provider!=='codex'&&model.current)?.name
+    ||allModels.find(model=>model.provider!=='codex'&&model.available)?.name||'';
+}
+
+function _setModelSourceBusy(busy){
+  _mpSourceSwitching=busy;
+  const control=document.getElementById('model-picker-source');
+  if(!control)return;
+  control.classList.toggle('is-switching',busy);
+  control.querySelectorAll('.mpicker-source-btn').forEach(button=>{button.disabled=busy});
+}
+
+export async function setModelSource(source){
+  if(_mpPanel==='image')return;
+  if(_mpSourceSwitching)return;
+  const nextSource=source==='codex'?'codex':'api';
+  const previousSource=_mpSource;
+  _mpSource=nextSource;
+  _mpFilter='all';
+  _renderModelSourceControl();
+  _renderModelFilters();
+  _renderModelPicker();
+  const expectedMode=nextSource==='codex'?'chatgpt_codex':'api';
+  if(_mpAccessMode===expectedMode)return;
+  const selectionId=_preferredSelectionForSource(nextSource);
+  if(!selectionId){
+    logC(nextSource==='codex'
+      ?'Aucun modele Codex disponible pour cet abonnement'
+      :'Aucun modele API disponible','error');
+    _mpSource=previousSource;
+    _renderModelSourceControl();
+    _renderModelFilters();
+    _renderModelPicker();
+    return;
+  }
+  _setModelSourceBusy(true);
+  const switched=await _selectCatalogModel(selectionId,{closePicker:false,announce:false});
+  _setModelSourceBusy(false);
+  if(!switched){
+    _mpSource=previousSource;
+    _renderModelSourceControl();
+    _renderModelFilters();
+    _renderModelPicker();
+  }
 }
 
 export function filterModelSearch(q){
@@ -162,14 +223,15 @@ function _renderCard(m, color){
   const tags = [];
   if(m.supports_vision) tags.push('<span class="mpicker-tag">Vision</span>');
   if(m.is_local) tags.push('<span class="mpicker-tag tag-local">Local</span>');
-  tags.push(`<span class="mpicker-tag">${ctx} ctx</span>`);
+  if(m.provider==='codex') tags.push('<span class="mpicker-tag tag-local">Abonnement ChatGPT</span>');
+  else tags.push(`<span class="mpicker-tag">${ctx} ctx</span>`);
   const badge = m.badge ? `<span class="mpicker-badge ${_badgeClass(m.badge)}">${esc(m.badge)}</span>` : '';
   const nameParts = m.display_name.split(' (');
   const shortName = nameParts[0];
-  const providerSub = nameParts[1] ? nameParts[1].replace(')','') : '';
+  const providerSub = m.source_label || (nameParts[1] ? nameParts[1].replace(')','') : '');
   return `<div class="mpicker-card${m.current?' is-current':''}${!m.available?' is-unavailable':''}"
      style="--pc:${color}"
-     onclick="${m.available?`switchModel('${m.name}')`:''}"
+     onclick="${m.available?`switchCatalogModel('${m.name}')`:''}"
      title="${esc(m.display_name)}">
     <div class="mpicker-card-stripe"></div>
     <div class="mpicker-card-inner">
@@ -216,9 +278,28 @@ function _renderImageCard(m, color){
 }
 
 function _modelPickerItems(){
-  if(_mpPanel==='vision') return allModels.filter(m=>m.supports_vision && !m.supports_image_generation);
+  if(_mpPanel==='vision') return allModels.filter(m=>m.supports_vision && !m.supports_image_generation).filter(_sourceModelMatch);
   if(_mpPanel==='image') return allImageModels;
-  return allModels.filter(m=>!m.supports_image_generation);
+  return allModels.filter(m=>!m.supports_image_generation).filter(_sourceModelMatch);
+}
+
+function _sourceModelMatch(model){
+  return _mpSource==='codex' ? model.provider==='codex' : model.provider!=='codex';
+}
+
+function _renderModelSourceControl(){
+  const control=document.getElementById('model-picker-source');
+  if(!control)return;
+  control.hidden=_mpPanel==='image';
+  control.querySelectorAll('.mpicker-source-btn').forEach(button=>{
+    button.classList.toggle('active',button.dataset.source===_mpSource);
+  });
+  const apiCount=allModels.filter(model=>model.provider!=='codex'&&!model.supports_image_generation).length;
+  const codexCount=allModels.filter(model=>model.provider==='codex'&&!model.supports_image_generation).length;
+  const apiEl=document.getElementById('model-source-api-count');
+  const codexEl=document.getElementById('model-source-codex-count');
+  if(apiEl)apiEl.textContent=String(apiCount);
+  if(codexEl)codexEl.textContent=String(codexCount);
 }
 
 function _searchModelMatch(m, search){
@@ -264,7 +345,9 @@ function _renderModelPicker(){
   if(!body) return;
   const keys = Object.keys(byProv);
   if(!keys.length){
-    body.innerHTML='<div class="mpicker-empty">Aucun modèle trouvé</div>';
+    body.innerHTML=_mpSource==='codex'&&_mpPanel!=='image'
+      ?'<div class="mpicker-empty">Aucun modele Codex disponible. Connectez une premiere fois votre abonnement ChatGPT dans Configuration.</div>'
+      :'<div class="mpicker-empty">Aucun modèle trouvé</div>';
     return;
   }
   const ordered = [..._PROVIDER_ORDER, ...keys.filter(p=>!_PROVIDER_ORDER.includes(p))];
@@ -282,15 +365,52 @@ function _renderModelPicker(){
   }).join('');
 }
 
+async function _loadCodexPickerModels(headers, apiModels){
+  try{
+    const response=await fetch(`${API_BASE}/api/codex-subscription/models`,{headers});
+    if(!response.ok)return apiModels;
+    const data=await response.json();
+    _mpAccessMode=data.access_mode==='chatgpt_codex'?'chatgpt_codex':'api';
+    _mpCodexModelId=typeof data.selected_model==='string'?data.selected_model:'';
+    const codexModels=Array.isArray(data.models)?data.models.map(model=>({
+      name:`codex:${model.model_id}`,
+      display_name:model.display_name||model.model_id,
+      provider:'codex',
+      description:model.description||'Modele disponible avec le quota de votre abonnement ChatGPT.',
+      badge:model.is_default?'Recommande':'Abonnement',
+      is_local:false,
+      is_free:false,
+      supports_vision:Array.isArray(model.input_modalities)&&model.input_modalities.includes('image'),
+      supports_image_generation:false,
+      context_window:0,
+      available:true,
+      current:data.access_mode==='chatgpt_codex'&&data.selected_model===model.model_id,
+      source_label:'Quota abonnement ChatGPT · pas de facturation API',
+    })):[];
+    if(data.access_mode==='chatgpt_codex')apiModels.forEach(model=>{model.current=false});
+    return [...apiModels,...codexModels];
+  }catch(_error){
+    return apiModels;
+  }
+}
+
 export async function loadModels(){
   try{
     const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
     const res=await fetch(`${API_BASE}/api/models`,{headers:h});
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const data=await res.json();
-    allModels=Array.isArray(data.models)?data.models:[];
+    const apiModels=Array.isArray(data.models)?data.models:[];
+    const apiCurrent=apiModels.find(model=>model.current);
+    if(apiCurrent)_mpApiModelId=apiCurrent.name;
+    allModels=await _loadCodexPickerModels(h,apiModels);
     const cur=allModels.find(m=>m.current);
+    if(_mpPanel!=='image'){
+      if(_mpAccessMode==='chatgpt_codex')_mpSource='codex';
+      else if(_mpAccessMode==='api')_mpSource='api';
+    }
     if(cur)document.getElementById('current-model-name').textContent=cur.display_name.split(' (')[0];
+    _renderModelSourceControl();
     _renderModelFilters();
     if(document.getElementById('model-picker-modal').classList.contains('open')){
       _renderModelPicker();
@@ -328,6 +448,42 @@ export async function switchModel(name){
   }catch(e){logC(e.message,'error');loadModels()}
 }
 
+function _selectionError(detail, fallback){
+  if(typeof detail==='string')return detail;
+  if(detail&&typeof detail.message==='string')return detail.message;
+  return fallback;
+}
+
+async function _selectCatalogModel(selectionId,{closePicker=true,announce=true}={}){
+  if(closePicker)closeModelPicker();
+  document.getElementById('current-model-name').textContent='Changement...';
+  try{
+    const h={'Content-Type':'application/json'};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+    const response=await fetch(`${API_BASE}/api/codex-subscription/model/select`,{
+      method:'POST',headers:h,body:JSON.stringify({selection_id:selectionId}),
+    });
+    const data=await response.json();
+    if(!response.ok)throw new Error(_selectionError(data.detail,`HTTP ${response.status}`));
+    _mpAccessMode=data.access_mode==='chatgpt_codex'?'chatgpt_codex':'api';
+    if(data.engine==='codex')_mpCodexModelId=String(data.model||selectionId).replace(/^codex:/,'');
+    else _mpApiModelId=data.model||selectionId;
+    document.getElementById('current-model-name').textContent=(data.display_name||selectionId).split(' (')[0];
+    logC(data.message||'Modele change','success');
+    loadStatus();await loadModels();
+    const source=data.engine==='codex'?'abonnement ChatGPT':'API';
+    if(announce)addMsg('assistant',`**Modele change** : J'utilise maintenant **${esc(data.display_name||selectionId)}** via ${source}.`);
+    return true;
+  }catch(error){
+    logC(error.message,'error');
+    await loadModels();
+    return false;
+  }
+}
+
+export async function switchCatalogModel(selectionId){
+  return _selectCatalogModel(selectionId);
+}
+
 export function toggleAgent(){
   useAgent=!useAgent;
   localStorage.setItem('lumena_agent_mode', useAgent ? 'true' : 'false');
@@ -348,7 +504,9 @@ export function startLiveRefreshLoops(){
     const active=document.querySelector('.nav-item.active');
     const p=active?active.dataset.panel:'chat';
     // Seuls les panneaux live se rafraîchissent automatiquement
-    const livePanels=['overview','trace','emotions','tasks','sessions'];
+    // Overview owns its wider, cancellable source batch and schedules its own
+    // backend-recommended refresh. Reloading it here every 4 s aborts that batch.
+    const livePanels=['trace','emotions','tasks','sessions'];
     if(p&&livePanels.includes(p)){
       // Sauvegarder scroll avant refresh, restaurer après
       const panelEl=document.getElementById('panel-'+p);

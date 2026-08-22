@@ -85,6 +85,81 @@ def _looks_like_mcp_control_flow(description: str, context: Any) -> bool:
     return any(token in haystack for token in _MCP_DELEGATE_GUARD_TOKENS)
 
 
+def _mission_publication_meta(ctx: HandlerContext) -> Optional[tuple]:
+    """`(dossier de mission, date de publication)` — ou None si rien n'est publié.
+
+    LOT Z8. Ne renvoie quelque chose QUE si la mission a réellement publié
+    (`mission_published` + `published_at`) : hors de ce cas, la question de la
+    fraîcheur ne se pose pas et rien ne doit changer.
+    """
+    if not getattr(ctx, "is_mission_run", False):
+        return None
+    try:
+        subdir = ctx.mission_workspace_subdir()
+        guardrails = getattr(ctx, "file_guardrails", None)
+        if not subdir or guardrails is None:
+            return None
+        core = getattr(ctx, "core", None) or getattr(ctx, "_core", None)
+        orch = getattr(core, "task_orchestrator", None) if core else None
+        lead_id = getattr(ctx, "runtime_task_id", None)
+        if orch is None or not lead_id:
+            return None
+        meta = ((orch.get_task(lead_id) or {}).get("metadata")) or {}
+        if not meta.get("mission_published") or not meta.get("published_at"):
+            return None
+        mission_dir = (guardrails._workspace_root() / subdir).resolve()
+        if not mission_dir.is_dir():
+            return None
+        return (str(mission_dir), meta.get("published_at"))
+    except Exception:
+        return None
+
+
+def _mission_codeagent_scope(
+    ctx: HandlerContext, *, create_if_missing: bool = False
+) -> tuple[Optional[str], Optional[list[str]]]:
+    """Return the mission workspace and the optional worker write perimeter.
+
+    A top-level mission lead deliberately has no ``allowed_files`` because it owns
+    integration. It must still delegate inside its isolated mission directory;
+    otherwise the generic project resolver can select the global ``workspace`` and
+    make CodeAgent scan or validate unrelated projects. Workers use the same root
+    plus their stricter per-file perimeter.
+
+    LOT Z2 (run Sillage) — ``create_if_missing`` existe à cause d'un ordre nouveau :
+    depuis Z1b le lead délègue le code au CodeAgent AVANT tout ``delegate_and_wait``,
+    donc AVANT que quoi que ce soit ait créé ``missions/<task_id>``. Le ``is_dir()``
+    ci-dessous renvoyait alors None et le CodeAgent partait dans le workspace daté
+    générique pendant que le lead travaillait ailleurs : 15 refus « path traversal »
+    d'affilée, CodeAgent stérile, lead obligé de reprendre le code à la main. Créer
+    le dossier ici, c'est poser en avance ce que ``_ensure_mission_workspace`` posera
+    de toute façon. Réservé aux délégations de CODE : une mission d'effets (mail,
+    PDF, recherche) ne crée toujours aucun dossier et garde son comportement.
+    """
+    if not getattr(ctx, "is_mission_run", False):
+        return None, None
+    try:
+        subdir = ctx.mission_workspace_subdir()
+        guardrails = getattr(ctx, "file_guardrails", None)
+        if not subdir or guardrails is None:
+            return None, None
+        mission_dir = (guardrails._workspace_root() / subdir).resolve()
+        if not mission_dir.is_dir():
+            if not create_if_missing:
+                return None, None
+            try:
+                mission_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as _mk_exc:
+                logger.debug("[Z2] dossier de mission non créé ({}): {}", mission_dir, _mk_exc)
+                return None, None
+            if not mission_dir.is_dir():
+                return None, None
+        owned = ctx.mission_allowed_files_set()
+        return str(mission_dir), (sorted(owned) if owned else None)
+    except Exception:
+        return None, None
+
+
 def _path_within(child: Path, root: Path) -> bool:
     try:
         child.resolve().relative_to(root.resolve())
@@ -245,6 +320,15 @@ async def delegate_task_handler(
             except Exception as _rpc_exc:
                 logger.debug("delegate_task: récupération contexte récent échouée: {}", _rpc_exc)
 
+        # ── LOT I.2 — worker de MISSION : le CodeAgent code DANS le dossier mission, borné
+        # au PÉRIMÈTRE du worker (il n'écrira QUE ses fichiers assignés). Hors mission →
+        # rien de tout ça (params optionnels absents) → CodeAgent du chat strictement inchangé.
+        _mission_project_path, _mission_allowed = _mission_codeagent_scope(
+            ctx, create_if_missing=_agent_kind in _CODE_AGENT_KINDS
+        )
+        if _mission_project_path:
+            _effective_project_path = _mission_project_path
+
         # Phase 0.6 : injecter la demande utilisateur originale (verbatim)
         # dans le context passé au sub-agent. La reformulation LLM (description)
         # peut perdre l'intent ; on garde la phrase exacte pour Architect/CodeAgent.
@@ -273,10 +357,14 @@ async def delegate_task_handler(
         if (
             _agent_kind in _dev_agents
             and task_ctx.workspace_path is not None
-            and task_ctx.resolution_source in {"explicit_text", "explicit_text_new"}
+            and task_ctx.resolution_source in {
+                "explicit_text", "explicit_text_new",
+                "explicit_param", "explicit_param_new", "explicit_param_relocated",
+            }
             and ctx.runtime_root is not None
             and not _path_within(task_ctx.workspace_path, Path(ctx.runtime_root))
             and not _path_mentioned_by_user(task_ctx.workspace_path, _orig_user_q)
+            and not _mission_project_path
         ):
             logger.warning(
                 "delegate_task refuse : chemin hors runtime issu de la reformulation LLM ({})",
@@ -337,6 +425,8 @@ async def delegate_task_handler(
         # ─────────────────────────────────────────────────────────────────
 
         safe_context = task_ctx.to_legacy_dict()
+        if _mission_allowed:
+            safe_context["allowed_files"] = _mission_allowed  # LOT I.2 — périmètre → CodeAgent
 
         # ── Injection des skills actifs dans le CodeAgent ──
         try:
@@ -348,6 +438,54 @@ async def delegate_task_handler(
             pass
 
         logger.info("delegate_task: {}", task_ctx.summary())
+
+        # S4 - abonnement ChatGPT via Codex App Server. Le rail est strictement
+        # opt-in; le chemin historique reste inchangé en mode API.
+        from ...llm.codex_subscription import load_codex_subscription_settings
+        from ...llm.codex_codeagent import (
+            CodexCodeAgentResult,
+            run_codeagent_with_codex_subscription,
+            should_route_codeagent_to_codex,
+        )
+
+        _codex_settings = load_codex_subscription_settings()
+        _use_codex_subscription = should_route_codeagent_to_codex(
+            _agent_kind, _codex_settings
+        )
+        _codex_supervisor = None
+        if _use_codex_subscription:
+            from ...llm.codex_app_server import get_shared_codex_app_server
+
+            _codex_supervisor = get_shared_codex_app_server()
+            if _codex_supervisor is None:
+                return HandlerResult.fail(
+                    "⛔ CodeAgent est configuré sur l'abonnement ChatGPT, mais "
+                    "aucune session Codex App Server connectée n'est active. "
+                    "Ouvre Configuration > Accès OpenAI, connecte le compte "
+                    "ChatGPT puis relance. Aucun fallback API n'a été utilisé.",
+                    handler_name="delegate_task",
+                    status_code="codex_not_connected",
+                )
+
+        async def _execute_delegate():
+            if _use_codex_subscription:
+                if task_ctx.workspace_path is None:
+                    return CodexCodeAgentResult(
+                        task_id="codex_no_workspace",
+                        success=False,
+                        output="CodeAgent Codex exige un workspace projet explicite.",
+                        status_code="invalid_workspace",
+                    )
+                return await run_codeagent_with_codex_subscription(
+                    description,
+                    agent_type=_agent_kind,
+                    context=safe_context,
+                    workspace_path=task_ctx.workspace_path,
+                    allowed_files=_mission_allowed,
+                    settings=_codex_settings,
+                    supervisor=_codex_supervisor,
+                )
+            return await delegate_to_agent_full(description, agent_type, safe_context)
 
         # ── Canal cancel coopératif ───────────────────────────────────────────
         _parent_task_id = ctx.runtime_task_id
@@ -362,7 +500,7 @@ async def delegate_task_handler(
                 )
             from ...agents.sub_agent import _register_active_delegate, _unregister_active_delegate
             _exec_task: asyncio.Task = asyncio.create_task(
-                delegate_to_agent_full(description, agent_type, safe_context)
+                _execute_delegate()
             )
             _register_active_delegate(_parent_task_id, _exec_task)
             _watcher = asyncio.create_task(
@@ -381,16 +519,30 @@ async def delegate_task_handler(
                 _unregister_active_delegate(_parent_task_id)
                 _watcher.cancel()
         else:
-            result = await delegate_to_agent_full(description, agent_type, safe_context)
+            result = await _execute_delegate()
 
         # ── Vérification que les fichiers annoncés existent réellement ──
         _missing_artifacts: list = []
+        _still_stub_artifacts: list = []  # 2.9.D
         if result.artifacts and result.success:
             import os as _os_art
             for _art_path in result.artifacts[:20]:
                 try:
                     if not (_os_art.path.isfile(str(_art_path)) and _os_art.path.getsize(str(_art_path)) > 0):
                         _missing_artifacts.append(str(_art_path))
+                        continue
+                    # 2.9.D (re-run MotCompteur/DevisAPI) — le CodeAgent a clamé
+                    # « rempli » mais le fichier est resté un STUB (edit auto-reverté,
+                    # ou fabrication). On le DÉTECTE au lieu de propager le mensonge.
+                    if str(_art_path).lower().endswith(".py"):
+                        _txt = ""
+                        try:
+                            with open(str(_art_path), "r", encoding="utf-8", errors="ignore") as _fh:
+                                _txt = _fh.read()
+                        except Exception:
+                            _txt = ""
+                        if "raise NotImplementedError" in _txt or "TODO worker" in _txt:
+                            _still_stub_artifacts.append(str(_art_path))
                 except Exception:
                     pass
 
@@ -408,11 +560,34 @@ async def delegate_task_handler(
             _artifacts_str = "\n**Fichiers** : " + ", ".join(f"`{a}`" for a in result.artifacts[:20])
         if _missing_artifacts:
             _artifacts_str += "\n⚠️ **Fichiers annoncés mais absents ou vides** : " + ", ".join(f"`{p}`" for p in _missing_artifacts)
+        if _still_stub_artifacts:
+            _artifacts_str += (
+                "\n⚠️ **NON REMPLI(S) — encore des STUBS** (raise NotImplementedError/TODO présent) : "
+                + ", ".join(f"`{p}`" for p in _still_stub_artifacts)
+                + "\n→ La modification n'a PAS pris (edit reverté ou fabrication). "
+                "NE conclus PAS « rempli » : relance le CodeAgent, ou édite toi-même "
+                "(edit_file/apply_patch) le corps du fichier."
+            )
         _iterations = _meta.get("iterations", "?")
+        # LOT Z8 (run Tanière) — une correction postérieure à la publication ne
+        # part pas toute seule. Le CodeAgent vient de corriger dans le dossier de
+        # mission ; si la mission a DÉJÀ publié, l'utilisateur reçoit encore la
+        # version d'avant. C'est le point exact où le dire : la correction vient
+        # d'atterrir, et republier ne coûte qu'un appel d'outil.
+        _stale_note = ""
+        try:
+            _pub_meta = _mission_publication_meta(ctx)
+            if _pub_meta:
+                from src.subagents.style_coverage import publication_perimee_note
+
+                _stale_note = publication_perimee_note(*_pub_meta)
+        except Exception as _exc_z8:
+            logger.debug("[Z8] fraîcheur de publication non vérifiée: {}", _exc_z8)
         _report = (
             f"{_icon} **{agent_type}Agent terminé** ({_duration}, {_iterations} itérations)"
             f"{_artifacts_str}\n\n"
             f"{result.output}"
+            f"{_stale_note}"
         )
         if _suspicious_reason:
             _report += (
@@ -462,6 +637,7 @@ async def delegate_task_bg_handler(
         from ...utils.project_registry import resolve_workspace
         from ...agents.sub_agent import delegate_to_agent_bg
 
+        _agent_kind = (agent_type or "code").strip().lower()
         _lum = ctx.lumena
         _mem_fn = None
         if _lum:
@@ -491,6 +667,21 @@ async def delegate_task_bg_handler(
             except Exception as _rpc_exc_bg:
                 logger.debug("delegate_task_bg: récupération contexte récent échouée: {}", _rpc_exc_bg)
 
+        # Même racine et même périmètre que delegate_task : une délégation
+        # background ne doit pas perdre l'isolation d'un worker de mission.
+        _mission_project_path, _mission_allowed = _mission_codeagent_scope(
+            ctx, create_if_missing=_agent_kind in _CODE_AGENT_KINDS
+        )
+        if _mission_project_path:
+            _effective_project_path_bg = _mission_project_path
+
+        _orig_user_q = getattr(ctx, "original_user_query", "") or ""
+        if _orig_user_q:
+            if context is None:
+                context = {}
+            if isinstance(context, dict) and "user_original_request" not in context:
+                context["user_original_request"] = _orig_user_q
+
         task_ctx = TaskContext.from_delegate_call(
             description=description,
             context=context,
@@ -500,6 +691,8 @@ async def delegate_task_bg_handler(
             memory_fn=_mem_fn,
         )
         safe_context = task_ctx.to_legacy_dict()
+        if _mission_allowed:
+            safe_context["allowed_files"] = _mission_allowed
 
         # ── Injection des skills actifs dans le CodeAgent bg ──
         try:
@@ -527,10 +720,70 @@ async def delegate_task_bg_handler(
         except Exception:
             pass
 
-        task_id = await delegate_to_agent_bg(
-            description, agent_type, safe_context,
-            progress_callback=_progress_cb,
+        # L'abonnement Codex est un rail d'exécution, pas un simple modèle API.
+        # Il doit donc survivre à la délégation background au lieu de retomber
+        # sur core.llm (souvent deepseek-chat) et son auto-switch reasoner.
+        from ...llm.codex_subscription import load_codex_subscription_settings
+        from ...llm.codex_codeagent import (
+            run_codeagent_with_codex_subscription,
+            should_route_codeagent_to_codex,
         )
+
+        _codex_settings = load_codex_subscription_settings()
+        _use_codex_subscription = should_route_codeagent_to_codex(
+            _agent_kind, _codex_settings
+        )
+        if _use_codex_subscription:
+            from ...llm.codex_app_server import get_shared_codex_app_server
+
+            _codex_supervisor = get_shared_codex_app_server()
+            if _codex_supervisor is None or not _codex_supervisor.is_running:
+                return HandlerResult.fail(
+                    "⛔ CodeAgent est configuré sur l'abonnement ChatGPT, mais "
+                    "aucune session Codex App Server connectée n'est active. "
+                    "Ouvre Configuration > Accès OpenAI, connecte le compte "
+                    "ChatGPT puis relance. Aucun fallback API n'a été utilisé.",
+                    handler_name="delegate_task_bg",
+                    status_code="codex_not_connected",
+                )
+            if task_ctx.workspace_path is None:
+                return HandlerResult.fail(
+                    "⛔ CodeAgent Codex exige un workspace projet explicite. "
+                    "Aucun fallback API n'a été utilisé.",
+                    handler_name="delegate_task_bg",
+                    status_code="invalid_workspace",
+                )
+
+            async def _run_codex_bg():
+                return await run_codeagent_with_codex_subscription(
+                    description,
+                    agent_type=_agent_kind,
+                    context=safe_context,
+                    workspace_path=task_ctx.workspace_path,
+                    allowed_files=_mission_allowed,
+                    settings=_codex_settings,
+                    supervisor=_codex_supervisor,
+                )
+
+            from ...agents.codex_background import start_codex_codeagent_bg
+
+            task_id = await start_codex_codeagent_bg(
+                description,
+                agent_type=_agent_kind,
+                context=safe_context,
+                runner=_run_codex_bg,
+                progress_callback=_progress_cb,
+            )
+            logger.info(
+                "delegate_task_bg: route=codex_subscription task={} model={}",
+                task_id,
+                _codex_settings.default_model or "server-default",
+            )
+        else:
+            task_id = await delegate_to_agent_bg(
+                description, agent_type, safe_context,
+                progress_callback=_progress_cb,
+            )
         return HandlerResult.ok(
             f"🚀 **CodeAgent lancé en arrière-plan**\n"
             f"- **ID** : `{task_id}`\n"
@@ -684,6 +937,13 @@ async def bg_status_handler(
                     result_text += f"\n**Démarré**: {task_info['started_at']}"
                 if task_info.get("finished_at"):
                     result_text += f"\n**Terminé**: {task_info['finished_at']}"
+                _task_meta = task_info.get("meta") or {}
+                _engine = task_info.get("engine") or _task_meta.get("engine")
+                _model = task_info.get("model") or _task_meta.get("model")
+                if _engine == "codex_subscription":
+                    result_text += "\n**Moteur**: abonnement ChatGPT Codex"
+                if _model:
+                    result_text += f"\n**Modèle**: {_model}"
                 # Propager le statut réel dans HandlerResult.
                 if _status == "failed":
                     return HandlerResult.fail(

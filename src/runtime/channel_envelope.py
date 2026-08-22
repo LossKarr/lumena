@@ -16,12 +16,17 @@ def _new_id(prefix: str) -> str:
 
 def _normalize_channel(value: Optional[str]) -> str:
     normalized = (value or "web").strip().lower()
-    allowed = {"web", "ide", "telegram", "discord", "api", "whatsapp"}
+    allowed = {"web", "ide", "telegram", "discord", "api", "whatsapp", "voice"}
     if os.getenv("LUMENA_WEB_ONLY", "").strip().lower() in {"1", "true", "yes", "on"}:
         return "web"
     if normalized not in allowed:
         return "web"
     return normalized
+
+
+def _normalize_mode(value: Optional[str]) -> str:
+    normalized = (value or "chat").strip().lower()
+    return normalized if normalized in {"chat", "agent"} else "chat"
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,7 @@ class ChannelEnvelope:
     message_id: str
     task_id: Optional[str] = None
     client_caps: Dict[str, Any] = field(default_factory=dict)
+    mode: str = "chat"
     conversation_source: str = "explicit"
     ts_utc: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     schema_version: int = 1
@@ -48,6 +54,7 @@ class ChannelEnvelope:
         message_id: Optional[str],
         task_id: Optional[str],
         client_caps: Optional[Dict[str, Any]],
+        mode: Optional[str] = None,
     ) -> "ChannelEnvelope":
         return cls(
             channel=_normalize_channel(channel),
@@ -57,6 +64,7 @@ class ChannelEnvelope:
             message_id=(message_id or _new_id("msg")).strip(),
             task_id=(task_id or "").strip() or None,
             client_caps=dict(client_caps or {}),
+            mode=_normalize_mode(mode),
             conversation_source="explicit" if (conversation_id or "").strip() else "generated",
         )
 

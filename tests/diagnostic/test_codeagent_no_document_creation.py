@@ -77,18 +77,35 @@ class TestDelegateTaskDocumentGuard:
         assert "create_pdf" in result.error or "développement" in result.error
 
     @pytest.mark.asyncio
-    async def test_dev_task_not_blocked(self):
+    async def test_dev_task_not_blocked(self, tmp_path):
         # Tâche de dev mentionnant un document → ne doit PAS être bloquée par
         # le garde-fou (elle peut échouer plus loin faute de contexte, mais
         # surtout pas avec le message de redirection document).
-        ctx = MagicMock()
-        ctx.original_user_query = ""
-        ctx.runtime_root = None
-        result = await delegate_task_handler(
-            ctx,
-            description="corrige le bug dans la fonction generate_pdf du module export",
-            agent_type="code",
+        ctx = HandlerContext.for_testing(
+            lumena_root=tmp_path,
+            runtime_root=tmp_path / "workspace",
         )
+        ctx.runtime_root.mkdir(exist_ok=True)
+        ctx.original_user_query = ""
+        delegated = AgentResult(
+            task_id="dev-task",
+            success=True,
+            output="Mutation du module export terminee",
+            status_code=StatusCode.SUCCESS,
+            duration_ms=1200,
+            meta={"iterations": 2},
+        )
+        with patch(
+            "src.agents.sub_agent.delegate_to_agent_full",
+            new=AsyncMock(return_value=delegated),
+        ):
+            result = await delegate_task_handler(
+                ctx,
+                description="corrige le bug dans la fonction generate_pdf du module export",
+                agent_type="code",
+                project_path=str(ctx.runtime_root),
+            )
+        assert result.success is True
         if result.success is False:
             assert "réservé au développement" not in (result.error or "")
 

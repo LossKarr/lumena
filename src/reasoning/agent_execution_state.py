@@ -39,6 +39,26 @@ class LoopGuards:
     last_browser_progress_sig: Optional[tuple] = None
     browser_no_progress_streak: int = 0
 
+    # LOT 2.11.C/D — preview LOCALE servie par Lumena : inspection visuelle
+    # répétée (screenshot/dom_state) sans progrès. Les outils VISUELS ne comptent
+    # pas dans browser_no_progress_streak (réservé aux vraies actions) → sur un
+    # jeu/preview local, screenshot en boucle ne déclenchait AUCUN stop (run memo).
+    local_preview_blind_streak: int = 0
+    local_preview_evaluate_asked: bool = False
+    # LOT 2.12.D — une assertion `browser_evaluate` a-t-elle PROUVÉ l'interactif
+    # (état JS réel : compteur/score/DOM) sur la preview locale ? Sans cette preuve,
+    # un FINAL qui affirme « jeu démarré / serpent redirigé » (run snake) fabrique.
+    local_preview_interaction_proven: bool = False
+    # M106: a click alone is not proof. Keep the last DOM-read fingerprint and
+    # require a successful user action followed by a different local DOM read.
+    local_preview_last_read_fingerprint: str = ""
+    local_preview_mutation_since_read: bool = False
+    # LOT Z23 — l'interactif a-t-il été jugé NON PROUVABLE sur cette preview ?
+    # Constat acquis et définitif : il ferme la boucle d'inspection (sans quoi on
+    # retombe sur le rebouclage infini du run memo) SANS terminer la mission.
+    # Avant Z23, ce constat faisait `return` : le run entier mourait avec lui.
+    local_preview_interaction_unprovable: bool = False
+
     # Stagnation par thoughts répétés
     stagnation_streak: int = 0
     exploratory_since_productive: int = 0

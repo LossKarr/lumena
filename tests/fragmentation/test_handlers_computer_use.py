@@ -6,6 +6,7 @@ src.computer_use, src.computer_use.vision, pyautogui, etc.
 
 import asyncio
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
@@ -42,6 +43,7 @@ from src.reasoning.handlers.computer_use import (
     ui_type,
     wait,
     _resolve_close_targets,
+    _protected_process_names,
     IS_WINDOWS,
 )
 from src.reasoning.handlers.context import HandlerContext
@@ -176,6 +178,53 @@ class TestCloseApp:
             mock_sub.run.return_value = MagicMock(returncode=0)
             r = await (close_app(ctx, name="chrome"))
         assert r.success
+
+    async def test_mission_cannot_close_host_terminals(self):
+        ctx = _make_ctx()
+        ctx.is_mission_run = True
+        with patch("src.reasoning.handlers.computer_use.subprocess") as mock_sub:
+            r = await close_app(
+                ctx,
+                name="flask.exe",
+                close_terminals=True,
+                force=True,
+                confirm=True,
+            )
+        assert not r.success
+        assert "stop_website_server" in r.output
+        mock_sub.run.assert_not_called()
+
+    async def test_runtime_ancestry_image_is_never_killed(self):
+        ctx = _make_ctx()
+        with (
+            patch(
+                "src.reasoning.handlers.computer_use._protected_process_names",
+                return_value={"powershell.exe", "python.exe"},
+            ),
+            patch("src.reasoning.handlers.computer_use.subprocess") as mock_sub,
+        ):
+            r = await close_app(ctx, name="powershell", confirm=True)
+        assert not r.success
+        assert "processus parent protégé" in r.output
+        mock_sub.run.assert_not_called()
+
+    async def test_external_application_remains_closable(self):
+        ctx = _make_ctx()
+        with (
+            patch(
+                "src.reasoning.handlers.computer_use._protected_process_names",
+                return_value={"python.exe", "powershell.exe"},
+            ),
+            patch("src.reasoning.handlers.computer_use.subprocess") as mock_sub,
+        ):
+            mock_sub.run.return_value = MagicMock(returncode=0)
+            r = await close_app(ctx, name="notepad", confirm=True)
+        assert r.success
+        mock_sub.run.assert_called_once()
+
+
+def test_protected_process_names_always_contains_current_interpreter():
+    assert Path(sys.executable).name.casefold() in _protected_process_names()
 
 
 # ─── _resolve_close_targets ───────────────────────────────────────────────

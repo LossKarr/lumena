@@ -14,6 +14,7 @@ l'imprononçable. Le SpeechPlanner viendra plus tard.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import List, Set
 
@@ -48,6 +49,16 @@ _RE_HASH = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 _RE_LONG_IDENT = re.compile(r"\b[A-Za-z0-9_]{24,}\b")
 _RE_TRACE = re.compile(r"(?im)^\s*traceback|^\s*at\s+\w+.*line\s+\d+|File \".*\", line \d+")
 _RE_SQL_LINE = re.compile(r"(?im)^\s*(select|insert|update|delete|create|drop|alter|truncate)\b.*$")
+_RE_EMOJI = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000026FF"
+    "\U00002700-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U0000FE00-\U0000FE0F"
+    "]+",
+    flags=re.UNICODE,
+)
 
 
 @dataclass
@@ -108,3 +119,34 @@ def normalize_for_speech(text: str) -> SpeechText:
     s = re.sub(r"[ \t]{2,}", " ", s)
     s = re.sub(r"\n{3,}", "\n\n", s).strip()
     return SpeechText(spoken=s, suppressed=suppressed)
+
+
+def prepare_for_tts(text: str) -> str:
+    """Return the canonical French text actually sent to a TTS engine.
+
+    This projection never changes the displayed answer. It removes formatting
+    that Piper pronounces literally and recomposes combining accents before
+    phonemization.
+    """
+    s = normalize_for_speech(text or "").spoken
+    s = unicodedata.normalize("NFC", s)
+    for source, target in (
+        ("’", "'"), ("‘", "'"), ("“", ""), ("”", ""),
+        ('"', ""), ("«", ""), ("»", ""), ("…", "..."),
+    ):
+        s = s.replace(source, target)
+    s = re.sub(r"(?m)^\s*[-*•]\s+", "", s)
+    s = re.sub(r"[*_`#>]+", " ", s)
+    s = re.sub(r"\s+[-–—]\s+", ", ", s)
+    s = s.replace("—", ", ").replace("–", ", ")
+    s = _RE_EMOJI.sub("", s)
+    s = re.sub(r"\s*/\s*", ", ", s)
+    s = re.sub(r"\n{2,}", ". ", s)
+    s = re.sub(r"\n", ". ", s)
+    s = re.sub(r"\s+([,.!?;:])", r"\1", s)
+    s = re.sub(r"\.\s*,", ", ", s)
+    s = re.sub(r"([?!:;])\s*\.", r"\1", s)
+    s = re.sub(r"\.{4,}", "...", s)
+    s = re.sub(r"(?:,\s*){2,}", ", ", s)
+    s = re.sub(r"[ \t]{2,}", " ", s)
+    return re.sub(r"^[\s,]+", "", s).strip()

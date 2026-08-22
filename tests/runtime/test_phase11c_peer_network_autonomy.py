@@ -124,7 +124,7 @@ class TestPeerNetworkAutonomy:
                 "instance_name": "Salon",
                 "host": "192.168.1.100",
                 "port": 8081,
-                "version": "1.0.46",
+                "version": "1.0.47",
                 "role": "standalone",
                 "capabilities": ["chat", "browser"],
                 "requires_pairing": True,

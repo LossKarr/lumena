@@ -23,6 +23,14 @@ ACTION_ALIASES = {
     "final": "done",
 }
 
+# CA-1 (run démineur 2026-07-12) — le LLM émet parfois la forme ReAct
+# `{"action": "str_replace", "args": {"path": …, "old_str": …, "new_str": …}}` :
+# le JSON parse, l'action est connue, mais TOUS les champs sont « manquants » au
+# niveau racine → boucle de refus infinie (le message de correction ne disait pas
+# de désimbriquer). Le registre ReAct dépaquette EXACTEMENT ces wrappers
+# (tool_registry._WRAPPER_KEYS) — même invariant ici. La racine gagne toujours.
+WRAPPER_KEYS = ("args", "arguments", "params", "parameters", "input", "payload", "data")
+
 FIELD_ALIASES = {
     "apply_patch": {"patchText": "patch", "patch_text": "patch"},
     "edit_file": {"old_str": "search", "new_str": "replace", "oldString": "search", "newString": "replace"},
@@ -86,6 +94,16 @@ def normalize_codeagent_action(action: dict[str, Any]) -> dict[str, Any]:
     raw_action = str(normalized.get("action", "") or "").strip()
     if raw_action:
         normalized["action"] = ACTION_ALIASES.get(raw_action, raw_action)
+
+    # CA-1 — dépaqueter les champs imbriqués sous un wrapper (forme ReAct).
+    # Fusion NON destructive : un champ déjà présent à la racine n'est jamais
+    # écrasé par le wrapper. Le wrapper reste en place (inoffensif).
+    for _wk in WRAPPER_KEYS:
+        _inner = normalized.get(_wk)
+        if isinstance(_inner, dict) and _inner:
+            for _k, _v in _inner.items():
+                if _k not in normalized:
+                    normalized[_k] = _v
 
     action_type = str(normalized.get("action", "") or "")
     for source, target in FIELD_ALIASES.get(action_type, {}).items():

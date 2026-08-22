@@ -69,7 +69,7 @@ async def _amain(args) -> int:
         calibrate=not args.no_calibrate, calibrate_ms=args.calibrate_ms,
         prewarm=not args.no_prewarm,
         disable_tools=not args.allow_tools,
-        llm_mode=("agent" if args.agent else "core_chat" if args.core_chat else "direct"),
+        llm_mode=("agent" if args.agent else "direct" if args.direct_benchmark else "core_chat"),
         agent_max_iterations=args.agent_max_iterations)
     return 0
 
@@ -87,10 +87,12 @@ def main() -> int:
     ap.add_argument("--allow-tools", action="store_true",
                     help="Autorise core.chat à utiliser chat_with_tools. Défaut: outils désactivés en live voix.")
     ap.add_argument("--core-chat", action="store_true",
-                    help="Utilise core.chat complet au lieu du LLM direct court. Plus lent et avec mémoire/hooks.")
+                    help="Compatibilité : core.chat officiel est désormais le défaut.")
+    ap.add_argument("--direct-benchmark", action="store_true",
+                    help="LABO uniquement : LLM direct sans session/mémoire/outils. Jamais utilisé en produit.")
     ap.add_argument("--agent", action="store_true",
                     help="Mode TASK-AWARE : think_and_act (ReAct/outils) en tâche de fond, "
-                         "feedback vocal + annulation coopérative. Défaut: direct (labo).")
+                         "feedback vocal + annulation coopérative. Défaut produit: mode Chat officiel.")
     ap.add_argument("--agent-max-iterations", type=int,
                     default=int(os.getenv("LUMENA_VOICE_AGENT_MAX_ITER", "6")),
                     help="Plafond ReAct en mode --agent voix (ou env LUMENA_VOICE_AGENT_MAX_ITER). "

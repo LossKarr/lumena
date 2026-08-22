@@ -451,13 +451,26 @@ class DOMIndexer:
                                 continue;
                             }
 
+                            // LOT Z19 — `DOMElement.options` etait declare (l. 137) et
+                            // rendu par to_text() (l. 162-165), mais ce chemin de repli
+                            // ecrivait [] en dur. Resultat mesure au run « Pelage » :
+                            // le modele lisait `combobox "-- Choisir --Marie Curie"`
+                            // (nameFromEl retombe sur textContent) au lieu des vrais
+                            // choix. Le fait etait declare, affichable, et vide.
+                            const options = (String(el.tagName || '').toLowerCase() === 'select')
+                                ? Array.from(el.options || [])
+                                    .map(o => String(o.textContent || '').trim())
+                                    .filter(Boolean)
+                                    .slice(0, 40)
+                                : [];
+
                             out.push({
                                 role,
                                 name,
                                 description: '',
                                 checked: typeof el.checked === 'boolean' ? !!el.checked : null,
                                 disabled,
-                                options: [],
+                                options,
                             });
                             if (out.length >= 300) return out;
                         }

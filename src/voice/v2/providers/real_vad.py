@@ -62,6 +62,7 @@ class RealVADProvider(VADProvider):
                  speaking_threshold: Optional[int] = None,
                  is_speaking_fn: Optional[Callable[[], bool]] = None,
                  partial_every_ms: int = 0,
+                 input_device_index: Optional[int] = None,
                  frames: Optional[Iterable[bytes]] = None,
                  rms_fn: Optional[Callable[[bytes], float]] = None):
         self.energy_threshold = energy_threshold
@@ -74,6 +75,7 @@ class RealVADProvider(VADProvider):
         # (défaut inchangé : seulement start/end + final).
         self.partial_every_ms = partial_every_ms
         self.partial_utterance: bytes = b""
+        self.input_device_index = input_device_index
         # SELF-VOICE GUARD : pendant que Lumena parle (is_speaking_fn() == True), on
         # exige un seuil PLUS HAUT pour qu'un barge-in se déclenche → l'écho de Piper
         # réentendu par le micro (énergie modérée) ne passe pas, mais une vraie voix
@@ -222,8 +224,13 @@ class RealVADProvider(VADProvider):
         loop = asyncio.get_running_loop()
         chunk = int(self.SAMPLE_RATE * self.frame_ms / 1000)
         pa = pyaudio.PyAudio()
-        stream = pa.open(format=pyaudio.paInt16, channels=1, rate=self.SAMPLE_RATE,
-                         input=True, frames_per_buffer=chunk)
+        open_kwargs = {
+            "format": pyaudio.paInt16, "channels": 1, "rate": self.SAMPLE_RATE,
+            "input": True, "frames_per_buffer": chunk,
+        }
+        if self.input_device_index is not None:
+            open_kwargs["input_device_index"] = int(self.input_device_index)
+        stream = pa.open(**open_kwargs)
         try:
             while not self._stop_requested:
                 frame = await loop.run_in_executor(

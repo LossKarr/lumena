@@ -10,6 +10,7 @@ import uuid
 
 WorkspacePolicyValue = Literal["default", "explicit", "strict_default"]
 UserRoleValue = Literal["owner", "admin", "user", "guest", "peer"]
+RuntimeModeValue = Literal["chat", "agent"]
 
 FALLBACK_USER_ID = "local:owner"
 FALLBACK_OWNER_USER_ID = "local:owner"
@@ -29,6 +30,11 @@ def _normalize_policy(value: Optional[str]) -> WorkspacePolicyValue:
     if normalized not in {"default", "explicit", "strict_default"}:
         return "default"
     return normalized  # type: ignore[return-value]
+
+
+def _normalize_mode(value: Optional[str]) -> RuntimeModeValue:
+    normalized = str(value or "chat").strip().lower()
+    return normalized if normalized in {"chat", "agent"} else "chat"  # type: ignore[return-value]
 
 
 def _normalize_role(value: Optional[str], *, default: UserRoleValue = _DEFAULT_LOCAL_ROLE) -> UserRoleValue:
@@ -56,6 +62,7 @@ class RuntimeContext:
     request_id: str
     conversation_id: str
     message_id: str
+    mode: RuntimeModeValue = "chat"
     # ── Identité utilisateur (Phase 0) ────────────────────────────────────
     user_id: str = FALLBACK_USER_ID
     owner_user_id: str = FALLBACK_OWNER_USER_ID
@@ -98,6 +105,7 @@ class RuntimeContext:
         user_role: Optional[str] = None,
         profile_id: Optional[str] = None,
         instance_id: Optional[str] = None,
+        mode: Optional[str] = None,
     ) -> "RuntimeContext":
         from src.utils.paths import INSTANCE_ID as _INSTANCE_ID
         resolved_channel = (channel or "web").strip().lower()
@@ -111,6 +119,7 @@ class RuntimeContext:
             request_id=(request_id or _new_id("req")).strip(),
             conversation_id=(conversation_id or _new_id("conv")).strip(),
             message_id=(message_id or _new_id("msg")).strip(),
+            mode=_normalize_mode(mode),
             user_id=_safe_str(user_id, FALLBACK_USER_ID),
             owner_user_id=_safe_str(owner_user_id, FALLBACK_OWNER_USER_ID),
             user_role=_normalize_role(user_role, default=_role_default),

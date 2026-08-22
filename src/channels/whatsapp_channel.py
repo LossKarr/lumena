@@ -473,6 +473,15 @@ class WhatsAppChannel(BaseChannel):
             await self.send_message("❌ Impossible de télécharger le document.", sender)
             return
 
+        from ..documents.ingest import index_received_document
+        asyncio.create_task(asyncio.to_thread(
+            index_received_document,
+            save_path,
+            source_kind="whatsapp",
+            source_uri=f"whatsapp:{sender}:{msg_id}",
+            metadata={"sender": sender, "original_filename": filename},
+        ))
+
         file_size = save_path.stat().st_size
         suffix = save_path.suffix.lower()
         text_like = mime_type.startswith("text/") or suffix in {

@@ -94,6 +94,18 @@ class TestReactMode:
         result = classify_intent("Écris un script Python pour scraper des données puis envoie par mail")
         assert result == RequestMode.REACT
 
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "Génère-moi un bon de commande test",
+            "Crée un devis professionnel",
+            "Prépare une attestation de travail",
+            "Rédige un contrat de prestation",
+        ],
+    )
+    def test_document_studio_artifacts_are_not_chat(self, query):
+        assert classify_intent(query) == RequestMode.REACT
+
 
 class TestEdgeCases:
     """Cas limites."""

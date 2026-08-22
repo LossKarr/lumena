@@ -259,6 +259,41 @@ def _resolve_close_targets(name: str, close_terminals: bool) -> List[str]:
     return unique_targets
 
 
+def _protected_process_names() -> set[str]:
+    """Return executable names for Lumena and its current process ancestry.
+
+    ``close_app`` kills by image name on Windows.  A mission that targets a
+    terminal image can therefore kill the shell hosting Lumena as well.  The
+    ancestry is resolved at execution time so normal external applications
+    remain closable while the current runtime is fail-closed.
+    """
+    protected = {Path(sys.executable).name.casefold()}
+    try:
+        import psutil
+
+        process = psutil.Process(os.getpid())
+        seen: set[int] = set()
+        for _ in range(32):
+            pid = int(process.pid)
+            if pid in seen:
+                break
+            seen.add(pid)
+            try:
+                name = str(process.name() or "").strip().casefold()
+            except Exception:
+                name = ""
+            if name:
+                protected.add(name)
+            process = process.parent()
+            if process is None:
+                break
+    except Exception:
+        # ``sys.executable`` still protects the Lumena interpreter when process
+        # inspection is unavailable.  psutil is a declared runtime dependency.
+        pass
+    return protected
+
+
 # ─── Handlers ──────────────────────────────────────────────────────────────
 
 async def screenshot(ctx: HandlerContext) -> HandlerResult:
@@ -322,6 +357,13 @@ async def close_app(
 ) -> HandlerResult:
     """Ferme une application (ou les terminaux) pour éviter la saturation."""
     try:
+        if ctx.is_mission_run and close_terminals:
+            return HandlerResult.fail(
+                "Action refusée : une mission ne peut pas fermer les terminaux de "
+                "la machine, car l'un d'eux peut héberger Lumena. Pour une preview "
+                "web, utilise stop_website_server."
+            )
+
         # CU-1/CU-1b — close_app force-kill via taskkill : il CONTOURNE le
         # contrôleur, donc on applique les garde-fous ici aussi.
         from ...computer_use.safety import enforce, require_approval, CUBlockedError
@@ -343,6 +385,15 @@ async def close_app(
 
         if not targets:
             return HandlerResult.fail("close_app: cible vide (ex: name='cmd' ou close_terminals=true)")
+
+        protected = _protected_process_names()
+        overlap = sorted({target.casefold() for target in targets} & protected)
+        if overlap:
+            return HandlerResult.fail(
+                "Action refusée : la cible recouvre Lumena ou un processus parent "
+                f"protégé ({', '.join(overlap)}). Utilise l'outil d'arrêt dédié au "
+                "service concerné."
+            )
 
         closed: List[str] = []
         failed: List[str] = []

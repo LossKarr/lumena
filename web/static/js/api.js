@@ -201,23 +201,52 @@ export async function loadHooks(){
 export async function loadVoiceStatus(){
   try{
     const _vs={};if(ADMIN_TOKEN)_vs['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-    const r=await fetch(`${API_BASE}/api/voice/status`,{headers:_vs});const d=await r.json();updateVoiceUI(d.running);
+    const r=await fetch(`${API_BASE}/api/voice/status`,{headers:_vs});const d=await r.json();updateVoiceUI(d);
   }catch(e){}
 }
 
 export async function toggleVoiceAssistant(){
   const btn=document.getElementById('voice-toggle-btn');btn.disabled=true;btn.textContent='...';
-  try{const vh={};if(ADMIN_TOKEN)vh['Authorization']=`Bearer ${ADMIN_TOKEN}`;const r=await fetch(`${API_BASE}/api/voice/toggle`,{method:'POST',headers:vh});const d=await r.json();updateVoiceUI(d.running);logC(d.message,d.running?'success':'info')}
+  try{const vh={};if(ADMIN_TOKEN)vh['Authorization']=`Bearer ${ADMIN_TOKEN}`;const r=await fetch(`${API_BASE}/api/voice/toggle`,{method:'POST',headers:vh});const d=await r.json();updateVoiceUI(d);logC(d.message,d.running?'success':'info')}
   catch(e){logC(e.message,'error')}finally{btn.disabled=false}
 }
 
-export function updateVoiceUI(running){
+export function updateVoiceUI(status){
+  const d=typeof status==='object'&&status?status:{running:!!status};const running=!!d.running;
   const btn=document.getElementById('voice-toggle-btn');
   const dot=document.getElementById('voice-dot');
   const txt=document.getElementById('voice-status-text');
   const badge=document.getElementById('badge-voice');
   if(running){btn.textContent="Arreter l'ecoute";btn.classList.add('active');dot.classList.add('ok');txt.textContent="Lumena ecoute";txt.style.color="var(--ok)";badge.textContent="ON";badge.style.background="var(--ok)"}
   else{btn.textContent="Demarrer l'ecoute";btn.classList.remove('active');dot.classList.remove('ok');txt.textContent="Desactive";txt.style.color="var(--muted)";badge.textContent="OFF";badge.style.background="var(--danger)"}
+  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=(v===undefined||v===null||v==='')?'—':String(v)};
+  set('voice-pipeline',`${d.backend||'—'} / ${d.state||'—'}`);
+  set('voice-mode-role',`${d.mode||'—'} / ${d.session_role||'—'}${d.session_trusted?' (appairé)':''}`);
+  set('voice-provider',`${d.provider||'—'}${d.degraded?' (dégradé)':''}`);
+  set('voice-first-audio',Number.isFinite(d.first_audio_ms)?`${Math.round(d.first_audio_ms)} ms`:'—');
+  set('voice-task',d.task_id||'aucune');
+  set('voice-privacy',d.cloud_allowed?'cloud autorisé':'local strict');
+}
+
+export async function stopVoiceAudio(){
+  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+  const r=await fetch(`${API_BASE}/api/voice/stop-audio`,{method:'POST',headers:h});const d=await r.json();
+  logC(d.stopped?'Voix coupée, travail conservé':'Aucun audio actif','info');
+}
+
+export async function toggleVoiceMute(){
+  const btn=document.getElementById('voice-mute-btn');const enabled=!btn.classList.contains('active');
+  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+  const r=await fetch(`${API_BASE}/api/voice/mute?enabled=${enabled}`,{method:'POST',headers:h});const d=await r.json();
+  btn.classList.toggle('active',!!d.muted);btn.innerHTML=d.muted?'<i data-lucide="mic"></i> Unmute':'<i data-lucide="mic-off"></i> Mute';
+  if(window.lucide)window.lucide.createIcons();
+}
+
+export async function testVoiceOutput(){
+  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+  const r=await fetch(`${API_BASE}/api/voice/test-output`,{method:'POST',headers:h});
+  if(!r.ok)throw new Error('Voice V2 doit être démarrée pour le test audio');
+  logC('Phrase de test envoyée au moteur vocal','success');
 }
 
 /* ============================================================

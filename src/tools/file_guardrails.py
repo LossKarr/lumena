@@ -202,6 +202,35 @@ def check_delete_allowed(resolved: Path, lumena_root: Path, workspace_root: Path
         )
 
 
+def strip_mission_workspace_prefix(path_str: str, subdir: str) -> str:
+    """LOT 2.8 (run BudgetBuddy) — ramène un chemin à sa forme RELATIVE au dossier
+    de mission. Les modèles recopient le chemin complet (`missions/<id>/app.py`,
+    voire `workspace/missions/<id>/app.py`) alors que le résolveur préfixe DÉJÀ le
+    dossier de mission → duplication `missions/<id>/missions/<id>/…`. On strippe
+    défensivement (en boucle : tue aussi un chemin déjà dupliqué) les préfixes
+    `workspace/` et `<subdir>/`. Pur ; sans subdir → chemin inchangé (hors mission)."""
+    s = (path_str or "").replace("\\", "/").lstrip("/")
+    sub = (subdir or "").replace("\\", "/").strip("/")
+    if not sub:
+        return path_str
+    sub_low = sub.lower() + "/"
+    changed = True
+    while changed:
+        changed = False
+        if s.lower().startswith("workspace/"):
+            s = s[len("workspace/"):]
+            changed = True
+        if s.lower().startswith(sub_low):
+            s = s[len(sub_low):]
+            changed = True
+        # A1 — alias court `mission/` (singulier, non ambigu) : un worker peut
+        # désigner son dossier sans jamais recopier l'identifiant long.
+        if s.lower().startswith("mission/"):
+            s = s[len("mission/"):]
+            changed = True
+    return s
+
+
 @dataclass
 class FileWriteResult:
     """Result of a strict write operation."""
@@ -372,6 +401,7 @@ class WorkspaceFileGuardrails:
         path: str,
         want_dir: bool = False,
         outside_grant: Optional[OutsideAccessGrant] = None,
+        mission_workspace_subdir: Optional[str] = None,
     ) -> Path:
         """Resolve a read/list/edit path with workspace fallback.
 
@@ -409,6 +439,17 @@ class WorkspaceFileGuardrails:
                 resolved = root_candidate
             elif candidate.exists():
                 resolved = candidate.resolve()
+            elif mission_workspace_subdir:
+                # LOT 2.1 — le fichier du dossier de la mission PRIME sur un homonyme
+                # (find_workspace_match). Existe → lecture ; sinon → création dans le
+                # dossier de la mission (cohérence read-après-write). Param explicite.
+                # LOT 2.8 — strip défensif anti-duplication (chemin complet recopié).
+                _cand_28 = Path(strip_mission_workspace_prefix(
+                    str(candidate), mission_workspace_subdir))
+                resolved = (
+                    self._workspace_root() / mission_workspace_subdir
+                    / self.sanitize_workspace_relative_path(_cand_28)
+                )
             else:
                 workspace_match = self.find_workspace_match(candidate, want_dir=want_dir)
                 if workspace_match:
@@ -502,9 +543,27 @@ class WorkspaceFileGuardrails:
         finally:
             cls._pinned_project = prev
 
-    def get_workspace_path(self, original_path: str, project_name: Optional[str] = None) -> Path:
+    def get_workspace_path(
+        self,
+        original_path: str,
+        project_name: Optional[str] = None,
+        mission_workspace_subdir: Optional[str] = None,
+    ) -> Path:
         """Compute workspace target path while preserving relative subfolders."""
         original = Path(original_path)
+
+        # LOT 2.1 — scope mission : dossier ISOLÉ, DÉTERMINISTE (pas de date, pas de
+        # dérivation par nom, PAS de _pinned_project de classe → concurrence-safe).
+        # Param explicite fourni par le handler ; None → résolution actuelle.
+        if mission_workspace_subdir:
+            # LOT 2.8 — strip défensif : le modèle passe souvent le chemin complet
+            # (missions/<id>/app.py) → sans strip, duplication missions/<id>/missions/<id>.
+            original = Path(strip_mission_workspace_prefix(
+                str(original), mission_workspace_subdir))
+            workspace_dir = self._workspace_root() / mission_workspace_subdir
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+            return workspace_dir / self.sanitize_workspace_relative_path(original)
+
         today = datetime.now().strftime("%Y-%m-%d")
         ext = original.suffix.lower()
 
@@ -538,11 +597,19 @@ class WorkspaceFileGuardrails:
         relative_original = self.sanitize_workspace_relative_path(original)
         return workspace_dir / relative_original
 
-    def resolve_write_target(self, path: str, project_name: Optional[str] = None) -> Tuple[Path, bool, str]:
+    def resolve_write_target(
+        self,
+        path: str,
+        project_name: Optional[str] = None,
+        mission_workspace_subdir: Optional[str] = None,
+    ) -> Tuple[Path, bool, str]:
         """Resolve a write target path and workspace metadata."""
         original = Path(path)
         if self.should_use_workspace(path) and not original.is_absolute():
-            target = self.get_workspace_path(path, project_name=project_name)
+            target = self.get_workspace_path(
+                path, project_name=project_name,
+                mission_workspace_subdir=mission_workspace_subdir,
+            )
             rel = str(target.relative_to(self.lumena_root)).replace("\\", "/")
             return target, True, rel
 
@@ -607,9 +674,20 @@ class WorkspaceFileGuardrails:
         content: str,
         project_name: Optional[str] = None,
         require_non_empty: bool = True,
+        mission_workspace_subdir: Optional[str] = None,
     ) -> FileWriteResult:
         """Write and validate immediately."""
-        target, redirected, workspace_relative = self.resolve_write_target(path, project_name=project_name)
+        target, redirected, workspace_relative = self.resolve_write_target(
+            path, project_name=project_name,
+            mission_workspace_subdir=mission_workspace_subdir,
+        )
+        # LOT Z25 — un dossier qui NAIT ici doit se voir. Le message disait deja
+        # le chemin complet, mais rien ne signalait qu'il venait d'etre INVENTE :
+        # un chemin plausible + aucun signal de nouveaute = le modele croit avoir
+        # ecrit dans le livrable. Run « jeu 3D » : `jeu-3d-monde-ouvert/README.md`
+        # relatif a resolu sous missions/<id>/, un arbre neuf qui PORTE LE NOM du
+        # livrable — le README n'a jamais rejoint `workspace/jeu-3d-monde-ouvert/`.
+        _parent_existed = target.parent.exists()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
 
@@ -631,6 +709,7 @@ class WorkspaceFileGuardrails:
         msg = f"✅ Fichier ecrit: {target.name} ({len(content)} caracteres)\n📍 Chemin complet: {target}"
         if redirected:
             msg += f"\n📁 Range dans le workspace: {workspace_relative}"
+        msg += self._new_directory_notice(target, _parent_existed)
         return FileWriteResult(
             success=True,
             file_path=target,
@@ -638,6 +717,43 @@ class WorkspaceFileGuardrails:
             workspace_redirected=redirected,
             workspace_relative=workspace_relative,
         )
+
+    def _new_directory_notice(self, target: Path, parent_existed: bool) -> str:
+        """LOT Z25 — dire qu'un dossier vient de naitre, et s'il a un homonyme.
+
+        Deux notes, factuelles, jamais bloquantes :
+          1. le dossier parent n'existait pas -> il a ete CREE a l'instant ;
+          2. un dossier du MEME NOM existe deja a la racine du workspace, la ou
+             vivent les livrables -> tres probablement l'endroit voulu.
+
+        La note 2 est celle qui aurait sauve le README du run « jeu 3D » :
+        `workspace/jeu-3d-monde-ouvert/` existait deja quand l'arbre fantome
+        `missions/<id>/jeu-3d-monde-ouvert/` est ne. Ne leve jamais.
+        """
+        if parent_existed:
+            return ""
+        try:
+            parent = Path(target).parent
+            note = f"\n🆕 Dossier CREE (il n'existait pas) : {parent}"
+        except Exception:
+            return ""
+        # La recherche d'homonyme touche le disque : elle peut echouer. Elle a
+        # son propre garde — sinon un echec ICI jetterait la note de naissance,
+        # qui n'en depend pas. (C'est exactement le defaut que tout ce chantier
+        # corrige : un fait acquis perdu a cause d'un calcul voisin.)
+        try:
+            nom = parent.name
+            if nom:
+                jumeau = self._workspace_root() / nom
+                if jumeau.exists() and jumeau.resolve() != parent.resolve():
+                    note += (
+                        f"\n⚠️ Un dossier '{nom}' existe DEJA ici : {jumeau}. "
+                        "Tu viens d'en creer un SECOND, ailleurs — ce que tu ecris "
+                        "n'ira pas dans le premier. Verifie que c'est bien voulu."
+                    )
+        except Exception:
+            pass
+        return note
 
     def _syntax_errors(self, file_path: Path, content: str) -> List[str]:
         """Perform lightweight syntax checks by extension."""

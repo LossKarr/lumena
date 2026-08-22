@@ -16,10 +16,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 import os
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .events import VoiceEvent, VoiceCommand
 from .ledger import ConversationAudioLedger
+from .voice_profile import (
+    VoiceProfile, apply_pronunciations, classify_dialogue_act, load_profile,
+)
+from .speech_normalizer import prepare_for_tts
 
 
 def v2_tts_enabled() -> bool:
@@ -36,6 +41,8 @@ async def _maybe_await(value: Any) -> Any:
 class VoiceRuntime:
     def __init__(self, tm: Any, tts_provider: Any, player: Any, *,
                  respond_fn: Optional[Callable[[str], Any]] = None,
+                 is_muted_fn: Optional[Callable[[], bool]] = None,
+                 voice_profile: Optional[VoiceProfile] = None,
                  enabled: Optional[bool] = None):
         self.tm = tm
         self.tts = tts_provider
@@ -43,6 +50,10 @@ class VoiceRuntime:
         self.ledger: ConversationAudioLedger = getattr(player, "ledger", None) or ConversationAudioLedger()
         # LLM stub par défaut : renvoie le texte tel quel (le LLM réel viendra plus tard).
         self._respond = respond_fn or (lambda text: text)
+        self._is_muted = is_muted_fn or (lambda: False)
+        self.voice_profile = voice_profile or load_profile(
+            os.getenv("LUMENA_VOICE_PROFILE_PATH", "").strip() or None
+        )
         # enabled None => lit le flag ; bool explicite => force (tests).
         self._enabled = v2_tts_enabled() if enabled is None else bool(enabled)
         self.status = "idle"
@@ -51,11 +62,18 @@ class VoiceRuntime:
         self._seg_audio: Dict[tuple, Optional[str]] = {}  # (generation_id, sequence) -> chemin audio
         self._play_tasks: List[asyncio.Task] = []         # playbacks en cours (jamais awaités dans l'acteur)
         self._producer_tasks: List[asyncio.Task] = []     # producteurs de stream TTS (chunking)
+        self._llm_tasks: Dict[str, asyncio.Task] = {}     # réponses LLM annulables, hors acteur
         self._gen_expected: Dict[str, int] = {}           # nb de segments attendus (set en fin de producteur)
         self._gen_played: Dict[str, int] = {}             # nb de segments réellement joués
         self._finished: set = set()                       # générations dont 'finished' a déjà été émis
         self._play_lock = asyncio.Lock()                  # un seul segment audible à la fois, sans bloquer l'acteur
         self._agent_gen_seq = 0                            # compteur de générations pour speak() hors-bande
+        self._generation_started_at: Dict[str, float] = {}
+        self._first_audio_seen: set[str] = set()
+        self._metrics: Dict[str, Any] = {
+            "llm_ms": None, "first_audio_ms": None, "interrupt_ms": None,
+            "queue_depth": 0, "dialogue_act": "explanation",
+        }
 
     @property
     def enabled(self) -> bool:
@@ -66,15 +84,39 @@ class VoiceRuntime:
             return  # NO-OP tant que LUMENA_VOICE_V2_TTS != 1
         for cmd in commands:
             await self._handle(cmd)
+            try:
+                from .observability import get_voice_telemetry
+                get_voice_telemetry().update(**self.status_report())
+            except Exception:
+                pass
 
     async def _handle(self, cmd: VoiceCommand) -> None:
         d = cmd.data
         if cmd.name == "start_llm":
             gen = d["generation_id"]; turn = d.get("turn_id"); text = d.get("text", "")
-            answer = await _maybe_await(self._respond(text))
-            await self._emit_answer(gen, turn, answer, status="thinking")
+            self._generation_started_at[gen] = time.perf_counter()
+            old = self._llm_tasks.pop(gen, None)
+            if old is not None and not old.done():
+                old.cancel()
+            task = asyncio.create_task(self._respond_and_emit(gen, turn, text))
+            self._llm_tasks[gen] = task
+            task.add_done_callback(lambda _t, _g=gen: self._forget_llm_task(_g, _t))
+
+        elif cmd.name == "cancel_llm":
+            gen = d.get("generation_id")
+            targets = [self._llm_tasks.get(gen)] if gen else list(self._llm_tasks.values())
+            for task in targets:
+                if task is not None and not task.done():
+                    task.cancel()
+            started = self._generation_started_at.get(gen) if gen else None
+            if started is not None:
+                self._metrics["interrupt_ms"] = (time.perf_counter() - started) * 1000.0
 
         elif cmd.name == "play_audio":
+            if self._muted():
+                self.player.stop()
+                self.status = "muted"
+                return
             # Playback EN TÂCHE DE FOND : l'acteur (TurnManager) ne doit jamais rester
             # bloqué sur un playback long, sinon stop_word/barge-in ne seraient pas traités.
             gen = d.get("generation_id"); seq = d.get("sequence", 0)
@@ -87,12 +129,16 @@ class VoiceRuntime:
         elif cmd.name in ("stop_playback", "clear_audio_queue"):
             # Immédiat : stoppe le player ET annule playbacks ET producteurs, sans rien attendre.
             self.player.stop()
-            for t in self._play_tasks + self._producer_tasks:
+            pending = self._play_tasks + self._producer_tasks
+            if cmd.name == "clear_audio_queue":
+                pending += list(self._llm_tasks.values())
+            for t in pending:
                 if not t.done():
                     t.cancel()
             self._play_tasks = []
             self._producer_tasks = []
             if cmd.name == "clear_audio_queue":
+                self._llm_tasks = {}
                 self.player.set_generation("__cleared__")
             self.status = "interrupted"
 
@@ -103,7 +149,30 @@ class VoiceRuntime:
 
         elif cmd.name == "show_status":
             self.status = d.get("state", self.status)
-        # cancel_tts/cancel_llm/cancel_tool_if_safe/request_confirmation : pas d'effet audio ici.
+        # cancel_tts/cancel_tool_if_safe/request_confirmation : pas d'effet audio ici.
+
+    async def _respond_and_emit(self, gen: str, turn: Any, text: str) -> None:
+        """Resolve one response outside the actor, then emit only if still current."""
+        try:
+            answer = await _maybe_await(self._respond(text))
+            if self._llm_tasks.get(gen) is not asyncio.current_task() or self._muted():
+                return
+            started = self._generation_started_at.get(gen)
+            if started is not None:
+                self._metrics["llm_ms"] = (time.perf_counter() - started) * 1000.0
+            await self._emit_answer(gen, turn, str(answer or ""), status="thinking")
+        except asyncio.CancelledError:
+            return
+
+    def _forget_llm_task(self, gen: str, task: asyncio.Task) -> None:
+        if self._llm_tasks.get(gen) is task:
+            self._llm_tasks.pop(gen, None)
+
+    def _muted(self) -> bool:
+        try:
+            return bool(self._is_muted())
+        except Exception:
+            return False
 
     async def _emit_answer(self, gen: str, turn: Any, answer: str, *,
                            status: str = "speaking") -> None:
@@ -111,6 +180,12 @@ class VoiceRuntime:
 
         Utilisé par `start_llm` (réponse au tour) ET par `speak()` (parole hors-bande
         pilotée par l'orchestrateur task-aware : accusé, jalon, résultat, erreur)."""
+        if self._muted() or not (answer or "").strip():
+            return
+        answer = prepare_for_tts(apply_pronunciations(answer, self.voice_profile))
+        if not answer:
+            return
+        self._metrics["dialogue_act"] = classify_dialogue_act(answer)
         self.status = status
         self.ledger.register_generation(turn, gen, answer)
         self.player.set_generation(gen)
@@ -124,7 +199,9 @@ class VoiceRuntime:
             self._producer_tasks = [t for t in self._producer_tasks if not t.done()]
         else:
             # Fallback mono-chunk (provider sans streaming).
-            res = await self.tts.synthesize(answer, voice=None)
+            res = await self.tts.synthesize(answer, voice=self.voice_profile)
+            if self._muted() or gen != self.player.current_generation_id:
+                return
             self.last_provider = res.provider
             if res.degraded:
                 self.degraded = True
@@ -143,10 +220,11 @@ class VoiceRuntime:
         Réutilisé par l'orchestrateur task-aware pour les jalons vocaux (accusé,
         « je travaille », résultat, erreur). Non bloquant : la synthèse part en fond.
         Renvoie l'id de génération alloué. Texte vide → no-op."""
-        if not (text or "").strip():
+        if self._muted() or not (text or "").strip():
             return ""
         self._agent_gen_seq += 1
         gen = f"agent_{self._agent_gen_seq}"
+        self._generation_started_at[gen] = time.perf_counter()
         await self._emit_answer(gen, turn, text)
         return gen
 
@@ -160,9 +238,9 @@ class VoiceRuntime:
         """
         count = 0
         try:
-            async for ch in self.tts.stream(answer, voice=None):
+            async for ch in self.tts.stream(answer, voice=self.voice_profile):
                 # La génération a pu changer (interruption) → on stoppe la synthèse.
-                if gen != self.player.current_generation_id:
+                if gen != self.player.current_generation_id or self._muted():
                     return
                 self.last_provider = ch.provider or self.last_provider
                 if ch.degraded:
@@ -173,6 +251,9 @@ class VoiceRuntime:
                     "generation_id": gen, "sequence": ch.sequence,
                     "text": ch.text, "duration_ms": ch.duration_ms,
                 }))
+                self._metrics["queue_depth"] = max(
+                    int(self._metrics.get("queue_depth") or 0), count - self._gen_played.get(gen, 0)
+                )
         except asyncio.CancelledError:
             return  # interruption : aucun finished, le reducer gère la troncature
         # Synthèse terminée : on connaît le nombre exact de segments attendus.
@@ -205,6 +286,11 @@ class VoiceRuntime:
         if r == "played" and gen == self.player.current_generation_id and not self.player._stopped:
             self.status = "speaking"
             self._gen_played[gen] = self._gen_played.get(gen, 0) + 1
+            if gen not in self._first_audio_seen:
+                self._first_audio_seen.add(gen)
+                started = self._generation_started_at.get(gen)
+                if started is not None:
+                    self._metrics["first_audio_ms"] = (time.perf_counter() - started) * 1000.0
             await self.tm.emit(VoiceEvent("playback.chunk_played",
                                           data={"generation_id": gen, "sequence": seq}))
             await self._maybe_finish(gen)   # finished seulement quand TOUS les segments sont joués
@@ -221,13 +307,17 @@ class VoiceRuntime:
             self.player.stop()
         except Exception:
             pass
-        tasks = [t for t in (self._play_tasks + self._producer_tasks) if not t.done()]
+        tasks = [
+            t for t in (self._play_tasks + self._producer_tasks + list(self._llm_tasks.values()))
+            if not t.done()
+        ]
         for t in tasks:
             t.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._play_tasks = []
         self._producer_tasks = []
+        self._llm_tasks = {}
 
     def status_report(self) -> Dict[str, Any]:
         """Statut pour l'UI : provider, dégradé (pyttsx3), état courant."""
@@ -236,4 +326,11 @@ class VoiceRuntime:
             "state": self.status,
             "provider": self.last_provider,
             "degraded": self.degraded,
+            "voice_profile": self.voice_profile.id,
+            "dialogue_act": self._metrics.get("dialogue_act"),
+            "llm_ms": self._metrics.get("llm_ms"),
+            "first_audio_ms": self._metrics.get("first_audio_ms"),
+            "interrupt_ms": self._metrics.get("interrupt_ms"),
+            "queue_depth": self._metrics.get("queue_depth", 0),
+            "identity_degraded": self.last_provider == "pyttsx3",
         }

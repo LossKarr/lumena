@@ -5,13 +5,16 @@ Implémente le pattern ReAct (Reason + Act) pour le raisonnement.
 LUMENA peut réfléchir, décider d'agir, observer le résultat, et itérer.
 """
 
-from typing import Dict, Any, List, Optional, Callable, Awaitable
-from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional, Callable, Awaitable, Iterable, Sequence, Tuple
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+import ast
 import asyncio
 import json
+import hashlib
 import os
 import re
 import platform
@@ -58,6 +61,13 @@ from .react_config import (
 
 
 from .tool_registry import ToolRegistry
+from ..documents.document_intent import (
+    DocumentRoute,
+    STUDIO_BYPASS_TOOLS,
+    normalize_document_kind,
+    normalize_document_query,
+    resolve_document_route,
+)
 from ..runtime.execution_ledger import (
     ExecutionLedger, MUTATION_TOOLS as _LEDGER_MUTATION_TOOLS,
     INTENT_TO_MUTATION_FAMILY as _LEDGER_INTENT_FAMILIES,
@@ -111,6 +121,284 @@ _NEG_SANS_RE = re.compile(
 )
 _NEG_AUCUN_MESSAGE_RE = re.compile(r"\baucun(?:e)?\s+message\b")
 
+# M6-colmatage (run MiniQuiz 2026-07-06) — l'OBJECTIF de mission annonce-t-il un
+# livrable WEB ? 3e source de `_mission_web_present_for_gate` : une fabrication à
+# l'itération 1 (zéro mutation, zéro contrat) laissait `web_deliverable=False` et
+# le claim navigateur fabriqué sortait sans bannière. Regex fermée, mission only.
+_WEB_OBJECTIVE_RE = re.compile(
+    r"(?:\.html?\b|\bflask\b|\bstatic/|\bfrontend\b|\bpage\s+web\b|\bsite\s+web\b"
+    r"|\bapplication\s+web\b|\bbrowser_navigate\b|\bnavigateur\b)",
+    re.IGNORECASE,
+)
+
+# A browser workflow advances one tool action per ReAct iteration. Keep enough
+# bounded retries for the common DOM-read -> input -> input -> click -> DOM-read
+# sequence,
+# while still guaranteeing that a model cannot loop indefinitely.
+_MAX_INTERACTION_GATE_SHOTS = 5
+
+# 2.9.A (re-run VentesReport/DevisAPI 2026-07-08) — la regex ci-dessus matchait
+# `flask` et `navigateur` NUS : « API Flask SANS interface » et « PAS de navigateur »
+# déclenchaient le BROWSER GATE sur des missions explicitement NON-web (2 runs sur 4
+# pollués). Deux garde-fous :
+#  1) NÉGATION : si l'objectif NIE le navigateur/HTML, le gate ne doit jamais tirer.
+#  2) SIGNAL POSITIF : `flask` seul ne suffit PAS ; il faut un vrai signal web
+#     (HTML/frontend/site/page/interface web, ou intention navigateur POSITIVE).
+_WEB_NEG_RE = re.compile(
+    r"pas\s+de\s+navigateur|sans\s+navigateur|aucun\s+navigateur"
+    r"|pas\s+de\s+page\s+html|sans\s+html|sans\s+page\s+html"
+    r"|sans\s+interface|sans\s+front(?:end)?|sans\s+ui\b"
+    # 2.12.B (run tasksapi) — l'objectif ré-écrit disait « Pas d'interface web,
+    # uniquement JSON » : ni « sans interface » ni « pas de navigateur » → la
+    # négation ratait et `interface web` était lu comme signal POSITIF. On couvre
+    # les formes « pas d'interface / sans aucune interface / (en) JSON uniquement ».
+    r"|pas\s+d['’]\s*interface|pas\s+d['’]\s*ui\b|pas\s+d['’]\s*front"
+    r"|sans\s+aucune?\s+interface|aucune?\s+interface\b"
+    r"|json\s+uniquement|uniquement\s+(?:du\s+|en\s+)?json"
+    r"|api\s+(?:rest\s+)?(?:flask\s+)?sans\b"
+    r"|api\s+seulement|api\s+uniquement"
+    r"|valide[rz]?\s+(?:uniquement|seulement)\s+par\s+les\s+tests"
+    r"|uniquement\s+par\s+les\s+tests"
+    # LOT L1 (audit des 80 contrats réels, 2026-08-14) — la négation n'était
+    # comprise qu'à la forme NOMINALE (« pas DE navigateur »). Trois écritures
+    # naturelles sur quatre passaient au travers :
+    #   « Ne pas utiliser le navigateur »  → True (faux positif)
+    #   « n'utilise pas le navigateur »    → True (faux positif)
+    #   « sans utiliser de navigateur »    → True (faux positif)
+    # Conséquence MESURÉE : sur MotCompteur et TempConv (deux outils EN LIGNE DE
+    # COMMANDE dont l'objectif dit « Ne pas utiliser le navigateur »), le BROWSER
+    # GATE se déclenchait — relance inutile puis bannière « navigateur non
+    # vérifié » sur un livrable qui n'a jamais eu d'interface.
+    r"|(?:ne\s+)?pas\s+utiliser\s+(?:le\s+|la\s+|de\s+|d['’]\s*|du\s+)?"
+    r"(?:navigateur|browser_navigate|interface|front(?:end)?|ui\b)"
+    # L'apostrophe est FACULTATIVE : les objectifs sont écrits à la main et
+    # « n utilise pas » / « ne utilise pas » arrivent tels quels. Une négation
+    # ratée pour une apostrophe manquante coûterait une bannière abusive.
+    r"|n(?:e\b|['’]|\s)\s*utilise[rz]?\s+pas\s+(?:le\s+|la\s+|de\s+|d['’]\s*)?"
+    r"(?:navigateur|browser_navigate|interface|front(?:end)?|ui\b)"
+    r"|sans\s+utiliser\s+(?:de\s+|d['’]\s*|le\s+|la\s+)?"
+    r"(?:navigateur|browser_navigate|interface|front(?:end)?|ui\b)"
+    # …et le nom de l'outil NIÉ était lu comme signal POSITIF : la fiche mémo
+    # `pyproject.toml` (mission d'EFFETS, zéro fichier) déclenchait sur
+    # « utilise web_search_brave, PAS browser_navigate ».
+    r"|pas\s+browser_navigate|sans\s+browser_navigate",
+    re.IGNORECASE,
+)
+_WEB_POS_RE = re.compile(
+    r"\.html?\b|\bstatic/|\bfrontend\b|\bpage\s+web\b|\bsite\s+web\b"
+    r"|\bapplication\s+web\b|\binterface\s+web\b|\bpages?\s+html\b"
+    r"|\bsite\s+statique\b|\bbrowser_navigate\b|\bnavigateur\b",
+    re.IGNORECASE,
+)
+
+
+def _objective_wants_browser(query) -> bool:
+    """2.9.A — l'OBJECTIF de mission demande-t-il RÉELLEMENT une vérif navigateur ?
+    Négation d'abord (« pas de navigateur », « API sans interface », « uniquement
+    par les tests ») → False sans discuter. Sinon exige un signal web POSITIF
+    (`flask`/`navigateur` NUS ne suffisent pas — négation déjà écartée, donc tout
+    `navigateur` restant est bien positif). Défensif : False sur entrée vide."""
+    q = str(query or "")
+    if not q:
+        return False
+    if _WEB_NEG_RE.search(q):
+        return False
+    return bool(_WEB_POS_RE.search(q))
+
+
+def _web_runtime_repair_allowed(
+    *,
+    failed: bool,
+    shots: int,
+    iteration: int,
+    max_iterations: int,
+    max_shots: int = 2,
+) -> bool:
+    """Return whether a strict local-web failure gets another repair attempt.
+
+    M100.4 keeps this decision deterministic and bounded. Three iterations are
+    reserved for inspecting/mutating and running the strict verifier again.
+    """
+    if not failed or int(shots or 0) >= int(max_shots or 0):
+        return False
+    return (int(max_iterations or 0) - int(iteration or 0) - 1) >= 3
+
+
+def _observation_counts_as_recent_failure(
+    tool_name: str,
+    observation: Optional[Observation],
+) -> bool:
+    """Return whether an observation is a real tool failure for escalation.
+
+    Document policy refusals happen before tool execution. Counting them as
+    runtime failures made a valid Studio workflow escalate after three guided
+    retries. Genuine tool failures retain the historical behavior.
+    """
+    if observation is None or observation.success:
+        return False
+    if getattr(observation, "origin", "tool") == "document_policy":
+        return False
+    read_only = {
+        "read_file", "list_directory", "find_files", "grep_search",
+        "search_in_code", "view_file_outline", "browser_get_content",
+        "memory_search", "web_search", "read_own_code",
+    }
+    if (
+        str(tool_name or "") in read_only
+        and observation.content
+        and len(observation.content) >= 500
+    ):
+        return False
+    return True
+
+
+def _document_batch_failure_signature(
+    observation: Optional[Observation],
+    tool_args: Optional[Dict[str, Any]] = None,
+) -> tuple[Any, ...] | None:
+    """Identify one exact batch attempt so changed input or errors are progress."""
+    if observation is None or observation.success:
+        return None
+    try:
+        args_signature = json.dumps(
+            tool_args or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            default=str,
+        )
+    except (TypeError, ValueError):
+        args_signature = repr(tool_args or {})
+    content = str(observation.content or "").strip()
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        normalized = re.sub(r"\s+", " ", content).strip().casefold()
+        return ("text", args_signature, normalized[:1000])
+    if not isinstance(payload, dict) or payload.get("phase") != "preflight":
+        normalized = re.sub(r"\s+", " ", content).strip().casefold()
+        return ("json", args_signature, normalized[:1000])
+    errors = payload.get("errors")
+    rows = []
+    if isinstance(errors, list):
+        for item in errors:
+            if not isinstance(item, dict):
+                continue
+            rows.append((
+                int(item.get("index") or 0),
+                str(item.get("kind") or "").strip().casefold(),
+                re.sub(
+                    r"\s+", " ", str(item.get("error") or ""),
+                ).strip().casefold(),
+            ))
+    return (
+        "preflight",
+        args_signature,
+        int(payload.get("requested") or 0),
+        int(payload.get("failed") or len(rows)),
+        tuple(rows),
+    )
+
+
+def _recent_tool_failure_streak(tool_name: str, history: list[Any]) -> int:
+    """Count historical failures, but only identical batch preflights."""
+    recent_fails = 0
+    latest_batch_signature: tuple[Any, ...] | None = None
+    for step in reversed(history[-8:]):
+        action = getattr(step, "action", None)
+        if getattr(action, "tool_name", "") != tool_name:
+            continue
+        observation = getattr(step, "observation", None)
+        if observation is not None and observation.success:
+            break
+        if not _observation_counts_as_recent_failure(tool_name, observation):
+            continue
+        if tool_name == "generate_studio_documents":
+            signature = _document_batch_failure_signature(
+                observation,
+                getattr(action, "tool_args", {}) or {},
+            )
+            if latest_batch_signature is None:
+                latest_batch_signature = signature
+            elif signature != latest_batch_signature:
+                break
+        recent_fails += 1
+    return recent_fails
+
+
+def _repeated_tool_failure_message(tool_name: str, history: list[Any]) -> str:
+    """Build a truthful bounded failure without suggesting an unsafe bypass."""
+    failures = [
+        str(step.observation.content or "")[:500]
+        for step in history[-8:]
+        if getattr(getattr(step, "action", None), "tool_name", "") == tool_name
+        and getattr(step, "observation", None) is not None
+        and not step.observation.success
+    ]
+    last_error = failures[-1] if failures else "inconnue"
+    if tool_name == "generate_studio_documents":
+        return (
+            "⚠️ Aucun document Studio n'a ete genere : le meme preflight "
+            "echoue de facon identique.\n\n"
+            f"**Derniere erreur :** {last_error}\n\n"
+            "Corrige le lot complet avec les `retry_request` fournis et reste "
+            "dans Document Studio ; aucun recu ne peut etre annonce."
+        )
+    return (
+        f"⚠️ J'ai essayé {tool_name} plusieurs fois mais ça échoue à chaque fois.\n\n"
+        f"**Dernière erreur:** {last_error}\n\n"
+        "Je dois reformuler ou utiliser un autre outil."
+    )
+
+
+def _document_requested_kinds_guidance(route: DocumentRoute) -> str:
+    """Build an exact compact instruction for explicit multi-model requests."""
+    kinds = tuple(dict.fromkeys(
+        item.kind for item in route.items if item.operation == "create"
+    )) or tuple(route.requested_kinds)
+    if route.is_catalog_selection or len(kinds) <= 1:
+        return ""
+    joined = ", ".join(kinds)
+    joined_filter = ",".join(kinds)
+    return f"""
+## LOT DOCUMENT STUDIO RESOLU (OBLIGATOIRE) :
+- La demande nomme exactement {len(kinds)} types structures, deja resolus dans cet ordre : {joined}.
+- Fais d'abord un seul appel `list_document_models(kind='{joined_filter}')` pour obtenir les contrats `sample_data` exacts des {len(kinds)} modeles.
+- Appelle `generate_studio_documents` avec ces {len(kinds)} types dans cet ordre ; les donnees partielles seront completees par les exemples professionnels.
+- Ne remplace aucun de ces modeles par `create_pdf` et ne deduis pas leur disponibilite d'un apercu tronque du catalogue.
+"""
+
+
+def _document_minimum_pages_guidance(route: DocumentRoute) -> str:
+    """Keep explicit page targets on the registered Studio template path."""
+    if route.minimum_pages <= 0:
+        return ""
+    minimum_chars = route.minimum_pages * 3_000
+    return f"""
+## LONGUEUR DOCUMENT STUDIO (OBLIGATOIRE) :
+- Le document rendu doit contenir au moins {route.minimum_pages} pages REELLES et substantielles.
+- Renseigne le modele integre avec assez de contenu metier detaille (environ {minimum_chars} caracteres visibles au total) avant le premier rendu.
+- Si le controle de rendu retourne moins de {route.minimum_pages} pages, enrichis fortement les donnees et relance LE MEME modele en remplacant le meme fichier.
+- Ne cree, n'importe et ne modifie aucun modele pour contourner ce minimum. N'ajoute jamais de page vide ni de texte de remplissage.
+"""
+
+# 2.6.1 (run MiniQuiz §5) — outils GARANTIS dans le prompt du LEAD de mission web :
+# la voie officielle preview (registre SSRF) + le navigateur de preuve. Sans eux,
+# le lead sert Flask à la main → SSRF → fabrication (rattrapée, mais run raté).
+_MISSION_WEB_LEAD_TOOLS = (
+    "serve_website", "start_preview_server", "stop_website_server",
+    "browser_navigate", "browser_click", "browser_type",
+    "browser_get_content", "browser_screenshot",
+)
+
+# A mission remains free to create a useful document even when document
+# creation was not the initial intent. Explicit document requests still expose
+# the full category; this compact core avoids adding 56 document schemas to
+# every worker prompt.
+_MISSION_PROACTIVE_DOCUMENT_TOOLS = (
+    "list_document_models",
+    "generate_studio_document", "generate_studio_documents",
+    "create_pdf", "create_docx", "create_xlsx", "create_pptx",
+    "create_markdown",
+)
+
 
 def _has_action_negation(normalized_q: str) -> bool:
     """True si la requête (déjà normalisée) nie une action d'envoi/mutation.
@@ -134,6 +422,54 @@ def _has_action_negation(normalized_q: str) -> bool:
 
 
 # Verbes d'envoi/post Discord (demande POSITIVE d'action).
+# LOT Z12 — outils dont l'observation PORTE DU CONTENU À LIRE (fichiers, contrat,
+# résultats groupés). Source UNIQUE : cette liste sert au seuil de déclenchement
+# de la compaction ET à la stratégie appliquée quand ce seuil est franchi.
+#
+# Elle existe parce que la même notion était écrite DEUX FOIS et que les deux
+# copies ont divergé. Le seuil (8000) contenait déjà `read_files_batch`,
+# `parallel_tools` et `write_mission_contract` — ajoutés par B0.3 (run PlantCare)
+# et C0.1 (run FrigoZen) — mais la STRATÉGIE ne connaissait que `read_file`,
+# `search_in_code`, `grep_search`, `find_files`. Conséquence : ces trois outils
+# étaient protégés jusqu'à 8000 caractères… puis réduits à 800 au lieu de 3000.
+# Un seuil élevé leur donnait une fausse sécurité : plus le contenu était gros,
+# plus la perte était totale.
+#
+# Run « Rustine » (2026-08-16) : le lead avait identifié la cause exacte du
+# défaut de style (« le CSS utilise des classes françaises, les HTML des classes
+# anglaises ») et cherchait les classes à corriger. Ses `read_files_batch`
+# rendaient 8437 et 8669 chars — juste au-dessus du seuil — et il en recevait
+# 830 : le `<head>` et le pied de page, jamais le corps. Dix itérations de
+# relecture, puis mort par PLAN GUARD anti-stagnation, livrable à 0 % de style.
+#
+# Les 11 compactions de tout le corpus portent EXACTEMENT sur les 3 outils mal
+# classés (read_files_batch 6×, write_mission_contract 3×, grep_batch 2×) et
+# ZÉRO sur ceux qui étaient dans les deux listes.
+_OBS_FILE_READ_TOOLS: frozenset = frozenset({
+    "read_file", "read_files_batch", "search_in_code", "grep_search",
+    "grep_batch", "find_files", "parallel_tools", "write_mission_contract",
+})
+
+# LOT Z6 — plafonds du PLAN GUARD sur le FINAL prématuré.
+#
+# Run « Écluse » (2026-08-15) : `[PLAN GUARD] FINAL premature bloque: 2/4 taches,
+# iteration 66 (retry 18/3)`. Le message affichait « /3 » et le garde avait déjà
+# refusé DIX-HUIT fois : la condition était `retries < 3 OR tâches_opérationnelles
+# _restantes`, et le second terme n'avait aucune borne. Pire, le filet
+# anti-stagnation (qui pose `_plan_guard_retries = 3` pour « empêcher PLAN GUARD de
+# bloquer ») était neutralisé par ce même `or` : le filet était posé et ignoré. La
+# mission avait pourtant SA preuve — elle avait lu « 5400 s · 90 min · 1.5 h ·
+# 0.0625 j » dans le DOM après un clic — mais elle est morte d'épuisement sans
+# jamais pouvoir conclure. Ni final, ni tâches faites.
+#
+# Deux plafonds distincts, tous deux FINIS : une tâche à preuve opérationnelle
+# mérite plus d'insistance qu'une tâche métier, pas une insistance infinie. Passé
+# le plafond, on laisse conclure — l'honnêteté du bilan est déjà tenue par les
+# verrous de vérité (publication, tests verts, constat mesuré), qui eux vérifient
+# des PREUVES et non un compteur.
+_PLAN_GUARD_MAX_RETRIES: int = 3
+_PLAN_GUARD_MAX_RETRIES_OPERATIONAL: int = 8
+
 _DISCORD_SEND_VERBS: tuple = (
     "anime", "animer", "poste", "poster", "envoie", "envoyer", "publie", "publier",
 )
@@ -164,6 +500,74 @@ _DOCUMENT_CREATE_VERBS: tuple = (
     "ecris", "ecrire", "sauvegarde", "sauvegarder", "produis", "produire",
     "produit", "enregistre", "enregistrer",
 )
+
+
+# ── Voix Lumena dans les rails sûrs (repair anti-leak + finalisation déterministe) ──
+# COURT VOLONTAIREMENT : une consigne de ton bavarde ré-ouvrirait le THOUGHT leak qu'on
+# corrige. On rappelle juste la voix + UNE accroche, puis les données, zéro raisonnement.
+_LUMENA_TONE_REPAIR = (
+    "🎙️ Garde ta voix Lumena : naturelle, chaleureuse, directe, un brin espiègle, "
+    "emojis modérés si utile. Commence par UNE courte phrase d'accroche pour l'utilisateur, "
+    "puis livre les données. Ne révèle aucun raisonnement, ne transforme pas ta réponse en "
+    "intention."
+)
+
+
+def build_mission_final_message(
+    artifact_note: str,
+    artifact_title: str,
+    *,
+    malformed: bool,
+    has_green_test: bool = False,
+    test_ran_not_green: bool = False,
+    tests_expected_not_run: bool = False,
+) -> str:
+    """Message de clôture DÉTERMINISTE d'une mission (sans LLM → sans leak), mais avec le
+    « grain Lumena » : accroche humaine, titre du livrable si connu, chemin/taille, et note
+    honnête si le contenu est potentiellement altéré. Pur/testable.
+
+    Honnêteté câblée sur le LEDGER (cf. run taskflow 2026-07-02) :
+    - `has_green_test` (pytest VERT réel) → « tests verts » autorisé ;
+    - `test_ran_not_green` (un test a tourné mais pas vert) → JAMAIS « vérifié » :
+      message honnête « tests non verts, à corriger » ;
+    - `tests_expected_not_run` (P0.2, cf. run PollApp multi-worker) : une suite de
+      tests EXISTE sur disque (souvent écrite par un worker → hors ledger du lead)
+      mais le lead n'a PAS de pytest vert → JAMAIS « vérifié structurellement » :
+      « tests présents mais non certifiés par le lead » ;
+    - aucun test (tout False) → « vérifié structurellement » (relecture OK),
+      jamais « tests verts »."""
+    _title = (artifact_title or "").strip()
+    _honest_tail = malformed or test_ran_not_green or tests_expected_not_run
+    if malformed:
+        head = ("✅ C'est fait — livrable écrit ! Petite honnêteté : le format a peut-être "
+                "été un peu altéré à l'écriture, jette-y un œil 👀.")
+    elif test_ran_not_green:
+        head = ("✅ Livrable produit — mais ⚠️ **tests non verts** : son intégration "
+                "n'est pas certifiée par les tests, à corriger avant de valider.")
+        if _title:
+            head += f" (**{_title}**)"
+    elif has_green_test:
+        head = "✅ C'est fait ! Livrable produit et **tests verts** 🎉"
+        if _title:
+            head += f" — **{_title}**."
+    elif tests_expected_not_run:
+        head = ("✅ Livrable produit — mais ⚠️ **tests présents et NON certifiés par moi** "
+                "(je ne les ai pas passés verts) : intégration non prouvée, à vérifier.")
+        if _title:
+            head += f" (**{_title}**)"
+    else:
+        head = "✅ C'est fait ! Livrable produit et **vérifié structurellement** (relecture OK) 🎉"
+        if _title:
+            head += f" — **{_title}**."
+    parts = [head]
+    note = (artifact_note or "").strip()
+    if note:
+        parts.append(note)
+    parts.append(
+        "Ouvre-le quand tu veux — dis-moi si tu veux que je l'ajuste. 🙂"
+        if not _honest_tail else "Ouvre le fichier pour vérifier le contenu."
+    )
+    return "\n\n".join(parts)
 
 
 def discord_requires_send(query: str) -> bool:
@@ -220,12 +624,14 @@ from .response_parser import (
     parse_plan as _parse_plan_fn,
     extract_balanced_json,
     parse_action_args as _parse_action_args_fn,
+    deliverable_looks_malformed,
     _action_inline_total as _ait_global,
 )
 from .prompt_builder import (
     is_length_finish_reason, has_unbalanced_delimiters,
     has_unclosed_quotes, ends_with_strong_punctuation,
     is_exploratory_tool, is_single_file_creation_request,
+    is_explicit_mission_request,
     is_project_creation_request, is_web_request,
     looks_code_like_or_structured, looks_incomplete_final_answer,
 )
@@ -417,9 +823,11 @@ from .plan_evidence import (
     _VERIFY_OBS_PROOF_MARKERS,
     classify_observation,
     is_verify_task,
+    verify_satisfied_by_artifact_read,
     has_sufficient_proof,
     evaluate_task_proof,
     reconcile_delegate_report,
+    reconcile_plan_on_artifact_delivery,
     task_completion_status,
     tool_capabilities_are_known_readonly,
     detect_verification_kind,
@@ -522,6 +930,47 @@ def _detect_browser_impasse(obs_text: str) -> "tuple[bool, str, bool]":
         if token in lower:
             return True, reason, try_dismiss
     return False, "", False
+
+
+_BROWSER_SOURCE_PIVOT_MARKERS = (
+    "cloudflare", "anti-bot", "anti bot", "challenge", "captcha", "recaptcha",
+    "acces refuse", "access denied", "403", "rate limit", "429",
+)
+
+
+def _legal_browser_source_pivot(
+    current_url: str,
+    reason: str,
+    original_query: str,
+    tried_origins: Iterable[str],
+    *,
+    max_origins: int = 3,
+) -> tuple[str, str] | None:
+    """Return one bounded legal source-pivot instruction for a blocked origin."""
+    folded_reason = normalize_document_query(reason)
+    if not any(marker in folded_reason for marker in _BROWSER_SOURCE_PIVOT_MARKERS):
+        return None
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(str(current_url or ""))
+        origin = f"{parsed.scheme}://{parsed.netloc}".casefold() if parsed.netloc else ""
+    except (TypeError, ValueError):
+        origin = ""
+    if not origin:
+        origin = "<origine-inconnue>"
+    tried = {str(value or "").casefold() for value in tried_origins if str(value or "")}
+    if origin in tried or len(tried) >= max_origins:
+        return None
+    guidance = (
+        f"⚠️ SOURCE BLOQUEE: `{origin}` refuse l'acces ({reason}). "
+        "Ne retente pas cette origine et ne contourne aucun CAPTCHA/WAF.\n"
+        "Pivote maintenant vers UNE source publique distincte et legale : "
+        "`web_fetch` sur une URL publique candidate, `web_search` pour un autre domaine, "
+        "une API officielle, ou un MCP deja actif. Recoupe le resultat avec la demande "
+        f"originale (`{str(original_query or '')[:240]}`)."
+    )
+    return origin, guidance
 
 
 BROWSER_SURFACE_TYPES: frozenset[str] = frozenset({
@@ -665,6 +1114,18 @@ from src.reasoning.plan_progress import (  # noqa: F401
     _BROWSER_PLAN_PASSIVE_TOOLS, _READ_ONLY_DISCOVERY_PLAN_TOOLS,
     _browser_passive_tool_can_complete_task, _read_only_discovery_tool_can_complete_task,
     _SYNTH_KW, _SYNTH_SIDE_EFFECT_BLOCK_KW, final_fulfills_task,
+    final_requires_operational_proof,
+    is_mission_tracking_task, mission_progress_proven, delegation_task_fulfilled,
+    delegation_task_blocks,
+    mission_deliverable_finalizable, mission_evidence_finalizable,
+    worker_evidence_finalizable,
+    correction_task_blocks_readonly,
+    pytest_execution_task, pytest_plan_task_proven,
+    tool_explicit_task_blocks, publish_task_blocks, browser_verify_task_blocks,
+    browser_interaction_task_blocks, artifact_target_task_blocks,
+    document_plan_tool_can_complete_task, document_workflow_task_blocks,
+    document_catalog_task_origin, document_workflow_task_operation,
+    sourced_web_research_task_proven,
 )
 
 _BROWSER_AUXILIARY_ACTION_MARKERS: frozenset[str] = frozenset({
@@ -1089,7 +1550,7 @@ def _browser_rewrite_index_like_selector_action(
     alors que `[16]` représente l'index DOM exposé par browser_dom_state,
     pas un sélecteur CSS valide.
     """
-    if tool_name not in {"browser_type", "browser_click"}:
+    if tool_name not in {"browser_type", "browser_click", "browser_select"}:
         return None
     selector = str((tool_args or {}).get("selector", "")).strip()
     if not selector:
@@ -1098,6 +1559,22 @@ def _browser_rewrite_index_like_selector_action(
     if match is None:
         return None
     idx = match.group(1)
+    if tool_name == "browser_select":
+        # LOT Z19 — run « Pelage » (2026-08-17) : browser_select(selector='[9]',
+        # label='Marie Curie', by='index') → Playwright lève « '[9]' is not a
+        # valid selector ». Le mécanisme de conversion existait déjà pour
+        # browser_type et browser_click ; il manquait la troisième branche.
+        # Attention au collision de noms : le `index` de browser_select désigne
+        # le RANG DE L'OPTION, pas l'index DOM — il devient `option_index`.
+        args: Dict[str, Any] = {"index": idx}
+        for _src, _dst in (("label", "label"), ("value", "value"), ("index", "option_index")):
+            if _src in (tool_args or {}):
+                args[_dst] = (tool_args or {})[_src]
+        return (
+            "browser_select_index",
+            args,
+            f"sélecteur '{selector}' reconnu comme index DOM [{idx}] — conversion vers browser_select_index",
+        )
     if tool_name == "browser_type":
         if "text" not in (tool_args or {}):
             return None
@@ -1306,6 +1783,222 @@ def _make_browser_progress_signature(
     )
 
 
+_BROWSER_EVALUATE_MUTATION_RE = re.compile(
+    r"\.click\s*\(|\.dispatchEvent\s*\(|\bdispatchEvent\s*\(|"
+    r"\brequestSubmit\s*\(|\.value\s*=|\bKeyboardEvent\s*\(|\bMouseEvent\s*\(",
+    re.IGNORECASE,
+)
+_BROWSER_INTERACTION_STATE_KEYS = frozenset({
+    "activecount", "after", "before", "changed", "checked", "classname",
+    "classes", "counter", "countertext", "grid", "movecount", "moves",
+    "position", "positions", "score", "selected", "state", "states", "value",
+})
+_BROWSER_EVALUATE_ERROR_MARKERS = (
+    "typeerror", "syntaxerror", "referenceerror", "cannot read", "is not defined",
+    "is not a function", "evaluation failed", "js error",
+)
+
+
+def _browser_evaluate_payload(observation_text: str) -> Any:
+    """Extract the structured value returned by a successful browser_evaluate."""
+    text = str(observation_text or "").strip()
+    folded = "".join(
+        char for char in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(char)
+    ).lower()
+    if not text or any(marker in folded for marker in _BROWSER_EVALUATE_ERROR_MARKERS):
+        return None
+    if "\u2705" not in text and "js execute" not in folded:
+        return None
+
+    payload_text = text.split("\u2192", 1)[-1].strip() if "\u2192" in text else text
+    starts = [index for index in (payload_text.find("{"), payload_text.find("[")) if index >= 0]
+    if not starts:
+        return None
+    start = min(starts)
+    opener = payload_text[start]
+    end = payload_text.rfind("}" if opener == "{" else "]")
+    if end < start:
+        return None
+    candidate = payload_text[start:end + 1]
+    for loader in (json.loads, ast.literal_eval):
+        try:
+            return loader(candidate)
+        except (TypeError, ValueError, SyntaxError):
+            continue
+    return None
+
+
+def _browser_payload_has_dynamic_state(payload: Any) -> bool:
+    if isinstance(payload, dict):
+        for raw_key, value in payload.items():
+            key = re.sub(r"[^a-z0-9]", "", str(raw_key).lower())
+            is_dynamic_key = key in _BROWSER_INTERACTION_STATE_KEYS or any(
+                key.startswith(root) and len(key) > len(root)
+                for root in _BROWSER_INTERACTION_STATE_KEYS
+            )
+            if is_dynamic_key and value not in (None, "", [], {}):
+                return True
+            if _browser_payload_has_dynamic_state(value):
+                return True
+    elif isinstance(payload, (list, tuple)):
+        return any(_browser_payload_has_dynamic_state(item) for item in payload)
+    return False
+
+
+def _browser_evaluate_proves_interaction(script: str, observation_text: str) -> bool:
+    """Require both a browser mutation and a concrete dynamic-state observation."""
+    if not _BROWSER_EVALUATE_MUTATION_RE.search(str(script or "")):
+        return False
+    payload = _browser_evaluate_payload(observation_text)
+    return payload is not None and _browser_payload_has_dynamic_state(payload)
+
+
+_BROWSER_USER_MUTATION_TOOLS = frozenset({
+    "browser_click", "browser_click_index", "browser_click_smart",
+    "browser_type", "browser_type_index", "browser_select",
+    "browser_press_key", "browser_check", "browser_uncheck",
+})
+_BROWSER_STATE_READ_TOOLS = frozenset({
+    "browser_get_content", "browser_dom_state", "browser_read", "browser_extract",
+})
+# ── LOT Z20 — une action en attente ne survit pas à ce qui rebâtit la page ───
+#
+# Run « Créneau » (2026-08-17). Déroulé exact, au log :
+#
+#   05:54:18  clic "Enregistrer"  → sans effet (le JS n'était pas initialisé)
+#             `local_preview_mutation_since_read = True`
+#             … diagnostic, correctif de lecons.js, republication, rechargement …
+#   05:58:51  lecture DOM → empreinte DIFFÉRENTE → [BROWSER INTERACTION PROOF]
+#   05:58:56  MISSION FINALIZE
+#
+# L'action en attente a survécu 4 minutes, 12 itérations, une correction de code,
+# une republication et un rechargement — puis elle a été appariée à une différence
+# de DOM causée par LA RÉPARATION, pas par elle. La mission a conclu « vérifié »
+# sur un site dont elle n'avait rien vérifié : ni élève enregistré, ni leçon créée.
+#
+# Cause structurelle : `_advance_manual_browser_flow` vit dans un bloc gardé par
+# `if _is_browser_tool:`. Un `delegate_task`, un `publish_mission_workspace`, un
+# `edit_file` n'y entrent JAMAIS — l'attente ne pouvait donc pas y être annulée.
+#
+# La règle appliquée ici est celle que le ledger tient déjà pour la preuve
+# voisine (`has_fresh_browser_action` : « la preuve navigateur date-t-elle
+# d'APRÈS la dernière mutation de source ? »). Elle n'avait simplement jamais
+# été étendue à la preuve d'interaction.
+_INTERACTION_PROOF_INVALIDATORS = frozenset({
+    # le programme sous test a pu changer
+    "write_file", "edit_file", "create_file", "apply_patch", "apply_patches",
+    "insert_at_anchor", "edit_by_lines", "edit_lines", "str_replace",
+    "multi_edit_file", "write_website_files", "edit_website",
+    # le code a pu être réécrit par un sous-agent (cas Créneau : le correctif
+    # est passé par le CodeAgent, invisible du ledger de source du lead)
+    "delegate_task", "delegate_task_bg", "delegate_and_wait",
+    # les fichiers SERVIS ont changé sous la page ouverte
+    "publish_mission_workspace",
+    # la page a été rebâtie sur décision de l'agent (une navigation PROVOQUÉE par
+    # une soumission apparaît dans l'écho du clic, pas comme un appel séparé)
+    "browser_navigate", "browser_back", "browser_forward", "browser_refresh",
+})
+
+
+_BROWSER_CLICK_TOOLS = frozenset({
+    "browser_click", "browser_click_index", "browser_click_smart",
+})
+# LOT M1 (run CaveÀVin 2026-08-14) — la trace d'un clic nomme le TYPE d'élément
+# atteint : `✅ Clic sur [1] link "S'inscrire" … → navigation vers /register`.
+_LINK_CLICK_RE = re.compile(r"clic\s+sur\s+\[?\d*\]?\s*link\b", re.IGNORECASE)
+
+
+def _browser_click_is_link_navigation(tool_name: str, observation: str) -> bool:
+    """LOT M1 (run CaveÀVin 2026-08-14) — un clic sur un LIEN change de page ; ce
+    n'est PAS une interaction produit.
+
+    CaveÀVin a été clôturée en pleine vérification : le lead a cliqué « S'inscrire »
+    (un `<a>`), lu le DOM du formulaire — DOM différent, donc `dom_delta` a posé
+    `local_preview_interaction_proven` — et le FINALIZE est tombé 2 s plus tard.
+    Aucun champ rempli, aucun compte créé, aucune bouteille ajoutée, alors que
+    l'objectif exigeait « inscription → connexion → ajout → liste ».
+
+    `browser_proven` dépend entièrement de ce flag quand l'objectif réclame une
+    interaction (cf. `_mission_completion_evidence`), d'où la clôture prématurée.
+
+    Un clic sur un `button` (soumettre un formulaire) reste une vraie mutation,
+    même s'il provoque une redirection : c'est le TYPE d'élément qui tranche, pas
+    le fait de naviguer.
+    """
+    if str(tool_name or "") not in _BROWSER_CLICK_TOOLS:
+        return False
+    return bool(_LINK_CLICK_RE.search(str(observation or "")))
+
+
+def _browser_state_fingerprint(text: str) -> str:
+    """Stable compact fingerprint for a browser state observation."""
+    # A form submitted without ``preventDefault`` can merely append its values
+    # to the URL and reload the exact same empty DOM.  That is navigation, not
+    # proof that the requested UI result/state changed.  Keep URL tracking in
+    # the browser progress guard, but exclude it from interaction authority.
+    stable_text = re.sub(
+        r"^URL:\s*.*$", "", str(text or ""), flags=re.IGNORECASE | re.MULTILINE
+    )
+    normalized = re.sub(r"\s+", " ", stable_text).strip().lower()
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _manual_browser_flow_proves_interaction(
+    previous_fingerprint: str,
+    *,
+    mutation_seen: bool,
+    current_observation: str,
+) -> bool:
+    """Proof = prior DOM read + real user action + a different subsequent DOM read."""
+    current = _browser_state_fingerprint(current_observation)
+    return bool(
+        previous_fingerprint
+        and mutation_seen
+        and current
+        and current != previous_fingerprint
+    )
+
+
+def _advance_manual_browser_flow(
+    previous_fingerprint: str,
+    *,
+    mutation_pending: bool,
+    tool_name: str,
+    observation: str,
+) -> tuple[bool, str, bool]:
+    """Advance strict proof without discarding an unobserved user action.
+
+    A click/type acknowledgement does not include the resulting static text.
+    The first follow-up DOM read may expose only interactive controls, so keep
+    the action pending until a later state read actually differs.
+    """
+    tool = str(tool_name or "")
+    # LOT M1 — un clic sur un LIEN n'arme PAS la preuve d'interaction : changer de
+    # page n'est pas agir sur le produit (run CaveÀVin).
+    _real_user_mutation = (
+        tool in _BROWSER_USER_MUTATION_TOOLS
+        and not _browser_click_is_link_navigation(tool, observation)
+    )
+    pending = bool(mutation_pending or _real_user_mutation)
+    fingerprint = str(previous_fingerprint or "")
+    proven = False
+    if tool in _BROWSER_STATE_READ_TOOLS:
+        proven = _manual_browser_flow_proves_interaction(
+            fingerprint,
+            mutation_seen=pending,
+            current_observation=observation,
+        )
+        current = _browser_state_fingerprint(observation)
+        if current:
+            fingerprint = current
+        if proven:
+            pending = False
+    return proven, fingerprint, pending
+
+
 def _browser_progress_delta(
     previous_sig: Optional[tuple],
     current_sig: tuple,
@@ -1486,10 +2179,124 @@ BROWSER_ACTION_TOOLS: frozenset = frozenset({
     "browser_keyboard_press", "browser_drag", "browser_drag_at",
 })
 
+# LOT Z23 — outils fermés une fois l'interactif jugé NON PROUVABLE sur une
+# preview locale. C'est ce verrou qui remplace le `return` : il casse la boucle
+# d'inspection (raison d'être du garde, run memo) sans tuer la mission. Les
+# outils d'ACTION restent ouverts — on ferme la relecture, pas le travail.
+_LP_UNPROVABLE_CLOSED_TOOLS: frozenset = BROWSER_VISUAL_TOOLS | frozenset({
+    "browser_evaluate",
+})
+
 # Outils système vers lesquels le LLM peut dériver après un blocage browser
 _BROWSER_DRIFT_TOOLS: frozenset = frozenset({
     "run_command", "run_shell", "exec_command", "web_fetch", "curl",
 })
+
+
+def _local_preview_loop_decision(
+    is_local_preview: bool,
+    tool_name: str,
+    progressed: bool,
+    current_streak: int,
+    evaluate_asked: bool,
+    *,
+    warn_at: int = 3,
+    stop_at: int = 5,
+    interaction_proven: bool = False,
+    tool_succeeded: bool = True,
+) -> tuple:
+    """LOT 2.11.C/D — décision PURE sur une preview LOCALE servie par Lumena.
+
+    Cas racine (run memo) : sur un jeu/preview local, Lumena inspecte en boucle
+    (screenshot/dom_state) sans que rien ne progresse ; ces outils VISUELS ne
+    comptent pas dans `browser_no_progress_streak` (réservé aux vraies actions)
+    → aucun stop ne se déclenchait, boucle infinie sur un livrable pourtant servi.
+
+    Politique BORNÉE (pas d'arrêt bête, une méthode plus intelligente d'abord) :
+      - inspection visuelle répétée sans progrès → au bout de `warn_at`, on ESCALADE
+        UNE fois vers `browser_evaluate` (lire l'état JS concret : compteur de coups,
+        score, assertion DOM) ;
+      - si l'évaluation ne prouve toujours rien (ou `stop_at` atteint après escalade)
+        → STOP et conclusion HONNÊTE (« page servie, navigation OK, mais validation
+        interactive complète NON prouvée ») — jamais « jeu validé » sans preuve.
+
+    LOT R′ (run Cadran, 2026-08-14) — CE GARDE A COUPÉ UNE MISSION QUI AVAIT SA
+    PREUVE. Séquence exacte :
+
+        23:55:47  clic « Auteur » → L'Étranger/Camus devient Fahrenheit/Bradbury
+        23:55:56  les 8 lignes relues dans le nouvel ordre
+        23:56:03  browser_evaluate SANS paramètre `script` (appel mal formé)
+        23:56:10  browser_evaluate (test du thème) → STOP
+
+    La mission a conclu à 7 min 19 sur 60, sans avoir vérifié le thème persistant,
+    le responsive ni le clavier. Deux défauts, tous deux ici :
+
+    1. **La preuve n'entrait pas dans la décision.** `local_preview_interaction_proven`
+       est calculé, journalisé et persisté en métadonnée — mais APRÈS cet appel, et
+       sans jamais lui être transmis. Cause racine commune aux lots F→I : le fait
+       existait, était calculé… puis jeté avant la décision.
+    2. **Réclamer une preuve puis punir celui qui la fournit.** L'escalade demande
+       « fais un `browser_evaluate` » et le PREMIER qui suit coupait, quel que soit
+       son contenu — y compris celui qui apportait la preuve demandée.
+
+    ⚠️ Nuance qui sauve le cas d'origine : un `browser_evaluate` techniquement
+    réussi mais VIDE ne prouve rien. Sans le distinguer, le jeu memo reboucle à
+    l'infini. D'où deux faits distincts — `interaction_proven` (la preuve) et
+    `tool_succeeded` (l'appel a abouti) — et jamais l'un pour l'autre.
+
+    Retour : (action, new_streak, new_evaluate_asked) où
+      action ∈ {"none", "escalate", "stop"}.
+    Ne touche à AUCUN état ; le caller applique le résultat.
+    """
+    if not is_local_preview:
+        return ("none", 0, False)
+    if interaction_proven:
+        # L'interactif est DÉMONTRÉ : cette boucle n'a plus lieu d'être.
+        return ("none", 0, False)
+    if progressed:
+        # La boucle est cassée : un vrai progrès a eu lieu → on repart à zéro.
+        return ("none", 0, False)
+    is_evaluate = (tool_name or "") == "browser_evaluate"
+    is_visual = (tool_name or "") in BROWSER_VISUAL_TOOLS
+    # Seules l'inspection visuelle et l'évaluation alimentent ce compteur.
+    if not (is_visual or is_evaluate):
+        return ("none", current_streak, evaluate_asked)
+    if is_evaluate and not tool_succeeded:
+        # Appel mal formé (`script` manquant, JS invalide) : la tentative demandée
+        # par l'escalade n'a pas eu lieu. On ne la consomme pas — sinon un typo
+        # coûte la mission, ce qui est arrivé à 23:56:03.
+        return ("none", current_streak, evaluate_asked)
+    new_streak = current_streak + 1
+    # L'escalade a DÉJÀ été demandée et une évaluation ABOUTIE revient sans preuve
+    # → stop. C'est le cas memo : on a demandé l'état JS, il ne démontre rien.
+    if is_evaluate and evaluate_asked:
+        return ("stop", new_streak, True)
+    if new_streak >= stop_at and evaluate_asked:
+        return ("stop", new_streak, True)
+    if new_streak >= warn_at and not evaluate_asked:
+        return ("escalate", new_streak, True)
+    return ("none", new_streak, evaluate_asked)
+
+
+def _url_is_local_preview(url) -> bool:
+    """True si l'URL pointe une preview loopback ENREGISTRÉE par Lumena.
+
+    S'appuie sur le registre `utils.local_preview` (host loopback + port
+    enregistré, jamais l'IP LAN ni l'externe). Tolérant : toute erreur = False.
+    """
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        from ..utils.local_preview import is_preview_allowed
+        p = urlparse(str(url))
+        host = p.hostname
+        port = p.port
+        if port is None:
+            port = 443 if (p.scheme or "").lower() == "https" else 80
+        return bool(is_preview_allowed(host, port))
+    except Exception:
+        return False
 
 
 # V2.1 fix prod 2026-05-19 (rev 2) : marqueurs d'INTENTION dans un thought/réponse.
@@ -1499,6 +2306,7 @@ _BROWSER_DRIFT_TOOLS: frozenset = frozenset({
 from src.reasoning.final_guards import (  # noqa: F401
     _INTENTION_MARKERS, _DELIVERABLE_MARKERS, _INTERNAL_PREFIXES,
     _looks_like_intention, strip_thought_leak_prefix, remask_secrets,
+    extract_mission_deliverable, apply_mission_truth_lock,
 )
 
 
@@ -1527,6 +2335,46 @@ def _obs_looks_tabular(obs_content: str) -> bool:
         return False
     n_markers = sum(1 for m in _TABULAR_OBS_MARKERS if m in obs_content)
     return n_markers >= 2
+
+
+_TEST_RESULT_TOOL_NAMES: frozenset = frozenset({
+    "run_command", "run_shell", "exec_command", "process_status",
+})
+_TEST_RESULT_RE = re.compile(
+    r"(?im)(?:^|\s)(?:\d+\s+passed|\d+\s+failed|\d+\s+error(?:s)?|"
+    r"tests?\s+passed|tests?\s+failed)(?:\s|$)"
+)
+
+
+def _obs_looks_like_test_result(obs_content: str, tool_name: str) -> bool:
+    """True pour une preuve d'execution de tests, verte ou rouge.
+
+    Ce signal ne sert qu'au dernier fallback anti-THOUGHT : apres epuisement des
+    reformulations, mieux vaut livrer le resultat pytest reel que retourner une
+    reponse vide. Le tool gate evite de prendre une phrase LLM pour une preuve.
+    """
+    if (tool_name or "").strip().lower() not in _TEST_RESULT_TOOL_NAMES:
+        return False
+    content = (obs_content or "").strip()
+    if len(content) < 20:
+        return False
+    return bool(_TEST_RESULT_RE.search(content))
+
+
+def _should_repair_incomplete_final(
+    *,
+    stagnation_streak: int,
+    plan_business_complete: bool,
+    document_free_grounded: bool,
+    looks_incomplete: bool,
+) -> bool:
+    """Gate the generic final repair with stronger run-scoped proof."""
+    return bool(
+        stagnation_streak == 0
+        and not plan_business_complete
+        and not document_free_grounded
+        and looks_incomplete
+    )
 
 
 _PHASE27_MCP_LOOP_TOOLS: frozenset = frozenset({
@@ -1712,7 +2560,10 @@ def _synthesize_response_from_observation(
     plusieurs repairs. La réponse est explicitement marquée comme un fallback
     pour que l'utilisateur sache que c'est une synthèse automatique.
     """
-    if not _obs_looks_tabular(obs_content):
+    if not (
+        _obs_looks_tabular(obs_content)
+        or _obs_looks_like_test_result(obs_content, tool_name)
+    ):
         return None
     # Bornes : 6 KB max
     body = obs_content.strip()
@@ -1727,6 +2578,256 @@ def _synthesize_response_from_observation(
     )
 
 
+def _synthesize_mission_response_from_evidence(
+    evidence: Sequence[Tuple[str, str, bool]],
+) -> Optional[str]:
+    """Construit un bilan de mission depuis plusieurs preuves outil réussies.
+
+    Ce filet n'est utilisé qu'après épuisement des repairs anti-THOUGHT. Il ne
+    transforme jamais une simple navigation ou une observation en succès :
+    chaque section exige l'outil autoritatif correspondant et une observation
+    marquée comme réussie.
+    """
+    selected: Dict[str, str] = {}
+    for tool_name, raw_observation, success in evidence:
+        if not success:
+            continue
+        tool = str(tool_name or "").strip().lower()
+        observation = str(raw_observation or "").strip()
+        if not observation:
+            continue
+
+        if tool == "publish_mission_workspace":
+            first_block = re.split(
+                r"\n\s*(?:➡️|🌐|Prochaine étape)", observation, maxsplit=1
+            )[0]
+            selected["publication"] = first_block[:1400].strip()
+        elif tool == "run_command" and _obs_looks_like_test_result(observation, tool):
+            summaries = [
+                line.strip()
+                for line in observation.splitlines()
+                if re.search(r"\b(?:passed|failed|errors?)\b", line, re.IGNORECASE)
+            ]
+            if summaries:
+                selected["tests"] = summaries[-1][:500]
+        elif tool in {"generate_studio_document", "generate_studio_documents"}:
+            studio = observation
+            try:
+                payload = json.loads(observation)
+                if isinstance(payload, dict):
+                    filename = str(payload.get("filename") or "document")
+                    size = payload.get("size")
+                    verified = payload.get("render_verified") is True
+                    studio = (
+                        f"{filename} — rendu {'vérifié' if verified else 'généré'}"
+                        + (f" — {size} octets" if isinstance(size, (int, float)) else "")
+                    )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            selected["studio"] = studio[:800].strip()
+        elif (
+            tool == "browser_verify_local_project"
+            and "runtime web verify: ok" in observation.lower()
+        ):
+            useful = []
+            for line in observation.splitlines():
+                stripped = line.strip()
+                if (
+                    "Runtime web verify: OK" in stripped
+                    or stripped.startswith("URL:")
+                    or stripped.startswith("- title:")
+                    or stripped.startswith("Project:")
+                ):
+                    useful.append(stripped)
+            selected["browser"] = "\n".join(useful)[:900].strip()
+        elif tool == "delegate_and_wait":
+            # H7 (TEST RÉEL n°2, mission `uv` 2026-08-13) — ne garder que la
+            # PREMIÈRE LIGNE revenait à ne garder que l'en-tête « Délégation :
+            # 2/2 terminée(s) : » et à jeter ce qui suit : **les rapports des
+            # workers**, que l'observation présente pourtant comme « les
+            # LIVRABLES des workers ». Pour une mission de CODE, le livrable est
+            # sur le disque et le bilan pouvait rester maigre ; pour une mission
+            # d'EFFETS (H4), ce rapport EST le livrable — le mémo enregistré en
+            # mémoire n'apparaissait nulle part dans le bilan rendu.
+            # Même cap que « publication », qui garde déjà un bloc entier.
+            _deleg = observation.strip()
+            # Le footer de steering s'adresse au LEAD pendant le run ; il n'a
+            # aucun sens dans un bilan livré à l'utilisateur.
+            for _mark in ("\n\n➡️ Ce sont les LIVRABLES", "\n\n⛔ RÉSULTAT PARTIEL"):
+                _cut = _deleg.find(_mark)
+                if _cut > 0:
+                    _deleg = _deleg[:_cut].strip()
+            selected["delegation"] = _deleg[:1400].strip()
+
+    if not selected:
+        return None
+
+    labels = (
+        ("publication", "Livraison"),
+        ("tests", "Tests"),
+        ("studio", "Document Studio"),
+        ("browser", "Navigateur"),
+        ("delegation", "Délégation"),
+    )
+    parts = ["Mission terminée. Voici le bilan factuel issu des preuves enregistrées :"]
+    for key, label in labels:
+        value = selected.get(key)
+        if value:
+            parts.append(f"**{label}**\n{value}")
+    parts.append(
+        "_(Bilan de secours construit depuis les observations outil réussies : "
+        "aucune étape non prouvée n'est déclarée terminée.)_"
+    )
+    return "\n\n".join(parts)[:6000]
+
+
+# PG-1.a (run SkiLoc 2026-07-12) — outils dont un SUCCÈS est une PROGRESSION
+# réelle même si le plan TODO ne bouge pas : les tâches restantes du plan
+# peuvent être verrouillées (PUBLISH-ONLY/BROWSER-ONLY) pendant que le lead
+# débogue légitimement. SkiLoc : reset_data ajouté + conftest.py créé = « aucune
+# progression » → FINAL forcé avec 2 048 s de budget restant, à une itération de
+# la victoire. Une écriture réussie remet le compteur de stagnation à ZÉRO.
+_PG1_MUTATION_TOOLS = frozenset({
+    "write_file", "edit_file", "edit_by_lines", "apply_patch", "apply_patches",
+    "insert_at_anchor", "str_replace", "multi_edit_file", "create_file",
+    "delete_file", "create_directory",
+    "publish_mission_workspace", "serve_website", "start_preview_server",
+    "write_mission_contract",
+    "generate_studio_documents",
+})
+
+# LOT P3 (run HuffPack v2, 2026-08-14) — le compteur de RELECTURE n'était, lui,
+# jamais remis à zéro : il montait sur toute la durée de la mission, et trois
+# relectures du même fichier suffisaient à FORCER LE FINAL. Or forcer un FINAL
+# dans un tour de chat est bénin (on rend une réponse) ; dans une MISSION, c'est
+# la tuer.
+#
+# Timeline exacte du run :
+#   04:36  write_file  core.py          → écriture RÉUSSIE
+#   04:37  pytest      12 passed        → le codec est réparé
+#   04:38  edit_file   test_huffpack.py → écriture RÉUSSIE (4 tests ajoutés)
+#   04:38  pytest      16 passed, 1 failed  → un seuil à ajuster, rien de plus
+#   04:42  ⚠️ read_file stagnation — forçage FINAL (relectures=3)
+#          budget restant : 4 775 s = 79 MINUTES · aucun rapport, aucune publication
+#
+# Deux écritures réussies s'étaient intercalées sans faire redescendre le
+# compteur. C'est mot pour mot le défaut que PG-1.a a corrigé pour le compteur
+# de progression du plan (SkiLoc : « FINAL forcé avec 2 048 s de budget restant,
+# à une itération de la victoire »). On applique ici la même règle, plus un
+# garde-fou : tant qu'il reste du budget, une mission est REDIRIGÉE, pas achevée.
+_READ_STAGNATION_BUDGET_FLOOR_S: float = 300.0
+
+
+def read_stagnation_action(
+    *,
+    is_mission_run: bool,
+    budget_remaining_s: float,
+    shots_used: int,
+) -> str:
+    """« redirect » ou « end » face à une stagnation de lecture. Pur/testable.
+
+    Hors mission : toujours « end » — le comportement historique du chat ne
+    bouge pas d'un pouce. En mission : « redirect » une seule fois, et
+    uniquement s'il reste réellement du temps de travail.
+    """
+    if not is_mission_run:
+        return "end"
+    if int(shots_used or 0) >= 1:
+        return "end"
+    try:
+        remaining = float(budget_remaining_s)
+    except (TypeError, ValueError):
+        return "end"
+    return "redirect" if remaining > _READ_STAGNATION_BUDGET_FLOOR_S else "end"
+
+
+# LOT P2b — un livrable DÉJÀ LIVRÉ ne se réécrit pas en place depuis une mission.
+# Mesuré sur les écritures réelles : 23 sur 104 (22 %) visent `workspace/<projet>`
+# hors dossier de mission, dont les 3 écrasements successifs de
+# `workspace/huffpack/huffpack/core.py` — un projet publié et vert, cassé en une
+# heure, sans filet et sans que l'utilisateur en soit informé.
+#
+# Le critère est FACTUEL, jamais lexical (leçon du LOT N2) : le fichier existe-t-il
+# déjà sur le disque, hors du dossier de cette mission ? Créer un fichier NEUF
+# reste libre — les missions d'effets (PDF, CSV, page web nouvelle) ne sont pas
+# concernées. Redirection, pas blocage : au second appel, l'écriture passe.
+_P2B_WRITE_TOOLS: frozenset = frozenset({
+    "write_file", "edit_file", "edit_by_lines", "apply_patch", "apply_patches",
+    "insert_at_anchor", "str_replace", "multi_edit_file",
+})
+
+
+def mission_write_path_exists(path_str: str, *, workspace_root: Any = None) -> bool:
+    """Le fichier visé existe-t-il déjà, quel que soit l'ancrage du chemin ?
+
+    LOT P2b-bis (run HuffPack v4, 2026-08-14) — le garde s'est TU alors que la
+    mission écrivait 4 fois dans `workspace/huffpack/huffpack/core.py`, et le
+    livrable est ressorti cassé (5 passed, 12 failed). Cause : je préfixais un
+    chemin DÉJÀ préfixé —
+
+        default_workspace_root : …/lumena/workspace
+        chemin du modèle       : workspace/huffpack/huffpack/core.py
+        mon calcul             : …/workspace/workspace/huffpack/…  → absent
+        le vrai fichier        : …/workspace/huffpack/…            → présent
+
+    Les modèles écrivent tantôt `workspace/x/y.py`, tantôt `x/y.py`, tantôt un
+    chemin absolu. On teste donc les ancrages plausibles : un fichier trouvé sous
+    N'IMPORTE lequel est un fichier qui existe.
+    """
+    target = str(path_str or "").strip()
+    if not target:
+        return False
+    try:
+        probe = Path(target)
+        if probe.is_absolute():
+            return probe.is_file()
+    except Exception:
+        return False
+    try:
+        project_root = Path(__file__).resolve().parents[2]
+    except Exception:
+        project_root = None
+    candidates = []
+    for base in (
+        workspace_root,
+        project_root,
+        (project_root / "workspace") if project_root else None,
+    ):
+        if not base:
+            continue
+        try:
+            candidates.append(Path(base) / target)
+        except Exception:
+            continue
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def mission_write_targets_existing_deliverable(
+    path_str: str,
+    mission_workspace: str,
+    *,
+    exists: bool,
+) -> bool:
+    """True si l'écriture vise un fichier EXISTANT hors du dossier de mission.
+
+    Pur : l'appelant fournit `exists` (le seul accès disque). `mission_workspace`
+    vide → False (hors mission, ou mission sans dossier : aucun effet).
+    """
+    if not exists:
+        return False
+    ws = str(mission_workspace or "").replace("\\", "/").strip().strip("/")
+    if not ws:
+        return False
+    target = str(path_str or "").replace("\\", "/").strip()
+    if not target:
+        return False
+    return ws not in target
 
 
 class ReActLoop:
@@ -1750,6 +2851,7 @@ class ReActLoop:
         step_callback: Optional[Callable[[str, dict], None]] = None,
         runtime_ctx: Optional[Any] = None,
         max_iterations: Optional[int] = None,
+        document_route: Optional[DocumentRoute] = None,
     ):
         """
         Args:
@@ -1784,12 +2886,14 @@ class ReActLoop:
         self.is_weak_model = bool(is_weak_model)
         self.step_callback: Optional[Callable[[str, dict], None]] = step_callback
         self.runtime_ctx = runtime_ctx  # RuntimeContext snapshot (Phase 2)
+        self._document_route = document_route
         # ── Plan TODO ──
         self._task_plan: List[TaskItem] = []
         self._plan_emitted: bool = False
         self._plan_last_emit_state: str = ""  # dédup: n'émet TODO_STATE que si changé
         self._iterations_without_progress: int = 0
         self._last_completed_task_count: int = 0
+        self._last_document_manifest_signature: tuple = ()
         # P5 — profil comportemental par modèle (chargé dynamiquement à la première itération)
         self._model_profile = None
         self._model_profile_applied_for: str = ""
@@ -2118,6 +3222,3163 @@ class ReActLoop:
     def _orchestrator_enabled(self) -> bool:
         return bool(self.task_orchestrator and self.task_id)
 
+    def _raise_if_user_cancelled(self, phase: str = "") -> None:
+        """Stop before a new side effect when the web stream was cancelled."""
+        event = _REACT_CANCEL_EVENTS.get(threading.get_ident())
+        if event is not None and event.is_set():
+            logger.info("[ReAct] annulation utilisateur avant {}", phase or "action")
+            raise SystemExit("user_cancelled_react")
+
+    async def _execute_tool_with_cancel_guard(
+        self, name: str, args: Dict[str, Any], *, caller: Any,
+    ):
+        """Execute one tool only while the owning stream is still active."""
+        self._raise_if_user_cancelled(f"outil {name}")
+        return await self.tools.execute(name, args, caller=caller)
+
+    @property
+    def _is_mission_run(self) -> bool:
+        """True si cette boucle ReAct tourne DANS une mission (sous-agent), pas le chat.
+        Le chat n'a pas de task_id (cf. logs `task=-`) ; une mission est un TaskRecord
+        kind='mission' (cf. manager.create_mission). Double verrou → jamais le chat.
+        Sert à relâcher le PLAN GUARD : en mission le seul contrat est le LIVRABLE, pas
+        le plan AUTO-généré du worker (tâches-passerelle + matching outil↔tâche imparfait)."""
+        if not self.task_id or not self.task_orchestrator:
+            return False
+        try:
+            rec = self.task_orchestrator.get_task(self.task_id)
+            return bool(rec and (rec.get("metadata") or {}).get("kind") == "mission")
+        except Exception:
+            return False
+
+    def _post_delegate_web_verify_allowed(self) -> bool:
+        """2.6.3 (run MiniQuiz §5) — le vérifieur web post-delegate ne tire JAMAIS
+        en mission. Il sert le dossier en STATIQUE → 404 structurels sur une app
+        Flask → il a poussé les 3 workers dans un chaos de « corrections » (port
+        du contrat muté via shell, tests pollués, serveurs fantômes). En mission,
+        la preuve navigateur appartient au LEAD : serve_website (voie 2.5) +
+        browser_* réels, gardés par BROWSER GATE et truth-lock."""
+        if getattr(self, "_is_mission_run", False):
+            return False
+        try:
+            return bool(_post_delegate_web_verify_enabled())
+        except Exception:
+            return True
+
+    def _mission_workspace_meta(self) -> str:
+        """LOT 2.1 — sous-dossier de scope mission lu dans la meta (posé par
+        delegate_and_wait). "" hors mission ou si absent → résolution actuelle.
+        Lu par tour (non caché) car le lead pose sa propre meta EN COURS de run."""
+        if not self.task_id or not self.task_orchestrator:
+            return ""
+        try:
+            rec = self.task_orchestrator.get_task(self.task_id)
+            return str(((rec or {}).get("metadata") or {}).get("mission_workspace") or "").strip()
+        except Exception:
+            return ""
+
+    def _mission_unpublished_writes(self) -> list:
+        """LOT Z24 — fichiers ecrits APRES la publication, donc hors livrable.
+
+        Run « jeu 3D » (2026-08-19) : `write_file jeu-3d-monde-ouvert/README.md`
+        a l'iteration 26, APRES le publish. Le livrable publie ne contient que
+        CONTRAT.md, contract.json, index.html, script.js, style.css — et la
+        mission a conclu « completed », sans un mot sur le README que l'objectif
+        exigeait (« index.html, styles, scripts, instructions »).
+
+        Deux faits deterministes, deja persistes cote a cote, jamais croises.
+
+        Bornes (sous-detecter plutot que crier au loup) :
+          - missions uniquement, et seulement apres une publication REUSSIE ;
+          - une ecriture DANS le dossier publie est sur le disque, donc livree
+            (meme doctrine DISK-GROUNDED que 2.12.C) : elle ne compte pas ;
+          - basenames uniques, liste plafonnee.
+
+        Les ecritures des SOUS-AGENTS ont leur propre ledger et ne figurent pas
+        ici : un oubli de worker echappe a ce garde. Sous-detection assumee —
+        c'est le bon sens de l'erreur, et `_cited_test_config` documente deja le
+        cout inverse (« faux fantomes ») d'un croisement ledger trop large.
+        """
+        if not getattr(self, "_is_mission_run", False):
+            return []
+        try:
+            entries = self.execution_ledger.writes_after_last_publish()
+        except Exception:
+            return []
+        if not entries:
+            return []
+        ws = ""
+        try:
+            rec = self.task_orchestrator.get_task(self.task_id) or {}
+            ws = str((rec.get("metadata") or {}).get("published_workspace") or "").strip()
+        except Exception:
+            ws = ""
+        ws_norm = ws.replace("\\", "/").strip("/").lower()
+        out: list = []
+        for e in entries:
+            raw = str(e.target or "").replace("\\", "/").strip()
+            if not raw:
+                continue
+            # Ecrit DANS le dossier publie → present sur le disque, donc livre.
+            if ws_norm and raw.strip("/").lower().startswith(ws_norm + "/"):
+                continue
+            base = os.path.basename(raw)
+            if base and base not in out:
+                out.append(base)
+        return out[:8]
+
+    def _mission_routing_objective(self) -> str:
+        """Semantic mission objective, excluding lead/worker protocol prose."""
+        if not self._is_mission_run or not self.task_id or not self.task_orchestrator:
+            return ""
+        try:
+            record = self.task_orchestrator.get_task(self.task_id) or {}
+            metadata = record.get("metadata") or {}
+            return str(
+                metadata.get("routing_objective")
+                or metadata.get("objective")
+                or ""
+            ).strip()
+        except Exception:
+            return ""
+
+    def _tests_present_but_not_run(self) -> bool:
+        """A5 — des tests existent pour cette mission mais AUCUN pytest n'a tourné
+        dans ce run. Alimente la bannière déterministe du chokepoint (preuve au
+        ledger, pas au prompt)."""
+        try:
+            _o = self.execution_ledger.last_test_outcome()
+            if (_o or {}).get("is_test_cmd"):
+                return False
+            owned = self._mission_allowed_files_meta()
+            if owned:
+                from src.reasoning.test_proof import any_test_file
+                return bool(any_test_file(owned))
+            return bool(self._mission_tests_present_for_gate())
+        except Exception:
+            return False
+
+    def _current_green_test_proof(self) -> bool:
+        """Mission proof is stale after a later source mutation."""
+        try:
+            if self._is_mission_run:
+                return self.execution_ledger.has_fresh_green_test_run()
+            return self.execution_ledger.has_green_test_run()
+        except Exception:
+            return False
+
+    def _ledger_facts_step(self) -> "Optional[ReActStep]":
+        """LOT Z22 — rend les faits PROUVÉS sous forme d'étape réinjectable.
+
+        Run « jeu 3D monde ouvert » (2026-08-19). La compaction d'urgence
+        anti-hallucination faisait `self.history = self.history[-3:]` — une
+        troncature aveugle par la queue. Elle a tiré 5 fois et a effacé, entre
+        autres, l'observation de 02:26:51 :
+
+            📦 Livrable publié : … vers `workspace/jeu-3d-monde-ouvert/`
+
+        La mission a ensuite passé **8 minutes et 42 appels d'exploration**
+        (`list_directory workspace/documents/jeu-3d` — un chemin inventé —, puis
+        find_files, grep_search, grep_batch…) à chercher un dossier qu'elle
+        venait de créer 90 secondes plus tôt.
+
+        Et c'est une BOUCLE : moins de faits → plus d'invention → streak plus
+        haut → nouvelle compaction. Le garde anti-hallucination nourrissait
+        l'hallucination qu'il combat.
+
+        Le ledger, lui, n'est jamais tronqué : c'est un journal horodaté en
+        ajout seul. `summary()` produit exactement la ligne perdue. On la remet
+        en tête de l'historique nettoyé — le bruit meurt, les faits restent.
+
+        `origin` n'est PAS "tool" : cette étape ne doit compter ni comme appel
+        d'outil ni dans les compteurs de panne. Défensive : None sur erreur.
+        """
+        try:
+            _resume = self.execution_ledger.summary()
+            if not _resume or "(vide)" in _resume:
+                return None
+            return ReActStep(
+                thought=Thought(
+                    content="Je relis ce qui est DÉJÀ prouvé avant de continuer."
+                ),
+                action=Action(action_type=ActionType.THINKING),
+                observation=Observation(
+                    content=(
+                        "📌 FAITS ÉTABLIS DANS CE RUN (journal d'exécution — "
+                        "ne les redécouvre pas, ne les cherche pas) :\n"
+                        f"{_resume}"
+                    ),
+                    success=True,
+                    origin="ledger_facts",
+                ),
+            )
+        except Exception:
+            return None
+
+    def _nudge_unpublished_writes(self) -> None:
+        """LOT Z24 — la prevenir AU MOMENT ou l'ecart se cree, pas a la fin.
+
+        Un tir unique, jamais de refus : elle vient d'ecrire un fichier apres
+        avoir publie. Le dire maintenant lui laisse le temps de republier ; le
+        dire au FINAL ne fait plus que constater la perte.
+        """
+        if getattr(self, "_z24_nudged", False):
+            return
+        try:
+            manquants = self._mission_unpublished_writes()
+        except Exception:
+            return
+        if not manquants:
+            return
+        self._z24_nudged = True
+        liste = ", ".join(f"`{m}`" for m in manquants)
+        logger.warning(
+            "[Z24] {} ecrit(s) apres la publication — hors livrable, redirection 1/1",
+            liste,
+        )
+        self._pending_loop_guidance = (
+            f"⚠️ {liste} : tu as écrit ce(s) fichier(s) APRÈS avoir publié. "
+            "La publication a figé un instantané — ils ne sont donc PAS dans le "
+            "livrable, et l'utilisateur ne les verra pas.\n\n"
+            "Si tu veux les livrer, rappelle `publish_mission_workspace`. Sinon, "
+            "dis-le explicitement dans ta réponse finale. Ne conclus pas en "
+            "laissant croire qu'ils sont livrés."
+        )
+
+    def _invalidate_interaction_pending(self, tool_name: str, success: bool) -> None:
+        """LOT Z20 — annule une action utilisateur en attente de preuve.
+
+        Appelée pour CHAQUE outil (le garde browser, lui, ne voit que `browser_*`).
+        Après un de ces outils, une différence de DOM n'est plus attribuable à
+        l'action : on jette l'attente ET l'empreinte de référence, ce qui oblige
+        la mission à refaire lecture → action → lecture sur la page réelle.
+
+        Ne touche PAS `local_preview_interaction_proven` : une preuve déjà acquise
+        reste acquise (c'est l'attente, pas la preuve, qui a menti sur Créneau).
+        Défensive : ne peut jamais interrompre la boucle.
+        """
+        try:
+            if not success or tool_name not in _INTERACTION_PROOF_INVALIDATORS:
+                return
+            _g = self.exec_state.guards
+            if not (_g.local_preview_mutation_since_read
+                    or _g.local_preview_last_read_fingerprint):
+                return
+            _pending = bool(_g.local_preview_mutation_since_read)
+            _g.local_preview_mutation_since_read = False
+            _g.local_preview_last_read_fingerprint = ""
+            logger.info(
+                "[Z20] preuve d'interaction recalibrée après '{}' "
+                "(action en attente={}) — la prochaine différence de DOM ne peut "
+                "plus être créditée à une action antérieure. task={}",
+                tool_name, _pending, self.task_id,
+            )
+        except Exception:
+            return
+
+    def _current_browser_proof(self) -> bool:
+        """Mission browser proof is stale after a later source mutation."""
+        try:
+            if self._is_mission_run:
+                return self.execution_ledger.has_fresh_browser_action()
+            return self.execution_ledger.has_browser_action()
+        except Exception:
+            return False
+
+    def _mission_tests_present_for_gate(self) -> str:
+        """LOT 2.10 — des tests existent-ils pour CE run de mission ? Retourne une
+        courte justification (pour le log/steer) ou "". Sources bornées : fichiers
+        écrits pendant le run (ledger), dossier mission (2.1), contract.json (2.2).
+        Jamais de scan large (garde-fou P0.2)."""
+        try:
+            from src.reasoning.test_proof import (
+                any_test_file, tests_present_in_dir, tests_present_in_contract,
+            )
+            if any_test_file(self.execution_ledger.written_basenames()):
+                return "fichiers de test écrits pendant ce run"
+            if self.task_id and self.task_orchestrator:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
+                if mws:
+                    import json as _j210
+                    import os as _os210
+                    from src.utils.paths import WORKSPACE_DIR as _ws210
+                    d = str(_ws210 / mws)
+                    if tests_present_in_dir(d):
+                        return f"tests dans {mws}"
+                    cj = _os210.path.join(d, "contract.json")
+                    if _os210.path.isfile(cj):
+                        with open(cj, encoding="utf-8", errors="replace") as fh:
+                            if tests_present_in_contract(_j210.load(fh)):
+                                return "tests déclarés au contrat"
+        except Exception:
+            return ""
+        return ""
+
+    def _mission_web_present_for_gate(self) -> str:
+        """LOT D — un livrable WEB existe-t-il pour CE run ? Retourne une courte
+        justification (log/steer) ou "". Sources bornées, comme _mission_tests_
+        present_for_gate (jamais de scan large, garde-fou P0.2) : fichiers écrits
+        pendant le run (ledger), dossier mission (2.1), contract.json (2.2)."""
+        _WEB = (".html", ".htm", ".js")
+        try:
+            import os as _osW
+            for b in self.execution_ledger.written_basenames():  # déjà en minuscules
+                if b.endswith(_WEB):
+                    return "page web écrite pendant ce run"
+            if self.task_id and self.task_orchestrator:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
+                if mws:
+                    from src.utils.paths import WORKSPACE_DIR as _wsW
+                    d = str(_wsW / mws)
+                    if _osW.path.isdir(d):
+                        for name in _osW.listdir(d):
+                            if name.lower().endswith(_WEB):
+                                return f"page web dans {mws}"
+                    cj = _osW.path.join(d, "contract.json")
+                    if _osW.path.isfile(cj):
+                        import json as _jW
+                        with open(cj, encoding="utf-8", errors="replace") as fh:
+                            data = _jW.load(fh)
+                        for f in (data.get("files") or []):
+                            if str(f.get("path") or "").lower().endswith(_WEB):
+                                return "page web déclarée au contrat"
+            # M6-colmatage (run MiniQuiz 2026-07-06, mission 1) — fabrication à
+            # l'itération 1 SANS AUCUNE mutation : ledger vide, pas de dossier
+            # mission, pas de contrat → les deux sources ci-dessus rendent "" et
+            # le mensonge « ✅ Navigateur : titre visible » sortait sans bannière.
+            # 3e source : l'OBJECTIF de mission demande explicitement un livrable
+            # web (borné mission). 2.9.A : négation-aware — « pas de navigateur »
+            # / « API sans interface » ne comptent PLUS comme objectif web.
+            if getattr(self, "_is_mission_run", False) and _objective_wants_browser(
+                getattr(self, "_original_query", "")
+            ):
+                return "objectif web explicite"
+        except Exception:
+            return ""
+        return ""
+
+    @staticmethod
+    def _browser_verify_intent(text: str) -> bool:
+        """LOT D — le texte exprime-t-il une INTENTION de vérifier au navigateur ?
+        Mêmes marqueurs que plan_progress.browser_verify_task_blocks (nom navigateur
+        + verbe de vérif). Pur/testable."""
+        d = (text or "").lower()
+        if not any(m in d for m in ("navigateur", "browser", "naviguer")):
+            return False
+        return any(v in d for v in ("vérif", "verif", "test", "valid", "confirm",
+                                    "s'assur", "assur", "contrôl", "controle"))
+
+    def _mission_browser_verify_pending(self, answer: str, original_query: str) -> str:
+        """LOT D — faut-il relancer pour la jambe navigateur ? Retourne la justif web
+        (non vide) si : livrable WEB présent ET aucune action browser_* réussie au
+        ledger ET (intention navigateur dans l'objectif OU claim navigateur dans le
+        FINAL). "" sinon. Déclencheur validé revue : objectif OU claim (le lead peut
+        conclure « frontend fonctionnel ✅ » sans que l'objectif ait dit « vérifie »)."""
+        # LOT Z11 (décision utilisateur 2026-08-16) — AVANT les sorties anticipées.
+        # Le gate ci-dessous se satisfait d'UNE navigation : ouvrir une page sur
+        # deux le contentait. Mesuré sur les 3 runs web multi-pages, sans
+        # exception : la page testée est à 100 % de style, la page jamais ouverte
+        # à 4 %, 50 %, 31 %. Z7 nomme pourtant la page fautive — Tanière a
+        # corrigé, Marée a ignoré. Un constat seul ne suffit pas ici.
+        _z11 = self._pages_never_opened_reason()
+        if _z11:
+            return _z11
+        interaction_required = self._truth_lock_interaction_flag()
+        if interaction_required:
+            if self._truth_lock_interaction_proven():
+                return ""  # verdict strict positif → interaction réellement exercée
+        elif self._current_browser_proof():
+            return ""  # simple inspection demandée : preuve browser historique suffisante
+        # LOT D-fix (run CoVoit'Éco 2026-07-04) — la vérif navigateur est le job du
+        # TOP-LEAD (il assemble, SERT l'app, puis navigue), JAMAIS d'un sous-worker
+        # délégué : l'app n'est pas servie pendant son run isolé. Un sous-worker a un
+        # périmètre `allowed_files` ; le lead non. Sans ce garde, le boilerplate
+        # « navigateur PARTAGÉ » + « test » des objectifs workers faisait sur-
+        # déclencher le gate sur w_backend/w_tests (bruit : 1 relance inutile chacun).
+        if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
+            return ""  # sous-worker délégué → pas de vérif navigateur ici
+        web = self._mission_web_present_for_gate()
+        if not web:
+            return ""
+        from src.reasoning.final_guards import claims_browser_verified
+        if (interaction_required or self._browser_verify_intent(original_query)
+                or claims_browser_verified(answer)):
+            return web
+        return ""
+
+    def _pages_never_opened_reason(self) -> str:
+        """LOT Z11 — les pages HTML produites que ce run n'a JAMAIS ouvertes.
+
+        Sources bornées, patron `_mission_web_present_for_gate` : les basenames
+        écrits au ledger et le `contract.json` de la mission pour le PRODUIT ;
+        l'historique des `browser_navigate` pour le VU. Aucune I/O nouvelle.
+
+        Inerte hors mission, chez un worker délégué, et dès qu'il y a moins de
+        deux pages — le cas mono-page est déjà couvert par la jambe navigateur
+        du LOT D, et ce garde ne parle que du multi-pages, seul cas mesuré.
+        """
+        try:
+            if self._is_worker_run():
+                return ""
+            produced: list = []
+            for b in self.execution_ledger.written_basenames():
+                if str(b).lower().endswith((".html", ".htm")):
+                    produced.append(str(b))
+            if self.task_id and self.task_orchestrator:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
+                if mws:
+                    import json as _jZ
+                    import os as _osZ
+
+                    from src.utils.paths import WORKSPACE_DIR as _wsZ
+
+                    cj = _osZ.path.join(str(_wsZ / mws), "contract.json")
+                    if _osZ.path.isfile(cj):
+                        with open(cj, encoding="utf-8", errors="replace") as fh:
+                            data = _jZ.load(fh)
+                        for f in (data.get("files") or []):
+                            p = str(f.get("path") or "")
+                            if p.lower().endswith((".html", ".htm")):
+                                produced.append(p)
+            if len(produced) < 2:
+                return ""
+            visited: list = []
+            for item in self.history:
+                act = getattr(item, "action", None)
+                if not act or getattr(act, "tool_name", "") != "browser_navigate":
+                    continue
+                url = (getattr(act, "tool_args", None) or {}).get("url")
+                if url:
+                    visited.append(str(url))
+            from src.reasoning.plan_progress import (
+                pages_never_opened,
+                unseen_pages_reason,
+            )
+
+            manquantes = pages_never_opened(produced, visited)
+            if not manquantes:
+                return ""
+            logger.warning(
+                "[Z11] pages jamais ouvertes: {} (produites={}, naviguées={})",
+                ", ".join(manquantes), len(set(produced)), len(visited),
+            )
+            return unseen_pages_reason(manquantes)
+        except Exception as _exc_z11:
+            logger.debug("[Z11] pages non vues non calculées: {}", _exc_z11)
+            return ""
+
+    def _mission_js_present_for_gate(self) -> str:
+        """LOT 2.4 (run MotDuJour) — un livrable JS existe-t-il pour CE run ?
+        Sources bornées (patron _mission_web_present_for_gate, garde-fou P0.2) :
+        fichiers écrits au ledger, contract.json de la mission. "" sinon."""
+        try:
+            import os as _osJ
+            for b in self.execution_ledger.written_basenames():
+                if b.endswith((".js", ".mjs")):
+                    return "JS écrit pendant ce run"
+            if self.task_id and self.task_orchestrator:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
+                if mws:
+                    from src.utils.paths import WORKSPACE_DIR as _wsJ
+                    cj = _osJ.path.join(str(_wsJ / mws), "contract.json")
+                    if _osJ.path.isfile(cj):
+                        import json as _jJ
+                        with open(cj, encoding="utf-8", errors="replace") as fh:
+                            data = _jJ.load(fh)
+                        for f in (data.get("files") or []):
+                            if str(f.get("path") or "").lower().endswith((".js", ".mjs")):
+                                return "JS déclaré au contrat"
+        except Exception:
+            return ""
+        return ""
+
+    def _finalize_browser_gate_pending(self, note: str, original_query: str) -> str:
+        """LOT 2.7 (run Converto 2026-07-06) — le FINALIZE déterministe doit-il être
+        intercepté pour la jambe navigateur ? Retourne la justif web ("" sinon).
+        Converto est sorti par `voie=plan_complet` (étape navigateur créditée à
+        TORT au plan) : le BROWSER GATE ne vivait que sur la voie FINAL LLM —
+        même trou que le PYTEST GATE avant C0.4. Borné : 1 tir partagé avec le
+        gate du FINAL (même compteur `_browser_gate_shots`)."""
+        if getattr(self, "_browser_gate_shots", 0) >= 1:
+            return ""
+        # ── LOT Z15 — une page ouverte ne vaut pas le site vérifié ────────────
+        # Run « Verdure 2 » (2026-08-16) : la mission a ouvert `localhost:8081`
+        # (= index.html), donc `_current_browser_proof()` est devenu vrai, donc
+        # ce garde s'est tu — sans jamais demander à Z11 s'il RESTAIT des pages.
+        # `devis.html`, l'espace client où vit toute la logique, n'a jamais été
+        # regardée, et la mission a conclu proprement.
+        #
+        # Z11 avait pourtant été placé AVANT les sorties anticipées de
+        # `_mission_browser_verify_pending`. Le trou était un cran plus haut :
+        # l'APPELANT a les siennes. Même motif, même erreur, autre étage — et
+        # mon test structurel ne regardait que l'étage du dessous.
+        #
+        # DÉCISION UTILISATEUR (2026-08-16) : « la vérification web du projet
+        # doit se faire par le parent une fois les workers finis ; il doit
+        # vraiment naviguer, scanner, vérifier — c'est le filet de sécurité ».
+        # Les workers ne voient chacun que leur fichier ; le lead est le seul à
+        # pouvoir regarder le résultat comme un utilisateur le verrait.
+        try:
+            _unseen = self._pages_never_opened_reason()
+            if _unseen:
+                return _unseen
+        except Exception:
+            pass
+        # The basic browser gate only owns the first successful page opening.
+        # An explicit form/game interaction has its own bounded gate below.
+        if self._current_browser_proof():
+            return ""
+        try:
+            return self._mission_browser_verify_pending(note or "", original_query or "")
+        except Exception:
+            return ""
+
+    def _finalize_interaction_gate_pending(
+        self, note: str, original_query: str
+    ) -> str:
+        """Return the web reason when an explicit UI interaction still lacks proof.
+
+        This is deliberately separate from ``_browser_gate_shots``: opening the
+        page and exercising a requested form/game flow are two distinct proofs.
+        The interaction gate gets a small bounded action budget because a real
+        form flow takes several ReAct iterations (inputs, click, DOM read).
+        """
+        if (
+            getattr(self, "_interaction_gate_shots", 0)
+            >= _MAX_INTERACTION_GATE_SHOTS
+        ):
+            return ""
+        try:
+            if not self._truth_lock_interaction_flag():
+                return ""
+            if self._truth_lock_interaction_proven():
+                return ""
+            if not self._current_browser_proof():
+                return ""  # the basic browser gate must open the page first
+            return self._mission_browser_verify_pending(
+                note or "", original_query or ""
+            )
+        except Exception:
+            return ""
+
+    def _server_started_proof(self) -> bool:
+        """LOT 2.3 (run MotDuJour) — un serveur de preview a-t-il RÉELLEMENT démarré
+        dans CE run ? Preuve ledger : serve_website ou start_preview_server réussi.
+        Défensif : True sur erreur (jamais de fausse rétrogradation)."""
+        try:
+            led = self.execution_ledger
+            return (led.has_successful_action("serve_website")
+                    or led.has_successful_action("start_preview_server"))
+        except Exception:
+            return True
+
+    def _browser_content_seen(self) -> Optional[str]:
+        """2.7.4 (run MiniPanier) — concaténation des observations qui LISENT la
+        page (browser_navigate + son enrichissement vision, browser_get_content,
+        browser_dom_state, browser_screenshot). EXCLUT les échos d'ACTION
+        (type/click) : « Tape "Pommes" » prouve la saisie, pas l'affichage — c'est
+        exactement la confusion qui a laissé passer le surclaim MiniPanier.
+        None si aucune lecture de page (le verrou reste inerte). Défensif."""
+        _CONTENT_TOOLS = {
+            "browser_navigate", "browser_get_content", "browser_dom_state",
+            "browser_screenshot", "browser_read", "browser_extract",
+        }
+        try:
+            chunks = []
+            for h in self.history:
+                if not (h.action and h.observation):
+                    continue
+                if (h.action.tool_name or "") in _CONTENT_TOOLS:
+                    c = h.observation.content or ""
+                    if c:
+                        chunks.append(c)
+            return "\n".join(chunks) if chunks else None
+        except Exception:
+            return None
+
+    def _truth_lock_web_flag(self) -> bool:
+        """M1 (run RévizIA) — policy navigateur DURE : True si CE run est le TOP-LEAD
+        d'une mission à livrable WEB. Passé au truth-lock (`web_deliverable=`) : sans
+        action browser_* réussie au ledger, TOUT final reçoit la bannière « Navigateur
+        NON vérifié », indépendamment de la formulation (« Test navigateur validé » —
+        forme nominale hors regex — avait livré une fabrication totale : serveur
+        jamais lancé). Scope top-lead (même raison que le BROWSER GATE / D-fix) : un
+        sous-worker isolé ne peut pas vérifier au navigateur — la vérité incombe au
+        lead. Défensif : False sur toute erreur (jamais de fausse rétrogradation)."""
+        try:
+            # H4 — un porteur d'EFFETS purs n'a pas d'`allowed_files` : le test
+            # historique le prenait pour le lead et lui collait cette policy
+            # (run veille_python_313 : bannière navigateur sur une veille).
+            if self._is_worker_run():
+                return False  # sous-worker délégué → pas son job
+            return bool(self._mission_web_present_for_gate())
+        except Exception:
+            return False
+
+    def _set_web_runtime_verification_state(
+        self,
+        *,
+        failed: bool,
+        report: str = "",
+    ) -> None:
+        """Persist the latest strict web-runtime verdict for this mission run."""
+        self._web_runtime_failed = bool(failed)
+        self._web_runtime_verified = not bool(failed)
+        self._web_runtime_failure_report = str(report or "")[:3000] if failed else ""
+        if not self.task_id or not self.task_orchestrator:
+            return
+        try:
+            self.task_orchestrator.set_task_metadata(
+                self.task_id,
+                web_runtime_failed=bool(failed),
+                web_runtime_verified=not bool(failed),
+                web_runtime_failure_report=self._web_runtime_failure_report,
+            )
+        except Exception as exc:
+            logger.debug("[M100.4] persistence verdict runtime web ignoree: {}", exc)
+
+    def _browser_runtime_failed_for_truth_lock(self) -> bool:
+        """Latest strict verifier failure, including persisted recovery state."""
+        try:
+            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
+                return False
+            marker = getattr(self, "_web_runtime_failed", None)
+            if marker is not None:
+                return bool(marker)
+            if self.task_id and self.task_orchestrator:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                return bool((rec.get("metadata") or {}).get("web_runtime_failed"))
+        except Exception:
+            pass
+        return False
+
+    def _browser_runtime_verified_for_truth_lock(self) -> bool:
+        """Latest positive strict runtime verdict, persisted across mission recovery."""
+        try:
+            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
+                return False
+            marker = getattr(self, "_web_runtime_verified", None)
+            if marker is not None:
+                return bool(marker)
+            if self.task_id and self.task_orchestrator:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                meta = (rec.get("metadata") or {})
+                if "web_runtime_verified" in meta:
+                    return bool(meta.get("web_runtime_verified"))
+            return self.execution_ledger.has_successful_action(
+                "browser_verify_local_project"
+            )
+        except Exception:
+            return False
+
+    def _mission_overwrite_gate(self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None):
+        """LOT P2b — GATE LIVRABLE EXISTANT, 1 tir.
+
+        Une mission qui réécrit en place un fichier déjà livré travaille sans
+        filet : si elle échoue en route, le projet reste cassé et personne n'est
+        prévenu. C'est arrivé deux fois à HuffPack v1 en une heure.
+
+        Inerte hors mission, inerte sans dossier de mission, inerte sur un
+        fichier neuf. Redirection unique — au second appel, l'écriture passe.
+        """
+        if not self._is_mission_run:
+            return None
+        if tool_name not in _P2B_WRITE_TOOLS:
+            return None
+        if getattr(self, "_overwrite_gate_shots", 0) >= 1:
+            return None
+        ws = self._mission_workspace_meta()
+        if not ws:
+            return None
+        args = tool_args or {}
+        target = str(args.get("path") or args.get("file_path") or "").strip()
+        if not target:
+            return None
+        exists = mission_write_path_exists(
+            target,
+            workspace_root=getattr(self.tools, "default_workspace_root", None),
+        )
+        if not mission_write_targets_existing_deliverable(target, ws, exists=exists):
+            return None
+        self._overwrite_gate_shots = getattr(self, "_overwrite_gate_shots", 0) + 1
+        logger.warning(
+            "[P2b] écriture en place sur le livrable existant '{}' (hors {}) → "
+            "redirection dirigée 1/1.", target, ws,
+        )
+        from .react_config import Observation as _ObsP2b
+
+        return _ObsP2b(
+            content=(
+                f"⛔ `{target}` existe déjà et se trouve HORS de ton dossier de "
+                f"mission (`{ws}`). L'écrire en place, c'est modifier un livrable "
+                "livré sans filet : si tu échoues ensuite, il reste cassé.\n\n"
+                f"Copie d'abord ce que tu dois modifier dans `{ws}`, travaille "
+                "là-bas, vérifie par une exécution réelle, puis publie avec "
+                "`publish_mission_workspace` quand c'est vert.\n\n"
+                "(Redirection unique : si tu rappelles cet outil, il s'exécutera.)"
+            ),
+            success=False,
+            origin="mission_overwrite",
+        )
+
+    def _local_preview_unprovable_gate(self, tool_name: str):
+        """LOT Z23 — l'inspection est close, la mission continue.
+
+        Run « jeu 3D monde ouvert » (2026-08-19), au log :
+
+            02:30:18  [LOCAL PREVIEW] escalade browser_evaluate (streak=3)
+            02:30:23  interruption sans preuve interactive (streak=4)
+                      ← DERNIERE LIGNE DU LOG
+
+        5,6 secondes. Le garde reclamait UNE assertion, elle l'a fournie, elle
+        n'a rien demontre — et le code faisait `return` : le run entier mourait
+        a 18 minutes, sans echeance, laissant sur place le README que
+        l'objectif demandait. Le meme degat est deja decrit en en-tete de
+        `_local_preview_loop_decision` pour le run Cadran (« conclu a 7 min 19
+        sur 60 »), ou seul le cas de l'appel mal forme avait ete repare.
+
+        Or ce `return` n'apportait AUCUNE honnetete : le truth-lock bannerise
+        « interaction NON prouvee » sur l'OBJECTIF et le ledger, quel que soit
+        le texte du final (doctrine 2.13.A). Il doublait un mecanisme qui marche
+        en payant la completude.
+
+        Ce gate le remplace : le constat ferme la relecture de CETTE preview
+        (sinon on retombe sur le rebouclage infini du run memo) et rien d'autre.
+        Inerte ailleurs, inerte sur une autre page.
+        """
+        try:
+            guards = getattr(getattr(self, "exec_state", None), "guards", None)
+            if not getattr(guards, "local_preview_interaction_unprovable", False):
+                return None
+            if (tool_name or "") not in _LP_UNPROVABLE_CLOSED_TOOLS:
+                return None
+            # Borne de portee : le constat vaut pour LA preview jugee, pas pour
+            # toute page que la mission ouvrira ensuite.
+            _url = str(getattr(self, "_last_browser_page_url", "") or "")
+            if _url != str(getattr(self, "_lp_unprovable_url", "") or ""):
+                return None
+        except Exception:
+            return None
+        from .react_config import Observation as _ObsZ23
+
+        return _ObsZ23(
+            content=(
+                "⛔ Constat ACQUIS sur cette preview locale : la validation "
+                "interactive n'y est pas prouvable (assertion deja tentee, sans "
+                "resultat probant). Ce constat est definitif pour ce run — "
+                "l'inspecter a nouveau ne le changera pas.\n\n"
+                "Ce n'est PAS un echec de mission : le reste de ce qui t'a ete "
+                "demande t'attend. Termine-le (fichiers annonces, livrables, "
+                "verifications hors navigateur), puis conclus en enoncant ce "
+                "constat tel quel — sans jamais affirmer l'interactif."
+            ),
+            success=False,
+            origin="local_preview_unprovable",
+        )
+
+    def _chat_mission_intent_gate(self, tool_name: str):
+        """LOT O2 (run HuffPack v2, 2026-08-14) — GATE INTENTION MISSION, 1 tir.
+
+        Au CHAT, l'utilisateur annonce « Mission avec échéance 90 minutes » et le
+        modèle part explorer le dossier au lieu de lancer la mission : 12
+        itérations de lecture, sans budget, sans workers, sans suivi. Rien ne
+        reliait son annonce à `create_mission` — la mission ne se créait que
+        lorsque le verbe de la tâche était « construis » (le modèle vise alors
+        write_mission_contract, et le refus le redirige). Avec « améliore
+        l'existant », personne ne le reprenait.
+
+        Inerte DANS une mission : le lead et les workers reçoivent ce même
+        vocabulaire dans leur prompt injecté — les déclencher relancerait des
+        missions en cascade.
+
+        Redirection, pas blocage : un seul tir, puis l'outil passe.
+        """
+        if self._is_mission_run:
+            return None
+        if tool_name == "create_mission":
+            return None
+        if getattr(self, "_chat_mission_gate_shots", 0) >= 1:
+            return None
+        from .final_guards import chat_requests_background_mission
+
+        if not chat_requests_background_mission(
+            getattr(self, "_original_query", "") or ""
+        ):
+            return None
+        self._chat_mission_gate_shots = getattr(self, "_chat_mission_gate_shots", 0) + 1
+        logger.warning(
+            "[CHAT MISSION GATE] '{}' alors que l'utilisateur a demandé une mission "
+            "à échéance → redirection dirigée 1/1.", tool_name,
+        )
+        from .react_config import Observation as _ObsO2
+
+        return _ObsO2(
+            content=(
+                "⛔ L'utilisateur a demandé une MISSION avec une échéance — donc un "
+                "travail en arrière-plan, avec son propre budget de temps et ses "
+                "sous-agents. Ne le fais PAS ici au fil de la conversation.\n\n"
+                "Appelle `create_mission(objective=..., deadline=...)` en reprenant "
+                "l'objectif et l'échéance tels qu'il les a écrits, puis annonce-lui "
+                "que c'est lancé et TERMINE ton tour.\n\n"
+                "(Redirection unique : si tu rappelles cet outil ensuite, il "
+                "s'exécutera.)"
+            ),
+            success=False,
+            origin="chat_mission_intent",
+        )
+
+    def _contract_protocol_requirement(self) -> tuple:
+        """LOT Z26 — d'où vient l'exigence du protocole, et de qui ?
+
+        La porte 2.13.B lisait `_original_query`, qui contient le PRÉAMBULE de
+        mission écrit par Lumena elle-même — préambule où figure littéralement
+        `write_mission_contract`. Mesuré : le préambule seul suffit à déclencher.
+        La porte affirmait ensuite « L'utilisateur a EXPLICITEMENT demandé » en
+        citant, en réalité, la prose de Lumena. Elle attribuait à l'utilisateur
+        une exigence qu'il n'avait pas formulée — le contraire exact du critère
+        de ce chantier.
+
+        Elle tirait aussi là où 2.13.B la voulait INERTE (« sans exigence
+        explicite, create_project direct reste licite »), puisque le préambule
+        est présent à chaque mission.
+
+        Correctif : l'objectif SÉMANTIQUE décide (`_mission_routing_objective`,
+        dont le rôle est précisément d'exclure la prose de protocole). Repli sur
+        `_original_query` seulement s'il est absent — et dans ce cas on ne
+        prétend PLUS que l'utilisateur l'a demandé.
+
+        Mesure du corpus (643 missions) : 166 objectifs UTILISATEUR exigent
+        réellement le protocole, « sous-agents » en tête (120 occurrences). La
+        porte garde donc tout son travail : Z26 corrige à qui on l'attribue, pas
+        ce qu'elle protège.
+
+        Retour : (exigence, attribuable_a_l_utilisateur).
+        """
+        from .final_guards import objective_requires_contract_protocol
+
+        objectif = ""
+        try:
+            _fn = getattr(self, "_mission_routing_objective", None)
+            if callable(_fn):
+                objectif = str(_fn() or "").strip()
+        except Exception:
+            objectif = ""
+        if objectif:
+            # L'objectif de l'utilisateur est connu : il décide SEUL. Retomber
+            # sur la requête brute ici, ce serait réintroduire le préambule.
+            return (objective_requires_contract_protocol(objectif), True)
+        brut = str(getattr(self, "_original_query", "") or "")
+        return (objective_requires_contract_protocol(brut), False)
+
+    def _contract_intent_gate(self, tool_name: str):
+        """2.13.B (run miniblog 2026-07-09) — GATE INTENTION CONTRAT, 1 tir.
+
+        L'utilisateur a EXPLICITEMENT exigé le protocole contrat+workers et le
+        lead tente un create_project/generate_website direct SANS
+        write_mission_contract réussi au ledger → observation de redirection
+        dirigée UNE fois (même mécanique bornée que le BROWSER GATE). Sans
+        exigence explicite : inerte — create_project direct reste licite
+        (morpion/pwgen/sondage). Retourne None pour laisser passer."""
+        if tool_name not in ("create_project", "generate_website"):
+            return None
+        if not self._is_mission_run:
+            return None
+        if getattr(self, "_contract_gate_shots", 0) >= 1:
+            return None
+        if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
+            return None  # worker délégué → le contrat appartient au lead
+        # Appel par la CLASSE : `_contract_intent_gate` est autoportante (elle ne
+        # lit qu'un jeu d'attributs) et se teste sur un duck-type — passer par
+        # `self.` exigerait de lui greffer la méthode. Contrat préservé.
+        _exige, _du_user = ReActLoop._contract_protocol_requirement(self)
+        if not _exige:
+            return None
+        if self.execution_ledger.has_successful_action("write_mission_contract"):
+            return None
+        self._contract_gate_shots = getattr(self, "_contract_gate_shots", 0) + 1
+        logger.warning(
+            "[CONTRACT GATE] {} direct alors que l'objectif exige le protocole "
+            "contrat+workers → redirection dirigée 1/1. task={}",
+            tool_name, self.task_id,
+        )
+        from .react_config import Observation as _Obs213
+        # LOT Z26 — n'attribuer à l'utilisateur que ce qu'il a écrit.
+        _amorce = (
+            "⛔ L'utilisateur a EXPLICITEMENT demandé le protocole contrat + "
+            "workers pour cette mission. "
+            if _du_user else
+            "⛔ Cette mission relève du protocole contrat + workers. "
+        )
+        return _Obs213(
+            content=(
+                _amorce +
+                "Ne crée PAS le projet directement : "
+                "pose d'abord le contrat via `write_mission_contract` (`files` avec "
+                "path/owner/exports pour le code, et/ou `effects` avec "
+                "owner/action/desc/proof pour les livrables non-fichier — un owner "
+                "par worker), puis délègue via "
+                "`delegate_and_wait`. (Redirection unique : si tu rappelles "
+                f"{tool_name} ensuite, il s'exécutera.)"
+            ),
+            success=False,
+        )
+
+    def _worker_codeagent_first_gate(self, tool_name: str, tool_args: Optional[dict] = None):
+        """Require one real CodeAgent attempt before a contract worker hand-codes.
+
+        LOT I already injects ``CODE PAR DÉLÉGATION`` into every contracted code
+        worker, but the RévizIA/AtelierAir runtime runs proved that a model can
+        ignore that prompt and call ``edit_file`` directly.  This narrow gate
+        turns the documented policy into an invariant without removing the
+        fallback: as soon as ``delegate_task`` (or its background variant) has
+        actually been attempted, successfully or not, direct mutation is allowed.
+
+        It is intentionally inert for the chat, the mission lead, non-code
+        workers, legacy workers without the marker, and CodeAgent itself.
+        """
+        normalized_tool = str(tool_name or "")
+        if normalized_tool in {"delegate_task", "delegate_task_bg"}:
+            return None
+        if normalized_tool not in _LEDGER_MUTATION_TOOLS:
+            return None
+        if not getattr(self, "_is_mission_run", False):
+            return None
+        code_ext = (".py", ".html", ".css", ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte")
+        owned = list(self._mission_allowed_files_meta() or [])
+        is_lead = not owned
+        if is_lead:
+            # LOT Z1b — DÉCISION UTILISATEUR (2026-08-15) : « il faudrait qu'il
+            # utilise le CodeAgent si c'est du dev ». Le garde sortait ici, et
+            # informer le lead n'a rien changé — mesuré deux fois :
+            #   HuffPack  50 read_file · 5 éditions à la main → 12 tests ROUGES
+            #   Cadence   20 read_file · 6 éditions          → 14/15, 1 cas limite
+            # Le lot Z1 lui avait pourtant ajouté « Ne PAS découper ≠ coder à la
+            # main » : consigne reçue (vérifiée au log), zéro delegate_task. C'est
+            # exactement la leçon du LOT I côté workers — un prompt se contourne,
+            # un rail tient.
+            # Le lead n'a pas de fichiers assignés : on juge donc le fichier qu'il
+            # VISE. Un .md, un .json, un .csv passent — seul le CODE est concerné.
+            cible = ""
+            for cle in ("file_path", "path", "filename"):
+                valeur = (tool_args or {}).get(cle)
+                if valeur:
+                    cible = str(valeur)
+                    break
+            if not cible.lower().endswith(code_ext):
+                return None
+        else:
+            if not any(str(path or "").lower().endswith(code_ext) for path in owned):
+                return None
+            objective = str(getattr(self, "_original_query", "") or "")
+            if "CODE PAR DÉLÉGATION" not in objective:
+                return None
+        attempted = any(
+            entry.action in {"delegate_task", "delegate_task_bg"}
+            for entry in self.execution_ledger.recent(max(1, self.execution_ledger.size))
+        )
+        if attempted:
+            return None
+        logger.warning(
+            "[CODEAGENT-FIRST] mutation '{}' refusée avant delegate_task. task={} "
+            "role={} files={}",
+            tool_name, self.task_id, "lead" if is_lead else "worker", owned or cible,
+        )
+        if is_lead:
+            return Observation(
+                content=(
+                    "⛔ CODEAGENT-FIRST — écrire du code passe par le CodeAgent. "
+                    "Appelle d'abord `delegate_task(description='<ce qu'il y a à "
+                    "coder>', agent_type='code')` : il a le harnais (plan, édition "
+                    "ciblée, exécution, réparation) que tu n'as pas en direct. "
+                    "Une mutation directe redevient autorisée APRÈS cette tentative "
+                    "réelle — si le CodeAgent échoue, reprends immédiatement "
+                    "toi-même avec edit_file/apply_patch. Tu restes responsable de "
+                    "VÉRIFIER par une exécution et de conclure."
+                ),
+                success=False,
+            )
+        return Observation(
+            content=(
+                "⛔ CODEAGENT-FIRST — tu es un worker de code contractuel. Appelle "
+                "d'abord `delegate_task(description='remplis tes fichiers selon "
+                "CONTRAT.md', agent_type='code')`. Une mutation directe ne devient "
+                "autorisée qu'APRÈS cette tentative réelle ; si CodeAgent échoue, "
+                "reprends immédiatement toi-même avec edit_file/apply_patch afin de "
+                "livrer toutes les exigences."
+            ),
+            success=False,
+        )
+
+    def _document_route_for_run(self, query: Optional[str] = None) -> DocumentRoute:
+        """Return the single mode-aware document decision for this run.
+
+        AgentService normally injects this immutable route. Direct ReAct
+        callers get one deterministic fallback from their runtime mode, then
+        reuse it for the entire run.
+        """
+        runtime_ctx = getattr(self, "runtime_ctx", None)
+        mode = getattr(runtime_ctx, "mode", "agent") if runtime_ctx is not None else "agent"
+        is_mission = bool(
+            getattr(self, "_is_mission_run", False)
+            or (
+                getattr(self, "task_id", None)
+                and getattr(self, "task_orchestrator", None)
+            )
+        )
+        route = getattr(self, "_document_route", None)
+        if isinstance(route, DocumentRoute) and not is_mission:
+            return route
+        routing_query = (
+            ReActLoop._mission_routing_objective(self) if is_mission else ""
+        )
+        if not routing_query:
+            routing_query = query if query is not None else (
+                getattr(self, "_original_query", "") or ""
+            )
+        route = resolve_document_route(routing_query, mode=mode)
+        if is_mission and route.owns_run:
+            route = replace(route, owns_run=False)
+        self._document_route = route
+        return route
+
+    def _force_mission_proactive_document_tools(self) -> list[str]:
+        """Keep bounded document creation available to leads and workers."""
+        if not self._is_mission_run or not hasattr(self.tools, "force_allow_tools"):
+            return []
+        return self.tools.force_allow_tools(_MISSION_PROACTIVE_DOCUMENT_TOOLS)
+
+    def _document_tool_events(self):
+        """Yield document calls, including structured parallel sub-results."""
+        for step in getattr(self, "history", []):
+            action = getattr(step, "action", None)
+            if action is None:
+                continue
+            name = getattr(action, "tool_name", "") or ""
+            observation = getattr(step, "observation", None)
+            if name in {"parallel_tools", "generate_studio_documents"}:
+                for sub in getattr(observation, "sub_results", ()) if observation else ():
+                    yield (
+                        getattr(sub, "tool_name", "") or "",
+                        getattr(sub, "args", {}) or {},
+                        bool(getattr(sub, "success", False)),
+                        True,
+                        getattr(sub, "content", "") or "",
+                    )
+                continue
+            yield (
+                name,
+                getattr(action, "tool_args", {}) or {},
+                bool(getattr(observation, "success", False)) if observation is not None else False,
+                observation is not None,
+                getattr(observation, "content", "") or "" if observation is not None else "",
+            )
+
+    @staticmethod
+    def _document_catalog_evidence_key(args: Optional[Dict[str, Any]]) -> tuple[str, int, str]:
+        values = args or {}
+        try:
+            limit = int(values.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        return (
+            str(values.get("origin") or "").strip().lower(),
+            limit,
+            str(values.get("sort") or "").strip().lower(),
+        )
+
+    @staticmethod
+    def _document_catalog_rows(content: Any) -> tuple[dict, ...]:
+        try:
+            payload = json.loads(content) if isinstance(content, str) else content
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return ()
+        rows = payload.get("models") if isinstance(payload, dict) else None
+        return tuple(row for row in rows if isinstance(row, dict)) if isinstance(rows, list) else ()
+
+    def _record_document_catalog_evidence(self, action, observation) -> None:
+        """Keep exact successful catalog rows before history compaction."""
+        if observation is None:
+            return
+        evidence = getattr(self, "_document_catalog_evidence", None)
+        if not isinstance(evidence, dict):
+            evidence = {}
+            self._document_catalog_evidence = evidence
+
+        candidates = []
+        name = getattr(action, "tool_name", "") or ""
+        if name == "list_document_models":
+            candidates.append((
+                getattr(action, "tool_args", {}) or {},
+                bool(getattr(observation, "success", False)),
+                getattr(observation, "content", "") or "",
+            ))
+        elif name == "parallel_tools":
+            for sub in getattr(observation, "sub_results", ()):
+                if getattr(sub, "tool_name", "") == "list_document_models":
+                    candidates.append((
+                        getattr(sub, "args", {}) or {},
+                        bool(getattr(sub, "success", False)),
+                        getattr(sub, "content", "") or "",
+                    ))
+
+        for args, success, content in candidates:
+            # Selection-by-count requires the unfiltered compact catalogue.
+            # A kind-specific response with the same origin/limit/sort is not
+            # equivalent and must never populate the exact selection cache.
+            if str((args or {}).get("kind") or "").strip():
+                continue
+            rows = ReActLoop._document_catalog_rows(content)
+            if success and rows:
+                evidence[ReActLoop._document_catalog_evidence_key(args)] = rows
+
+    @staticmethod
+    def _document_parallel_calls(tool_args: Optional[Dict[str, Any]]) -> tuple[tuple[str, dict], ...]:
+        """Return normalized nested calls without executing or mutating them."""
+        calls = (tool_args or {}).get("tool_calls", [])
+        if isinstance(calls, str):
+            try:
+                calls = json.loads(calls)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return ()
+        normalized = []
+        name_keys = {"name", "tool_name", "tool", "action"}
+        arg_keys = ("args", "arguments", "tool_args", "parameters", "input", "params")
+        for raw in calls if isinstance(calls, list) else ():
+            if not isinstance(raw, dict):
+                continue
+            name = str(
+                raw.get("name") or raw.get("tool_name")
+                or raw.get("tool") or raw.get("action") or ""
+            ).strip()
+            args = next(
+                (raw.get(key) for key in arg_keys if isinstance(raw.get(key), dict)),
+                None,
+            )
+            if args is None:
+                args = {
+                    key: value for key, value in raw.items()
+                    if key not in name_keys and key not in arg_keys
+                }
+            normalized.append((name, dict(args)))
+        return tuple(normalized)
+
+    def _record_document_workflow_evidence(self, action, observation) -> None:
+        """Capture proof-bearing workflow results before visible compaction."""
+        if observation is None or not bool(getattr(observation, "success", False)):
+            return
+        store = getattr(self, "_document_workflow_evidence", None)
+        if not isinstance(store, dict):
+            store = {
+                "batch_proofs": {}, "generation_events": [],
+                "open_events": [], "revision_events": [], "revision_records": [],
+                "verification_events": [], "history_events": [],
+                "export_events": [], "library_events": [], "event_counter": 0,
+            }
+            self._document_workflow_evidence = store
+        name = getattr(action, "tool_name", "") or ""
+        args = getattr(action, "tool_args", {}) or {}
+        content = getattr(observation, "content", "") or ""
+        event_index = int(store.get("event_counter", 0) or 0) + 1
+        store["event_counter"] = event_index
+
+        from src.documents.delivery_manifest import parse_generation_proof
+
+        if name == "generate_studio_documents":
+            # A new successful generation supersedes any target frozen from a
+            # previous attempt.  Keeping the old target made a later, valid
+            # revision invisible to the workflow proof.
+            self._document_workflow_target_proof = None
+            self._document_delivery_reference_id = ""
+            self._document_delivery_reference_signature = ()
+            # A batch is authoritative over any earlier unitary attempt.  The
+            # Horizon Vert run regenerated one document only to obtain a
+            # receipt; keeping both generations made the opened parent drift.
+            store["generation_events"] = []
+            proofs = store.setdefault("batch_proofs", {})
+            route = ReActLoop._document_route_for_run(self)
+            if route.requested_count == 1:
+                proofs.clear()
+            for sub in getattr(observation, "sub_results", ()):
+                if not bool(getattr(sub, "success", False)):
+                    continue
+                sub_args = getattr(sub, "args", {}) or {}
+                proof = parse_generation_proof(
+                    getattr(sub, "content", "") or "",
+                    fallback_kind=normalize_document_kind(str(sub_args.get("kind", ""))),
+                )
+                if proof is None:
+                    continue
+                identity = proof.template_id or proof.document_id or proof.path
+                if identity:
+                    proofs[identity] = proof
+            store["last_generation_event_index"] = event_index
+            try:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            receipt_id = str(
+                payload.get("receipt_id") or ""
+                if isinstance(payload, dict)
+                else ""
+            ).strip()
+            if receipt_id:
+                manifest, missing, unverified = (
+                    ReActLoop._structured_document_delivery_manifest(self)
+                )
+                route = ReActLoop._document_route_for_run(self)
+                if (
+                    not missing and not unverified
+                    and len(manifest) == route.requested_count
+                ):
+                    from src.documents.delivery_manifest import (
+                        manifest_progress_signature,
+                    )
+
+                    # The receipt emitted by generate_studio_documents is the
+                    # authoritative reference for this exact manifest.  Do not
+                    # replace it with a synthetic bundle before the open step.
+                    self._document_delivery_reference_id = receipt_id
+                    self._document_delivery_reference_signature = (
+                        manifest_progress_signature(manifest)
+                    )
+            return
+
+        if name == "generate_studio_document":
+            self._document_workflow_target_proof = None
+            self._document_delivery_reference_id = ""
+            self._document_delivery_reference_signature = ()
+            proof = parse_generation_proof(
+                content,
+                fallback_kind=normalize_document_kind(str(args.get("kind", ""))),
+            )
+            if proof is not None:
+                route = ReActLoop._document_route_for_run(self)
+                if route.requested_count == 1:
+                    store.setdefault("batch_proofs", {}).clear()
+                store.setdefault("generation_events", []).append({
+                    "proof": proof,
+                    "_event_index": event_index,
+                })
+                store["last_generation_event_index"] = event_index
+            return
+
+        if name == "open_document_delivery":
+            payload = ReActLoop._document_open_payload(observation)
+            if isinstance(payload, dict):
+                event = dict(payload)
+                event["_event_index"] = event_index
+                event["_receipt_id"] = str(args.get("receipt_id") or "")
+                store.setdefault("open_events", []).append(event)
+            return
+
+        if name == "open_file":
+            route = ReActLoop._document_route_for_run(self)
+            manifest, missing, unverified = (
+                ReActLoop._structured_document_delivery_manifest(self)
+            )
+            path = str(args.get("path") or args.get("file_path") or "")
+            if (
+                route.requested_count == 1
+                and len(manifest) == 1
+                and not missing
+                and not unverified
+                and ReActLoop._document_paths_match(path, manifest[0].path)
+            ):
+                receipt_id = str(
+                    getattr(self, "_document_delivery_reference_id", "") or ""
+                )
+                store.setdefault("open_events", []).append({
+                    "receipt_id": receipt_id,
+                    "_receipt_id": receipt_id,
+                    "requested": 1,
+                    "opened": 1,
+                    "failed": 0,
+                    "files": [{
+                        "filename": manifest[0].filename,
+                        "path": manifest[0].path,
+                    }],
+                    "_event_index": event_index,
+                })
+            return
+
+        if name == "revise_studio_document":
+            target = ReActLoop._document_workflow_target(self)
+            proof = parse_generation_proof(
+                content,
+                fallback_kind=str(getattr(target, "kind", "") or ""),
+            )
+            if proof is not None:
+                try:
+                    payload = json.loads(content) if isinstance(content, str) else content
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    payload = {}
+                changed_fields = (
+                    dict(payload.get("changed_fields") or {})
+                    if isinstance(payload, dict)
+                    else {}
+                )
+                store.setdefault("revision_events", []).append((dict(args), proof))
+                store.setdefault("revision_records", []).append({
+                    "args": dict(args), "proof": proof,
+                    "changed_fields": changed_fields,
+                    "_event_index": event_index,
+                })
+                if str(args.get("output_format") or "").strip():
+                    record = (
+                        dict(payload.get("record") or {})
+                        if isinstance(payload, dict) else {}
+                    )
+                    store.setdefault("export_events", []).append({
+                        "args": dict(args), "record": record, "proof": proof,
+                        "_event_index": event_index,
+                    })
+            return
+
+        if name == "read_document":
+            store.setdefault("verification_events", []).append({
+                "args": dict(args), "content": str(content), "_event_index": event_index,
+            })
+            return
+
+        if name == "get_document_history":
+            try:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                store.setdefault("history_events", []).append({
+                    "args": dict(args), "payload": dict(payload),
+                    "_event_index": event_index,
+                })
+            return
+
+        if name in {"convert_library_document", "export_library_document"}:
+            try:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            if isinstance(payload, dict):
+                record = payload.get("record")
+                store.setdefault("export_events", []).append({
+                    "args": dict(args),
+                    "record": dict(record) if isinstance(record, dict) else dict(payload),
+                    "_event_index": event_index,
+                })
+            return
+
+        if name in {"search_document_library", "get_document_record"}:
+            try:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            records = []
+            if name == "search_document_library" and isinstance(payload, dict):
+                records = payload.get("documents") or []
+            elif isinstance(payload, dict):
+                records = [payload]
+            normalized_records = [dict(row) for row in records if isinstance(row, dict)]
+            if normalized_records:
+                store.setdefault("library_events", []).append({
+                    "args": dict(args), "records": normalized_records,
+                    "_event_index": event_index,
+                })
+
+    @staticmethod
+    def _duplicate_document_mutation(
+        primary_name: str,
+        primary_args: Optional[Dict[str, Any]],
+        queued_name: str,
+        queued_args: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Reject only byte-for-byte equivalent document mutations in one turn."""
+        document_mutations = {
+            "generate_studio_document",
+            "generate_studio_documents",
+            "revise_studio_document",
+            "apply_document_edit",
+        }
+        if primary_name != queued_name or primary_name not in document_mutations:
+            return False
+        try:
+            primary = json.dumps(
+                primary_args or {}, ensure_ascii=False, sort_keys=True, default=str,
+            )
+            queued = json.dumps(
+                queued_args or {}, ensure_ascii=False, sort_keys=True, default=str,
+            )
+        except (TypeError, ValueError):
+            return False
+        return primary == queued
+
+    @staticmethod
+    def _document_open_payload(observation) -> dict[str, Any] | None:
+        """Parse the authoritative raw open payload before visible compaction."""
+        content = getattr(observation, "content", None)
+        try:
+            payload = json.loads(content) if isinstance(content, str) else content
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return dict(payload) if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _document_revision_patch(args: Optional[Dict[str, Any]]) -> dict[str, Any]:
+        raw = (args or {}).get("data", {})
+        if isinstance(raw, dict):
+            return dict(raw)
+        if not isinstance(raw, str) or not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            try:
+                parsed = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _document_revision_changed_fields(record: Any) -> dict[str, Any]:
+        """Return the authoritative parent-child diff, with legacy arg fallback."""
+        if not isinstance(record, dict):
+            return {}
+        changed = record.get("changed_fields")
+        if isinstance(changed, dict) and changed:
+            return dict(changed)
+        return ReActLoop._document_revision_patch(record.get("args", {}))
+
+    @staticmethod
+    def _document_patch_scalar_values(value: Any) -> tuple[str, ...]:
+        values: list[str] = []
+        if isinstance(value, dict):
+            for child in value.values():
+                values.extend(ReActLoop._document_patch_scalar_values(child))
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                values.extend(ReActLoop._document_patch_scalar_values(child))
+        elif value is not None and not isinstance(value, (dict, list, tuple)):
+            text = str(value).strip()
+            if text:
+                values.append(text)
+        return tuple(values)
+
+    @staticmethod
+    def _document_paths_match(left: str, right: str) -> bool:
+        if not left or not right:
+            return False
+        return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
+            os.path.normpath(str(right))
+        )
+
+    @staticmethod
+    def _document_verification_text(value: Any) -> str:
+        """Normalize PDF line wrapping without weakening value matching."""
+        text = unicodedata.normalize("NFKC", str(value or ""))
+        text = re.sub(r"(?<=\w)-\s+(?=\w)", "-", text)
+        return re.sub(r"\s+", " ", text).strip().casefold()
+
+    def _document_workflow_proof_state(self) -> dict[str, Any]:
+        """Return causally ordered open, revision and reread evidence."""
+        route = ReActLoop._document_route_for_run(self)
+        store = getattr(self, "_document_workflow_evidence", {})
+        if not isinstance(store, dict):
+            store = {}
+
+        open_events = list(store.get("open_events", ()))
+        revision_records = list(store.get("revision_records", ()))
+        verification_events = list(store.get("verification_events", ()))
+        history_events = list(store.get("history_events", ()))
+        export_events = list(store.get("export_events", ()))
+        library_events = list(store.get("library_events", ()))
+
+        # Compatibility for tests and old in-memory runs that only have history.
+        if not open_events or not revision_records or not verification_events:
+            from src.documents.delivery_manifest import parse_generation_proof
+
+            load_history_opens = not open_events
+            load_history_revisions = not revision_records
+            load_history_verifications = not verification_events
+
+            for sequence, (name, args, success, observed, content) in enumerate(
+                ReActLoop._document_tool_events(self), start=1,
+            ):
+                if not (success and observed):
+                    continue
+                if name == "open_document_delivery" and load_history_opens:
+                    try:
+                        payload = json.loads(content) if isinstance(content, str) else content
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        payload = None
+                    if isinstance(payload, dict):
+                        event = dict(payload)
+                        event["_event_index"] = sequence
+                        event["_receipt_id"] = str((args or {}).get("receipt_id") or "")
+                        open_events.append(event)
+                elif name == "revise_studio_document" and load_history_revisions:
+                    target = ReActLoop._document_workflow_target(self)
+                    proof = parse_generation_proof(
+                        content,
+                        fallback_kind=str(getattr(target, "kind", "") or ""),
+                    )
+                    if proof is not None:
+                        try:
+                            payload = json.loads(content) if isinstance(content, str) else content
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            payload = {}
+                        revision_records.append({
+                            "args": dict(args or {}), "proof": proof,
+                            "changed_fields": (
+                                dict(payload.get("changed_fields") or {})
+                                if isinstance(payload, dict)
+                                else {}
+                            ),
+                            "_event_index": sequence,
+                        })
+                elif name == "read_document" and load_history_verifications:
+                    verification_events.append({
+                        "args": dict(args or {}), "content": str(content),
+                        "_event_index": sequence,
+                    })
+
+        from src.documents.delivery_manifest import summarize_document_open_events
+
+        generation_index = int(store.get("last_generation_event_index", 0) or 0)
+        expected_receipt = str(
+            getattr(self, "_document_delivery_reference_id", "") or ""
+        ).strip()
+        causal_open_events = []
+        for event in open_events:
+            if not isinstance(event, dict):
+                continue
+            event_index = int(event.get("_event_index", 0) or 0)
+            if generation_index and event_index <= generation_index:
+                continue
+            payload_receipt = str(event.get("receipt_id") or "").strip()
+            argument_receipt = str(event.get("_receipt_id") or "").strip()
+            if (
+                payload_receipt
+                and argument_receipt
+                and payload_receipt != argument_receipt
+            ):
+                continue
+            event_receipt = payload_receipt or argument_receipt
+            if expected_receipt and event_receipt != expected_receipt:
+                continue
+            causal_open_events.append(event)
+
+        open_summary = summarize_document_open_events(
+            ReActLoop._structured_document_delivery_manifest(self)[0],
+            causal_open_events,
+            requested_count=route.requested_count,
+        )
+        exact_open = (
+            open_summary
+            if isinstance(open_summary, dict) and bool(open_summary.get("complete"))
+            else None
+        )
+
+        target = ReActLoop._document_workflow_target(self)
+        open_index = int((exact_open or {}).get("_event_index", 0) or 0)
+        exact_revision = None
+        for record in revision_records:
+            args = record.get("args", {}) if isinstance(record, dict) else {}
+            if (
+                target is not None
+                and str(args.get("document_id") or "") == target.document_id
+                and int(record.get("_event_index", 0) or 0) > open_index
+            ):
+                exact_revision = record
+
+        exact_verification = None
+        if exact_revision is not None:
+            revision_index = int(exact_revision.get("_event_index", 0) or 0)
+            proof = exact_revision.get("proof")
+            patch = ReActLoop._document_revision_changed_fields(exact_revision)
+            expected_values = ReActLoop._document_patch_scalar_values(patch)
+            for event in verification_events:
+                args = event.get("args", {}) if isinstance(event, dict) else {}
+                path = str(args.get("path") or args.get("file_path") or "")
+                content = str(event.get("content") or "") if isinstance(event, dict) else ""
+                normalized_content = ReActLoop._document_verification_text(content)
+                if (
+                    int(event.get("_event_index", 0) or 0) > revision_index
+                    and proof is not None
+                    and ReActLoop._document_paths_match(path, proof.path)
+                    and expected_values
+                    and all(
+                        ReActLoop._document_verification_text(value)
+                        in normalized_content
+                        for value in expected_values
+                    )
+                ):
+                    exact_verification = event
+                    break
+
+        actions = tuple(getattr(route, "workflow_actions", ()) or ())
+        requested_operations = {
+            str(getattr(action, "operation", "") or "") for action in actions
+        }
+        revised_proof = (
+            exact_revision.get("proof") if isinstance(exact_revision, dict) else None
+        )
+        verification_index = int(
+            (exact_verification or {}).get("_event_index", 0) or 0
+        )
+
+        exact_history = None
+        if revised_proof is not None:
+            for event in history_events:
+                if not isinstance(event, dict):
+                    continue
+                payload = event.get("payload", {})
+                document = payload.get("document", {}) if isinstance(payload, dict) else {}
+                metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
+                parent_id = str(
+                    (document.get("parent_id") if isinstance(document, dict) else "")
+                    or (metadata.get("parent_id") if isinstance(metadata, dict) else "")
+                    or ""
+                )
+                if (
+                    int(event.get("_event_index", 0) or 0) > verification_index
+                    and str((document or {}).get("id") or "") == revised_proof.document_id
+                    and target is not None
+                    and parent_id == target.document_id
+                ):
+                    exact_history = event
+                    break
+
+        history_floor = int((exact_history or {}).get("_event_index", 0) or 0)
+        export_floor = history_floor if "history" in requested_operations else verification_index
+        export_action = next(
+            (
+                action for action in actions
+                if getattr(action, "operation", "") == "export"
+            ),
+            None,
+        )
+        expected_export_format = str(
+            getattr(export_action, "output_format", "") or ""
+        ).strip().lower()
+        exact_export = None
+        if revised_proof is not None:
+            for event in export_events:
+                if not isinstance(event, dict):
+                    continue
+                args = event.get("args", {})
+                record = event.get("record", {})
+                proof = event.get("proof")
+                record_id = str(
+                    (record.get("id") if isinstance(record, dict) else "")
+                    or getattr(proof, "document_id", "") or ""
+                )
+                record_format = str(
+                    (record.get("format") if isinstance(record, dict) else "")
+                    or getattr(proof, "format", "")
+                    or args.get("output_format") or ""
+                ).strip().lower().lstrip(".")
+                parent_id = str(
+                    (record.get("parent_id") if isinstance(record, dict) else "")
+                    or (
+                        (record.get("metadata") or {}).get("parent_id")
+                        if isinstance(record, dict) and isinstance(record.get("metadata"), dict)
+                        else ""
+                    )
+                    or args.get("document_id") or ""
+                )
+                if (
+                    int(event.get("_event_index", 0) or 0) > export_floor
+                    and record_id
+                    and parent_id == revised_proof.document_id
+                    and (
+                        not expected_export_format
+                        or record_format == expected_export_format
+                    )
+                ):
+                    exact_export = event
+                    break
+
+        expected_library_ids = {
+            value for value in (
+                str(getattr(target, "document_id", "") or ""),
+                str(getattr(revised_proof, "document_id", "") or ""),
+                str(
+                    ((exact_export or {}).get("record") or {}).get("id")
+                    or getattr((exact_export or {}).get("proof"), "document_id", "")
+                    or ""
+                ),
+            ) if value
+        }
+        library_floor = int((exact_export or {}).get("_event_index", 0) or 0)
+        observed_library_ids: set[str] = set()
+        latest_library_index = 0
+        for event in library_events:
+            if not isinstance(event, dict):
+                continue
+            event_index = int(event.get("_event_index", 0) or 0)
+            if event_index <= library_floor:
+                continue
+            latest_library_index = max(latest_library_index, event_index)
+            for record in event.get("records", ()):
+                if isinstance(record, dict) and record.get("id"):
+                    observed_library_ids.add(str(record["id"]))
+        exact_library = None
+        if expected_library_ids and expected_library_ids.issubset(observed_library_ids):
+            exact_library = {
+                "document_ids": tuple(sorted(expected_library_ids)),
+                "_event_index": latest_library_index,
+            }
+
+        return {
+            "open": exact_open,
+            "open_progress": open_summary,
+            "target": target,
+            "revision": exact_revision,
+            "verification": exact_verification,
+            "history": exact_history,
+            "export": exact_export,
+            "library_verify": exact_library,
+        }
+
+    def _document_workflow_progress_signature(self) -> tuple:
+        """Return monotone workflow evidence for document-only stagnation checks."""
+        from src.documents.delivery_manifest import workflow_progress_signature
+
+        state = ReActLoop._document_workflow_proof_state(self)
+        revision = state.get("revision") or {}
+        revised = revision.get("proof")
+        verification = state.get("verification") or {}
+        verification_args = verification.get("args", {}) if isinstance(verification, dict) else {}
+        history = state.get("history") or {}
+        history_payload = history.get("payload", {}) if isinstance(history, dict) else {}
+        history_document = (
+            history_payload.get("document", {}) if isinstance(history_payload, dict) else {}
+        )
+        export = state.get("export") or {}
+        export_record = export.get("record", {}) if isinstance(export, dict) else {}
+        export_proof = export.get("proof") if isinstance(export, dict) else None
+        library = state.get("library_verify") or {}
+        return workflow_progress_signature(
+            state.get("open_progress"),
+            revised_document_id=str(getattr(revised, "document_id", "") or ""),
+            verification_path=str(
+                verification_args.get("path") or verification_args.get("file_path") or ""
+            ),
+            history_document_id=str(
+                history_document.get("id") if isinstance(history_document, dict) else ""
+            ),
+            export_document_id=str(
+                (export_record.get("id") if isinstance(export_record, dict) else "")
+                or getattr(export_proof, "document_id", "") or ""
+            ),
+            library_document_ids=tuple(library.get("document_ids", ()))
+            if isinstance(library, dict) else (),
+        )
+
+    def _document_catalog_selection_groups(self) -> tuple[tuple[dict, ...], ...]:
+        """Return exact catalogue rows grouped in the user's requested order."""
+        route = ReActLoop._document_route_for_run(self)
+        selections = route.selections or (() if not route.is_catalog_selection else (
+            SimpleNamespace(
+                origin=route.selection_origin,
+                limit=route.selection_limit,
+                sort=route.selection_sort,
+            ),
+        ))
+        events = tuple(ReActLoop._document_tool_events(self))
+        groups: list[tuple[dict, ...]] = []
+        for selection in selections:
+            key = ReActLoop._document_catalog_evidence_key({
+                "origin": selection.origin,
+                "limit": selection.limit,
+                "sort": selection.sort,
+            })
+            cache = getattr(self, "_document_catalog_evidence", {})
+            selected: tuple[dict, ...] = tuple(cache.get(key, ())) if isinstance(cache, dict) else ()
+            fallback: tuple[dict, ...] = ()
+            for name, args, success, observed, content in (() if selected else reversed(events)):
+                if name != "list_document_models" or not (success and observed):
+                    continue
+                parsed = ReActLoop._document_catalog_rows(content)
+                if not parsed:
+                    continue
+                if not fallback:
+                    fallback = parsed
+                if ReActLoop._document_catalog_evidence_key(args) == key:
+                    selected = parsed
+                    break
+            # Historical single-selection tests/callers did not always retain
+            # list arguments. Preserve that compatibility only for one group.
+            if not selected and len(selections) == 1:
+                selected = fallback
+            groups.append(selected[:selection.limit])
+        return tuple(groups)
+
+    def _document_catalog_selection_models(self) -> tuple[dict, ...]:
+        """Compatibility view flattening the exact ordered catalogue groups."""
+        return tuple(
+            row
+            for group in ReActLoop._document_catalog_selection_groups(self)
+            for row in group
+        )
+
+    def _document_expected_template_ids(self) -> tuple[str, ...]:
+        route = ReActLoop._document_route_for_run(self)
+        rows = ReActLoop._document_catalog_selection_models(self)
+        return tuple(
+            str(row.get("id") or "").strip()
+            for row in rows[:route.requested_count]
+            if str(row.get("id") or "").strip()
+        )
+
+    def _reconcile_document_catalog_plan(self, iteration: int) -> int:
+        """Credit catalogue plan tasks only from their exact successful listing."""
+        if not getattr(self, "_task_plan", None):
+            return 0
+        route = ReActLoop._document_route_for_run(self)
+        selections = tuple(getattr(route, "selections", ()) or ())
+        if len(selections) <= 1:
+            return 0
+        evidence = getattr(self, "_document_catalog_evidence", {})
+        if not isinstance(evidence, dict):
+            return 0
+
+        changed = 0
+        for selection in selections:
+            key = ReActLoop._document_catalog_evidence_key({
+                "origin": selection.origin,
+                "limit": selection.limit,
+                "sort": selection.sort,
+            })
+            rows = tuple(evidence.get(key, ()))
+            if len(rows) < selection.limit:
+                continue
+            for task in self._task_plan:
+                if task.completed or document_catalog_task_origin(task.description) != selection.origin:
+                    continue
+                task.completed = True
+                task.completed_at_iteration = iteration
+                task.completed_by_tool = "list_document_models"
+                task.completion_status = "verified"
+                task.completion_evidence = (
+                    f"catalogue exact origin={selection.origin}, limit={selection.limit}, "
+                    f"sort={selection.sort}"
+                )
+                task.completion_confidence = "strong"
+                changed += 1
+                logger.info(
+                    "[PLAN DOCUMENT CATALOG] '{}' - {}",
+                    task.description[:70], task.completion_evidence,
+                )
+                break
+        if changed:
+            self._emit_plan_state(context_tool="list_document_models")
+        return changed
+
+    def _latest_document_batch_proofs(self):
+        """Aggregate newest proof per template across bounded batch retries."""
+        from src.documents.delivery_manifest import parse_generation_proof
+
+        newest = {}
+        for step in reversed(getattr(self, "history", [])):
+            action = getattr(step, "action", None)
+            if getattr(action, "tool_name", "") != "generate_studio_documents":
+                continue
+            observation = getattr(step, "observation", None)
+            if observation is None:
+                continue
+            for sub in getattr(observation, "sub_results", ()):
+                if not bool(getattr(sub, "success", False)):
+                    continue
+                args = getattr(sub, "args", {}) or {}
+                proof = parse_generation_proof(
+                    getattr(sub, "content", "") or "",
+                    fallback_kind=normalize_document_kind(str(args.get("kind", ""))),
+                )
+                if proof is not None:
+                    identity = proof.template_id or proof.document_id or proof.path
+                    if identity and identity not in newest:
+                        newest[identity] = proof
+        # Run-scoped evidence is captured before compaction and therefore wins
+        # over history-derived records for the same template.
+        store = getattr(self, "_document_workflow_evidence", {})
+        cached = store.get("batch_proofs", {}) if isinstance(store, dict) else {}
+        if isinstance(cached, dict):
+            newest.update(cached)
+        return tuple(newest.values())
+
+    def _document_web_rights_evidence(self) -> tuple[bool, bool]:
+        """Return (web-document action observed, explicit reuse rights proven)."""
+        relevant = False
+        accepted = {"licensed", "public_domain", "permission_granted"}
+        for name, _args, success, observed, content in ReActLoop._document_tool_events(self):
+            if name not in {"inspect_document_source", "download_document"} \
+                    or not (success and observed):
+                continue
+            relevant = True
+            try:
+                payload = json.loads(content) if isinstance(content, str) else content
+            except (TypeError, ValueError):
+                payload = {}
+            candidates = [payload] if isinstance(payload, dict) else []
+            record = payload.get("record") if isinstance(payload, dict) else None
+            if isinstance(record, dict):
+                candidates.extend([record, record.get("metadata", {})])
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    continue
+                status = str(candidate.get("rights_status", "")).strip().lower()
+                evidence = str(candidate.get("rights_evidence", "")).strip()
+                if status in accepted and evidence:
+                    return True, True
+        return relevant, False
+
+    @staticmethod
+    def _nested_document_bypass(
+        tool_name: str, tool_args: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        if tool_name in STUDIO_BYPASS_TOOLS:
+            return tool_name
+        if tool_name != "parallel_tools":
+            return ""
+        calls = (tool_args or {}).get("tool_calls", [])
+        if isinstance(calls, str):
+            try:
+                calls = json.loads(calls)
+            except (TypeError, ValueError):
+                calls = []
+        for call in calls if isinstance(calls, list) else []:
+            if isinstance(call, dict) and str(call.get("name", "")) in STUDIO_BYPASS_TOOLS:
+                return str(call["name"])
+        return ""
+
+    def _studio_attempted_kinds(self, studio_tool: str, route: DocumentRoute) -> tuple[str, ...]:
+        attempted: list[str] = []
+        requested = route.requested_kinds
+        for name, args, _success, _observed, _content in ReActLoop._document_tool_events(self):
+            if name != studio_tool:
+                continue
+            kind = normalize_document_kind(str((args or {}).get("kind", "")))
+            if not kind and len(requested) == 1:
+                kind = requested[0]
+            if kind:
+                attempted.append(kind)
+        return tuple(attempted)
+
+    def _structured_document_delivery_progress(self) -> tuple[int, int, tuple[str, ...]]:
+        """Return the number of requested documents proven as generated."""
+        from collections import Counter
+
+        route = ReActLoop._document_route_for_run(self)
+        if route.is_catalog_selection:
+            manifest, missing, _unverified = (
+                ReActLoop._structured_document_delivery_manifest(self)
+            )
+            return route.requested_count, len(manifest), missing
+        requested = route.requested_kinds
+        if not requested:
+            return 0, 0, ()
+        remaining = Counter(requested)
+        delivered = 0
+        generic_successes = 0
+        delivery_tools = {
+            "create_pdf", "create_invoice_pdf", "create_from_template",
+            "create_docx", "create_xlsx", "create_pptx", "create_csv",
+            "create_html", "create_markdown",
+        }
+        for name, args, success, observed, _content in ReActLoop._document_tool_events(self):
+            if not (success and observed):
+                continue
+            if name == "generate_studio_document":
+                kind = normalize_document_kind(str((args or {}).get("kind", "")))
+                if kind and remaining[kind] > 0:
+                    remaining[kind] -= 1
+                    delivered += 1
+            elif name in delivery_tools:
+                generic_successes += 1
+        missing = [kind for kind in requested for _ in range(remaining[kind])]
+        generic_used = min(generic_successes, len(missing))
+        delivered += generic_used
+        return len(requested), min(delivered, len(requested)), tuple(missing[generic_used:])
+
+    def _structured_document_delivery_manifest(self):
+        """Return exact Studio proofs in the order requested by the user."""
+        from collections import Counter, defaultdict, deque
+        from src.documents.delivery_manifest import parse_generation_proof
+
+        route = ReActLoop._document_route_for_run(self)
+        if route.is_catalog_selection:
+            expected_ids = ReActLoop._document_expected_template_ids(self)
+            proofs = ReActLoop._latest_document_batch_proofs(self)
+            by_template = {}
+            for proof in proofs:
+                if proof.template_id and proof.template_id not in by_template:
+                    by_template[proof.template_id] = proof
+            ordered = []
+            missing = []
+            for template_id in expected_ids:
+                if template_id in by_template:
+                    ordered.append(by_template[template_id])
+                else:
+                    missing.append(template_id)
+            if len(expected_ids) < route.requested_count:
+                missing.extend(
+                    f"catalog_selection_{index}"
+                    for index in range(len(expected_ids) + 1, route.requested_count + 1)
+                )
+            unverified = tuple(
+                proof.template_id or proof.kind
+                for proof in ordered
+                if (
+                    not proof.render_verified
+                    or (
+                        route.minimum_pages > 0
+                        and proof.page_count < route.minimum_pages
+                    )
+                )
+            )
+            return tuple(ordered), tuple(missing), unverified
+        buckets = defaultdict(deque)
+
+        def add_proof(proof) -> None:
+            canonical_kind = normalize_document_kind(proof.kind)
+            if not canonical_kind:
+                return
+            buckets[canonical_kind].append(proof)
+
+        store = getattr(self, "_document_workflow_evidence", {})
+        cached_batch = store.get("batch_proofs", {}) if isinstance(store, dict) else {}
+        for proof in cached_batch.values() if isinstance(cached_batch, dict) else ():
+            add_proof(proof)
+        generation_events = (
+            store.get("generation_events", []) if isinstance(store, dict) else []
+        )
+        for event in generation_events if isinstance(generation_events, list) else ():
+            proof = event.get("proof") if isinstance(event, dict) else None
+            if proof is not None:
+                add_proof(proof)
+
+        # Run-scoped evidence is captured before history compaction.  When it
+        # exists, it is the sole source of the initial delivery manifest.
+        # Otherwise retain compatibility with history-only tests/old runs.
+        # Revisions are deliberately excluded: children belong to the lifecycle
+        # proof, never to the immutable generation manifest.
+        have_run_scoped_generation = bool(cached_batch) or bool(generation_events)
+        if not have_run_scoped_generation:
+            allows_revision_as_origin = (
+                route.operation == "revise"
+                and not any(
+                    getattr(action, "operation", "") == "generate"
+                    for action in getattr(route, "workflow_actions", ())
+                )
+            )
+            for name, args, success, observed, content in ReActLoop._document_tool_events(self):
+                if (
+                    name != "generate_studio_document"
+                    and not (allows_revision_as_origin and name == "revise_studio_document")
+                ) or not (success and observed):
+                    continue
+                fallback_kind = normalize_document_kind(str((args or {}).get("kind", "")))
+                if not fallback_kind and len(route.requested_kinds) == 1:
+                    fallback_kind = route.requested_kinds[0]
+                proof = parse_generation_proof(content, fallback_kind=fallback_kind)
+                if proof is not None:
+                    add_proof(proof)
+
+        # A retry supersedes an earlier failed/unverified rendering for the
+        # same requested slot. Keep only the newest N proofs, where N is the
+        # number of times that kind was actually requested.
+        requested_counts = Counter(route.requested_kinds)
+        for kind, bucket in buckets.items():
+            while len(bucket) > requested_counts[kind]:
+                bucket.popleft()
+
+        ordered = []
+        missing = []
+        for kind in route.requested_kinds:
+            if buckets[kind]:
+                ordered.append(buckets[kind].popleft())
+            else:
+                missing.append(kind)
+        unverified = tuple(
+            proof.kind
+            for proof in ordered
+            if (
+                not proof.render_verified
+                or (
+                    route.minimum_pages > 0
+                    and proof.page_count < route.minimum_pages
+                )
+            )
+        )
+        return tuple(ordered), tuple(missing), unverified
+
+    def _ensure_document_delivery_reference(self) -> str:
+        """Persist the exact run manifest as soon as it becomes complete."""
+        route = ReActLoop._document_route_for_run(self)
+        manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
+        if (
+            missing or unverified or route.requested_count < 1
+            or len(manifest) != route.requested_count
+        ):
+            return ""
+        from src.documents.delivery_manifest import manifest_progress_signature
+
+        signature = manifest_progress_signature(manifest)
+        existing = str(getattr(self, "_document_delivery_reference_id", "") or "")
+        if (
+            existing
+            and getattr(self, "_document_delivery_reference_signature", ()) == signature
+        ):
+            return existing
+        try:
+            from src.documents.document_delivery_bundle import save_delivery_reference
+            from src.documents.studio import get_document_studio
+
+            receipt = save_delivery_reference(
+                get_document_studio().root,
+                manifest,
+                requested_count=route.requested_count,
+            )
+            reference_id = str(receipt.get("id") or "")
+            if reference_id:
+                self._document_delivery_reference_id = reference_id
+                self._document_delivery_reference_signature = signature
+            return reference_id
+        except Exception as exc:
+            logger.warning("[DOCUMENT DELIVERY RECEIPT] persistence impossible: {}", exc)
+            return ""
+
+    def _document_workflow_pending_action(self):
+        """Return the first unproved post-generation action for this run."""
+        route = ReActLoop._document_route_for_run(self)
+        actions = tuple(getattr(route, "workflow_actions", ()) or ())
+        if not actions:
+            return None
+        manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
+        proof_state = ReActLoop._document_workflow_proof_state(self)
+        for action in actions:
+            operation = getattr(action, "operation", "")
+            if operation == "generate":
+                if missing or unverified or len(manifest) != route.requested_count:
+                    return action
+                continue
+            if operation == "open":
+                if proof_state["open"] is None:
+                    return action
+                continue
+            if operation == "revise":
+                if proof_state["revision"] is None:
+                    return action
+                continue
+            if operation == "verify":
+                if proof_state["verification"] is None:
+                    return action
+                continue
+            if operation == "history":
+                if proof_state["history"] is None:
+                    return action
+                continue
+            if operation == "export":
+                if proof_state["export"] is None:
+                    return action
+                continue
+            if operation == "library_verify":
+                if proof_state["library_verify"] is None:
+                    return action
+                continue
+        return None
+
+    def _document_workflow_target(self):
+        """Return the exact manifest proof targeted by the revision ordinal."""
+        cached = getattr(self, "_document_workflow_target_proof", None)
+        if cached is not None:
+            return cached
+        route = ReActLoop._document_route_for_run(self)
+        manifest, missing, _unverified = ReActLoop._structured_document_delivery_manifest(self)
+        revision = next(
+            (
+                action for action in getattr(route, "workflow_actions", ())
+                if getattr(action, "operation", "") == "revise"
+            ),
+            None,
+        )
+        ordinal = int(getattr(revision, "target_ordinal", 0) or 0)
+        target = (
+            manifest[ordinal - 1]
+            if not missing and len(manifest) == route.requested_count
+            and ordinal and ordinal <= len(manifest)
+            else None
+        )
+        if target is not None:
+            self._document_workflow_target_proof = target
+        return target
+
+    @staticmethod
+    def _document_delivery_truth_required(route: DocumentRoute, requested_count: int) -> bool:
+        """Require exact Studio evidence for every actionable structured request."""
+        return bool(requested_count >= 1 and route.requires_studio)
+
+    @staticmethod
+    def _merge_mission_document_evidence(free_answer: str, evidence: str) -> str:
+        """Keep a mission's free report while attaching exact document proof."""
+        answer = str(free_answer or "").strip()
+        proof = str(evidence or "").strip()
+        if not answer:
+            # A document capability never becomes the mission's voice. Keeping
+            # this empty lets the normal FINAL/thought-leak repair obtain a
+            # complete free mission report on the next turn. Returning `proof`
+            # here used to short-circuit that repair and replace mixed mission
+            # results with the canned Document Studio receipt.
+            return ""
+        if not proof or proof in answer:
+            return answer
+        return f"{answer}\n\nPreuves documentaires:\n{proof}"
+
+    @staticmethod
+    def _document_plan_required_kinds(task_desc: str) -> tuple[str, ...]:
+        from src.documents.document_intent import document_kinds_mentioned
+
+        kinds = list(document_kinds_mentioned(task_desc))
+        # Plan-only abbreviation. Ordinary user prose containing lowercase
+        # "bc" must not alter the deterministic document router.
+        if re.search(r"(?<!\w)BC(?!\w)", str(task_desc or "")) and "bon_commande" not in kinds:
+            kinds.append("bon_commande")
+        return tuple(kinds)
+
+    def _document_final_fulfills_plan_task(self, task_desc: str) -> bool:
+        """Reserve multi-document verification tasks for exact render proofs."""
+        if not final_fulfills_task(task_desc):
+            return False
+        route = ReActLoop._document_route_for_run(self)
+        desc = _normalize_guard_token(task_desc)
+        if "bilan" in desc and route.has_pending_post_actions:
+            return ReActLoop._document_workflow_pending_action(self) is None
+        if route.requested_count < 2:
+            return True
+        is_verification = any(
+            token in desc for token in ("verif", "valid", "control", "relire", "inspect")
+        )
+        if not is_verification:
+            return True
+        _manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
+        return not missing and not unverified
+
+    def _reconcile_document_plan_from_manifest(self, iteration: int) -> int:
+        """Complete document batch tasks only from exact generation proofs."""
+        from collections import Counter
+
+        if not getattr(self, "_task_plan", None):
+            return 0
+        route = ReActLoop._document_route_for_run(self)
+        if route.requested_count < 2:
+            return 0
+        manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
+        delivered = Counter(proof.kind for proof in manifest)
+        all_render_verified = not missing and not unverified
+        changed = 0
+        for task in self._task_plan:
+            if task.completed:
+                continue
+            desc = task.description or ""
+            desc_lower = _normalize_guard_token(desc)
+            if (
+                len(getattr(route, "workflow_actions", ()) or ()) > 1
+                and document_workflow_task_operation(desc)
+            ):
+                continue
+            if document_workflow_task_blocks("document_manifest", desc):
+                continue
+            verify_task = any(
+                token in desc_lower
+                for token in ("verif", "valid", "control", "relire", "inspect")
+            )
+            if verify_task:
+                if not all_render_verified:
+                    continue
+                evidence = "tous les rendus documentaires demandes sont certifies"
+                status = "verified"
+            else:
+                explicit_batch = "generate_studio_documents" in desc_lower
+                explicit_fallback = any(
+                    name in desc_lower
+                    for name in ("create_pdf", "create_invoice_pdf", "create_from_template")
+                )
+                if all_render_verified and explicit_batch:
+                    evidence = "manifest complet du batch Document Studio"
+                    status = "created"
+                elif all_render_verified and explicit_fallback:
+                    evidence = "fallback non requis: Document Studio a livre le lot complet"
+                    status = "not_required"
+                elif all_render_verified and route.is_catalog_selection and any(
+                    token in desc_lower
+                    for token in ("gener", "cre", "produ", "redig", "ecri", "livr")
+                ):
+                    evidence = (
+                        f"selection catalogue exacte: {len(manifest)}/"
+                        f"{route.requested_count} rendus certifies"
+                    )
+                    status = "created"
+                else:
+                    required = ReActLoop._document_plan_required_kinds(desc)
+                    if not required or not any(
+                        token in desc_lower
+                        for token in ("gener", "cre", "produ", "redig", "ecri", "livr")
+                    ):
+                        continue
+                    needed = Counter(required)
+                    if any(delivered[kind] < count for kind, count in needed.items()):
+                        continue
+                    evidence = "manifest exact: " + ", ".join(required)
+                    status = "created"
+            task.completed = True
+            task.completed_at_iteration = iteration
+            task.completed_by_tool = "document_manifest"
+            task.completion_status = status
+            task.completion_evidence = evidence
+            task.completion_confidence = "strong"
+            changed += 1
+            logger.info("[PLAN DOCUMENT] '{}' - {}", task.description[:70], evidence)
+        if changed:
+            self._emit_plan_state(context_tool="document_manifest")
+        return changed
+
+    def _reconcile_document_workflow_plan(self, iteration: int) -> int:
+        """Credit compound post-actions only after their exact proof is complete."""
+        if not getattr(self, "_task_plan", None):
+            return 0
+        route = ReActLoop._document_route_for_run(self)
+        actions = tuple(getattr(route, "workflow_actions", ()) or ())
+        if len(actions) <= 1:
+            return 0
+        action_names = [str(getattr(item, "operation", "") or "") for item in actions]
+        pending = ReActLoop._document_workflow_pending_action(self)
+        pending_name = str(getattr(pending, "operation", "") or "")
+        if pending_name and pending_name in action_names:
+            completed_operations = set(action_names[:action_names.index(pending_name)])
+        elif pending_name:
+            completed_operations = set()
+        else:
+            completed_operations = set(action_names)
+
+        target = ReActLoop._document_workflow_target(self)
+        proof_state = ReActLoop._document_workflow_proof_state(self)
+        revision_record = proof_state.get("revision") or {}
+        revised_proof = revision_record.get("proof")
+        evidence_by_operation = {
+            "open": (
+                f"ouverture exacte {route.requested_count}/{route.requested_count}, "
+                "aucun echec"
+            ),
+            "revise": (
+                f"revision de la cible exacte {target.document_id} vers "
+                f"{revised_proof.document_id}"
+                if target is not None and revised_proof is not None
+                else "revision cible exacte"
+            ),
+            "verify": "nouvelle version relue apres revision et valeur confirmee",
+            "history": "relation parent/enfant exacte confirmee par l'historique",
+            "export": "export enfant cree depuis la version revisee",
+            "library_verify": "tous les identifiants attendus retrouves dans la bibliotheque",
+        }
+        changed = 0
+        for task in self._task_plan:
+            if task.completed:
+                continue
+            operation = document_workflow_task_operation(task.description)
+            if operation not in completed_operations:
+                continue
+            task.completed = True
+            task.completed_at_iteration = iteration
+            task.completed_by_tool = "document_workflow_proof"
+            task.completion_status = (
+                "verified"
+                if operation in {"open", "verify", "history", "library_verify"}
+                else "updated"
+            )
+            task.completion_evidence = evidence_by_operation[operation]
+            task.completion_confidence = "strong"
+            changed += 1
+            logger.info(
+                "[PLAN DOCUMENT WORKFLOW] '{}' - {}",
+                task.description[:70], task.completion_evidence,
+            )
+        if changed:
+            self._emit_plan_state(context_tool="document_workflow_proof")
+        return changed
+
+    def _structured_document_tool_gate(
+        self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None,
+    ):
+        """Require one Studio attempt per requested structured document."""
+        route = ReActLoop._document_route_for_run(self)
+        if not route.requires_studio or not route.owns_run:
+            return None
+        from src.documents.document_settings import get_document_settings
+        from .react_config import Observation as _StudioObservation
+
+        workflow_actions = tuple(getattr(route, "workflow_actions", ()) or ())
+        if len(workflow_actions) > 1 and tool_name == "revise_studio_document":
+            pending = ReActLoop._document_workflow_pending_action(self)
+            pending_name = str(getattr(pending, "operation", "") or "")
+            if pending_name in {"generate", "open"}:
+                if pending_name == "open":
+                    guidance = (
+                        f"Ouvre d'abord le bundle exact avec `open_document_delivery`: "
+                        f"la preuve attendue est {route.requested_count}/{route.requested_count}, "
+                        "failed=0."
+                    )
+                else:
+                    guidance = "Termine d'abord la generation certifiee du lot exact."
+                return _StudioObservation(
+                    content=(
+                        "Ordre du workflow documentaire refuse: la revision ne peut pas "
+                        f"preceder l'etape `{pending_name}`. {guidance}"
+                    ),
+                    success=False,
+                    origin="document_policy",
+                )
+
+        document_settings = get_document_settings()
+        if (
+            tool_name == "generate_studio_documents"
+            and route.requested_count > document_settings.workflow_max_documents
+        ):
+            return _StudioObservation(
+                content=(
+                    f"Workflow documentaire refuse: {route.requested_count} documents demandes, "
+                    f"maximum configure {document_settings.workflow_max_documents}. "
+                    "Reduis la selection ou augmente le plafond Documents dans Configuration "
+                    "sans depasser la limite dure de 100."
+                ),
+                success=False,
+                origin="document_policy",
+            )
+
+        bypass_tool = ReActLoop._nested_document_bypass(tool_name, tool_args)
+        if route.operation == "revise" and (
+            bypass_tool
+            or tool_name in {"generate_studio_document", "generate_studio_documents"}
+        ):
+            refused = bypass_tool or tool_name
+            logger.warning(
+                "[DOCUMENT STUDIO GATE] {} refuse: une revision ne recree jamais le document",
+                refused,
+            )
+            return _StudioObservation(
+                content=(
+                    f"`{refused}` refuse: la demande est une revision. Retrouve la reference "
+                    "exacte, puis appelle `revise_studio_document`. Si le nom exact est absent "
+                    "ou ambigu, demande confirmation; ne genere jamais un nouveau document de "
+                    "remplacement."
+                ),
+                success=False,
+                origin="document_policy",
+            )
+
+        if route.is_catalog_selection:
+            selections = route.selections or (
+                SimpleNamespace(
+                    origin=route.selection_origin,
+                    limit=route.selection_limit,
+                    sort=route.selection_sort,
+                ),
+            )
+            expected_catalog_keys = {
+                ReActLoop._document_catalog_evidence_key({
+                    "origin": selection.origin,
+                    "limit": selection.limit,
+                    "sort": selection.sort,
+                })
+                for selection in selections
+            }
+            exact_catalog_calls = ", puis ".join(
+                f"list_document_models(origin='{selection.origin}', "
+                f"limit={selection.limit}, sort='{selection.sort}')"
+                for selection in selections
+            )
+
+            if tool_name == "parallel_tools":
+                nested = ReActLoop._document_parallel_calls(tool_args)
+                invalid = [
+                    name or "<outil sans nom>" for name, args in nested
+                    if name != "list_document_models"
+                    or ReActLoop._document_catalog_evidence_key(args) not in expected_catalog_keys
+                    or bool(str(args.get("kind") or "").strip())
+                ]
+                if invalid:
+                    return _StudioObservation(
+                        content=(
+                            "Workflow catalogue en deux phases: `parallel_tools` peut seulement "
+                            "lister les catalogues exacts. Aucune generation, ouverture ou "
+                            "revision documentaire ne peut y etre imbriquee. Appelle `"
+                            + exact_catalog_calls.replace(", puis ", "`, puis `")
+                            + "`, attends leurs resultats, puis appelle "
+                            "`generate_studio_documents` directement et sequentiellement. "
+                            "Sous-appel refuse: " + ", ".join(invalid)
+                        ),
+                        success=False,
+                        origin="document_policy",
+                    )
+                return None
+
+            if tool_name == "list_document_models":
+                actual_key = ReActLoop._document_catalog_evidence_key(tool_args)
+                if (
+                    actual_key not in expected_catalog_keys
+                    or bool(str((tool_args or {}).get("kind") or "").strip())
+                ):
+                    return _StudioObservation(
+                        content=(
+                            "Parametres catalogue incorrects pour cette requete. Appelle `"
+                            + exact_catalog_calls.replace(", puis ", "`, puis `")
+                            + "` exactement; ne change ni origin, ni limit, ni sort."
+                        ),
+                        success=False,
+                        origin="document_policy",
+                    )
+                return None
+
+            catalog_groups = ReActLoop._document_catalog_selection_groups(self)
+            expected_ids = tuple(
+                str(row.get("id") or "").strip()
+                for group in catalog_groups
+                for row in group
+                if str(row.get("id") or "").strip()
+            )
+            if tool_name == "generate_studio_documents":
+                if (
+                    len(catalog_groups) != len(selections)
+                    or any(len(group) != selection.limit for group, selection in zip(catalog_groups, selections))
+                    or len(expected_ids) != route.requested_count
+                ):
+                    calls = ", puis ".join(
+                        f"list_document_models(origin='{selection.origin}', "
+                        f"limit={selection.limit}, sort='{selection.sort}')"
+                        for selection in selections
+                    ) or (
+                        f"list_document_models(origin='{route.selection_origin}', "
+                        f"limit={route.selection_limit}, sort='{route.selection_sort}')"
+                    )
+                    return _StudioObservation(
+                        content=(
+                            "Selection documentaire non prouvee. Appelle d'abord `"
+                            + calls.replace(", puis ", "`, puis `") + "`, "
+                            "puis reutilise exactement les template_id retournes."
+                        ),
+                        success=False,
+                        origin="document_policy",
+                    )
+                raw_requests = (tool_args or {}).get("requests", [])
+                if isinstance(raw_requests, str):
+                    try:
+                        raw_requests = json.loads(raw_requests)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        raw_requests = []
+                actual_ids = tuple(
+                    str(item.get("template_id") or "").strip()
+                    for item in raw_requests
+                    if isinstance(item, dict)
+                ) if isinstance(raw_requests, list) else ()
+                proven = {
+                    proof.template_id
+                    for proof in ReActLoop._latest_document_batch_proofs(self)
+                    if proof.template_id
+                }
+                pending_group_index = next((
+                    index for index, group in enumerate(catalog_groups)
+                    if any(str(row.get("id") or "").strip() not in proven for row in group)
+                ), None)
+                remaining_group = () if pending_group_index is None else tuple(
+                    str(row.get("id") or "").strip()
+                    for row in catalog_groups[pending_group_index]
+                    if str(row.get("id") or "").strip()
+                    and str(row.get("id") or "").strip() not in proven
+                )
+                expected_batch = remaining_group[:len(actual_ids)]
+                if (
+                    not actual_ids
+                    or len(actual_ids) > document_settings.batch_size
+                    or actual_ids != expected_batch
+                ):
+                    group_label = (
+                        str(selections[pending_group_index].origin)
+                        if pending_group_index is not None else "termine"
+                    )
+                    return _StudioObservation(
+                        content=(
+                            f"Batch refuse: utilise au maximum {document_settings.batch_size} "
+                            f"template_id encore manquants du groupe {group_label}, "
+                            "dans l'ordre exact de ce groupe sans passer au suivant. "
+                            "Prochain lot attendu: "
+                            + ", ".join(remaining_group[:document_settings.batch_size])
+                        ),
+                        success=False,
+                        origin="document_policy",
+                )
+                return None
+            blocked_selection_tools = {
+                "generate_studio_document", "find_files", "list_directory",
+                "grep_search", "read_file", "read_files_batch",
+                "search_document_library", "list_templates",
+            }
+            if bypass_tool or tool_name in blocked_selection_tools:
+                refused = bypass_tool or tool_name
+                return _StudioObservation(
+                    content=(
+                        f"`{refused}` refuse pour cette selection de catalogue. Utilise "
+                        "`list_document_models`, puis un seul `generate_studio_documents` "
+                        "avec exactement les template_id retournes."
+                    ),
+                    success=False,
+                    origin="document_policy",
+                )
+            return None
+
+        if not bypass_tool:
+            return None
+        studio_tool = (
+            "revise_studio_document"
+            if route.operation == "revise"
+            else "generate_studio_document"
+        )
+        pending = list(route.requested_kinds)
+        for kind in ReActLoop._studio_attempted_kinds(self, studio_tool, route):
+            if kind in pending:
+                pending.remove(kind)
+        if not pending:
+            return None
+        logger.warning(
+            "[DOCUMENT STUDIO GATE] {} refuse; types sans tentative Studio={}",
+            bypass_tool,
+            pending,
+        )
+        return _StudioObservation(
+            content=(
+                f"Fallback `{bypass_tool}` refuse: {len(pending)} type(s) restent sans "
+                f"tentative Studio: {', '.join(pending)}. Appelle "
+                "`list_document_models(kind='<type>')`, puis "
+                "`generate_studio_documents(requests=[...])` une fois pour le lot, ou "
+                "`generate_studio_document(kind='<type>', data={...})` pour chaque type. "
+                "Le modele par defaut, sa mise en page et le logo actif seront appliques. "
+                "Le fallback historique ne sera disponible qu'apres une tentative Studio "
+                "pour chaque type demande."
+            ),
+            success=False,
+            origin="document_policy",
+        )
+
+    def _truth_lock_game_flag(self) -> bool:
+        """2.13.A (run puissance4) — True si l'OBJECTIF de CE run demande un JEU web.
+        Passé au truth-lock (`objective_is_game=`) : combiné à web_deliverable et
+        interaction_proven=False, la bannière « Interaction NON prouvée » tire QUEL
+        QUE SOIT le texte du final (la course aux regex sur le final est perdue —
+        « jetons tombent / X a gagné » avait échappé à 2.12.D). Même scope top-lead
+        que _truth_lock_web_flag. Défensif : False sur toute erreur."""
+        try:
+            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
+                return False  # sous-worker délégué → pas son job
+            from .final_guards import objective_is_web_game
+            return objective_is_web_game(getattr(self, "_original_query", "") or "")
+        except Exception:
+            return False
+
+    def _note_truth_lock_outcome(self, info: Any) -> None:
+        """F1.b — mémorise l'issue du truth-lock dans `_run_meta` (CUMULATIF).
+
+        Le truth-lock calculait déjà `overclaim` (= le final AFFIRMAIT une preuve
+        que le ledger ne porte pas : navigateur, livraison ou publication), s'en
+        servait pour réécrire le MESSAGE, puis jetait l'information. L'ÉTAT de la
+        mission restait donc `done/completed` alors qu'une affirmation venait
+        d'être rétrogradée (cause AUD-014).
+
+        Le drapeau est cumulatif : un site aval qui ne détecte rien ne doit jamais
+        effacer un overclaim vu en amont (le texte a pu être neutralisé entre-temps
+        — l'idempotence du verrou le garantit).
+
+        On distingue volontairement `overclaim` de `changed` : une simple note
+        honnête (« tests non exécutés ») modifie le texte sans être une faute de
+        clôture. Seule l'affirmation fausse compte.
+
+        Défensif : n'échoue jamais — une preuve manquante ne doit pas casser un run.
+        """
+        try:
+            if not isinstance(info, dict):
+                return
+            if info.get("overclaim"):
+                self._run_meta["mission_truth_lock_overclaim"] = True
+            elif "mission_truth_lock_overclaim" not in self._run_meta:
+                self._run_meta["mission_truth_lock_overclaim"] = False
+            if info.get("changed"):
+                self._run_meta["mission_truth_lock_applied"] = True
+        except Exception:
+            pass
+
+    def _empty_final_fallback(self) -> str:
+        """F1.b — en mission, un FINAL vide ne devient JAMAIS une phrase de politesse.
+
+        Hors mission : comportement historique strictement inchangé (le chat garde
+        sa formule).
+
+        En mission (AUD-012 / AUD-008) : un `answer` vide sur le chemin de SUCCÈS
+        produisait « Je n'ai pas trouvé de réponse pertinente. » — une chaîne NON
+        VIDE, qui franchissait donc la porte `empty_result` du runner. La mission
+        sortait `done` avec une politesse alors que le ledger prouvait le travail
+        (trois artefacts réels sur M01_DATA_DOCS ; navigateur réussi puis résultat
+        détruit par les repairs sur A14_browser).
+
+        Deux issues, toutes deux honnêtes :
+        - le ledger porte des preuves → bilan DÉTERMINISTE (aucun appel LLM, donc
+          aucun risque de fuite THOUGHT réintroduit) via `build_mission_final_message` ;
+        - le ledger est vide → rien n'a été produit : on marque l'échec, exactement
+          comme le fait déjà le chemin tronqué en amont.
+
+        Défensif : toute erreur retombe sur la formule historique — ce garde-fou ne
+        doit jamais transformer une mission réussie en exception.
+        """
+        _historical = "Je n'ai pas trouvé de réponse pertinente."
+        try:
+            if not self._is_mission_run:
+                return _historical
+            led = self.execution_ledger
+            written = sorted(led.written_basenames())
+            published = led.has_published()
+            if not (written or published or led.has_any_mutation()):
+                # Aucune preuve d'effet : ce n'est pas une livraison.
+                self._mark_task_failed("empty_final_without_evidence")
+                logger.warning(
+                    "[F1.b] FINAL vide et ledger SANS preuve → échec honnête "
+                    "(pas de clôture `done` sur une phrase de politesse). task={}",
+                    self.task_id,
+                )
+                return ("⚠️ La mission s'est terminée sans produire de réponse finale, "
+                        "et aucune action n'a laissé de trace vérifiable. "
+                        "Rien n'a été livré — il faut relancer le travail.")
+            _note_bits = []
+            if written:
+                _note_bits.append("Fichiers écrits : " + ", ".join(written[:12]))
+            if published:
+                _note_bits.append("Publication effectuée (publish_mission_workspace).")
+            _note = "\n".join(_note_bits)
+            logger.warning(
+                "[F1.b] FINAL vide MAIS ledger avec preuves → bilan déterministe "
+                "(écrits={} publié={}). task={}",
+                len(written), published, self.task_id,
+            )
+            return build_mission_final_message(
+                _note, "",
+                malformed=False,
+                has_green_test=self._current_green_test_proof(),
+                test_ran_not_green=False,
+                tests_expected_not_run=self._tests_present_but_not_run(),
+            )
+        except Exception as _exc:
+            logger.debug("[F1.b] fallback déterministe indisponible: {}", _exc)
+            return _historical
+
+    def _truth_lock_interaction_flag(self) -> bool:
+        """Whether the top-lead objective requires an observable UI state change."""
+        try:
+            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
+                return False
+            if not self._mission_web_present_for_gate():
+                return False
+            from .final_guards import objective_requires_web_interaction_proof
+            return objective_requires_web_interaction_proof(
+                getattr(self, "_original_query", "") or ""
+            )
+        except Exception:
+            return False
+
+    def _truth_lock_interaction_proven(self) -> bool:
+        """Strong proof for games and generic form/interface workflows."""
+        try:
+            if (self._is_mission_run and self.execution_ledger.has_source_mutation()
+                    and not self._current_browser_proof()):
+                return False
+        except Exception:
+            return False
+        _exec_state = getattr(self, "exec_state", None)
+        _guards = getattr(_exec_state, "guards", None)
+        local_assertion = bool(
+            getattr(_guards, "local_preview_interaction_proven", False)
+        )
+        if not local_assertion and self.task_id and self.task_orchestrator:
+            try:
+                rec = self.task_orchestrator.get_task(self.task_id) or {}
+                local_assertion = bool(
+                    (rec.get("metadata") or {}).get("browser_interaction_verified")
+                )
+            except Exception:
+                pass
+        if self._truth_lock_game_flag():
+            return local_assertion
+        if self._truth_lock_interaction_flag():
+            return local_assertion or self._browser_runtime_verified_for_truth_lock()
+        return local_assertion
+
+    def _mission_completion_evidence(self) -> Dict[str, Any]:
+        """Authoritative complete-only proof snapshot for a mission run."""
+        facts: Dict[str, Any] = {
+            "complete": False,
+            "scope": "",
+            "delivery_proven": False,
+            "delegation_complete": False,
+            "tests_required": False,
+            "tests_green": False,
+            "browser_required": False,
+            "browser_proven": False,
+        }
+        if not self._is_mission_run or not self._orchestrator_enabled():
+            return facts
+        try:
+            rec = self.task_orchestrator.get_task(self.task_id) or {}
+            meta = rec.get("metadata") or {}
+            owned = list(self._mission_allowed_files_meta() or [])
+            if owned:
+                from src.reasoning.test_proof import any_test_file
+                from src.subagents.mission_contract import inspect_worker_deliverables
+                from src.utils.paths import WORKSPACE_DIR
+
+                mission_workspace = str(meta.get("mission_workspace") or "").strip()
+                inspected = inspect_worker_deliverables(
+                    WORKSPACE_DIR / mission_workspace,
+                    owned,
+                ) if mission_workspace else {
+                    "ready": False,
+                    "assigned": owned,
+                    "missing": [],
+                    "stubs": [],
+                    "invalid": ["mission_workspace"],
+                }
+                latest_test = self.execution_ledger.last_test_outcome()
+                if not isinstance(latest_test, dict):
+                    latest_test = meta.get("last_test_outcome") or {}
+                tests_green = bool(latest_test.get("green"))
+                if self.execution_ledger.has_source_mutation():
+                    tests_green = self._current_green_test_proof()
+                facts.update({
+                    "scope": "worker",
+                    "delivery_proven": bool(inspected.get("ready")),
+                    "delegation_complete": bool(inspected.get("ready")),
+                    "tests_required": bool(any_test_file(owned)),
+                    "tests_green": tests_green,
+                    "browser_required": False,
+                    "browser_proven": True,
+                    "assigned_files": list(inspected.get("assigned") or []),
+                    "missing_files": list(inspected.get("missing") or []),
+                    "stub_files": list(inspected.get("stubs") or []),
+                    "invalid_files": list(inspected.get("invalid") or []),
+                })
+                facts["complete"] = worker_evidence_finalizable(
+                    self._task_plan,
+                    assigned_files_ready=facts["delivery_proven"],
+                    tests_required=facts["tests_required"],
+                    tests_green=facts["tests_green"],
+                )
+                return facts
+
+            facts["scope"] = "lead"
+            facts["delivery_proven"] = bool(
+                meta.get("mission_published") or self.execution_ledger.has_published()
+            )
+
+            children = list(meta.get("children") or [])
+            if not children:
+                facts["delegation_complete"] = True
+            else:
+                progress = meta.get("last_delegate_progress") or {}
+                facts["delegation_complete"] = bool(
+                    progress.get("total") == len(children)
+                    and progress.get("done") == len(children)
+                    and not progress.get("failed")
+                    and not progress.get("cancelled")
+                    and not progress.get("timed_out")
+                )
+
+            facts["tests_required"] = bool(self._mission_tests_present_for_gate())
+            latest_test = self.execution_ledger.last_test_outcome()
+            if not isinstance(latest_test, dict):
+                latest_test = meta.get("last_test_outcome") or {}
+            facts["tests_green"] = bool(latest_test.get("green"))
+            if self.execution_ledger.has_source_mutation():
+                facts["tests_green"] = self._current_green_test_proof()
+
+            facts["browser_required"] = bool(self._truth_lock_web_flag())
+            if facts["browser_required"]:
+                if self._truth_lock_interaction_flag() or self._truth_lock_game_flag():
+                    facts["browser_proven"] = self._truth_lock_interaction_proven()
+                else:
+                    facts["browser_proven"] = bool(
+                        self._current_browser_proof()
+                        or (
+                            meta.get("web_runtime_verified")
+                            and not self.execution_ledger.has_source_mutation()
+                        )
+                    )
+            else:
+                facts["browser_proven"] = True
+
+            facts["complete"] = mission_evidence_finalizable(
+                self._task_plan,
+                delivery_proven=facts["delivery_proven"],
+                delegation_complete=facts["delegation_complete"],
+                tests_required=facts["tests_required"],
+                tests_green=facts["tests_green"],
+                browser_required=facts["browser_required"],
+                browser_proven=facts["browser_proven"],
+            )
+            return facts
+        except Exception as exc:
+            logger.debug("[M106] completion evidence unavailable: {}", exc)
+            return facts
+
+    def _mission_allowed_files_meta(self) -> list:
+        """LOT 2.3 — liste des fichiers assignés à CE worker (meta `allowed_files`,
+        posée par delegate_and_wait). [] hors mission ou si absent → aucune restriction."""
+        if not self.task_id or not self.task_orchestrator:
+            return []
+        try:
+            rec = self.task_orchestrator.get_task(self.task_id)
+            files = ((rec or {}).get("metadata") or {}).get("allowed_files")
+            return list(files) if isinstance(files, (list, tuple)) else []
+        except Exception:
+            return []
+
+    def _mission_worker_delivered(self) -> bool:
+        """I3 — ce worker a-t-il rempli TOUS ses fichiers assignés ? (fait DISQUE)
+
+        Run « comparatif vectoriel » (2026-08-13) : `w_qdrant` a été marqué
+        `failed` sur `final_answer_potentially_incomplete` — sa phrase de
+        conclusion était tronquée — alors que `rapport_qdrant.md` était **écrit,
+        complet et exact** (ses données se retrouvent intégralement dans le
+        comparatif final). Le verdict jugeait la FORME du final, jamais le
+        TRAVAIL accompli.
+
+        `inspect_worker_deliverables` répond déjà à la question, sur des faits
+        durs : chaque fichier assigné existe, est non vide, et n'est plus le stub
+        du contrat. Il n'y a donc aucune porte ouverte à la fabrication.
+
+        False dès qu'un doute existe (pas un worker, pas de périmètre, pas de
+        workspace) → comportement historique conservé.
+        """
+        try:
+            if not getattr(self, "_is_mission_run", False):
+                return False
+            owned = list(self._mission_allowed_files_meta() or [])
+            if not owned:
+                return False  # lead, ou porteur d'EFFETS (rien à inspecter ici)
+            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
+                    .get("metadata") or {})
+            mws = str(meta.get("mission_workspace") or "").strip()
+            if not mws:
+                return False
+            from src.subagents.mission_contract import inspect_worker_deliverables
+            from src.utils.paths import WORKSPACE_DIR as _WS_I3
+            return bool(
+                inspect_worker_deliverables(_WS_I3 / mws, owned).get("ready")
+            )
+        except Exception:
+            return False
+
+    def _mission_lead_delivered(self) -> list:
+        """LOT Z28 — le LEAD a-t-il produit quelque chose qui existe sur le disque ?
+
+        I3 sauve un WORKER dont tous les fichiers assignés sont remplis. Mais
+        `_mission_worker_delivered()` sort sur `if not owned: return False` — un
+        lead n'a JAMAIS de fichiers assignés, donc I3 ne le couvre jamais.
+
+        Run « Papier Cousu » (2026-08-19), mesuré :
+
+            17:59  6 fichiers écrits (index/savoir-faire/contact/css/js/README)
+            18:02  serveur lancé, 95 % des classes CSS couvertes
+            18:02→18:03  les 3 pages ouvertes et vues au navigateur
+            18:04  ACTION: final ×4 → « THOUGHT leaké » 1/3, 2/3, 3/3
+            18:04  état = FAILED (final_answer_potentially_incomplete)
+
+        Le site était complet, sombre, avec l'animation et le README. Le verdict
+        jugeait la MISE EN FORME de la conclusion, jamais le travail. Après
+        45 lots à empêcher d'affirmer un succès non prouvé, c'est l'inverse :
+        annoncer un échec qui n'a pas eu lieu.
+
+        Fait DISQUE, aucune inférence : on rassemble les chemins que le run a
+        laissés (cibles de mutations + chemins rangés dans les `proof`, cf. Z28
+        côté ledger + workspace publié/mission), on ne garde que ceux qui
+        EXISTENT et ne sont pas vides.
+
+        ⚠️ Le repérage par cibles seules ne suffisait pas, et c'est mesuré :
+        `create_project` reçoit `description`/`project_name`, jamais un `path` —
+        `_extract_target` renvoie None. Sans le volet ledger de Z28, cette
+        méthode aurait renvoyé [] sur le run même qu'elle doit sauver.
+
+        Liste vide dès qu'un doute existe (pas une mission, un worker, rien sur
+        le disque) → l'état `failed` historique est conservé.
+        """
+        try:
+            if not getattr(self, "_is_mission_run", False):
+                return []
+            if list(self._mission_allowed_files_meta() or []):
+                return []  # worker : c'est I3 qui décide, pas nous
+            led = self.execution_ledger
+            if not led.successful_mutations():
+                return []  # rien n'a été fait : l'échec est réel
+        except Exception:
+            return []
+
+        from src.utils.paths import WORKSPACE_DIR as _WS_Z28
+
+        candidats: list = []
+
+        def _ajoute(brut) -> None:
+            txt = str(brut or "").strip()
+            if txt:
+                candidats.append(txt)
+
+        try:
+            for e in led.successful_mutations():
+                _ajoute(e.target)
+                if e.proof:
+                    from src.runtime.execution_ledger import _PATH_IN_TEXT_RE
+                    for m in _PATH_IN_TEXT_RE.finditer(str(e.proof)):
+                        _ajoute(next((g for g in m.groups() if g), ""))
+        except Exception:
+            pass
+        try:
+            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
+                    .get("metadata") or {})
+            _ajoute(meta.get("published_workspace"))
+            _ajoute(meta.get("mission_workspace"))
+        except Exception:
+            pass
+
+        vus: list = []
+        for brut in candidats:
+            for base in (Path(brut), _WS_Z28 / brut, Path.cwd() / brut):
+                try:
+                    if not base.exists():
+                        continue
+                    if base.is_dir():
+                        if not any(base.iterdir()):
+                            continue
+                    elif base.stat().st_size <= 0:
+                        continue
+                except Exception:
+                    continue
+                chemin = str(base)
+                if chemin not in vus:
+                    vus.append(chemin)
+                break
+        return vus[:6]
+
+    def _truncated_but_delivered_answer(self, artefacts: list) -> str:
+        """LOT Z28 — la réponse est faite de FAITS, jamais de la prose du modèle.
+
+        À ce point du code, `answer` contient la pensée qui a fuité : parfois un
+        résumé lisible, parfois du charabia. La renvoyer telle quelle livrerait
+        au hasard. On énonce donc ce qui est vérifiable, et on dit clairement
+        que c'est la conclusion qui a échoué — pas la mission.
+        """
+        lignes = [
+            "⚠️ Ma conclusion n'a pas pu être mise en forme (réponse finale "
+            "tronquée). Je ne te donne donc pas mon résumé, mais les faits.",
+            "",
+        ]
+        if artefacts:
+            lignes.append("📦 Présent sur le disque :")
+            for a in artefacts:
+                try:
+                    p = Path(a)
+                    if p.is_dir():
+                        noms = sorted(x.name for x in p.iterdir())[:12]
+                        lignes.append(f"   • {a} — {', '.join(noms)}")
+                    else:
+                        lignes.append(f"   • {a} ({p.stat().st_size} octets)")
+                except Exception:
+                    lignes.append(f"   • {a}")
+            lignes.append("")
+        try:
+            resume = self.execution_ledger.summary()
+            if resume:
+                lignes.append(resume)
+                lignes.append("")
+        except Exception:
+            pass
+        lignes.append(
+            "Le travail est là et vérifiable ci-dessus. C'est ma phrase de "
+            "conclusion qui a échoué, pas la mission."
+        )
+        return "\n".join(lignes)
+
+    def _mission_expects_file_deliverables(self):
+        """H8 — cette mission attend-elle des livrables FICHIERS ? (None = inconnu)
+
+        Lu du contrat : `files` non vide ⇒ True ; contrat d'EFFETS purs ⇒ False.
+        `None` quand il n'y a pas de contrat — les gardes gardent alors leur
+        comportement historique, aucune mission existante n'est affectée.
+
+        Sert à éteindre les gardes conçus pour le CODE sur une mission d'actions :
+        au run n°3, un mémo décrivant `pyproject.toml` (« publication sur PyPI »)
+        a déclenché la bannière « Non publié » sur une mission qui n'avait rien à
+        publier.
+        """
+        try:
+            if not (self.task_id and self.task_orchestrator):
+                return None
+            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
+                    .get("metadata") or {})
+            mws = str(meta.get("mission_workspace") or "").strip()
+            if not mws:
+                return None
+            from src.utils.paths import WORKSPACE_DIR as _WS_H8
+            cj = _WS_H8 / mws / "contract.json"
+            if not cj.exists():
+                return None
+            data = json.loads(cj.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return None
+            return bool(data.get("files"))
+        except Exception:
+            return None
+
+    def _is_worker_run(self) -> bool:
+        """H4 — « ce run est-il un worker (pas le lead) ? », la vraie question.
+
+        Historiquement posée `if self._mission_allowed_files_meta():`, ce qui
+        définissait un worker par ses FICHIERS. Un porteur d'effets purs n'en a
+        aucun : neuf gardes réservés au lead (BROWSER GATE, CONTRACT GATE, verdicts
+        runtime web, gate JS, flags jeu/interaction) se retournaient contre lui.
+
+        Sûr par construction : un worker de code a déjà un périmètre (inchangé), le
+        lead n'a jamais de `parent_id` (inchangé). Seul le cas neuf bascule.
+        """
+        return bool(self._mission_allowed_files_meta()) or self._is_delegated_worker()
+
+    def _is_delegated_worker(self) -> bool:
+        """H4 — CE run est-il un worker délégué (par opposition au lead) ?
+
+        La question était jusqu'ici posée sous la forme `if allowed_files:`, ce qui
+        revenait à dire « un worker, c'est quelqu'un qui possède des fichiers ».
+        Un porteur d'EFFETS purs n'en possède aucun (`allowed_files: []`) : il était
+        donc pris pour le lead, et recevait des politiques qui ne le concernent pas.
+        Prouvé au run `veille_python_313` (2026-08-13) : `w_recherche` a reçu la
+        bannière « Navigateur NON vérifié » — policy réservée au TOP-LEAD — sur une
+        mission de veille documentaire.
+
+        Le fait déterministe est `metadata.parent_id`, posé par `delegate_and_wait`
+        pour TOUT enfant, avec ou sans fichiers. Défensif : False sur erreur (on ne
+        transforme jamais un lead en worker par accident).
+        """
+        if not self.task_id or not self.task_orchestrator:
+            return False
+        try:
+            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
+                    .get("metadata") or {})
+            return bool(meta.get("parent_id") or meta.get("delegation_owner"))
+        except Exception:
+            return False
+
     def _mark_task_running(self) -> None:
         if not self._orchestrator_enabled():
             return
@@ -2161,7 +6422,9 @@ class ReActLoop:
                     mark_checkpoint(self.task_id, final_cp)
             mark_done = getattr(self.task_orchestrator, "mark_done", None)
             if callable(mark_done):
-                mark_done(self.task_id, result_summary=summary[:1000])
+                # Pas de pré-cap ici : l'orchestrateur applique LE cap unique
+                # (_result_summary_cap) — sinon le worker serait tronqué avant la fusion.
+                mark_done(self.task_id, result_summary=summary)
         except Exception as exc:
             logger.debug("task orchestrator mark_done skipped: {}", exc)
 
@@ -2396,6 +6659,23 @@ class ReActLoop:
             return {}
 
     @staticmethod
+    def _llm_provider_error_detail(
+        response: Any, meta: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """Return an authoritative provider failure instead of model prose.
+
+        ``MultiProviderLLM.chat`` returns a short ``[Erreur]`` string when
+        every configured route failed. The accompanying metadata is the
+        authoritative discriminator: a normal model may mention an error in
+        its answer, but only the provider layer emits ``finish_reason=error``.
+        """
+        info = meta if isinstance(meta, dict) else {}
+        if str(info.get("finish_reason") or "").strip().lower() != "error":
+            return None
+        detail = str(response or "").strip()
+        return detail[:1200] or "provider returned finish_reason=error"
+
+    @staticmethod
     def _is_length_finish_reason(finish_reason: Optional[str]) -> bool:
         return is_length_finish_reason(finish_reason)
 
@@ -2447,6 +6727,17 @@ class ReActLoop:
         """
         # Guard : pas de pipeline si outils contraints (scheduler, tâches internes)
         if getattr(self.tools, "_caller_set_allowed", False):
+            return None
+
+        # A structured business document already has a deterministic Studio
+        # route. Do not let a generic skill or direct pipeline capture it.
+        route = ReActLoop._document_route_for_run(self, query)
+        if route.requires_studio and route.owns_run:
+            logger.debug(
+                "[ReAct] Rail Document Studio prioritaire (kind={}, operation={}) → pipeline skip",
+                route.kind,
+                route.operation,
+            )
             return None
 
         # ── Skill priority gate ──
@@ -2559,7 +6850,17 @@ class ReActLoop:
             try:
                 logger.info(f"Recherche mémoire ChromaDB pour: {query[:60]}...")
                 _max_mem = int(os.environ.get("LUMENA_MEMORY_MAX_INJECT", "20"))
-                mem_ctx = memory.get_context_for_prompt(query, max_memories=_max_mem)
+                # B0bis (run TriboBlog) — en MISSION, exclure les souvenirs
+                # épisodiques (récits d'anciens runs) qui font fabriquer le modèle.
+                # get_context_for_prompt tolère l'argument même sur un store legacy
+                # (défaut False) → dégradation gracieuse.
+                _excl_epi = bool(getattr(self, "_is_mission_run", False))
+                try:
+                    mem_ctx = memory.get_context_for_prompt(
+                        query, max_memories=_max_mem, exclude_episodic=_excl_epi)
+                except TypeError:
+                    # Store sans le paramètre (compat) → comportement historique.
+                    mem_ctx = memory.get_context_for_prompt(query, max_memories=_max_mem)
                 if mem_ctx:
                     logger.info(f"Mémoire injectée: {len(mem_ctx)} chars, ~{len(mem_ctx)//4} tokens")
                     parts.append(mem_ctx)
@@ -2968,6 +7269,12 @@ REGLES STRICTES:
             logger.warning(f"Sandbox context injection failed: {exc}")
 
         # --- Fix A+B : Creation d'artefact → agir sans sur-questionner ---
+        _document_route = ReActLoop._document_route_for_run(self, query)
+        _structured_document = (
+            (_document_route.kind or "type_a_selectionner")
+            if _document_route.requires_studio
+            else None
+        )
         _CREATION_KW = re.compile(
             r"\b(cr[ée]+[erz]?|r[ée]dige[rz]?|[ée]cri[s|rez]?|g[ée]n[èe]re[rz]?|"
             r"fais[\s-]?moi|produis|pr[ée]pare[rz]?|make|write|draft|create|build)\b",
@@ -2980,19 +7287,49 @@ REGLES STRICTES:
             re.IGNORECASE,
         )
         creation_rule_section = ""
-        if _CREATION_KW.search(query) and _ARTIFACT_KW.search(query):
+        if (_CREATION_KW.search(query) and _ARTIFACT_KW.search(query)) or _structured_document:
             creation_rule_section = """
 ## REGLE CREATION D'ARTEFACT (PRIORITAIRE) :
 - L'utilisateur veut que tu CREES. Ne pose PAS de liste de questions.
 - Si le sujet manque → choisis un sujet raisonnable et crée immédiatement.
 - Maximum 1 question si vraiment bloquant (ex: destinataire d'un email).
 - Outils de création directs (pas besoin de discover_tools) :
-  * `create_pdf`   → rapport, document, note en PDF
+  * `generate_studio_document` → OBLIGATOIRE pour un seul document structuré.
+  * `generate_studio_documents` → OBLIGATOIRE quand plusieurs documents structurés
+    sont demandés : envoie le lot ordonné en UNE action. Chaque `data` peut être
+    partiel et sera fusionné avec l'exemple professionnel du modèle.
+  * Document Studio couvre facture, devis, bon de commande, contrat, NDA,
+    attestation, bulletin de paie, fiche de poste et les autres modèles du catalogue.
+    N'utilise PAS create_pdf, Python ou CodeAgent tant que Document Studio n'a pas
+    explicitement signalé que le type est indisponible.
+  * `create_pdf`   → rapport libre, document ou note sans modèle Studio adapté
   * `create_docx`  → document Word .docx
   * `create_xlsx`  → tableur Excel .xlsx
   * `create_pptx`  → présentation PowerPoint .pptx
   * `write_file`   → tout autre fichier texte (script, .txt, .md, .csv…)
 - AGIS D'ABORD. Propose de modifier après.
+"""
+        creation_rule_section += _document_requested_kinds_guidance(_document_route)
+        creation_rule_section += _document_minimum_pages_guidance(_document_route)
+        if _document_route.is_catalog_selection:
+            _selection_calls = _document_route.selections or (
+                SimpleNamespace(
+                    origin=_document_route.selection_origin,
+                    limit=_document_route.selection_limit,
+                    sort=_document_route.selection_sort,
+                ),
+            )
+            _selection_instructions = "\n".join(
+                f"- Appelle `list_document_models(origin='{item.origin}', "
+                f"limit={item.limit}, sort='{item.sort}')`."
+                for item in _selection_calls
+            )
+            creation_rule_section += f"""
+## SELECTION DOCUMENT STUDIO (OBLIGATOIRE) :
+- Cette demande vise exactement {_document_route.requested_count} modele(s) du catalogue.
+{_selection_instructions}
+- Reprends TOUS les `id` retournes dans l'ordre global. Genere-les par lots de 30 maximum ; en cas d'echec, ne relance que les modeles manquants.
+- N'utilise ni recherche de fichiers, ni `create_pdf`, ni resume generique a la place des modeles selectionnes.
 """
 
         # --- Video (Remotion) ---
@@ -3169,8 +7506,8 @@ Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration
 6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `create_project`, `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
 7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
 8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
-9. Serveur de preview/test (http.server, serve, vite, etc.) -> JAMAIS sur le port 8080 (reserve a Lumena). Utilise 8081 ou superieur (ex: `python -m http.server 8081`).
-10. Verification de projet web local/workspace -> utilise `browser_verify_local_project`. N'utilise pas `browser_navigate` vers localhost/127.0.0.1 : le garde SSRF peut le bloquer.
+9. Serveur de preview/test (http.server, serve, vite, flask run, uvicorn, etc.) -> lance-le EN BACKGROUND sur un port entre 8081 et 8099 (JAMAIS 8080/8245 reserves a Lumena). Ex: `python -m flask run --port 8085` ou `python -m http.server 8085`. Lumena l'enregistre alors comme preview loopback atteignable.
+10. Verification de projet web local/workspace -> APRES avoir servi sur un port 8081-8099, `browser_navigate` vers `http://127.0.0.1:<port>` fonctionne (preview enregistree). Sinon `browser_verify_local_project` si disponible.
 
 ## Delegation CodeAgent — OBLIGATOIRE pour le code :
 ⚠️ REGLE ABSOLUE : Tu ne codes JAMAIS toi-meme. Tu DELEGUES au CodeAgent.
@@ -3332,8 +7669,8 @@ Maintenant, reflechis et reponds:"""
     def _extract_balanced_json(self, text: str, start_index: int) -> Optional[tuple[str, int]]:
         return extract_balanced_json(text, start_index)
 
-    def _parse_action_args(self, action_input: str) -> Dict[str, Any]:
-        return _parse_action_args_fn(action_input)
+    def _parse_action_args(self, action_input: str, tool_name: str = "") -> Dict[str, Any]:
+        return _parse_action_args_fn(action_input, tool_name=tool_name)
 
     def _parse_response(self, response: str) -> tuple[Thought, Action]:
         """Parse la reponse du LLM — delegue a response_parser."""
@@ -3358,6 +7695,103 @@ Maintenant, reflechis et reponds:"""
             if getattr(h, "observation", None)
         ]
         return remask_secrets(answer, obs_texts)
+
+    def _stream_and_return_final(self, message: str, *,
+                                 skip_mission_truth_lock: bool = False) -> str:
+        """Diffuse la réponse finale par chunks (SSE « Lumena écrit »), marque la
+        tâche done et retourne le message. Chemin de livraison FINAL canonique,
+        réutilisé par le retour direct mission_result.
+
+        LOT 2.7 — POINT D'ÉTRANGLEMENT du verrou de vérité mission (run NoteFlash
+        2026-07-02 : un FINAL fabriqué « 8/8 tests pytest verts » a été émis sans
+        passer par le verrou). TOUTE émission finale d'une mission passe ici → le
+        verrou s'applique par défaut (idempotent : les sites amont déjà verrouillés
+        ne produisent pas de double-bannière). `skip_mission_truth_lock=True` est
+        RÉSERVÉ au relais MISSION DELIVERY (P0.1 : re-juger un résultat étranger
+        avec le ledger du tour relayeur = fausse rétrogradation)."""
+        # DS-1 (run SkiLoc) — l'utilisateur ne voit JAMAIS de DSML brut : un FINAL
+        # contenant des blocs tool-calls deepseek non parsés est nettoyé ici, au
+        # point d'étranglement d'émission (toutes les voies de sortie passent là).
+        if message:
+            try:
+                from src.llm.output_normalizer import strip_dsml_markup
+                message = strip_dsml_markup(message)
+            except Exception:
+                pass
+        if (message
+                and (self._is_mission_run or getattr(self, "_codex_tool_bridge_run", False))
+                and not skip_mission_truth_lock):
+            try:
+                _cp_locked, _cp_info = apply_mission_truth_lock(
+                    message,
+                    has_green_test=self._current_green_test_proof(),
+                    last_test_outcome=self.execution_ledger.last_test_outcome(),
+                    has_browser_proof=self._current_browser_proof(),
+                    # A5 (run FitLog) — preuves au LEDGER, plus au prompt : couvre
+                    # TOUTES les voies de sortie (repair thought-leak/tronqué
+                    # comprises — w_tests avait conclu sans pytest, gate éteint
+                    # par le plafond d'itérations).
+                    tests_present_not_run=self._tests_present_but_not_run(),
+                    has_any_mutation=self.execution_ledger.has_any_mutation(),
+                    # LOT E (run FidéliBar) — « publié » n'est licite qu'avec un
+                    # publish_mission_workspace réussi au ledger de ce run.
+                    has_published=self.execution_ledger.has_published(),
+                    # LOT 2.11.E — disk-grounded : « publié dans workspace/X » où X
+                    # n'existe pas sur disque = fausse publication (run StatsNotes).
+                    project_root=Path(__file__).resolve().parents[2],
+                    # M1 (run RévizIA) — policy navigateur dure (top-lead web).
+                    web_deliverable=self._truth_lock_web_flag(),
+                    file_deliverables_expected=self._mission_expects_file_deliverables(),  # H8
+                    unpublished_writes=self._mission_unpublished_writes(),  # Z24
+                    has_server_started=self._server_started_proof(),  # LOT 2.3
+                    browser_content_seen=self._browser_content_seen(),  # 2.7.4
+                    interaction_proven=self._truth_lock_interaction_proven(),
+                    interaction_required=self._truth_lock_interaction_flag(),
+                    objective_is_game=self._truth_lock_game_flag(),  # 2.13.A
+                    browser_runtime_failed=self._browser_runtime_failed_for_truth_lock(),  # M100.4
+                )
+                self._note_truth_lock_outcome(_cp_info)  # F1.b
+                if _cp_info.get("changed"):
+                    logger.warning(
+                        "[MISSION TRUTH-LOCK] CHOKEPOINT — rétrogradé honnêtement "
+                        "(preuves ledger insuffisantes ; voie non verrouillée en "
+                        "amont). détails={} task={}",
+                        {k: v for k, v in _cp_info.items() if v and k != "changed"},
+                        self.task_id)
+                    message = _cp_locked
+            except Exception as _cp_exc:
+                logger.debug("[MISSION TRUTH-LOCK] chokepoint skip: {}", _cp_exc)
+        # P3 — Token streaming : 2 mots / chunk, 25ms entre chunks → typing fluide.
+        # Voice V2 consumes the already truth-locked canonical result. It must not
+        # wait for this purely visual typing animation; every other channel keeps
+        # the historical timing unchanged.
+        import time as _time_mod
+        _voice_delivery = (
+            str(getattr(self.runtime_ctx, "channel", "") or "").strip().lower() == "voice"
+        )
+
+        def _delivery_sleep(seconds: float) -> None:
+            if not _voice_delivery:
+                _time_mod.sleep(seconds)
+
+        _lines = (message or "").split('\n')
+        _first_chunk = True
+        for _li, _line in enumerate(_lines):
+            if _li > 0:
+                logger.debug("[FINAL_TOKEN]{}", "\n")
+                _delivery_sleep(0.015)
+            if not _line:
+                continue
+            _words = _line.split(' ')
+            for _wi in range(0, len(_words), 2):
+                _chunk = " ".join(_words[_wi:_wi + 2])
+                if not _first_chunk and _wi > 0:
+                    _chunk = " " + _chunk
+                logger.debug("[FINAL_TOKEN]{}", _chunk)
+                _first_chunk = False
+                _delivery_sleep(0.025)
+        self._mark_task_done(message)
+        return message
 
     def _tool_is_safe_readonly(self, tool_name: str) -> bool:
         """Verdict guard-safe : l'outil est-il un read-only CONNU et sûr ?
@@ -3395,6 +7829,14 @@ Maintenant, reflechis et reponds:"""
         if not self._task_plan:
             return
 
+        try:
+            _doc_route_for_plan = ReActLoop._document_route_for_run(self)
+            _compound_document_workflow = len(
+                tuple(getattr(_doc_route_for_plan, "workflow_actions", ()) or ())
+            ) > 1
+        except Exception:
+            _compound_document_workflow = False
+
         # Signaux d'échec : si l'observation contient un marqueur d'erreur, ne rien cocher
         obs_lower = (observation_content or "").lower()
         _fail, _overridden = classify_observation(observation_content)
@@ -3417,6 +7859,44 @@ Maintenant, reflechis et reponds:"""
         # Guard 5 pré-calculé : si l'outil est exploratoire, aucune tâche métier
         # ne peut être marquée par aucune voie (sem, seq, auto).
         _is_exploration_for_guard5 = tool_name in _EXPLORATION_TOOLS_STRICT
+
+        # #3 (2026-06-30) — RELECTURE D'ARTEFACT : une lecture (read_file/read_document)
+        # qui relit un fichier RÉELLEMENT écrit avant (mutation réussie dans le ledger)
+        # est une preuve de VÉRIFICATION légitime. Lien read→write par basename (le write
+        # cible un chemin relatif « workspace/x.md », le read un chemin absolu → on compare
+        # le nom de fichier). Sinon : le garde-fou « lecture seule ≠ preuve » reste actif.
+        _artifact_reread = False
+        if (tool_name in ("read_file", "read_document")
+                and not observation_has_failure
+                and observation_content and observation_content.strip()
+                and isinstance(tool_args, dict)):
+            _rp = str(tool_args.get("path") or tool_args.get("file_path") or "").strip()
+            _read_base = _rp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            if _read_base and len(_read_base) >= 4:
+                _led = getattr(self, "execution_ledger", None)
+                if _led is not None and _led.has_mutation_for_target_hint(_read_base):
+                    _artifact_reread = True
+                # #3b (2026-07-01) — FILET MISSION : l'execution_ledger est in-memory
+                # et clear() à chaque _run_internal ; il ne survit PAS au checkpoint/resume
+                # du worker de mission (run soirée-cinéma : write iter1 absent du ledger à
+                # la relecture → verify SKIP → plan 1/2 → FINALIZE bloqué). Le signal fiable
+                # est deadline_artifact_written, porté par task_orchestrator (SURVIT au
+                # checkpoint, cf. 5.7.4a). Si la mission a CONFIRMÉ l'écriture de son artefact
+                # cible et que la relecture porte sur CE fichier, la vérification est légitime.
+                elif getattr(self, "_is_mission_run", False) and self._orchestrator_enabled():
+                    try:
+                        from src.subagents.mission_budget import extract_target_file as _etf
+                        _rec_rr = self.task_orchestrator.get_task(self.task_id) or {}
+                        _meta_rr = _rec_rr.get("metadata") or {}
+                        if _meta_rr.get("deadline_artifact_written"):
+                            _tgt_rr = _etf(_meta_rr.get("objective")
+                                           or _rec_rr.get("message_preview") or "")
+                            if _tgt_rr:
+                                _tgt_base = _tgt_rr.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                                if _tgt_base and _tgt_base.lower() == _read_base.lower():
+                                    _artifact_reread = True
+                    except Exception:
+                        pass
 
         _any_matched = False
         _has_specific_match = False  # True si au moins un arg/tool/obs match (pas juste hint)
@@ -3574,6 +8054,84 @@ Maintenant, reflechis et reponds:"""
                 )
                 continue
 
+            # Guard CORRECTION-ONLY : une tâche « corriger / réparer / debug » ne
+            # peut PAS être créditée par un outil de LECTURE (lire = diagnostiquer,
+            # pas corriger). Seule une mutation (edit_file/write_file/apply_patch…)
+            # la marque. Sinon FINALIZE prématuré avec des tests encore rouges.
+            if correction_task_blocks_readonly(tool_name, desc_guard):
+                logger.debug(
+                    "[PLAN] Guard CORRECTION-ONLY: '{}' non marquable par {} "
+                    "(lecture ≠ correction) (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
+            # LOT 2.7 — Guard TOOL-EXPLICIT : une tâche qui NOMME un outil précis
+            # (« … via write_mission_contract », « lance pytest ») n'est créditée
+            # QUE par cet outil (run NoteFlash : create_mission avait coché
+            # « Poser le contrat via write_mission_contract »).
+            if tool_explicit_task_blocks(tool_name, desc_guard):
+                logger.debug(
+                    "[PLAN] Guard TOOL-EXPLICIT: '{}' non marquable par {} (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
+            if delegation_task_blocks(tool_name, desc_guard):
+                logger.debug(
+                    "[PLAN] Guard DELEGATION-ONLY: '{}' non marquable par {} (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
+            # C0.3b — Guard PUBLISH-ONLY : une tâche « publier le livrable » n'est
+            # créditée QUE par publish_mission_workspace (run FrigoZen : cochée par
+            # le write_file de style.css → FINALIZE prématuré).
+            if publish_task_blocks(tool_name, desc_guard):
+                logger.debug(
+                    "[PLAN] Guard PUBLISH-ONLY: '{}' non marquable par {} (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
+            # LOT E — Guard BROWSER-ONLY : une tâche « vérifier le navigateur » n'est
+            # créditée QUE par une action browser_* réelle (run CéramiShop : cochée
+            # sur une pensée fabriquée avant tout browser_navigate).
+            if browser_verify_task_blocks(tool_name, desc_guard):
+                logger.debug(
+                    "[PLAN] Guard BROWSER-ONLY: '{}' non marquable par {} (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
+            if browser_interaction_task_blocks(tool_name, desc_guard):
+                logger.debug(
+                    "[PLAN] Guard INTERACTION-PROOF: '{}' non marquable par {} "
+                    "sans verifier strict/evaluate (iter {})",
+                    task.description, tool_name, iteration,
+                )
+                continue
+
+            if artifact_target_task_blocks(tool_name, desc_guard, tool_args or {}):
+                logger.debug(
+                    "[PLAN] Guard ARTIFACT-TARGET: '{}' incompatible avec la cible de {} "
+                    "(iter {})", task.description, tool_name, iteration,
+                )
+                continue
+
+            if not document_plan_tool_can_complete_task(
+                tool_name,
+                task.description,
+                tool_kind=str((tool_args or {}).get("kind", "")),
+                required_kinds=ReActLoop._document_plan_required_kinds(task.description),
+                compound_workflow=_compound_document_workflow,
+            ):
+                logger.debug(
+                    "[PLAN] Document batch/verify: '{}' attend le manifest complet (iter {})",
+                    task.description, iteration,
+                )
+                continue
+
             # Fallback: observation de succes + mot du nom d'outil dans la description
             # GF-1 : obs_match est une heuristique FAIBLE. Désactivée pour les sous-outils
             # parallel_tools (allow_fallback=False) : "profile" ⊂ "profiler X" matcherait
@@ -3593,6 +8151,12 @@ Maintenant, reflechis et reponds:"""
                 tool_module_category,
                 tool_semantic_category,
             )
+            if pytest_execution_task(task.description):
+                _proof_for_task = _proof_for_task or pytest_plan_task_proven(
+                    task.description,
+                    tool_name,
+                    self.execution_ledger.last_test_outcome(),
+                )
             if hint_match and not is_specific and tool_name in _HINT_ONLY_PROOF_REQUIRED_TOOLS and not _proof_for_task:
                 logger.debug(
                     "[PLAN] Hint-only bloqué: '{}' non marquable par {} sans preuve spécifique (iter {})",
@@ -3600,6 +8164,14 @@ Maintenant, reflechis et reponds:"""
                 )
                 continue
             if hint_match or is_specific:
+                if not sourced_web_research_task_proven(
+                    tool_name, task.description, observation_content
+                ):
+                    logger.debug(
+                        "[PLAN] Recherche sourcée sans URL suffisante: '{}' non marquable par {} (iter {})",
+                        task.description, tool_name, iteration,
+                    )
+                    continue
                 if (
                     tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
                     and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
@@ -3640,7 +8212,13 @@ Maintenant, reflechis et reponds:"""
                     break
                 # Verify-gate : une tâche de vérification exige une preuve réelle.
                 # Présence de fichiers, hint de tool, ou ✅ générique ne suffisent pas.
-                if is_verify_task(desc_lower) and not _proof_for_task:
+                # #3 : EXCEPTION — relecture d'un artefact réellement écrit avant.
+                if (
+                    is_verify_task(desc_lower) and not _proof_for_task
+                    and not verify_satisfied_by_artifact_read(
+                        tool_name, task.description, artifact_reread=_artifact_reread,
+                    )
+                ):
                     logger.debug(
                         "[PLAN] Verify-gate (sem): '{}' non marquable par {} — preuve insuffisante (iter {})",
                         task.description, tool_name, iteration,
@@ -3695,6 +8273,26 @@ Maintenant, reflechis et reponds:"""
                 if not task.completed:
                     desc_lower = task.description.lower()
                     if tool_words and any(tw in desc_lower for tw in tool_words):
+                        if not sourced_web_research_task_proven(
+                            tool_name, task.description, observation_content
+                        ):
+                            logger.debug(
+                                "[PLAN] Recherche sourcée seq sans URL suffisante: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if not document_plan_tool_can_complete_task(
+                            tool_name,
+                            task.description,
+                            tool_kind=str((tool_args or {}).get("kind", "")),
+                            required_kinds=ReActLoop._document_plan_required_kinds(task.description),
+                            compound_workflow=_compound_document_workflow,
+                        ):
+                            logger.debug(
+                                "[PLAN] Document seq: '{}' attend le manifest complet (iter {})",
+                                task.description, iteration,
+                            )
+                            break
                         if (
                             tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
                             and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
@@ -3858,6 +8456,9 @@ Maintenant, reflechis et reponds:"""
                         tool_module_category,
                         tool_semantic_category,
                     )
+                    # #3 : relecture d'un artefact écrit avant = vérification légitime,
+                    # même si read_file est « trivial » (le verify-gate ci-dessous tranche).
+                    or _artifact_reread
                 )
             ):
                 # Garde 4: si la tâche mentionne explicitement un nom d'outil différent
@@ -3867,6 +8468,26 @@ Maintenant, reflechis et reponds:"""
                 for task in self._task_plan:
                     if not task.completed:
                         desc_lower = task.description.lower()
+                        if not sourced_web_research_task_proven(
+                            tool_name, task.description, observation_content
+                        ):
+                            logger.debug(
+                                "[PLAN] Recherche sourcée auto sans URL suffisante: '{}' non marquable par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if not document_plan_tool_can_complete_task(
+                            tool_name,
+                            task.description,
+                            tool_kind=str((tool_args or {}).get("kind", "")),
+                            required_kinds=ReActLoop._document_plan_required_kinds(task.description),
+                            compound_workflow=_compound_document_workflow,
+                        ):
+                            logger.debug(
+                                "[PLAN] Document auto: '{}' attend le manifest complet (iter {})",
+                                task.description, iteration,
+                            )
+                            break
                         if (
                             tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
                             and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
@@ -3926,12 +8547,20 @@ Maintenant, reflechis et reponds:"""
                             break
                         # Verify-gate : l'auto-avancement générique ne constitue pas
                         # une preuve pour les étapes de vérification fonctionnelle.
-                        if is_verify_task(desc_lower) and not has_sufficient_proof(
-                            tool_name,
-                            observation_content,
-                            task.description,
-                            tool_module_category,
-                            tool_semantic_category,
+                        # #3 : EXCEPTION — une relecture d'artefact réellement écrit avant
+                        # (read_file/read_document sur le fichier muté) EST la vérification.
+                        if (
+                            is_verify_task(desc_lower)
+                            and not has_sufficient_proof(
+                                tool_name,
+                                observation_content,
+                                task.description,
+                                tool_module_category,
+                                tool_semantic_category,
+                            )
+                            and not verify_satisfied_by_artifact_read(
+                                tool_name, task.description, artifact_reread=_artifact_reread,
+                            )
                         ):
                             logger.debug(
                                 "[PLAN] Verify-gate (auto): '{}' non marquable par {} — preuve insuffisante (iter {})",
@@ -3973,6 +8602,62 @@ Maintenant, reflechis et reponds:"""
                             logger.debug(
                                 "[PLAN] Guard FINAL-ONLY (auto): '{}' non marquable par {} — réservé à FINAL (iter {})",
                                 task.description, tool_name, iteration,
+                            )
+                            break
+                        # Guard CORRECTION-ONLY (fallback) : idem chemin principal —
+                        # une lecture ne crédite jamais une tâche de correction.
+                        if correction_task_blocks_readonly(tool_name, desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard CORRECTION-ONLY (auto): '{}' non marquable par {} "
+                                "(lecture ≠ correction) (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        # LOT 2.7 — Guard TOOL-EXPLICIT (fallback auto) : idem chemin
+                        # principal — un autre outil ne coche jamais une tâche qui
+                        # nomme explicitement write_mission_contract/pytest/etc.
+                        if tool_explicit_task_blocks(tool_name, desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard TOOL-EXPLICIT (auto): '{}' non marquable par {} "
+                                "(iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if delegation_task_blocks(tool_name, desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard DELEGATION-ONLY (auto): '{}' non marquable "
+                                "par {} (iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        # C0.3b — Guard PUBLISH-ONLY (fallback) : idem chemin principal.
+                        if publish_task_blocks(tool_name, desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard PUBLISH-ONLY (auto): '{}' non marquable par {} "
+                                "(iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        # LOT E — Guard BROWSER-ONLY (fallback) : idem chemin principal.
+                        if browser_verify_task_blocks(tool_name, desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard BROWSER-ONLY (auto): '{}' non marquable par {} "
+                                "(iter {})",
+                                task.description, tool_name, iteration,
+                            )
+                            break
+                        if browser_interaction_task_blocks(tool_name, desc_lower):
+                            logger.debug(
+                                "[PLAN] Guard INTERACTION-PROOF (auto): '{}' non marquable "
+                                "par {} (iter {})", task.description, tool_name, iteration,
+                            )
+                            break
+                        if artifact_target_task_blocks(
+                            tool_name, desc_lower, tool_args or {}
+                        ):
+                            logger.debug(
+                                "[PLAN] Guard ARTIFACT-TARGET (auto): '{}' incompatible avec "
+                                "la cible de {} (iter {})", task.description, tool_name, iteration,
                             )
                             break
                         _proof = evaluate_task_proof(task.description, tool_name, observation_content)
@@ -4227,11 +8912,33 @@ Maintenant, reflechis et reponds:"""
         """Implémentation interne de la boucle ReAct."""
         logger.info(f"ReAct Loop: {query}")
         self._loop_start_time = perf_counter()  # Pour calcul budget restant dans le prompt
+        self._last_observation_monotonic = None
+        self._last_observation_tool = ""
         self._identity_ctx_cache: Optional[str] = None  # Cache ChromaDB pour toute la boucle
         self._mark_task_running()
         self._mark_task_checkpoint({"phase": "start", "status": "running"})
         original_query = query  # Garder la requete originale
         self._original_query = query  # Phase 4.3 FIX: pour filtrage contextuel stable
+        # Exact catalog proof is run-scoped and captured before observation
+        # compaction. It never leaks into a later ReAct request.
+        self._document_catalog_evidence = {}
+        # Batch/open/revision proofs are equally run-scoped. Keeping their
+        # structured form here prevents observation compaction from erasing a
+        # completed workflow step and selecting an older document on retry.
+        self._document_workflow_evidence = {
+            "batch_proofs": {}, "generation_events": [],
+            "open_events": [], "revision_events": [], "revision_records": [],
+            "verification_events": [], "history_events": [],
+            "export_events": [], "library_events": [], "event_counter": 0,
+        }
+        self._document_workflow_target_proof = None
+        self._browser_blocked_origins = set()
+        self._document_delivery_reference_id = ""
+        self._document_delivery_reference_signature = ()
+        self._document_reference_announced = False
+        self._document_free_final_grounding_shots = 0
+        self._last_document_workflow_progress_signature = (0, "", "")
+        _document_route = ReActLoop._document_route_for_run(self, query)
 
         # ── P1.2 + P5 : Filtrage contextuel SOFT avec intent — une seule fois ──
         if not getattr(self.tools, '_caller_set_allowed', False):
@@ -4239,18 +8946,19 @@ Maintenant, reflechis et reponds:"""
                 _intent_for_filter: Optional[str] = None
                 try:
                     from ..core_services.intent_classifier import classify_intent as _ci
-                    _snap = None
-                    _lum = getattr(self.tools, "lumena", None)
-                    if _lum is not None and hasattr(_lum, "build_runtime_snapshot"):
-                        try:
-                            _snap = _lum.build_runtime_snapshot()
-                        except Exception:
-                            _snap = None
-                    _res = _ci(query, _snap)
+                    _res = _ci(
+                        query,
+                        getattr(self, "runtime_ctx", None),
+                        document_route=_document_route,
+                    )
                     _intent_for_filter = _res.value if hasattr(_res, "value") else str(_res)
                 except Exception:
                     _intent_for_filter = None
-                self.tools.apply_context_filter(query, intent=_intent_for_filter)
+                self.tools.apply_context_filter(
+                    query,
+                    intent=_intent_for_filter,
+                    document_route=_document_route,
+                )
                 # ── StructuredState V1 : alimenter last_intent (classifier) ──
                 self._feed_structured_intent(_intent_for_filter)
                 # Fallback léger si le classifier n'a rien donné
@@ -4260,7 +8968,54 @@ Maintenant, reflechis et reponds:"""
             # Classifier non invoqué (_caller_set_allowed=True) : fallback keyword
             self._feed_structured_intent(self._infer_intent_from_query(query))
 
+        try:
+            _forced_documents = self._force_mission_proactive_document_tools()
+            if _forced_documents:
+                logger.info(
+                    "[MISSION DOCUMENTS] creation proactive disponible: {}",
+                    _forced_documents,
+                )
+        except Exception:
+            pass
+
+        # ── 2.6.1 (run MiniQuiz §5) : la jambe navigateur ne dépend plus du filtre ──
+        # Le lead mission web a dit « je n'ai pas serve_website dans ma liste » et a
+        # servi Flask à la main → serveur hors registre SSRF → browser_navigate
+        # bloqué → fabrication (rétrogradée par le truth-lock, mais critère §5 raté).
+        # LEAD top-mission à objectif web UNIQUEMENT (les workers restent steerés
+        # loin du navigateur — la preuve navigateur appartient au lead).
+        try:
+            if (getattr(self, "_is_mission_run", False)
+                    and not self._is_worker_run()  # H4 : périmètre OU parent
+                    and _objective_wants_browser(original_query)  # 2.9.A négation-aware
+                    and hasattr(self.tools, "force_allow_tools")):
+                _forced_web = self.tools.force_allow_tools(_MISSION_WEB_LEAD_TOOLS)
+                if _forced_web:
+                    logger.info("[2.6.1] outils web mission forcés au prompt du lead: {}",
+                                _forced_web)
+        except Exception:
+            pass
+
         single_file_creation_intent = self._is_single_file_creation_request(original_query)
+        # ── Steer d'intention MISSION (2026-07-01) ────────────────────────────────
+        # Bug observé (run petits-déjeuners) : « Crée une mission… » → Lumena, biaisée
+        # par la mémoire d'échecs passés, fait le travail EN DIRECT et ignore la
+        # consigne. On rétablit la priorité de la demande explicite par un NUDGE one-time
+        # (pas de hard-route). Côté LEAD uniquement (pas le worker : _is_mission_run).
+        # `original_query` reste INTACT (logs/mémoire/routing) ; seul `query` est nudgé.
+        if not self._is_mission_run and is_explicit_mission_request(original_query):
+            # #1 : l'intention mission ÉCRASE la création de fichier direct (le cas
+            # « crée une mission … dans workspace/x.md » matche les deux détecteurs).
+            single_file_creation_intent = False
+            query = (query or "") + (
+                "\n\n⚙️ L'utilisateur demande explicitement de créer une mission en "
+                "arrière-plan. Utilise create_mission(objective, deadline). Ne réalise "
+                "pas le travail toi-même dans ce tour, même si le livrable semble simple "
+                "ou l'échéance courte. N'impose PAS de dossier cible dans l'objectif "
+                "(pas de « dans workspace/xxx/ ») : la mission travaille dans son "
+                "dossier dédié et publiera son livrable à la fin."
+            )
+            logger.info("[ReAct] steer intention mission injecté (create_mission attendu)")
         # ── Reset état structuré pour ce run ──
         self.exec_state.reset()
         self.execution_ledger.clear()
@@ -4307,11 +9062,32 @@ Maintenant, reflechis et reponds:"""
         if _pipeline_result is not None:
             return _pipeline_result
 
+        # S7: Codex may choose the next tool, while this ReAct instance keeps
+        # ToolRegistry policies, mission context, ledger and the FINAL choke point.
+        # The adapter returns None when the opt-in surface is disabled.
+        from src.llm.execution_router import maybe_run_codex_surface
+        _codex_surface_result = await maybe_run_codex_surface(
+            self, query, original_query,
+        )
+        if _codex_surface_result is not None:
+            return _codex_surface_result
+
         # v2: Auto-route supprimé — le LLM utilise delegate_task / delegate_task_bg via le prompt
 
         for i in range(self.max_iterations):
             self._current_iteration = i  # Exposé pour réduction mémoire dynamique
             logger.debug(f"Iteration {i+1}")
+            if self._last_observation_monotonic is not None:
+                _post_observation_s = perf_counter() - self._last_observation_monotonic
+                _latency_log = logger.warning if _post_observation_s >= 30.0 else logger.debug
+                _latency_log(
+                    "[REACT LATENCY] post_observation_to_next_iteration_s={:.3f} "
+                    "previous_tool={} task={}",
+                    _post_observation_s,
+                    self._last_observation_tool or "unknown",
+                    self.task_id,
+                )
+                self._last_observation_monotonic = None
             # ── Cancel user check ENTRE itérations ──────────────────────────────
             _rl_tid = threading.current_thread().ident
             if _rl_tid:
@@ -4328,6 +9104,35 @@ Maintenant, reflechis et reponds:"""
                     raise
                 except Exception:
                     pass
+                # Voice V2 V6 — pause cooperative and persistent steering. Both
+                # happen BETWEEN iterations, never in the middle of a tool.
+                try:
+                    from src.runtime.task_steering import (
+                        acknowledge_control, consume_text_steering,
+                    )
+                    _work_record = self.task_orchestrator.get_task(self.task_id) or {}
+                    _work_meta = _work_record.get("metadata") or {}
+                    if _work_meta.get("pause_requested"):
+                        self.task_orchestrator.set_task_metadata(self.task_id, paused=True)
+                        acknowledge_control(self.task_orchestrator, self.task_id, "pause")
+                        while True:
+                            if self.task_orchestrator.is_cancel_requested(self.task_id):
+                                raise SystemExit("task_orchestrator_cancel")
+                            _paused_record = self.task_orchestrator.get_task(self.task_id) or {}
+                            if not ((_paused_record.get("metadata") or {}).get("pause_requested")):
+                                self.task_orchestrator.set_task_metadata(self.task_id, paused=False)
+                                break
+                            await asyncio.sleep(0.2)
+                    _steer_text, _steer_ids = consume_text_steering(
+                        self.task_orchestrator, self.task_id,
+                    )
+                    if _steer_text:
+                        query = f"{query}\n\n{_steer_text}" if query else _steer_text
+                        logger.info("[ReAct] steering applique task={} commands={}", self.task_id, _steer_ids)
+                except SystemExit:
+                    raise
+                except Exception as _steer_exc:
+                    logger.debug("[ReAct] steering skip: {}", _steer_exc)
             # ── Deadline dynamique : check ENTRE itérations (les outils longs finissent proprement) ──
             if hasattr(self, '_timeout_deadline') and perf_counter() > self._timeout_deadline:
                 raise asyncio.TimeoutError()
@@ -4360,6 +9165,130 @@ Maintenant, reflechis et reponds:"""
             if i == _warn_threshold_90 and _warn_threshold_90 >= 2:
                 logger.warning(f"⚠️ {i+1}/{self.max_iterations} itérations - approche de la limite")
             
+            # ── Lot 5.7.3 — conscience temporelle DOUCE (missions avec échéance) ──
+            # Nudge CALME, UNE fois par palier (mi-budget ~50%, réduit ~80%), persisté
+            # dans metadata.budget_nudges (survit reboot/reprise → pas de spam). Aide à
+            # prioriser, déléguer et pivoter vers la livraison complète — jamais « dépêche-toi ».
+            try:
+                if self._is_mission_run and self._orchestrator_enabled():
+                    _rec = self.task_orchestrator.get_task(self.task_id) or {}
+                    _md = _rec.get("metadata") or {}
+                    if _md.get("deadline_ts"):
+                        from src.subagents.mission_budget import (
+                            mission_budget, mission_budget_nudge, mission_budget_finalize,
+                            extract_unambiguous_target_file,
+                        )
+                        _budget = mission_budget(_rec)
+                        # Preuve de chargement (re-test) : trace 1 ligne/itération du budget
+                        # vu par le bloc → grep `[5.7.4]` confirme que le hook s'exécute même
+                        # sans déclenchement. DEBUG → zéro bruit en prod si niveau > debug.
+                        logger.debug(
+                            "[5.7.4] budget task={} remaining_s={} ratio={}",
+                            self.task_id, _budget.get("remaining_s"), _budget.get("ratio_used"),
+                        )
+                        # ── Lot 5.7.4 — fin de temps : on NE coupe PAS d'un coup ──
+                        # INVARIANT (verrouillé) : si la finalisation n'a jamais été TENTÉE,
+                        # on tente d'abord une dernière stratégie vers le complet, même si la grâce est
+                        # déjà dépassée (cas du lead débloqué tard de delegate_and_wait). Le
+                        # filet dur (cancel) n'intervient QU'APRÈS une tentative de finalisation
+                        # — sinon on annulerait sans jamais produire le livrable (bug cocktails).
+                        try:
+                            _grace = max(0.0, float(os.getenv("LUMENA_MISSION_DEADLINE_GRACE_S", "120") or 120))
+                        except (ValueError, TypeError):
+                            _grace = 120.0
+                        _remaining = _budget.get("remaining_s")
+                        _overdue = isinstance(_remaining, (int, float)) and _remaining <= 0
+                        _steered = bool(_md.get("deadline_steered"))
+                        # Cible artefact détectée dans l'objectif (None = mission texte).
+                        _target = extract_unambiguous_target_file(
+                            _md.get("objective") or _rec.get("message_preview") or "")
+
+                        if _overdue and not _steered:
+                            # 5.7.4a — finalisation ARTEFACT-AWARE, prioritaire sur le cancel.
+                            if _target:
+                                _steer = (
+                                    f"⏱ Échéance atteinte. Change de stratégie pour terminer "
+                                    f"TOUTES les exigences et produire le livrable COMPLET dans `{_target}`. "
+                                    f"Relis et prouve le résultat avant ACTION: FINAL. Si une dépendance "
+                                    f"externe reste réellement impossible après ce pivot, conclus en "
+                                    f"échec explicite et factuel ; ne présente jamais une livraison incomplète comme finie."
+                                )
+                            else:
+                                _steer = mission_budget_finalize(_budget, grace_s=_grace)
+                                _steer = _steer[1] if (_steer and _steer[0] == "finalize") else (
+                                    "⏱ Échéance atteinte — termine toutes les exigences, ou conclus "
+                                    "en échec explicite si une dépendance externe reste impossible après pivot.")
+                            query = (query + "\n\n" + _steer) if query else _steer
+                            try:
+                                self.task_orchestrator.set_task_metadata(
+                                    self.task_id, deadline_steered=True)
+                            except Exception:
+                                pass
+                            logger.info(
+                                "[ReAct] échéance atteinte → finalisation {} task={}",
+                                f"artefact-aware ({_target})" if _target else "générique",
+                                self.task_id,
+                            )
+                        elif _overdue and _steered:
+                            # Filet dur (2 étages) — 5.7.4b : on NE coupe QUE si la grâce est
+                            # épuisée ET qu'AUCUN artefact n'a été produit. Si le livrable cible
+                            # est déjà sur disque, on DÉSARME le filet : la mission a livré, on la
+                            # laisse conclure en FINAL (PLAN GUARD relâché par 5.7.4a) → état `done`
+                            # au lieu d'un `cancelled` trompeur sur un fichier pourtant complet.
+                            from src.subagents.mission_budget import deadline_hard_net_fires
+                            _artifact_written = bool(_md.get("deadline_artifact_written"))
+                            _deadline_completion = self._mission_completion_evidence()
+                            _completion_proven = bool(_deadline_completion.get("complete"))
+                            if deadline_hard_net_fires(
+                                steered=_steered, remaining_s=_remaining,
+                                grace_s=_grace, artifact_written=_artifact_written,
+                                completion_proven=_completion_proven,
+                            ):
+                                try:
+                                    self.task_orchestrator.set_task_metadata(
+                                        self.task_id,
+                                        deadline_expired=True,
+                                        terminal_reason_code="deadline_expired",
+                                        terminal_reason_detail=(
+                                            "grace epuisee avant acquisition de toutes les preuves requises"
+                                        ),
+                                        completion_proof=dict(_deadline_completion),
+                                    )
+                                    self.task_orchestrator.cancel_task(self.task_id, propagate=True)
+                                except Exception:
+                                    pass
+                                logger.info(
+                                    "[ReAct] grâce épuisée après finalisation → filet dur task={}", self.task_id)
+                                raise SystemExit("mission_deadline_grace_expired")
+                            elif ((_artifact_written or _completion_proven)
+                                  and isinstance(_remaining, (int, float)) and _remaining <= -_grace
+                                  and not _md.get("deadline_net_disarmed")):
+                                try:
+                                    self.task_orchestrator.set_task_metadata(
+                                        self.task_id, deadline_net_disarmed=True)
+                                except Exception:
+                                    pass
+                                logger.info(
+                                    "[5.7.4b] filet dur désarmé — livraison/preuves acquises, "
+                                    "sortie FINAL laissée task={}", self.task_id)
+                        elif not _overdue:
+                            # Avant l'échéance : nudge d'auto-gestion CALME, one-time par palier.
+                            _already = list(_md.get("budget_nudges") or [])
+                            _nudge = mission_budget_nudge(_budget, already=_already)
+                            if _nudge is not None:
+                                _nkey, _ntext = _nudge
+                                query = (query + "\n\n" + _ntext) if query else _ntext
+                                try:
+                                    self.task_orchestrator.set_task_metadata(
+                                        self.task_id, budget_nudges=_already + [_nkey])
+                                except Exception:
+                                    pass
+                                logger.info("[ReAct] nudge budget '{}' task={}", _nkey, self.task_id)
+            except SystemExit:
+                raise
+            except Exception:
+                pass
+
             # 1. Demander au LLM de réfléchir
             prompt = self._build_react_prompt(query)
 
@@ -4543,6 +9472,22 @@ Maintenant, reflechis et reponds:"""
             if hasattr(self, '_timeout_deadline') and perf_counter() > self._timeout_deadline:
                 raise asyncio.TimeoutError()
             self._last_llm_meta = self._get_llm_meta()
+            _provider_error = self._llm_provider_error_detail(
+                response, self._last_llm_meta
+            )
+            if _provider_error:
+                if TELEMETRY_AVAILABLE:
+                    publish_trace(
+                        stage="llm_request_done",
+                        status="error",
+                        mode="agent",
+                        duration_ms=(perf_counter() - llm_started) * 1000.0,
+                        provider=self._last_llm_meta.get("provider_used"),
+                        model=self._last_llm_meta.get("model_used"),
+                        error=_provider_error,
+                    )
+                _finish_iteration(status="error", error="llm_provider_error")
+                raise RuntimeError(f"llm_provider_error: {_provider_error}")
             if TELEMETRY_AVAILABLE:
                 publish_trace(
                     stage="llm_request_done",
@@ -4707,11 +9652,15 @@ Maintenant, reflechis et reponds:"""
                 if _halluc_streak >= 2 and len(self.history) > 3:
                     _kept = self.history[-3:]
                     _dropped = len(self.history) - 3
-                    self.history = _kept
+                    # LOT Z22 — le bruit meurt, les faits restent : on remet en
+                    # tête le journal d'exécution (jamais tronqué, lui).
+                    _facts = self._ledger_facts_step()
+                    self.history = ([_facts] + _kept) if _facts else _kept
                     logger.warning(
                         "🚨 Hallucination streak {} — compaction d'urgence: {} étapes supprimées, "
-                        "historique réduit à 3 pour nettoyer le contexte.",
+                        "historique réduit à 3 pour nettoyer le contexte{}.",
                         _halluc_streak, _dropped,
+                        " (faits du ledger réinjectés)" if _facts else "",
                     )
             else:
                 self._halluc_streak = 0
@@ -4773,7 +9722,7 @@ Maintenant, reflechis et reponds:"""
                         _stag_relevant: list = []
                         _STAG_KW_MAP = [
                             (("pdf", "rapport", "document", "facture", "devis"),
-                             ["create_pdf", "create_docx", "create_invoice_pdf", "create_from_template"]),
+                             ["generate_studio_document", "generate_studio_documents", "list_document_models", "create_pdf", "create_docx", "create_invoice_pdf", "create_from_template"]),
                             (("site", "web", "html", "page"),
                              ["create_project", "generate_website", "write_file"]),
                             (("image", "photo", "capture"),
@@ -4799,8 +9748,15 @@ Maintenant, reflechis et reponds:"""
                     # (N=2 pour react_stability=unstable, N=3 sinon)
                     if _stagnation_streak >= _stagnation_limit and self._task_plan:
                         logger.warning("⚠️ Stagnation critique ({}) — bypass PLAN GUARD pour débloquer FINAL", _stagnation_streak)
-                        # NE PAS mentir sur l'état des tâches — juste bypasser le guard
-                        self._plan_guard_retries = 3  # Empêche PLAN GUARD de bloquer
+                        # NE PAS mentir sur l'état des tâches — juste bypasser le guard.
+                        # LOT Z6 : poser 3 ne débloquait RIEN quand une tâche
+                        # opérationnelle restait — le `or` sans borne du PLAN GUARD
+                        # neutralisait ce filet, qui était donc posé puis ignoré. Il
+                        # faut franchir le PLUS HAUT des deux plafonds pour que
+                        # « bypass » veuille dire bypass.
+                        self._plan_guard_retries = max(
+                            _PLAN_GUARD_MAX_RETRIES, _PLAN_GUARD_MAX_RETRIES_OPERATIONAL
+                        )
                     # P3 HARD: Après N stagnations consécutives ET actions identiques → FORCER FINAL synthétique
                     # Une progression légitime (lectures séquentielles avec args différents) est tolérée.
                     _actions_are_redundant = False
@@ -4957,6 +9913,50 @@ Maintenant, reflechis et reponds:"""
                                 f"relectures={_reread_count}" if _reread_count >= 3
                                 else f"total={_rf_count}/{_max_total}"
                             )
+                            # LOT P3 — en MISSION, tant qu'il reste du budget, on
+                            # redirige au lieu d'achever : forcer le FINAL ici, ce
+                            # n'est pas rendre une réponse, c'est tuer la mission.
+                            _p3_remaining = 0.0
+                            try:
+                                _p3_remaining = max(
+                                    0.0,
+                                    float(self.timeout_seconds or 600)
+                                    - (asyncio.get_running_loop().time() - self._loop_start_time),
+                                )
+                            except Exception:
+                                _p3_remaining = 0.0
+                            _p3_shots = getattr(self, "_read_stagnation_shots", 0)
+                            if read_stagnation_action(
+                                is_mission_run=bool(self._is_mission_run),
+                                budget_remaining_s=_p3_remaining,
+                                shots_used=_p3_shots,
+                            ) == "redirect":
+                                self._read_stagnation_shots = _p3_shots + 1
+                                logger.warning(
+                                    "[P3] read_file stagnation sur '{}' ({}) — mission avec "
+                                    "{:.0f}s de budget → REDIRECTION 1/1 (pas de FINAL forcé).",
+                                    target_path, _reason, _p3_remaining,
+                                )
+                                _read_file_reread_counter.pop(target_path, None)
+                                _read_file_path_counter.pop(target_path, None)
+                                observation = Observation(
+                                    content=(
+                                        f"⛔ Tu relis `{target_path}` en boucle ({_reason}) — tu as "
+                                        "déjà son contenu en contexte, le relire ne t'apprendra rien "
+                                        f"de neuf.\n\nIl te reste {_p3_remaining/60:.0f} minutes de "
+                                        "mission : AGIS. Écris la correction (`edit_file`/"
+                                        "`str_replace`), lance les tests, et conclus sur ce que "
+                                        "l'exécution montre.\n\n(Redirection unique : au prochain "
+                                        "appel, la lecture s'exécutera.)"
+                                    ),
+                                    success=False,
+                                    origin="read_stagnation_redirect",
+                                )
+                                self.history.append(ReActStep(
+                                    thought=thought, action=action, observation=observation,
+                                ))
+                                _finish_iteration(status="ok", summary="read_stagnation_redirect")
+                                continue
                             logger.warning(
                                 "⚠️ read_file stagnation sur '{}' — forçage FINAL ({})",
                                 target_path,
@@ -5025,16 +10025,49 @@ Maintenant, reflechis et reponds:"""
                         )
                         action_key = (action.tool_name, str(action.tool_args))
                 
-                # FIX: Détection spécifique des écritures répétées au même fichier
+                # FIX: Détection spécifique des écritures répétées au même fichier.
+                # A4 (run FitLog) : l'ancien garde comptait les TENTATIVES (échecs
+                # inclus), matchait TOUT l'historique quand path était vide ('' est
+                # substring de tout), et fabriquait un FAUX succès (« ✅ créé avec
+                # succès après 7 tentatives ») SANS passer par le chokepoint — le
+                # lead FitLog est mort comme ça, en pleine intégration, à 08:12:27.
                 if action.tool_name == "write_file":
                     target_path = action.tool_args.get("path", "") or action.tool_args.get("file_path", "")
-                    write_count = sum(1 for k in self.action_history if k[0] == "write_file" and target_path in str(k[1]))
-                    if write_count >= 3:
-                        logger.warning(f"⚠️ Fichier {target_path} écrit {write_count} fois - arrêt de la boucle")
-                        _finish_iteration(status="ok", summary="stop_on_repeated_write_file")
-                        message = f"✅ Fichier {target_path} créé avec succès après {write_count} tentatives."
-                        self._mark_task_done(message)
-                        return message
+                    if target_path:
+                        write_count = sum(1 for k in self.action_history if k[0] == "write_file" and target_path in str(k[1]))
+                        _wf_base = target_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+                        _wf_written_ok = False
+                        try:
+                            _wf_written_ok = _wf_base in self.execution_ledger.written_basenames()
+                        except Exception:
+                            pass
+                        if write_count >= 3 and _wf_written_ok:
+                            # Le fichier a RÉELLEMENT été écrit au moins une fois →
+                            # arrêt honnête de la boucle, via le chokepoint (truth-lock).
+                            logger.warning(
+                                "⚠️ Fichier {} : {} écritures répétées (déjà écrit au ledger) — arrêt honnête",
+                                target_path, write_count)
+                            _finish_iteration(status="ok", summary="stop_on_repeated_write_file")
+                            message = (
+                                f"⚠️ J'arrête la boucle d'écritures répétées de `{target_path}` "
+                                f"({write_count} tentatives). Le fichier a été écrit dans ce run ; "
+                                "son contenu est celui actuellement sur disque (non re-validé)."
+                            )
+                            return self._stream_and_return_final(message)
+                        if write_count >= 6:
+                            # Jamais écrit avec succès malgré 6 tentatives → échec
+                            # HONNÊTE (l'ancien message « créé avec succès » mentait).
+                            logger.warning(
+                                "⚠️ Fichier {} : {} tentatives d'écriture SANS succès au ledger — échec honnête",
+                                target_path, write_count)
+                            _finish_iteration(status="error", error="repeated_write_failures")
+                            message = (
+                                f"❌ Impossible d'écrire `{target_path}` après {write_count} tentatives "
+                                "(réponses probablement tronquées). Le livrable est INCOMPLET : "
+                                "ce fichier manque."
+                            )
+                            self._mark_task_failed("repeated_write_failures")
+                            return message
 
                 # FIX: Si mail_send a déjà réussi, ne pas boucler sur la vérification IMAP
                 # (mail_list_messages avec les dossiers IMAP encodés échoue souvent et crée une spirale)
@@ -5089,28 +10122,30 @@ Maintenant, reflechis et reponds:"""
                 # non-vide (ex: read_file de 10KB mal flaggé par le détecteur
                 # par mots-clés). Un "échec" avec 500+ chars de contenu est un
                 # faux positif, pas une vraie erreur.
-                _READ_ONLY_NO_FAIL_COUNT = {
-                    "read_file", "list_directory", "find_files", "grep_search",
-                    "search_in_code", "view_file_outline", "browser_get_content",
-                    "memory_search", "web_search", "read_own_code",
-                }
-                _recent_fails = 0
-                for h in reversed(self.history[-8:]):
-                    if h.action.tool_name != action.tool_name:
-                        continue
-                    if h.observation and h.observation.success:
-                        break  # un succès récent casse la série
-                    if h.observation and not h.observation.success:
-                        # Skip: outil lecture ayant ramené du contenu substantiel
-                        if (
-                            action.tool_name in _READ_ONLY_NO_FAIL_COUNT
-                            and h.observation.content
-                            and len(h.observation.content) >= 500
-                        ):
-                            continue
-                        _recent_fails += 1
+                # 2.8.1 (run MotCompteur) — write_mission_contract est RÉCUPÉRABLE
+                # par simple reformulation (JSON/no_public_api) : l'escalade « 3×
+                # échoué → CodeAgent » n'a aucun sens pour lui (le CodeAgent ne sait
+                # pas poser un contrat) et a TUÉ la mission avant que le lead trouve
+                # le bon format. On ne compte JAMAIS ses échecs ici.
+                _ESCALATION_EXEMPT = {"write_mission_contract"}
+                _recent_fails = (
+                    0
+                    if action.tool_name in _ESCALATION_EXEMPT
+                    else _recent_tool_failure_streak(
+                        action.tool_name, self.history,
+                    )
+                )
                 if _recent_fails >= 3:
-                    logger.warning(f"⚠️ Outil {action.tool_name} a échoué {_recent_fails}x récemment — escalade CodeAgent")
+                    if action.tool_name in ("edit_file", "write_file", "apply_patch"):
+                        logger.warning(
+                            "⚠️ Outil {} a échoué {}x récemment — escalade CodeAgent",
+                            action.tool_name, _recent_fails,
+                        )
+                    else:
+                        logger.warning(
+                            "⚠️ Outil {} a répété le même échec {}x — arrêt borné",
+                            action.tool_name, _recent_fails,
+                        )
 
                     # ── Escalade automatique vers CodeAgent ──
                     _lum = getattr(self.tools, "lumena", None)
@@ -5186,16 +10221,8 @@ Maintenant, reflechis et reponds:"""
                     # ── Fallback: forçage FINAL si CodeAgent indisponible ──
                     self._run_meta["agent_output_warning"] = "tool_repeated_failure"
                     _finish_iteration(status="ok", summary=f"stop_repeated_failure_{action.tool_name}")
-                    _fail_obs = [
-                        h.observation.content[:200]
-                        for h in self.history[-5:]
-                        if h.action.tool_name == action.tool_name
-                        and h.observation and not h.observation.success
-                    ]
-                    message = (
-                        f"⚠️ J'ai essayé {action.tool_name} plusieurs fois mais ça échoue à chaque fois.\n\n"
-                        f"**Dernière erreur:** {_fail_obs[-1] if _fail_obs else 'inconnue'}\n\n"
-                        "Je dois reformuler ou utiliser un autre outil."
+                    message = _repeated_tool_failure_message(
+                        action.tool_name, self.history,
                     )
                     self._mark_task_failed(f"repeated_failure_{action.tool_name}")
                     return message
@@ -5532,6 +10559,9 @@ Maintenant, reflechis et reponds:"""
             
             # 4. Si c'est une réponse finale, retourner
             if action.action_type == ActionType.FINAL_ANSWER:
+                _document_deterministic_final = False
+                _document_workflow_incomplete_final = False
+                _document_free_grounded_final = False
                 # ── Anti-hallucination/fuite : ré-imposer les valeurs masquées vues
                 # en observation (ex. config BDD IONOS) avant tout traitement du FINAL.
                 if action.answer:
@@ -5541,13 +10571,370 @@ Maintenant, reflechis et reponds:"""
                         action.answer = _remasked
                         step.action.answer = _remasked
                 self.history.append(step)
+                # Multi-document truth gate: exact paths and render proofs come from
+                # the successful Studio observations, never from a directory listing.
+                try:
+                    _doc_route = self._document_route_for_run()
+                    _doc_requested = _doc_route.requested_count
+                    _doc_manifest, _doc_missing, _doc_unverified = (
+                        self._structured_document_delivery_manifest()
+                    )
+                    _doc_incomplete = bool(_doc_missing or _doc_unverified)
+                    _doc_truth_required = self._document_delivery_truth_required(
+                        _doc_route, _doc_requested,
+                    )
+                    if _doc_truth_required and _doc_incomplete:
+                        _doc_gate_shots = getattr(self, "_document_delivery_gate_shots", 0)
+                        if _doc_gate_shots < 1 and i < self.max_iterations - 2:
+                            self._document_delivery_gate_shots = _doc_gate_shots + 1
+                            self.history.pop()
+                            _targets = tuple(dict.fromkeys((*_doc_missing, *_doc_unverified)))
+                            query = (
+                                f"Requete originale: {original_query}\n\n"
+                                f"DOCUMENTS NON CERTIFIES: {len(_doc_manifest)}/{_doc_requested} "
+                                "livrables exacts sont prouves. Reprends les types manquants ou dont "
+                                f"le rendu a echoue ({', '.join(_targets)}), utilise Document Studio "
+                                "type par type"
+                                + (
+                                    f", en respectant le minimum explicite de "
+                                    f"{_doc_route.minimum_pages} pages"
+                                    if _doc_route.minimum_pages
+                                    else ""
+                                )
+                                + ", puis conclus depuis les chemins retournes par les outils."
+                            )
+                            _finish_iteration(status="ok", summary="document_delivery_gate_relaunch")
+                            continue
+                    if _doc_truth_required:
+                        from src.documents.delivery_manifest import build_multi_document_final
+
+                        _receipt_id = self._ensure_document_delivery_reference()
+
+                        _pending_workflow = (
+                            self._document_workflow_pending_action()
+                            if not _doc_missing and not _doc_unverified
+                            else None
+                        )
+                        _pending_name = getattr(_pending_workflow, "operation", "")
+                        _workflow_shots = getattr(self, "_document_workflow_gate_shots", {})
+                        _shot_count = int(_workflow_shots.get(_pending_name, 0)) if _pending_name else 0
+                        if (
+                            _pending_name in {
+                                "open", "revise", "verify", "history", "export",
+                                "library_verify",
+                            }
+                            and _shot_count < 1
+                            and i < self.max_iterations - 2
+                        ):
+                            _workflow_shots = dict(_workflow_shots)
+                            _workflow_shots[_pending_name] = _shot_count + 1
+                            self._document_workflow_gate_shots = _workflow_shots
+                            self.history.pop()
+                            if _pending_name == "open" and _receipt_id:
+                                query = (
+                                    f"Requete originale: {original_query}\n\n"
+                                    "WORKFLOW DOCUMENTAIRE: la generation exacte est terminee. "
+                                    f"Appelle maintenant `open_document_delivery(receipt_id='{_receipt_id}')`. "
+                                    "N'utilise ni list_directory ni run_command. Ensuite poursuis les actions "
+                                    "restantes de la requete originale."
+                                )
+                                _finish_iteration(status="ok", summary="document_workflow_open_gate")
+                                continue
+                            if _pending_name == "revise":
+                                _target = self._document_workflow_target()
+                                if _target is not None and _target.document_id:
+                                    query = (
+                                        f"Requete originale: {original_query}\n\n"
+                                        "WORKFLOW DOCUMENTAIRE: modifie maintenant exactement le document "
+                                        f"`{_target.document_id}` (`{_target.filename}`) avec "
+                                        "`revise_studio_document`. N'invente aucun champ: utilise seulement "
+                                        "les champs editables de sa recette. Si le champ demande n'est pas "
+                                        "editable, rapporte le refus honnetement sans creer de faux fichier."
+                                    )
+                                    _finish_iteration(status="ok", summary="document_workflow_revision_gate")
+                                    continue
+
+                            if _pending_name == "verify":
+                                _proof_state = self._document_workflow_proof_state()
+                                _revision = _proof_state.get("revision") or {}
+                                _revised = _revision.get("proof")
+                                _patch = self._document_revision_changed_fields(_revision)
+                                _values = self._document_patch_scalar_values(_patch)
+                                if _revised is not None and _revised.path:
+                                    query = (
+                                        f"Requete originale: {original_query}\n\n"
+                                        "WORKFLOW DOCUMENTAIRE: verifie maintenant la version revisee "
+                                        f"avec `read_document(path='{_revised.path}')`. La relecture doit "
+                                        "confirmer la ou les valeurs appliquees"
+                                        + (f" ({', '.join(_values)})" if _values else "")
+                                        + "; ensuite seulement, fournis le bilan exact."
+                                    )
+                                    _finish_iteration(
+                                        status="ok", summary="document_workflow_verify_gate",
+                                    )
+                                    continue
+
+                            if _pending_name == "history":
+                                _proof_state = self._document_workflow_proof_state()
+                                _revision = _proof_state.get("revision") or {}
+                                _revised = _revision.get("proof")
+                                if _revised is not None and _revised.document_id:
+                                    query = (
+                                        f"Requete originale: {original_query}\n\n"
+                                        "WORKFLOW DOCUMENTAIRE: recupere maintenant la provenance "
+                                        "parent/enfant exacte avec "
+                                        f"`get_document_history(document_id='{_revised.document_id}')`. "
+                                        "Le parent retourne doit etre le document original ouvert."
+                                    )
+                                    _finish_iteration(
+                                        status="ok", summary="document_workflow_history_gate",
+                                    )
+                                    continue
+
+                            if _pending_name == "export":
+                                _proof_state = self._document_workflow_proof_state()
+                                _revision = _proof_state.get("revision") or {}
+                                _revised = _revision.get("proof")
+                                _format = str(
+                                    getattr(_pending_workflow, "output_format", "") or "html"
+                                )
+                                if _revised is not None and _revised.document_id:
+                                    query = (
+                                        f"Requete originale: {original_query}\n\n"
+                                        "WORKFLOW DOCUMENTAIRE: exporte maintenant exactement la "
+                                        f"version revisee avec `convert_library_document(document_id="
+                                        f"'{_revised.document_id}', output_format='{_format}')`. "
+                                        "Utilise l'identifiant enfant retourne pour la suite."
+                                    )
+                                    _finish_iteration(
+                                        status="ok", summary="document_workflow_export_gate",
+                                    )
+                                    continue
+
+                            if _pending_name == "library_verify":
+                                _proof_state = self._document_workflow_proof_state()
+                                _target = _proof_state.get("target")
+                                _revision = _proof_state.get("revision") or {}
+                                _revised = _revision.get("proof")
+                                _export = _proof_state.get("export") or {}
+                                _export_record = _export.get("record", {})
+                                _export_proof = _export.get("proof")
+                                _ids = [
+                                    str(getattr(_target, "document_id", "") or ""),
+                                    str(getattr(_revised, "document_id", "") or ""),
+                                    str(
+                                        (_export_record.get("id") if isinstance(_export_record, dict) else "")
+                                        or getattr(_export_proof, "document_id", "") or ""
+                                    ),
+                                ]
+                                _ids = [value for value in _ids if value]
+                                if _ids:
+                                    query = (
+                                        f"Requete originale: {original_query}\n\n"
+                                        "WORKFLOW DOCUMENTAIRE: verifie la presence en bibliotheque "
+                                        "par identifiant exact, sans recherche floue. Appelle "
+                                        "`get_document_record` pour chacun de ces identifiants: "
+                                        + ", ".join(_ids)
+                                        + ". Conclus seulement quand ils sont tous retrouves."
+                                    )
+                                    _finish_iteration(
+                                        status="ok", summary="document_workflow_library_gate",
+                                    )
+                                    continue
+
+                        _workflow_state = self._document_workflow_proof_state()
+                        _revision_record = _workflow_state.get("revision") or {}
+                        _revised_proof = _revision_record.get("proof")
+                        _verification_event = _workflow_state.get("verification") or {}
+                        _open_event = _workflow_state.get("open") or {}
+                        _compound_revision_ready = (
+                            len(getattr(_doc_route, "workflow_actions", ()) or ()) > 1
+                            and _workflow_state.get("target") is not None
+                            and _revised_proof is not None
+                        )
+                        if _compound_revision_ready and not _pending_name and _verification_event:
+                            from src.documents.delivery_manifest import build_document_workflow_final
+
+                            _revision_action = next(
+                                (
+                                    item for item in _doc_route.workflow_actions
+                                    if getattr(item, "operation", "") == "revise"
+                                ),
+                                None,
+                            )
+                            _verification_args = _verification_event.get("args", {})
+                            honest = build_document_workflow_final(
+                                _doc_manifest,
+                                requested_count=_doc_requested,
+                                receipt_id=_receipt_id,
+                                opened=int(_open_event.get("opened") or 0),
+                                failed=int(_open_event.get("failed") or 0),
+                                target_ordinal=int(
+                                    getattr(_revision_action, "target_ordinal", 0) or 0
+                                ),
+                                target=_workflow_state["target"],
+                                revised=_revised_proof,
+                                changed_fields=self._document_revision_changed_fields(
+                                    _revision_record,
+                                ),
+                                verification_path=str(
+                                    _verification_args.get("path")
+                                    or _verification_args.get("file_path")
+                                    or _revised_proof.path
+                                ),
+                                history_parent_id=str(
+                                    (((_workflow_state.get("history") or {}).get("payload") or {}).get("document") or {}).get("parent_id")
+                                    or (((((_workflow_state.get("history") or {}).get("payload") or {}).get("document") or {}).get("metadata") or {}).get("parent_id"))
+                                    or ""
+                                ),
+                                exported_document_id=str(
+                                    (((_workflow_state.get("export") or {}).get("record") or {}).get("id"))
+                                    or getattr(
+                                        (_workflow_state.get("export") or {}).get("proof"),
+                                        "document_id", "",
+                                    )
+                                    or ""
+                                ),
+                                exported_path=str(
+                                    (((_workflow_state.get("export") or {}).get("record") or {}).get("path"))
+                                    or getattr(
+                                        (_workflow_state.get("export") or {}).get("proof"),
+                                        "path", "",
+                                    )
+                                    or ""
+                                ),
+                                library_document_ids=tuple(
+                                    (_workflow_state.get("library_verify") or {}).get(
+                                        "document_ids", (),
+                                    )
+                                ),
+                            )
+                        elif _compound_revision_ready and _pending_name in {
+                            "verify", "history", "export", "library_verify",
+                        }:
+                            from src.documents.delivery_manifest import (
+                                build_document_workflow_incomplete_final,
+                            )
+
+                            _revision_action = next(
+                                (
+                                    item for item in _doc_route.workflow_actions
+                                    if getattr(item, "operation", "") == "revise"
+                                ),
+                                None,
+                            )
+                            honest = build_document_workflow_incomplete_final(
+                                _doc_manifest,
+                                requested_count=_doc_requested,
+                                receipt_id=_receipt_id,
+                                opened=int(_open_event.get("opened") or 0),
+                                failed=int(_open_event.get("failed") or 0),
+                                target_ordinal=int(
+                                    getattr(_revision_action, "target_ordinal", 0) or 0
+                                ),
+                                target=_workflow_state["target"],
+                                revised=_revised_proof,
+                                changed_fields=self._document_revision_changed_fields(
+                                    _revision_record,
+                                ),
+                                pending_operation=_pending_name,
+                                verification_confirmed=bool(_verification_event),
+                            )
+                            _document_workflow_incomplete_final = True
+                        else:
+                            honest = build_multi_document_final(
+                                _doc_manifest, requested_count=_doc_requested,
+                                receipt_id=_receipt_id,
+                            )
+                        if _doc_missing:
+                            honest += "\n\nNon livres: " + ", ".join(_doc_missing) + "."
+                        if _pending_name and "Action restante non prouvee:" not in honest:
+                            honest += (
+                                "\n\nAction restante non prouvee: " + _pending_name
+                                + ". Je ne la declare pas terminee."
+                            )
+                        from src.documents.delivery_manifest import (
+                            build_document_grounding_request,
+                            document_free_answer_is_grounded,
+                        )
+
+                        _grounding_shots = int(
+                            getattr(self, "_document_free_final_grounding_shots", 0)
+                        )
+                        if _grounding_shots < 1 and i < self.max_iterations - 2:
+                            self._document_free_final_grounding_shots = _grounding_shots + 1
+                            self.history.pop()
+                            query = build_document_grounding_request(
+                                original_query, honest,
+                            )
+                            _finish_iteration(
+                                status="ok", summary="document_free_final_grounding",
+                            )
+                            continue
+
+                        _free_grounded = document_free_answer_is_grounded(
+                            action.answer or "",
+                            _doc_manifest,
+                            missing=_doc_missing,
+                            receipt_id=_receipt_id,
+                            pending_operation=_pending_name or "",
+                        )
+                        if _free_grounded:
+                            _document_free_grounded_final = True
+                            logger.info(
+                                "[DOCUMENT DELIVERY] final libre accepte depuis les preuves exactes"
+                            )
+                        elif _doc_route.owns_run:
+                            action.answer = honest
+                            step.action.answer = honest
+                            _document_deterministic_final = True
+                            logger.warning(
+                                "[DOCUMENT DELIVERY] final libre insuffisamment ancre; "
+                                "repli deterministe"
+                            )
+                        else:
+                            # A mission owns its final answer. Document Studio
+                            # contributes exact evidence but never replaces the
+                            # global report for code, tests, browser or MCP work.
+                            action.answer = self._merge_mission_document_evidence(
+                                action.answer or "", honest,
+                            )
+                            step.action.answer = action.answer
+                            logger.warning(
+                                "[DOCUMENT DELIVERY] preuves ajoutees au final libre de mission"
+                            )
+                except Exception as _doc_gate_exc:
+                    logger.debug("[DOCUMENT DELIVERY GATE] skip: {}", _doc_gate_exc)
+                try:
+                    _rights_relevant, _rights_proven = self._document_web_rights_evidence()
+                    if _rights_relevant:
+                        from .final_guards import apply_document_rights_truth_lock
+
+                        action.answer, _rights_info = apply_document_rights_truth_lock(
+                            action.answer or "", rights_proven=_rights_proven,
+                        )
+                        step.action.answer = action.answer
+                        if _rights_info.get("changed"):
+                            logger.warning(
+                                "[DOCUMENT RIGHTS LOCK] claim de droits sans preuve explicite"
+                            )
+                except Exception as _rights_exc:
+                    logger.debug("[DOCUMENT RIGHTS LOCK] skip: {}", _rights_exc)
                 # ── Guard anti-hallucination d'ACTION (avec OU sans plan) ──────────
                 # Tourne pour TOUT FINAL : « j'ai tapé/cliqué/ouvert l'app/connecté/
                 # créé/envoyé » sans outil RÉUSSI → retry forcé. Couvre les tâches
                 # SANS plan, où les hallucinations CU/login passaient à travers
                 # (le bloc plan plus bas garde sa propre vérif, désormais redondante).
-                _hc_combined = ((thought.content or "") + " " + (action.answer or "")).lower()
-                _hc_retry = self._action_hallucination_retry_query(_hc_combined, original_query)
+                _hc_combined = (
+                    (action.answer or "")
+                    if _document_deterministic_final
+                    else ((thought.content or "") + " " + (action.answer or ""))
+                ).lower()
+                _hc_retry = (
+                    None
+                    if _document_deterministic_final
+                    else self._action_hallucination_retry_query(_hc_combined, original_query)
+                )
                 if _hc_retry is not None:
                     self.history.pop()
                     query = _hc_retry
@@ -5558,6 +10945,24 @@ Maintenant, reflechis et reponds:"""
                 # Le flag passe à True uniquement si on a un plan ET que toutes les tâches métier sont done.
                 _plan_business_complete = False
                 if self._task_plan:
+                    # C (sous-agents) — une mission LANCÉE ce tour tourne en arrière-plan :
+                    # les tâches de « suivi de mission » (poll status/result) ne sont PAS du
+                    # travail à faire MAINTENANT. On les auto-complète pour que le PLAN GUARD
+                    # ne force pas le chat à baby-sitter (sinon il finit par refaire le travail).
+                    # Ciblé : uniquement si create_mission a réussi ET tâche = suivi de mission.
+                    if "create_mission" in (self._successful_session_tools or set()):
+                        for _st in self._task_plan:
+                            if not _st.completed and is_mission_tracking_task(_st.description):
+                                _st.completed = True
+                                _st.completed_by_tool = "create_mission"
+                    # #2 — une délégation RÉUSSIE accomplit les tâches « lancer/déléguer
+                    # à des sous-agents/workers » (sinon le plan tracker les laisse SKIP
+                    # → PLAN GUARD bloque un tour pour rien). Gaté sur le succès réel.
+                    if "delegate_and_wait" in (self._successful_session_tools or set()):
+                        for _st in self._task_plan:
+                            if not _st.completed and delegation_task_fulfilled(_st.description):
+                                _st.completed = True
+                                _st.completed_by_tool = "delegate_and_wait"
                     # Auto-compléter les tâches de synthèse/résumé (réalisées par
                     # FINAL lui-même) — logique pure : plan_progress.final_fulfills_task.
                     # Avant l'auto-mark : on note si toutes les tâches "métier" (non-synthèse)
@@ -5566,11 +10971,17 @@ Maintenant, reflechis et reponds:"""
                     _business_tasks_remaining = sum(
                         1
                         for _t in self._task_plan
-                        if not _t.completed and not final_fulfills_task(_t.description)
+                        if not _t.completed and not self._document_final_fulfills_plan_task(_t.description)
                     )
                     _plan_business_complete = _business_tasks_remaining == 0
+                    _operational_tasks_remaining = [
+                        _t.description
+                        for _t in self._task_plan
+                        if not _t.completed
+                        and final_requires_operational_proof(_t.description)
+                    ]
                     for _st in self._task_plan:
-                        if not _st.completed and final_fulfills_task(_st.description):
+                        if not _st.completed and self._document_final_fulfills_plan_task(_st.description):
                             _st.completed = True
                             _st.completed_by_tool = "FINAL"
                     completed = sum(1 for t in self._task_plan if t.completed)
@@ -5602,28 +11013,178 @@ Maintenant, reflechis et reponds:"""
                     # CODE_READ (analyse) : le LLM a lu ce qu'il lui fallait et
                     # rédige sa synthèse → ne pas bloquer son FINAL.
                     _is_read_only = False  # v2: mode lecture seule supprimé
+                    # B′ (Lot 5) — relaxation contexte-mission : le plan d'un worker est
+                    # AUTO-généré, pas un contrat utilisateur. On garde UN nudge (le 1er
+                    # blocage peut faire approfondir le worker — observé 13:36 : a déclenché
+                    # un deep_research utile), puis si le worker a VRAIMENT travaillé
+                    # (recherche/livrable) on le laisse conclure au lieu de répéter 2
+                    # blocages stériles. Scopé missions → le chat garde ses 3 retries
+                    # pleins. Le filet "tâches critiques" (login/auth) plus bas reste actif.
+                    _mission_relax = (
+                        self._is_mission_run
+                        and self._plan_guard_retries >= 1
+                        and mission_progress_proven(self._successful_session_tools)
+                        and not _operational_tasks_remaining
+                    )
+                    # Compatibilité avec les anciennes métadonnées. Sous la politique
+                    # complete-only ce hook reste toujours False : un artefact partiel
+                    # ne relâche jamais un plan incomplet.
+                    _deadline_finalized = False
+                    if self._is_mission_run and self._orchestrator_enabled():
+                        try:
+                            from src.subagents.mission_budget import (
+                                extract_unambiguous_target_file as _etf2, deadline_final_exit_allowed,
+                            )
+                            _gm = (self.task_orchestrator.get_task(self.task_id) or {}).get("metadata") or {}
+                            _deadline_finalized = deadline_final_exit_allowed(
+                                partial_due_to_deadline=bool(_gm.get("partial_due_to_deadline")),
+                                target_file=_etf2(_gm.get("objective") or ""),
+                                artifact_written=bool(_gm.get("deadline_artifact_written")),
+                            ) and not _operational_tasks_remaining
+                        except Exception:
+                            _deadline_finalized = False
+                    _completion_snapshot = self._mission_completion_evidence()
+                    _evidence_finalized = bool(_completion_snapshot.get("complete"))
+                    _worker_incomplete = (
+                        _completion_snapshot.get("scope") == "worker"
+                        and not _evidence_finalized
+                    )
+                    if _evidence_finalized:
+                        logger.info(
+                            "[M106] stale PLAN bypassed by authoritative {} evidence: "
+                            "delivery={} tests_required={} tests_green={} task={}",
+                            _completion_snapshot.get("scope") or "mission",
+                            _completion_snapshot.get("delivery_proven"),
+                            _completion_snapshot.get("tests_required"),
+                            _completion_snapshot.get("tests_green"),
+                            self.task_id,
+                        )
+                        if self._orchestrator_enabled():
+                            try:
+                                self.task_orchestrator.set_task_metadata(
+                                    self.task_id,
+                                    completion_proven=True,
+                                    completion_proof=dict(_completion_snapshot),
+                                    terminal_reason_code="completed",
+                                    terminal_reason_detail=(
+                                        "worker delivery complete from assigned files and tests"
+                                        if _completion_snapshot.get("scope") == "worker"
+                                        else "mission complete from publication and required proofs"
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.debug("[M106] proof bypass persistence skipped: {}", exc)
+                    elif _worker_incomplete and self._plan_guard_retries >= 3:
+                        _worker_issues = []
+                        if _completion_snapshot.get("missing_files"):
+                            _worker_issues.append(
+                                "missing=" + ",".join(_completion_snapshot["missing_files"])
+                            )
+                        if _completion_snapshot.get("stub_files"):
+                            _worker_issues.append(
+                                "stubs=" + ",".join(_completion_snapshot["stub_files"])
+                            )
+                        if _completion_snapshot.get("invalid_files"):
+                            _worker_issues.append(
+                                "invalid=" + ",".join(_completion_snapshot["invalid_files"])
+                            )
+                        if (
+                            _completion_snapshot.get("tests_required")
+                            and not _completion_snapshot.get("tests_green")
+                        ):
+                            _worker_issues.append("pytest_not_green")
+                        _worker_detail = "; ".join(_worker_issues) or "proofs_incomplete"
+                        if self._orchestrator_enabled():
+                            try:
+                                self.task_orchestrator.set_task_metadata(
+                                    self.task_id,
+                                    terminal_reason_code="failed",
+                                    terminal_reason_detail=(
+                                        "worker_delivery_incomplete: " + _worker_detail
+                                    ),
+                                    completion_proven=False,
+                                    completion_proof=dict(_completion_snapshot),
+                                )
+                            except Exception:
+                                pass
+                        raise RuntimeError("worker_delivery_incomplete: " + _worker_detail)
                     if (
-                        (_business_tasks_remaining > 0 or remaining >= 2)
-                        and self._plan_guard_retries < 3
+                        (_business_tasks_remaining > 0 or remaining >= 2 or _worker_incomplete)
+                        and (
+                            self._plan_guard_retries < _PLAN_GUARD_MAX_RETRIES
+                            or (
+                                bool(_operational_tasks_remaining)
+                                # LOT Z6 — ce court-circuit n'avait pas de borne :
+                                # 18 refus consécutifs sur un plafond annoncé de 3.
+                                and self._plan_guard_retries
+                                < _PLAN_GUARD_MAX_RETRIES_OPERATIONAL
+                            )
+                        )
                         and not _is_clarification
                         and not _is_read_only
+                        and not _mission_relax
+                        and not _deadline_finalized
+                        and not _evidence_finalized
+                        and not _document_workflow_incomplete_final
                         and i < self.max_iterations - 2
                     ):
                         self._plan_guard_retries += 1
                         logger.warning(
-                            "[PLAN GUARD] FINAL premature bloque: {}/{} taches, iteration {} (retry {}/3)",
+                            "[PLAN GUARD] FINAL premature bloque: {}/{} taches, iteration {} (retry {}/{})",
                             completed, total, i, self._plan_guard_retries,
+                            # LOT Z6 — afficher le plafond RÉELLEMENT appliqué : le
+                            # message annonçait « /3 » pendant 18 refus, ce qui a
+                            # masqué le défaut aussi longtemps qu'il a duré.
+                            _PLAN_GUARD_MAX_RETRIES_OPERATIONAL
+                            if _operational_tasks_remaining
+                            else _PLAN_GUARD_MAX_RETRIES,
                         )
                         self.history.pop()
                         uncompleted = [t.description for t in self._task_plan if not t.completed]
+                        _worker_proof_hint = ""
+                        if _worker_incomplete:
+                            _problem_lines = []
+                            if _completion_snapshot.get("missing_files"):
+                                _problem_lines.append(
+                                    "Fichiers assignes MANQUANTS: "
+                                    + ", ".join(_completion_snapshot["missing_files"])
+                                )
+                            if _completion_snapshot.get("stub_files"):
+                                _problem_lines.append(
+                                    "Fichiers assignes ENCORE STUBS: "
+                                    + ", ".join(_completion_snapshot["stub_files"])
+                                )
+                            if _completion_snapshot.get("invalid_files"):
+                                _problem_lines.append(
+                                    "Chemins assignes invalides: "
+                                    + ", ".join(_completion_snapshot["invalid_files"])
+                                )
+                            if (
+                                _completion_snapshot.get("tests_required")
+                                and not _completion_snapshot.get("tests_green")
+                            ):
+                                _problem_lines.append(
+                                    "Le dernier pytest de ce worker n'est pas vert."
+                                )
+                            if _problem_lines:
+                                _worker_proof_hint = (
+                                    "\n\nCONTROLE DISQUE AUTORITATIF (il prime sur les "
+                                    "cases du plan):\n- " + "\n- ".join(_problem_lines)
+                                    + "\nRemplis/corrige exactement ces fichiers par mutation, "
+                                    "relance pytest si requis, puis seulement FINAL."
+                                )
                         query = (
                             f"Requête originale: {original_query}\n\n"
                             "⚠️ Tu as tenté de terminer (FINAL) alors que ton plan n'est PAS terminé!\n"
                             f"Plan: {completed}/{total} tâches complétées. Il reste:\n"
                             + "\n".join(f"- {d}" for d in uncompleted[:5]) + "\n\n"
                             "CONTINUE ton plan. Exécute la prochaine tâche maintenant. "
-                            "N'utilise FINAL que quand TOUTES les tâches sont faites ou impossibles."
+                            "Une tâche navigateur, pytest, publication ou outil nommé exige "
+                            "la preuve réelle de cet outil : un texte FINAL ne la remplace jamais. "
+                            "Si une dépendance externe reste impossible après un vrai pivot, "
+                            "termine en échec explicite au lieu de la déclarer accomplie."
                         )
+                        query += _worker_proof_hint
                         _finish_iteration(status="ok", summary="premature_final_blocked")
                         continue
                     # ── Guard anti-hallucination d'ACTION (in-plan) : SUPPRIMÉ ──
@@ -5640,7 +11201,7 @@ Maintenant, reflechis et reponds:"""
                         "dashboard", "mot de passe", "password", "vérifier accès",
                         "verifier acces", "admin", "authentif", "sign in", "signin",
                     }
-                    if self._premature_final_retries < 2:
+                    if not _evidence_finalized and self._premature_final_retries < 2:
                         critical_skipped = [
                             t.description for t in self._task_plan
                             if not t.completed
@@ -5911,6 +11472,27 @@ Maintenant, reflechis et reponds:"""
                         # Cas nominal : aucune verify-task pendante → bypass autorisé
                         _finish_iteration(status="ok", summary="delegate_task_final_direct")
                         message = answer if answer.strip() else self._delegate_success_fallback_message()
+                        # LOT Z9b (run « décision voiture ») — quand le FINAL du lead
+                        # est VIDE, on rend le rapport du sous-agent à sa place. Ça
+                        # sauve le run (sans ça l'utilisateur ne reçoit rien), mais le
+                        # résultat est indiscernable d'une vraie conclusion alors que
+                        # ses chemins sont relatifs au dossier du sous-agent. On pose
+                        # le fait ; la bannière est ajoutée à la clôture (runner.py).
+                        if not answer.strip():
+                            logger.info(
+                                "[Z9b] FINAL vide → bilan = rapport du sous-agent "
+                                "(voie H7). task={}", self.task_id or "-",
+                            )
+                            try:
+                                _orch_z9b = getattr(
+                                    getattr(self, "core", None), "task_orchestrator", None
+                                )
+                                if _orch_z9b is not None and self.task_id:
+                                    _orch_z9b.set_task_metadata(
+                                        self.task_id, final_from_worker_report=True
+                                    )
+                            except Exception as _exc_z9b:
+                                logger.debug("[Z9b] marqueur non posé: {}", _exc_z9b)
                         self._mark_task_done("delegate_task_final_direct")
                         return message
                     # Verify-tasks non prouvées : traitement FINAL normal ci-dessous
@@ -5961,12 +11543,54 @@ Maintenant, reflechis et reponds:"""
                         and action.action_type == ActionType.FINAL_ANSWER
                     )
                 )
-                # P5 — modèles à thought_leak_risk élevé ont droit à plus de repairs
-                _max_tleak = (
-                    4 if getattr(self._model_profile, "thought_leak_risk", "low") == "high" else
-                    3 if getattr(self._model_profile, "thought_leak_risk", "low") == "medium" else
-                    2
-                ) if self._model_profile else 2
+                # ── LOT Z29 phase 0 — RENDRE LE REJET OBSERVABLE ────────────────
+                # Mesuré : 71 runs sur 478 ont eu besoin d'une réparation, et
+                # 36 (51 %) ont fini `incomplete`. Impossible d'arbitrer un seul
+                # de ces rejets après coup : le log montre la PENSÉE, jamais le
+                # texte refusé. Le garde calcule un verdict sur un texte… puis
+                # jette le texte. On le journalise (aucun changement de décision).
+                if _thought_leaked:
+                    _z29_cas = (
+                        "prefixe_reflexion" if (bool(answer) and _is_reasoning_prefix)
+                        else "intention" if _answer_is_intention
+                        else "answer_egale_thought" if (
+                            answer and thought.content
+                            and answer.strip() == thought.content.strip()
+                        )
+                        else "final_sans_contenu"
+                    )
+                    try:
+                        self._run_meta["thought_leak_case"] = _z29_cas
+                        self._run_meta["thought_leak_len"] = len((answer or "").strip())
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "[Z29] THOUGHT leak — cas={} len={} texte={!r}",
+                        _z29_cas, len((answer or "").strip()),
+                        (answer or "").strip()[:300],
+                    )
+
+                # LOT Z29 phase 3 — PLAFOND DUR à 2 demandes. Mesuré sur le
+                # corpus : 71 runs réparés, 36 finis `incomplete` → une
+                # réparation sur DEUX échoue. Redemander une 3ᵉ puis une 4ᵉ fois
+                # ne fait pas monter la chance, ça consomme le budget avant le
+                # repli déterministe (strip / synthèse depuis les preuves) qui,
+                # lui, produit toujours quelque chose. Run « Papier Cousu » :
+                # 3 leaks + 1 troncature = mission perdue avec le site fini.
+                #
+                # LOT Z31 — le calcul P5 qui vivait ici (« thought_leak_risk
+                # élevé ⇒ jusqu'à 4 tirs ») accordait PLUS de tentatives aux
+                # modèles qui fuient le plus. La mesure dit l'inverse : le taux
+                # d'échec ne dépend pas du modèle, il dépend du fait qu'on
+                # redemande. Le plafond le rendait de toute façon MORT — ses
+                # quatre branches (4/3/2/2) donnaient toutes 2 après `min`.
+                # Retiré plutôt que laissé en place : un calcul inerte fait
+                # croire à un réglage qui n'existe plus.
+                # ⚠️ C'était son SEUL consommateur : `thought_leak_risk` reste
+                # déclaré sur les profils de modèle mais n'est plus lu nulle
+                # part. Lui redonner un rôle demanderait une mesure PAR MODÈLE
+                # que le corpus ne permet pas aujourd'hui.
+                _max_tleak = 2
                 # ── AUTO-CLEAN: Cas 1 (préfixe de réflexion interne) ──
                 # Au lieu de forcer une reformulation coûteuse (1-3 iter perdues),
                 # on tente de nettoyer le texte en supprimant les phrases internes
@@ -6030,12 +11654,39 @@ Maintenant, reflechis et reponds:"""
                         f"⚠️ THOUGHT leaké comme réponse finale (tentative {self._thought_leak_repairs}/{_max_tleak}) - reformulation demandée"
                     )
                     # Conserver l'analyse faite dans ce thought pour ne pas la perdre.
+                    #
+                    # LOT Z29 phase 1 — SAUF si cette pensée est elle-même une
+                    # intention. Run « Papier Cousu » : la pensée valait
+                    # « Le site est complet et vérifié, je livre le résultat final
+                    # avec les détails concrets. » — 84 caractères, donc AU-DESSUS
+                    # du seuil de 80. Elle était réinjectée avec la consigne
+                    # « réutilise-la », juste avant de reprocher au modèle d'avoir
+                    # écrit une intention. Il obéissait à la première consigne : la
+                    # MÊME phrase revient mot pour mot à 18:04:36, 18:04:58, 18:12:55.
+                    # Le seuil devient un test de NATURE, pas de longueur.
                     _leaked_analysis = ""
-                    if thought.content and len(thought.content.strip()) > 80:
-                        _thought_excerpt = thought.content.strip()[:600]
+                    _th_txt = (thought.content or "").strip()
+                    if _th_txt and len(_th_txt) > 80 and not _looks_like_intention(_th_txt):
+                        _thought_excerpt = _th_txt[:600]
                         _leaked_analysis = (
                             f"\nAnalyse déjà effectuée (réutilise-la, ne refais pas les mêmes lectures) :\n"
                             f"{_thought_excerpt}{'...' if len(thought.content.strip()) > 600 else ''}\n"
+                        )
+                    # LOT Z29 phase 2 — les faits du RUN ENTIER, en tête. La
+                    # dernière observation seule est un contexte trop étroit :
+                    # au run « Papier Cousu » c'était `read_files_batch` sur le
+                    # README, alors que le modèle devait conclure sur un site de
+                    # 6 fichiers vérifié au navigateur. Le ledger, lui, n'est
+                    # jamais tronqué (même source que Z22).
+                    try:
+                        _z29_faits = self.execution_ledger.summary()
+                    except Exception:
+                        _z29_faits = ""
+                    if _z29_faits:
+                        _leaked_analysis += (
+                            "\nFAITS ÉTABLIS DANS CE RUN (journal d'exécution — "
+                            "appuie ta réponse dessus) :\n"
+                            f"{_z29_faits}\n"
                         )
                     # V2.1 fix prod (rev 2) : injecter la DERNIÈRE observation outil dans le
                     # prompt de reformulation pour que le LLM ait les données concrètes sous
@@ -6064,10 +11715,11 @@ Maintenant, reflechis et reponds:"""
                         "- les chiffres/résultats des outils déjà exécutés\n"
                         "- les citations de source (chemins, IDs, MD5 si data.gouv)\n"
                         "- un résumé clair pour l'utilisateur\n\n"
+                        + _LUMENA_TONE_REPAIR + "\n\n"
                         "Format :\n"
                         "THOUGHT: (1 ligne max)\n"
                         "ACTION: FINAL\n"
-                        "ACTION_INPUT: [le livrable complet avec les chiffres réels]"
+                        "ACTION_INPUT: [le livrable complet avec les chiffres réels, dans ta voix]"
                     )
                     _finish_iteration(status="ok", summary="thought_leaked_repair")
                     continue
@@ -6100,15 +11752,30 @@ Maintenant, reflechis et reponds:"""
                         # ou de l'intention à l'utilisateur.
                         _fallback = None
                         _fallback_tool = ""
-                        for _h in reversed(self.history):
-                            if _h.observation and _h.observation.content and _h.action:
-                                _fallback_tool = getattr(_h.action, "tool_name", "") or ""
-                                _candidate = _synthesize_response_from_observation(
-                                    _h.observation.content, _fallback_tool, original_query,
-                                )
-                                if _candidate:
-                                    _fallback = _candidate
-                                    break
+                        if self._is_mission_run:
+                            _mission_evidence = []
+                            for _h in self.history:
+                                if _h.observation and _h.observation.content and _h.action:
+                                    _mission_evidence.append((
+                                        getattr(_h.action, "tool_name", "") or "",
+                                        _h.observation.content,
+                                        bool(getattr(_h.observation, "success", False)),
+                                    ))
+                            _fallback = _synthesize_mission_response_from_evidence(
+                                _mission_evidence
+                            )
+                            if _fallback:
+                                _fallback_tool = "mission_evidence"
+                        if not _fallback:
+                            for _h in reversed(self.history):
+                                if _h.observation and _h.observation.content and _h.action:
+                                    _fallback_tool = getattr(_h.action, "tool_name", "") or ""
+                                    _candidate = _synthesize_response_from_observation(
+                                        _h.observation.content, _fallback_tool, original_query,
+                                    )
+                                    if _candidate:
+                                        _fallback = _candidate
+                                        break
                         if _fallback:
                             logger.warning(
                                 "[REACT FALLBACK] FINAL synthétisé depuis dernière observation "
@@ -6203,10 +11870,13 @@ Maintenant, reflechis et reponds:"""
                 # Skip repair si stagnation déjà détectée — le FINAL est volontaire
                 # V2.1 fix prod : skip aussi si plan business complete (toutes les tâches
                 # métier done → ne pas boucler en repair pour gratter quelques chars).
-                should_repair = (
-                    _stagnation_streak == 0
-                    and not _plan_business_complete
-                    and self._looks_incomplete_final_answer(answer, self._last_llm_meta)
+                should_repair = _should_repair_incomplete_final(
+                    stagnation_streak=_stagnation_streak,
+                    plan_business_complete=_plan_business_complete,
+                    document_free_grounded=_document_free_grounded_final,
+                    looks_incomplete=self._looks_incomplete_final_answer(
+                        answer, self._last_llm_meta,
+                    ),
                 )
 
                 if should_repair:
@@ -6235,39 +11905,331 @@ Maintenant, reflechis et reponds:"""
                         f"final_answer_potentially_incomplete (finish_reason={finish_reason})"
                     )
                     self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
-                    _finish_iteration(status="error", error=self._run_meta["agent_output_warning"])
                     message = answer if answer else "Je n'ai pas trouvé de réponse pertinente."
+                    # I3 (run comparatif vectoriel) — un worker dont TOUS les
+                    # fichiers assignés sont remplis a fait son travail : sa
+                    # conclusion tronquée ne rend pas son livrable inexistant.
+                    # `w_qdrant` était `failed` avec un rapport complet et exact,
+                    # dont les données se retrouvaient dans le comparatif final.
+                    # Le warning reste en meta ; seul l'ÉTAT devient fidèle.
+                    if self._mission_worker_delivered():
+                        logger.warning(
+                            "[I3] FINAL tronqué (finish_reason={}) mais livrables "
+                            "assignés TOUS remplis → worker non marqué failed. task={}",
+                            finish_reason, self.task_id,
+                        )
+                        self._run_meta["agent_output_delivered_anyway"] = True
+                        _finish_iteration(status="ok", summary="final_truncated_but_delivered")
+                        return message
+                    # LOT Z28 — le LEAD aussi. I3 s'arrête aux workers (il exige
+                    # des `allowed_files`, qu'un lead n'a jamais) ; run « Papier
+                    # Cousu » : 6 fichiers livrés, 3 pages vues au navigateur,
+                    # et `failed` parce que la CONCLUSION ne se formatait pas.
+                    _z28_artefacts = self._mission_lead_delivered()
+                    if _z28_artefacts:
+                        logger.warning(
+                            "[Z28] FINAL tronqué (finish_reason={}) mais livrable "
+                            "PRÉSENT sur le disque ({}) → mission non marquée failed. "
+                            "task={}",
+                            finish_reason, ", ".join(_z28_artefacts), self.task_id,
+                        )
+                        self._run_meta["agent_output_delivered_anyway"] = True
+                        self._run_meta["z28_lead_artifacts"] = list(_z28_artefacts)
+                        _finish_iteration(
+                            status="ok", summary="final_truncated_but_lead_delivered",
+                        )
+                        return self._truncated_but_delivered_answer(_z28_artefacts)
+                    _finish_iteration(status="error", error=self._run_meta["agent_output_warning"])
                     self._mark_task_failed(self._run_meta["agent_output_warning"])
                     return message
 
                 self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
+                # ── LOT 2.10 — GATE PYTEST À RELANCE BORNÉE (run StockPilot) ───
+                # Des tests existent (ledger/dossier mission/contrat) mais AUCUN
+                # pytest n'a tourné dans ce run → UNE relance dirigée avant
+                # d'accepter le FINAL. Au 2e passage sans test : clôture honnête
+                # (truth-lock) — gate d'honnêteté, jamais de boucle infinie.
+                # A5 (run FitLog) : compteur à 2 tirs — w_storage avait brûlé sa
+                # relance UNIQUE sur un FINAL d'avant-travail (iter 2, zéro
+                # mutation), son vrai FINAL menteur n'avait plus de filet.
+                _gate_shots = getattr(self, "_pytest_gate_shots", 0)
+                # 2.13.D — plafond élargi à 4 : les tirs 3-4 sont RÉSERVÉS à la
+                # branche budget-aware (tests rouges qui progressent) ; la branche
+                # « aucun test lancé » garde ses 2 tirs historiques.
+                if (answer and self._is_mission_run
+                        and _gate_shots < 4
+                        and i < self.max_iterations - 2):
+                    try:
+                        _o_gate = self.execution_ledger.last_test_outcome()
+                        if not (_o_gate or {}).get("is_test_cmd"):
+                            _tests_where = self._mission_tests_present_for_gate()
+                            if _tests_where and _gate_shots < 2:
+                                self._pytest_gate_shots = _gate_shots + 1
+                                self._pytest_gate_relaunched = True
+                                self._iterations_without_progress = 0  # PG-1.c — tir accorde = strategie neuve, pas de stagnation
+                                logger.warning(
+                                    "[PYTEST GATE] FINAL sans aucun run de tests alors que des "
+                                    "tests existent ({}) → relance dirigée {}/2. task={}",
+                                    _tests_where, self._pytest_gate_shots, self.task_id)
+                                self.history.pop()
+                                query = (
+                                    f"Requête originale: {original_query}\n\n"
+                                    f"🧪 STOP — des tests existent ({_tests_where}) et tu n'as "
+                                    "lancé AUCUN pytest dans ce run. AVANT de conclure : lance "
+                                    "`python -m pytest` sur le dossier du livrable, corrige LE "
+                                    "CODE par MUTATION si rouge (jamais les tests contractuels), "
+                                    "PUIS fais ton FINAL. (Relances bornées : si tu conclus "
+                                    "encore sans test, la clôture dira honnêtement « tests non "
+                                    "exécutés ».)"
+                                )
+                                _finish_iteration(status="ok", summary="pytest_gate_relaunch")
+                                continue
+                        else:
+                            # ── 2.13.D (run bibliapi) — PYTEST GATE budget-aware ──
+                            # Le dernier pytest est ROUGE et le lead veut conclure
+                            # alors que le budget est confortable (bibliapi : 4
+                            # failed + ~24 min gâchées). Tir supplémentaire SEULEMENT
+                            # si failed décroît (helper pur, plafond dur 4) ; sinon
+                            # final honnête actuel (bannières truth-lock) inchangé.
+                            _failed_now = (_o_gate or {}).get("failed")
+                            _green_gate = bool((_o_gate or {}).get("green"))
+                            if (not _green_gate
+                                    and isinstance(_failed_now, (int, float))
+                                    and _failed_now > 0):
+                                from src.subagents.mission_budget import (
+                                    mission_budget, pytest_gate_extra_shot_allowed,
+                                )
+                                _bud_213 = {}
+                                try:
+                                    if self._orchestrator_enabled():
+                                        _bud_213 = mission_budget(
+                                            self.task_orchestrator.get_task(self.task_id) or {}
+                                        )
+                                except Exception:
+                                    _bud_213 = {}
+                                if pytest_gate_extra_shot_allowed(
+                                    shots=_gate_shots,
+                                    failed_now=_failed_now,
+                                    failed_prev=getattr(
+                                        self, "_pytest_gate_failed_prev", None),
+                                    remaining_s=_bud_213.get("remaining_s"),
+                                    ratio_used=_bud_213.get("ratio_used"),
+                                ):
+                                    self._pytest_gate_shots = _gate_shots + 1
+                                    self._pytest_gate_failed_prev = _failed_now
+                                    self._pytest_gate_relaunched = True
+                                    self._iterations_without_progress = 0  # PG-1.c — tir accorde = strategie neuve, pas de stagnation
+                                    logger.warning(
+                                        "[PYTEST GATE 2.13.D] FINAL avec {} failed et "
+                                        "budget confortable → tir supplémentaire {}/4. "
+                                        "task={}",
+                                        _failed_now, self._pytest_gate_shots, self.task_id)
+                                    self.history.pop()
+                                    query = (
+                                        f"Requête originale: {original_query}\n\n"
+                                        f"🧪 STOP — le dernier pytest montre "
+                                        f"{int(_failed_now)} failed et il te reste du budget "
+                                        "confortable. Ne conclus pas sur du rouge : lis les "
+                                        "erreurs du dernier run, corrige LE CODE par MUTATION "
+                                        "(jamais les tests contractuels ; si un test contredit "
+                                        "le CONTRAT, aligne-le sur le contrat), relance "
+                                        "`python -m pytest` sur le dossier du livrable, PUIS "
+                                        "conclus. Prends le temps de bien faire — zéro "
+                                        "précipitation."
+                                    )
+                                    _finish_iteration(
+                                        status="ok",
+                                        summary="pytest_gate_budget_relaunch")
+                                    continue
+                    except Exception as _pg_exc:
+                        logger.debug("[PYTEST GATE] skip: {}", _pg_exc)
+                # ── LOT 2.4 (run MotDuJour) — JS GATE à relance bornée ─────────
+                # pytest vert ne dit RIEN du JS (2 runs de suite : script.js
+                # invalide puis CSS jamais chargé, avec 4/4 pytest verts). Un
+                # TOP-LEAD de mission à livrable JS ne conclut pas sans UN
+                # `node --check` réussi au ledger. 1 tir, jamais de boucle.
+                _jg_shots = getattr(self, "_js_gate_shots", 0)
+                if (answer and self._is_mission_run
+                        and _jg_shots < 1
+                        and i < self.max_iterations - 2
+                        and not self._is_worker_run()  # H4 : périmètre OU parent
+                        and not self.execution_ledger.has_js_syntax_check()):
+                    try:
+                        _js_where = self._mission_js_present_for_gate()
+                        if _js_where:
+                            self._js_gate_shots = _jg_shots + 1
+                            self._iterations_without_progress = 0  # PG-1.c — tir accorde = strategie neuve, pas de stagnation
+                            logger.warning(
+                                "[JS GATE] FINAL sans node --check alors qu'un "
+                                "livrable JS existe ({}) → relance dirigée 1/1. task={}",
+                                _js_where, self.task_id)
+                            self.history.pop()
+                            query = (
+                                f"Requête originale: {original_query}\n\n"
+                                f"🟨 STOP — livrable JS ({_js_where}) et tu n'as vérifié "
+                                "AUCUNE syntaxe JS dans ce run. AVANT de conclure : lance "
+                                "`node --check <chemin du .js>` sur chaque fichier JS du "
+                                "livrable, corrige par MUTATION si rouge, PUIS ton FINAL. "
+                                "(Relance bornée : un JS invalide livré = interface morte "
+                                "même avec pytest vert.)"
+                            )
+                            _finish_iteration(status="ok", summary="js_gate_relaunch")
+                            continue
+                    except Exception as _jg_exc:
+                        logger.debug("[JS GATE] skip: {}", _jg_exc)
+                # ── LOT D (run FidéliBar) — BROWSER GATE à relance bornée ──────
+                # Livrable WEB + intention/claim de vérif navigateur + AUCUNE
+                # action browser_* réussie au ledger → UNE relance dirigée avant
+                # d'accepter le FINAL (sers la preview puis browser_navigate + DOM).
+                # 1 SEUL tir (le navigateur risque plus le rabbit-hole que pytest) ;
+                # débordement rattrapé par D.1 (bannière « navigateur non prouvée »
+                # au truth-lock). Jamais de boucle.
+                _bg_shots = getattr(self, "_browser_gate_shots", 0)
+                # LOT Z15 — `not _current_browser_proof()` fermait aussi CETTE
+                # voie dès la première page ouverte. Les deux chemins de clôture
+                # (FINAL LLM ici, sortie déterministe via
+                # `_finalize_browser_gate_pending`) portaient la même sortie
+                # anticipée : une page suffisait à dispenser du reste du site.
+                # Le garde reste borné à 1 tir par `_bg_shots`.
+                if (answer and self._is_mission_run
+                        and _bg_shots < 1
+                        and i < self.max_iterations - 2
+                        and (not self._current_browser_proof()
+                             or self._pages_never_opened_reason())):
+                    try:
+                        _web_where = self._mission_browser_verify_pending(answer, original_query)
+                        if _web_where:
+                            self._browser_gate_shots = _bg_shots + 1
+                            self._browser_gate_relaunched = True
+                            self._iterations_without_progress = 0  # PG-1.c — tir accorde = strategie neuve, pas de stagnation
+                            logger.warning(
+                                "[BROWSER GATE] FINAL sans action browser_* alors que la "
+                                "mission web demande une vérif navigateur ({}) → relance "
+                                "dirigée {}/1. task={}",
+                                _web_where, self._browser_gate_shots, self.task_id)
+                            self.history.pop()
+                            if self._truth_lock_interaction_flag():
+                                query = (
+                                    f"Requête originale: {original_query}\n\n"
+                                    f"🌐 STOP — livrable WEB interactif ({_web_where}) sans "
+                                    "preuve stricte du changement demandé. Appelle MAINTENANT "
+                                    "`browser_verify_local_project(project_path='<dossier du "
+                                    "livrable>')`. Cet outil remplit tous les champs visibles, "
+                                    "soumet l'action principale et exige un changement DOM "
+                                    "observable. S'il échoue, corrige le code puis relance-le. "
+                                    "Ne conclus pas sur une simple saisie, un clic ou une capture."
+                                )
+                            else:
+                                query = (
+                                    f"Requête originale: {original_query}\n\n"
+                                    f"🌐 STOP — livrable WEB ({_web_where}) et tu n'as fait "
+                                    "AUCUNE action navigateur (browser_*) dans ce run. AVANT de "
+                                    "conclure : SERS l'app avec l'OUTIL "
+                                    "serve_website(directory='<dossier du livrable>', port=8081), "
+                                    "PUIS browser_navigate dessus et CONTRÔLE le "
+                                    "DOM (le flux demandé), ENFIN ton FINAL. (Relance bornée : si "
+                                    "tu conclus encore sans action navigateur, la clôture dira "
+                                    "honnêtement « vérification navigateur non prouvée ».)"
+                                )
+                            _finish_iteration(status="ok", summary="browser_gate_relaunch")
+                            continue
+                    except Exception as _bg_exc:
+                        logger.debug("[BROWSER GATE] skip: {}", _bg_exc)
+                # M108 (run FocusForge): opening the page is not proof of the
+                # requested interaction. Give the lead a small bounded action
+                # budget to perform the flow and observe a DOM/JS state change.
+                _ig_shots = getattr(self, "_interaction_gate_shots", 0)
+                if (answer and self._is_mission_run
+                        and _ig_shots < _MAX_INTERACTION_GATE_SHOTS
+                        and i < self.max_iterations - 2):
+                    try:
+                        _interaction_where = self._finalize_interaction_gate_pending(
+                            answer, original_query
+                        )
+                        if _interaction_where:
+                            self._interaction_gate_shots = _ig_shots + 1
+                            self._iterations_without_progress = 0
+                            logger.warning(
+                                "[INTERACTION GATE] FINAL after browser open ({}) "
+                                "-> directed retry {}/{}. task={}",
+                                _interaction_where,
+                                self._interaction_gate_shots,
+                                _MAX_INTERACTION_GATE_SHOTS,
+                                self.task_id,
+                            )
+                            self.history.pop()
+                            query = (
+                                f"Requete originale: {original_query}\n\n"
+                                "STOP -- la page est ouverte, mais l'interaction "
+                                "demandee n'est pas encore prouvee. Execute maintenant "
+                                "le parcours exact demande (saisies, selection, clic), "
+                                "puis relis l'etat avec `browser_dom_state` ou "
+                                "`browser_evaluate` et constate le changement avant/apres. "
+                                "Ne conclus pas sur la seule navigation ou une capture."
+                            )
+                            _finish_iteration(
+                                status="ok", summary="interaction_gate_relaunch"
+                            )
+                            continue
+                    except Exception as _ig_exc:
+                        logger.debug("[INTERACTION GATE] skip: {}", _ig_exc)
+                # ── VERROU DE VÉRITÉ FINALE (mission) ──────────────────────────
+                # Le FINAL du lead devient le livrable stocké (re-livré tel quel
+                # par mission_result). On interdit toute affirmation « tests verts /
+                # certifié » SANS preuve verte au ledger : réécriture honnête
+                # (jamais fabriquer du vert). Cf. run bibliotech 2026-07-01.
+                if answer and self._is_mission_run:
+                    try:
+                        _answer_locked, _lock_info = apply_mission_truth_lock(
+                            answer,
+                            has_green_test=self._current_green_test_proof(),
+                            last_test_outcome=self.execution_ledger.last_test_outcome(),
+                            has_browser_proof=self._current_browser_proof(),
+                            # 2.8.2 (run TriboBlog) — HARMONISATION : ces 2 params
+                            # manquaient à CE site → overclaim_delivery (défaut
+                            # has_any_mutation=True) et note_tests_not_run étaient
+                            # MORTS ici. TriboBlog est sorti par ce site → la
+                            # fabrication « fichiers créés » (zéro écriture) a filé.
+                            tests_present_not_run=self._tests_present_but_not_run(),
+                            has_any_mutation=self.execution_ledger.has_any_mutation(),
+                            # LOT E (run FidéliBar) — verrou « publié » sans preuve.
+                            has_published=self.execution_ledger.has_published(),
+                            # LOT 2.11.E — disk-grounded (run StatsNotes).
+                            project_root=Path(__file__).resolve().parents[2],
+                            # M1 (run RévizIA) — policy navigateur dure (top-lead web).
+                            web_deliverable=self._truth_lock_web_flag(),
+                            file_deliverables_expected=self._mission_expects_file_deliverables(),  # H8
+                            unpublished_writes=self._mission_unpublished_writes(),  # Z24
+                            has_server_started=self._server_started_proof(),  # LOT 2.3
+                            browser_content_seen=self._browser_content_seen(),  # 2.7.4
+                            interaction_proven=self._truth_lock_interaction_proven(),
+                            interaction_required=self._truth_lock_interaction_flag(),
+                            objective_is_game=self._truth_lock_game_flag(),  # 2.13.A
+                            browser_runtime_failed=self._browser_runtime_failed_for_truth_lock(),  # M100.4
+                        )
+                        self._note_truth_lock_outcome(_lock_info)  # F1.b
+                        if _lock_info.get("changed"):
+                            # M1 (revue) — log GÉNÉRIQUE : le verrou couvre désormais
+                            # tests/navigateur/livraison/publication ; le motif exact
+                            # vient de _lock_info, plus d'un libellé figé « tests verts ».
+                            _lt = self.execution_ledger.last_test_outcome() or {}
+                            logger.warning(
+                                "[MISSION TRUTH-LOCK] FINAL rétrogradé honnêtement — "
+                                "détails={} (dernier pytest: passed={} failed={} "
+                                "errors={}) task={}",
+                                {k: v for k, v in _lock_info.items() if v and k != "changed"},
+                                _lt.get("passed"), _lt.get("failed"), _lt.get("errors"),
+                                self.task_id,
+                            )
+                            answer = _answer_locked
+                            self._run_meta["mission_truth_lock_applied"] = True
+                    except Exception as _tl_exc:
+                        logger.debug("[MISSION TRUTH-LOCK] skip: {}", _tl_exc)
                 _finish_iteration(status="ok", summary="final_answer_ready")
-                message = answer if answer else "Je n'ai pas trouvé de réponse pertinente."
-                # P3 — Token streaming: émettre la réponse finale par chunks pour le SSE
-                # Émet 2 mots à la fois avec 25ms entre chaque chunk.
-                # Le poll SSE (50ms en mode token) capture chaque chunk quasi-unitairement
-                # → effet "Lumena écrit" fluide au lieu de blocs saccadés.
-                import time as _time_mod
-                _lines = message.split('\n')
-                _first_chunk = True
-                for _li, _line in enumerate(_lines):
-                    if _li > 0:
-                        logger.debug("[FINAL_TOKEN]{}", "\n")
-                        _time_mod.sleep(0.015)
-                    if not _line:
-                        continue
-                    _words = _line.split(' ')
-                    for _wi in range(0, len(_words), 2):
-                        _chunk = " ".join(_words[_wi:_wi + 2])
-                        if not _first_chunk and _wi > 0:
-                            _chunk = " " + _chunk
-                        elif not _first_chunk and _wi == 0:
-                            pass  # début de ligne, pas d'espace prefix
-                        logger.debug("[FINAL_TOKEN]{}", _chunk)
-                        _first_chunk = False
-                        _time_mod.sleep(0.025)  # 25ms par chunk = typing fluide
-                self._mark_task_done(message)
-                return message
+                # F1.b — hors mission : formule historique. En mission : jamais une
+                # politesse à la place d'un livrable (cf. _empty_final_fallback).
+                message = answer if answer else self._empty_final_fallback()
+                return self._stream_and_return_final(message)
             
             # 5. Sinon, exécuter l'outil
             if action.action_type == ActionType.TOOL_CALL and action.tool_name:
@@ -6366,6 +12328,18 @@ Maintenant, reflechis et reponds:"""
                     # Cancel canal : propager le parent task_id pour delegate_task
                     if self.task_id:
                         self.tools._v2_context.runtime_task_id = self.task_id
+                    # Exemption sandbox mission : la boucle POSSÈDE la vérité (double-verrou
+                    # task_id + kind=="mission"). tool_registry._policy_check l'utilise pour
+                    # autoriser un worker de mission à écrire ses artefacts code dans workspace/.
+                    self.tools._v2_context.is_mission_run = bool(self._is_mission_run)
+                    # LOT 2.1 — scope workspace mission : dossier ISOLÉ partagé par les
+                    # workers d'un lead (posé par delegate_and_wait dans la meta mission).
+                    # Lu ici par tour (la meta du lead peut être posée EN COURS de run).
+                    # Vide hors mission → résolution actuelle inchangée.
+                    self.tools._v2_context.mission_workspace = self._mission_workspace_meta()
+                    # LOT 2.3 — périmètre d'écriture du worker (fichiers assignés).
+                    # Vide → aucune restriction (lead, worker sans liste, chat).
+                    self.tools._v2_context.mission_allowed_files = self._mission_allowed_files_meta()
                     # Phase 0.6 : propager la demande utilisateur originale (verbatim)
                     # pour que delegate_task puisse la transmettre au sub-agent
                     # sans passer par la reformulation ReAct.
@@ -6375,11 +12349,70 @@ Maintenant, reflechis et reponds:"""
                 # Mesurer le temps outil pour exclure du timeout de raisonnement
                 from .caller_context import REACT as _CALLER_REACT
                 _tool_exec_start = perf_counter()
-                observation = await self.tools.execute(
-                    action.tool_name, 
-                    action.tool_args,
-                    caller=_CALLER_REACT,
-                )
+                # ── 2.13.B — GATE INTENTION CONTRAT (run miniblog) ──────────
+                # Redirection dirigée AVANT exécution : l'observation de refus
+                # suit le flux normal (historique, ledger success=False) → le
+                # lead voit la consigne et retente par write_mission_contract.
+                _studio_obs = None
+                try:
+                    _studio_obs = self._structured_document_tool_gate(
+                        action.tool_name, action.tool_args or {},
+                    )
+                except Exception as _studio_exc:
+                    logger.debug("[DOCUMENT STUDIO GATE] skip: {}", _studio_exc)
+                _cg_obs = None
+                try:
+                    _cg_obs = self._contract_intent_gate(action.tool_name)
+                except Exception as _cg_exc:
+                    logger.debug("[CONTRACT GATE] skip: {}", _cg_exc)
+                _wca_obs = None
+                try:
+                    _wca_obs = self._worker_codeagent_first_gate(action.tool_name, action.tool_args)
+                except Exception as _wca_exc:
+                    logger.debug("[CODEAGENT-FIRST] skip: {}", _wca_exc)
+                # LOT O2 — l'utilisateur a demandé une mission à échéance : elle
+                # doit être lancée, pas bricolée au fil de la conversation.
+                _cmi_obs = None
+                try:
+                    _cmi_obs = self._chat_mission_intent_gate(action.tool_name)
+                except Exception as _cmi_exc:
+                    logger.debug("[CHAT MISSION GATE] skip: {}", _cmi_exc)
+                # LOT P2b — ne pas réécrire en place un livrable déjà livré.
+                _ovw_obs = None
+                try:
+                    _ovw_obs = self._mission_overwrite_gate(
+                        action.tool_name, action.tool_args or {},
+                    )
+                except Exception as _ovw_exc:
+                    logger.debug("[P2b] skip: {}", _ovw_exc)
+                # LOT Z23 — l'inspection d'une preview jugee non prouvable est close.
+                _lpu_obs = None
+                try:
+                    _lpu_obs = self._local_preview_unprovable_gate(action.tool_name)
+                except Exception as _lpu_exc:
+                    logger.debug("[Z23] skip: {}", _lpu_exc)
+                if _cmi_obs is not None:
+                    observation = _cmi_obs
+                elif _lpu_obs is not None:
+                    observation = _lpu_obs
+                elif _ovw_obs is not None:
+                    observation = _ovw_obs
+                elif _studio_obs is not None:
+                    observation = _studio_obs
+                elif _cg_obs is not None:
+                    observation = _cg_obs
+                elif _wca_obs is not None:
+                    observation = _wca_obs
+                else:
+                    observation = await self._execute_tool_with_cancel_guard(
+                        action.tool_name,
+                        action.tool_args,
+                        caller=_CALLER_REACT,
+                    )
+                # Capture the complete catalog JSON before warnings or history
+                # compaction alter the model-visible observation.
+                ReActLoop._record_document_catalog_evidence(self, action, observation)
+                ReActLoop._record_document_workflow_evidence(self, action, observation)
                 _tool_exec_duration = perf_counter() - _tool_exec_start
                 # ── Cancel post-outil : stopper avant de réinjecter l'observation ──
                 # Si le parent a été annulé PENDANT l'outil (ex: delegate_task long),
@@ -6416,14 +12449,30 @@ Maintenant, reflechis et reponds:"""
                     observation = Observation(
                         content=observation.content + _stagnation_warning,
                         success=observation.success,
+                        sub_results=getattr(observation, "sub_results", ()),
+                        origin=getattr(observation, "origin", "tool"),
                     )
                 # Injecter l'avertissement d'hallucination dans l'observation si récidive
                 if _halluc_warning and observation.content:
                     observation = Observation(
                         content=observation.content + _halluc_warning,
                         success=observation.success,
+                        sub_results=getattr(observation, "sub_results", ()),
+                        origin=getattr(observation, "origin", "tool"),
                     )
                 step.observation = observation
+
+                # LOT P3 — une MUTATION RÉUSSIE remet les compteurs de lecture à
+                # ZÉRO : relire un fichier qu'on vient de modifier n'est pas de la
+                # stagnation, c'est vérifier son travail. Même règle que PG-1.a
+                # pour le compteur de progression du plan.
+                if (
+                    observation.success
+                    and (action.tool_name or "") in _PG1_MUTATION_TOOLS
+                ):
+                    _read_file_path_counter.clear()
+                    _read_file_reread_counter.clear()
+                    _read_file_ranges_seen.clear()
 
                 # Fix 3.2: Vérifier que write_file/apply_patch produit un fichier non-vide
                 # (uniquement sur chemins absolus pour éviter les faux positifs sur chemins relatifs)
@@ -6453,17 +12502,98 @@ Maintenant, reflechis et reponds:"""
                     _ss_for_led = self._structured_state
                     if _ss_for_led is not None:
                         _led_intent = _ss_for_led.last_intent
+                    _led_meta = {
+                        "duration_ms": round(_tool_exec_duration * 1000, 1),
+                        "intent": _led_intent,
+                    }
+                    # VERROU DE VÉRITÉ : pour une commande shell qui lance des
+                    # tests, on parse l'issue réelle (pytest/jest/…) et on la
+                    # stocke — la finalisation mission ne pourra plus clamer
+                    # « tests verts » sans preuve verte au ledger.
+                    if action.tool_name in ("run_command", "run_shell", "exec_command"):
+                        try:
+                            from src.reasoning.test_proof import (
+                                is_test_command as _is_test_cmd,
+                                parse_test_outcome as _parse_test_outcome,
+                            )
+                            _cmd_str = str((action.tool_args or {}).get("command", "") or "")
+                            # LOT 2.4 — la commande au meta : preuve `node --check`
+                            # consultable par le JS GATE / has_js_syntax_check().
+                            _led_meta["command"] = _cmd_str[:200]
+                            if _is_test_cmd(_cmd_str):
+                                _exit_code = getattr(observation, "exit_code", None)
+                                _led_meta["test_outcome"] = _parse_test_outcome(
+                                    _cmd_str, observation.content or "", _exit_code,
+                                )
+                        except Exception:
+                            pass
                     self.execution_ledger.append(
                         iteration=i,
                         action=action.tool_name,
                         target=_led_target,
                         success=observation.success,
                         proof=_led_proof,
-                        meta={
-                            "duration_ms": round(_tool_exec_duration * 1000, 1),
-                            "intent": _led_intent,
-                        },
+                        meta=_led_meta,
                     )
+                    # M106: keep the latest test verdict in the persistent mission
+                    # record so status/result remain factual after reboot or cancel.
+                    _persisted_test = _led_meta.get("test_outcome")
+                    if (
+                        isinstance(_persisted_test, dict)
+                        and _persisted_test.get("is_test_cmd")
+                        and self._orchestrator_enabled()
+                    ):
+                        try:
+                            self.task_orchestrator.set_task_metadata(
+                                self.task_id,
+                                last_test_outcome=dict(_persisted_test),
+                                tests_green=bool(_persisted_test.get("green")),
+                            )
+                        except Exception as exc:
+                            logger.debug("[M106] test proof persistence skipped: {}", exc)
+                    # LOT N1 (run HuffPack 2026-08-14) — un CONSTAT mesuré doit
+                    # rejoindre les faits de la mission. Sans ça, les trois taux de
+                    # compression calculés à 03:11:27 n'ont jamais atteint
+                    # l'utilisateur : `mission_status` ne portait que quatre
+                    # compteurs, et le récapitulatif — pourtant libre — n'a pu dire
+                    # que « 12 passed ». Le modèle ne les a pas inventés (truth-lock
+                    # tenu) : il ne les avait plus.
+                    if (
+                        action.tool_name in ("run_command", "run_tests")
+                        and observation.success
+                        and self._is_mission_run
+                        and self._orchestrator_enabled()
+                    ):
+                        try:
+                            from src.subagents.mission_measures import (
+                                command_is_measurement,
+                                merge_measurement,
+                            )
+
+                            _cmd_n1 = str((action.tool_args or {}).get("command") or "")
+                            if command_is_measurement(_cmd_n1):
+                                _rec_n1 = self.task_orchestrator.get_task(self.task_id) or {}
+                                _prev_n1 = (_rec_n1.get("metadata") or {}).get(
+                                    "mission_measurements"
+                                )
+                                _merged_n1 = merge_measurement(
+                                    # LOT N1-bis (run LogLens, 2026-08-14) : c'est
+                                    # `.content`, pas `.output` — l'attribut n'existe
+                                    # pas. Chaque mesure levait une AttributeError
+                                    # avalée par le `except`, donc AUCUN chiffre n'a
+                                    # jamais été retenu (6 fois dans ce seul run).
+                                    _prev_n1, _cmd_n1, str(observation.content or "")
+                                )
+                                if _merged_n1:
+                                    self.task_orchestrator.set_task_metadata(
+                                        self.task_id, mission_measurements=_merged_n1,
+                                    )
+                                    logger.info(
+                                        "[N1] constat mesuré retenu ({} au total) : {}",
+                                        len(_merged_n1), _cmd_n1[:70],
+                                    )
+                        except Exception as _exc_n1:
+                            logger.debug("[N1] capture du constat ignorée: {}", _exc_n1)
                 except Exception as _led_exc:
                     logger.debug("[ExecutionLedger] Échec enregistrement: {}", _led_exc)
 
@@ -6564,7 +12694,9 @@ Maintenant, reflechis et reponds:"""
                         from .caller_context import REACT as _CALLER_REACT_PAR
                         async def _run_one(_n: str, _a: dict):
                             try:
-                                return _n, await self.tools.execute(_n, _a, caller=_CALLER_REACT_PAR), None
+                                return _n, await self._execute_tool_with_cancel_guard(
+                                    _n, _a, caller=_CALLER_REACT_PAR,
+                                ), None
                             except Exception as _e:
                                 return _n, None, _e
 
@@ -6588,6 +12720,20 @@ Maintenant, reflechis et reponds:"""
                         # ── Exécution SÉQUENTIELLE (legacy : abort-on-fail pour writes) ──
                         _abort_multi = False
                         for _ma_name, _ma_args in _pending:
+                            if ReActLoop._duplicate_document_mutation(
+                                action.tool_name or "",
+                                action.tool_args or {},
+                                _ma_name or "",
+                                _ma_args or {},
+                            ):
+                                logger.info(
+                                    "Multi-action document: mutation identique '{}' ignoree",
+                                    _ma_name,
+                                )
+                                _combined_obs.append(
+                                    f"[{_ma_name}] Mutation documentaire identique deja executee"
+                                )
+                                continue
                             if _abort_multi:
                                 logger.warning("⚡ Multi-action '{}' annulé (échec précédent)", _ma_name)
                                 _combined_obs.append(f"[{_ma_name}] Annulé (action précédente échouée)")
@@ -6596,7 +12742,13 @@ Maintenant, reflechis et reponds:"""
                                 logger.info("⚡ Multi-action queue: exécution de '{}' (args: {})", _ma_name, list(_ma_args.keys()))
                                 from .caller_context import REACT as _CALLER_REACT_MA
                                 _ma_start = perf_counter()
-                                _ma_obs = await self.tools.execute(_ma_name, _ma_args, caller=_CALLER_REACT_MA)
+                                _ma_gate = self._worker_codeagent_first_gate(_ma_name, _ma_args if isinstance(_ma_args, dict) else None)
+                                if _ma_gate is not None:
+                                    _ma_obs = _ma_gate
+                                else:
+                                    _ma_obs = await self._execute_tool_with_cancel_guard(
+                                        _ma_name, _ma_args, caller=_CALLER_REACT_MA,
+                                    )
                                 _ma_dur = perf_counter() - _ma_start
                                 if hasattr(self, '_timeout_deadline'):
                                     self._timeout_deadline += _ma_dur
@@ -6649,6 +12801,19 @@ Maintenant, reflechis et reponds:"""
                             observation.content or "", i,
                         )
 
+                # LOT Z20 — hors du garde browser À DESSEIN : ce qui invalide une
+                # attente d'interaction (édition, délégation, publication) n'est
+                # jamais un outil `browser_*`.
+                self._invalidate_interaction_pending(
+                    action.tool_name or "", bool(observation.success)
+                )
+                # LOT Z24 — un fichier ecrit apres la publication est hors livrable.
+                if bool(observation.success):
+                    try:
+                        self._nudge_unpublished_writes()
+                    except Exception as _z24_exc:
+                        logger.debug("[Z24] skip: {}", _z24_exc)
+
                 # ── Guard browser : impasse, échecs en série, répétition de cible ──
                 # Couvre tous les outils browser_* (préfixe), pas seulement les 6 initiaux.
                 _is_browser_tool = (action.tool_name or "").startswith("browser_")
@@ -6679,6 +12844,15 @@ Maintenant, reflechis et reponds:"""
                         )
                         if _m_nav_t:
                             _page_title = _m_nav_t.group(1).strip()
+                    # Interaction tools usually return only an acknowledgement.
+                    # Preserve the last observed location so type/click/content
+                    # remain associated with the registered local preview.
+                    if _page_url:
+                        self._last_browser_page_url = _page_url
+                    else:
+                        _page_url = str(
+                            getattr(self, "_last_browser_page_url", "") or ""
+                        )
 
                     # Phase 1 browser: reconnaître la surface réelle avant d'insister.
                     # previous_surface : héritage de surface sur les observations sans signal fort
@@ -6717,6 +12891,18 @@ Maintenant, reflechis et reponds:"""
                         action_tool=action.tool_name or "",
                         observation_text=_obs_text,
                     )
+                    _interaction_proof = (
+                        (action.tool_name or "") == "browser_evaluate"
+                        and _browser_evaluate_proves_interaction(
+                            str((action.tool_args or {}).get("script", "")),
+                            _obs_text,
+                        )
+                    )
+                    if _interaction_proof:
+                        _progressed = True
+                        _progress_reason = (
+                            "browser_evaluate a provoque une interaction et lu son etat dynamique"
+                        )
                     self._last_browser_progress_sig = _progress_sig
                     _is_real_action = (action.tool_name or "") in BROWSER_ACTION_TOOLS
                     if _progressed:
@@ -6859,6 +13045,151 @@ Maintenant, reflechis et reponds:"""
                                         "Revalide l'état réel puis choisis une action différente."
                                     )
 
+                    # ── 2b. LOT 2.11.C/D — preview LOCALE : boucle d'inspection ──────────
+                    # Sur une preview que Lumena sert elle-même (loopback enregistré),
+                    # screenshot/dom_state en boucle ne comptent pas comme « no progress »
+                    # (run memo) → escalade bornée vers browser_evaluate, puis conclusion
+                    # HONNÊTE si l'interactif n'est pas prouvé. Inerte hors preview locale.
+                    _is_local_preview = _url_is_local_preview(_page_url)
+                    _g_cd = self.exec_state.guards
+                    _manual_interaction_proof = False
+                    _browser_tool = action.tool_name or ""
+                    if _is_local_preview and observation.success:
+                        (
+                            _manual_interaction_proof,
+                            _g_cd.local_preview_last_read_fingerprint,
+                            _g_cd.local_preview_mutation_since_read,
+                        ) = _advance_manual_browser_flow(
+                            _g_cd.local_preview_last_read_fingerprint,
+                            mutation_pending=_g_cd.local_preview_mutation_since_read,
+                            tool_name=_browser_tool,
+                            observation=_obs_text,
+                        )
+                    # LOT R′ — la preuve d'interaction était enregistrée APRÈS cette
+                    # décision (quelques lignes plus bas), donc invisible pour elle :
+                    # une mission pouvait démontrer son interactif à l'itération N et
+                    # être coupée par la décision de cette même itération N. On la
+                    # calcule ICI, avant de décider — persistée OU acquise à l'instant.
+                    _cd_proven = bool(
+                        getattr(_g_cd, "local_preview_interaction_proven", False)
+                        or (_interaction_proof and _browser_tool == "browser_evaluate")
+                        or _manual_interaction_proof
+                    )
+                    _cd_action, _cd_streak, _cd_asked = _local_preview_loop_decision(
+                        _is_local_preview,
+                        action.tool_name or "",
+                        _progressed,
+                        _g_cd.local_preview_blind_streak,
+                        _g_cd.local_preview_evaluate_asked,
+                        interaction_proven=_cd_proven,
+                        tool_succeeded=bool(observation.success),
+                    )
+                    _g_cd.local_preview_blind_streak = _cd_streak
+                    _g_cd.local_preview_evaluate_asked = _cd_asked
+                    # LOT 2.12.D — un browser_evaluate qui PROGRESSE (état JS réel lu)
+                    # sur la preview locale = preuve de l'interactif. Sans lui, tout
+                    # claim « jeu démarré / serpent redirigé » au FINAL est fabriqué.
+                    if _is_local_preview and (
+                        (_interaction_proof and _browser_tool == "browser_evaluate")
+                        or _manual_interaction_proof
+                    ):
+                        _g_cd.local_preview_interaction_proven = True
+                        logger.info(
+                            "[BROWSER INTERACTION PROOF] mutation + etat dynamique confirmes "
+                            "(source={})",
+                            "browser_evaluate" if _interaction_proof else "dom_delta",
+                        )
+                        if self._orchestrator_enabled():
+                            try:
+                                self.task_orchestrator.set_task_metadata(
+                                    self.task_id,
+                                    browser_interaction_verified=True,
+                                    browser_interaction_proof_kind=(
+                                        "browser_evaluate"
+                                        if _interaction_proof
+                                        else "dom_delta_after_user_flow"
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "[M106] browser proof persistence skipped: {}", exc
+                                )
+                    if _cd_action == "escalate":
+                        logger.info(
+                            "[LOCAL PREVIEW] escalade browser_evaluate (streak={})",
+                            _cd_streak,
+                        )
+                        self._pending_loop_guidance = (
+                            "⚠️ GUIDANCE PREVIEW LOCALE: tu inspectes en boucle une preview "
+                            "que TU sers en local sans progrès visible. Screenshot/dom_state "
+                            "ne PROUVENT pas l'interactif. Fais UNE assertion concrète avec "
+                            "`browser_evaluate` : lis l'état JS réel (compteur de coups, score, "
+                            "valeur d'un élément du DOM) qui démontre que la logique marche. "
+                            "Si l'évaluation ne prouve rien, conclus HONNÊTEMENT : page servie "
+                            "et navigable, mais validation interactive complète non prouvée — "
+                            "n'affirme JAMAIS « jeu validé » sans cette preuve."
+                        )
+                    elif _cd_action == "stop":
+                        # LOT Z23 — ce constat GRAVE un fait ; il ne termine plus le
+                        # run. Le `return` d'origine coutait la completude sans rien
+                        # apporter a l'honnetete (le truth-lock bannerise de toute
+                        # facon, doctrine 2.13.A). Voir `_local_preview_unprovable_gate`.
+                        _lp_url_now = str(_page_url or "")
+                        _lp_already = bool(
+                            getattr(_g_cd, "local_preview_interaction_unprovable", False)
+                            and str(getattr(self, "_lp_unprovable_url", "") or "") == _lp_url_now
+                        )
+                        logger.warning(
+                            "⛔ Preview locale : inspection sans preuve interactive (streak={}) — conclusion honnête",
+                            _cd_streak,
+                        )
+                        if not _lp_already:
+                            _g_cd.local_preview_interaction_unprovable = True
+                            self._lp_unprovable_url = _lp_url_now
+                            self._pending_loop_guidance = (
+                                "⚠️ CONSTAT ACQUIS : sur cette preview locale, la validation "
+                                "interactive n'est pas prouvable — tu as deja tenté l'assertion, "
+                                "elle n'a rien démontré. C'est definitif pour ce run : ne "
+                                "réessaie pas, n'inspecte plus cette page.\n\n"
+                                "La mission N'EST PAS finie pour autant. Reprends ce qui reste "
+                                "demandé — fichiers annoncés, livrables, vérifications hors "
+                                "navigateur — puis conclus en énonçant ce constat tel quel."
+                            )
+                            _g_cd.local_preview_blind_streak = 0
+                            logger.info(
+                                "[Z23] interactif jugé non prouvable sur '{}' — inspection close, "
+                                "mission POURSUIVIE (le run n'est plus tué ici)",
+                                _lp_url_now,
+                            )
+                        else:
+                            # Filet de terminaison : la branche se redéclenche sur la
+                            # MEME page alors que le verrou est deja pose — le verrou
+                            # n'a pas pris, on conclut plutot que de boucler.
+                            logger.warning(
+                                "[Z23] filet : stop redéclenché sur '{}' malgré le verrou — "
+                                "conclusion honnête", _lp_url_now,
+                            )
+                            _finish_iteration(status="ok", summary="local_preview_unproven")
+                            _port_txt = ""
+                            try:
+                                from urllib.parse import urlparse as _up_cd
+                                _pp_cd = _up_cd(str(_page_url)).port
+                                if _pp_cd:
+                                    _port_txt = f" sur le port {_pp_cd}"
+                            except Exception:
+                                pass
+                            return (
+                                f"J'ai servi la preview en local{_port_txt} et vérifié "
+                                "qu'elle se charge et se navigue (page rendue, style "
+                                "appliqué). En revanche, même après une assertion "
+                                "`browser_evaluate`, je n'ai pas pu **prouver** la "
+                                "validation interactive complète (logique de jeu / état "
+                                "applicatif) : je ne l'affirme donc pas. Le livrable est "
+                                "en place et consultable, mais la validation interactive "
+                                "reste NON prouvée dans ce run — dis-moi si tu veux que "
+                                "je retente avec une autre méthode d'assertion."
+                            )
+
                     # ── 2a. Détection d'impasse centralisée ──────────────────────────────
                     _imp_blocked, _imp_reason, _imp_try_dismiss = _detect_browser_impasse(
                         observation.content or ""
@@ -6918,19 +13249,40 @@ Maintenant, reflechis et reponds:"""
                                     _search_query,
                                 )
                             else:
-                                logger.warning(
-                                    "⛔ Impasse browser détectée: {} — arrêt propre",
+                                _tried_origins = set(getattr(
+                                    self, "_browser_blocked_origins", set(),
+                                ))
+                                _pivot = _legal_browser_source_pivot(
+                                    str(_page_url or ""),
                                     _imp_reason,
+                                    original_query,
+                                    _tried_origins,
                                 )
-                                _finish_iteration(status="error", error="browser_impasse")
-                                message = (
-                                    f"⛔ Navigation interrompue : **{_imp_reason}**.\n\n"
-                                    f"Le site semble protégé ou non exploitable "
-                                    f"({_imp_reason.lower()}).\n\n"
-                                    f"Observation : {(observation.content or '')[:400]}"
-                                )
-                                self._mark_task_failed("browser_impasse")
-                                return message
+                                if _pivot is not None:
+                                    _origin, _guidance = _pivot
+                                    _tried_origins.add(_origin)
+                                    self._browser_blocked_origins = _tried_origins
+                                    self._pending_loop_guidance = _guidance
+                                    browser_fail_streak = 0
+                                    logger.info(
+                                        "[BROWSER SOURCE PIVOT] origine={} tentatives={}/3",
+                                        _origin, len(_tried_origins),
+                                    )
+                                else:
+                                    logger.warning(
+                                        "⛔ Impasse browser détectée: {} — arrêt propre",
+                                        _imp_reason,
+                                    )
+                                    _finish_iteration(status="error", error="browser_impasse")
+                                    message = (
+                                        f"⛔ Navigation interrompue : **{_imp_reason}**.\n\n"
+                                        f"Le site semble protégé ou non exploitable "
+                                        f"({_imp_reason.lower()}). Les pivots légaux bornés "
+                                        "ont été épuisés; aucun CAPTCHA/WAF n'a été contourné.\n\n"
+                                        f"Observation : {(observation.content or '')[:400]}"
+                                    )
+                                    self._mark_task_failed("browser_impasse")
+                                    return message
 
                     # ── 2b. Suivi des échecs techniques en série ─────────────────────────
                     browser_failed = (
@@ -7114,6 +13466,7 @@ Maintenant, reflechis et reponds:"""
                         _write_tools = {
                             "write_file", "edit_file", "create_project", "create_skill",
                             "create_pdf", "create_docx", "create_xlsx", "create_pptx",
+                            "generate_studio_document", "generate_studio_documents",
                             "website_build", "generate_website", "write_website_files",
                             "edit_website",
                         }
@@ -7201,6 +13554,8 @@ Maintenant, reflechis et reponds:"""
                 # FIX: Supprimé le '...' trompeur qui faisait croire au LLM que le contenu était tronqué
                 obs_preview = observation.content[:500]
                 logger.debug(f"Observation: {obs_preview}{'[...log truncated]' if len(observation.content) > 500 else ''}")
+                self._last_observation_monotonic = perf_counter()
+                self._last_observation_tool = action.tool_name or ""
 
                 # ── Emit file_read events for UI file viewer ──
                 if action.tool_name == "read_file":
@@ -7252,6 +13607,71 @@ Maintenant, reflechis et reponds:"""
                     _finish_iteration(status="ok", summary="parallel_tools_rejected_sequential_redirect")
                     continue
             
+            # M100.4 — a strict local-web failure starts a bounded repair cycle.
+            # This runs before plan-stagnation accounting: a real verifier report
+            # is a new diagnostic signal, not another identical/no-progress turn.
+            if (
+                action.tool_name == "browser_verify_local_project"
+                and observation is not None
+                and self._is_mission_run
+                and not self._is_worker_run()  # H4 : périmètre OU parent
+            ):
+                _runtime_failed = not bool(observation.success)
+                self._set_web_runtime_verification_state(
+                    failed=_runtime_failed,
+                    report=observation.content or "",
+                )
+                if _runtime_failed:
+                    _runtime_shots = int(getattr(self, "_web_runtime_repair_shots", 0) or 0)
+                    if _web_runtime_repair_allowed(
+                        failed=True,
+                        shots=_runtime_shots,
+                        iteration=i,
+                        max_iterations=self.max_iterations,
+                    ):
+                        self._web_runtime_repair_shots = _runtime_shots + 1
+                        self._iterations_without_progress = 0
+                        self._all_session_tools.add(action.tool_name)
+                        self.history.append(step)
+                        _runtime_target = (
+                            (action.tool_args or {}).get("project_dir")
+                            or (action.tool_args or {}).get("project_path")
+                            or "le dossier web de la mission"
+                        )
+                        logger.warning(
+                            "[M100.4] verification runtime web rouge -> reparation locale {}/2 "
+                            "target={} task={}",
+                            self._web_runtime_repair_shots,
+                            _runtime_target,
+                            self.task_id,
+                        )
+                        query = (
+                            f"Requete originale: {original_query}\n\n"
+                            "ECHEC D'INTEGRATION WEB REEL detecte par "
+                            "`browser_verify_local_project`.\n"
+                            f"Dossier cible: {_runtime_target}\n"
+                            f"Rapport strict:\n{(observation.content or '')[:5000]}\n\n"
+                            "Repare maintenant le CODE PRODUIT local, par petite mutation ciblee. "
+                            "Ne modifie pas les tests pour masquer le defaut. Verifie les routes, "
+                            "methodes HTTP, selecteurs DOM et erreurs console indiquees. Puis relance "
+                            "`browser_verify_local_project` sur le meme dossier. Ne conclus pas avant "
+                            "ce nouveau verdict. La reparation est bornee a deux tentatives."
+                        )
+                        _finish_iteration(status="ok", summary="web_runtime_repair_relaunch")
+                        continue
+
+                    # No more repair budget: let the normal finalization path run,
+                    # but prevent another generic browser-gate loop. The truth-lock
+                    # will expose the persisted strict failure in every FINAL path.
+                    self._browser_gate_shots = max(
+                        int(getattr(self, "_browser_gate_shots", 0) or 0), 1
+                    )
+                    logger.warning(
+                        "[M100.4] verification runtime web toujours rouge; tentatives "
+                        "epuisees -> cloture honnete task={}",
+                        self.task_id,
+                    )
+
             # 6. Compacter les observations volumineuses avant stockage (anti-context-poisoning)
             # Le modèle a déjà vu l'observation complète — on stocke une version compacte
             # pour que les futures itérations ne soient pas noyées dans du contenu stale.
@@ -7261,7 +13681,19 @@ Maintenant, reflechis et reponds:"""
                 _raw_obs_len = len(step.observation.content)
                 _tool_name_compact = action.tool_name or ""
                 # Seuils adaptatifs par type d'outil
-                if _tool_name_compact in ("read_file", "search_in_code", "grep_search", "find_files"):
+                if _tool_name_compact == "delegate_and_wait":
+                    # Les LIVRABLES des workers doivent rester INTACTS pour que le lead
+                    # fusionne sans re-fouiller le disque (sinon le fix excerpt est gâché).
+                    _OBS_COMPACT_LIMIT = 20000
+                elif _tool_name_compact in _OBS_FILE_READ_TOOLS:
+                    # B0.3 (run PlantCare) : read_files_batch et parallel_tools étaient
+                    # ABSENTS de cette liste → compactés à ~830 chars → les workers
+                    # relisaient les mêmes fichiers en boucle (w_tests mort sans écrire).
+                    # C0.1 (run FrigoZen) : l'observation de write_mission_contract PORTE
+                    # les objectifs contractuels (allowed_files) — compactée à 830 chars,
+                    # le lead re-rédigeait ses propres objectifs divergents du contrat.
+                    # LOT Z12 : la liste est devenue `_OBS_FILE_READ_TOOLS`, PARTAGÉE avec
+                    # la stratégie de compaction plus bas — les deux copies avaient divergé.
                     _OBS_COMPACT_LIMIT = 8000   # seuil élevé : ne pas tronquer le contenu fichier
                 elif _tool_name_compact in ("browser_get_content", "browser_evaluate"):
                     # Fix A: Pour les surfaces chat, augmenter la limite pour ne pas tronquer la conversation
@@ -7281,6 +13713,22 @@ Maintenant, reflechis et reponds:"""
                     )
                     if _browser_compacted is not None:
                         _c_body = _browser_compacted
+                    elif _tool_name_compact == "generate_studio_documents":
+                        from src.documents.delivery_manifest import (
+                            compact_batch_observation,
+                        )
+
+                        _c_body = compact_batch_observation(
+                            step.observation.content,
+                        )
+                        if _c_body is None:
+                            _c_head = step.observation.content[:500]
+                            _c_tail = step.observation.content[-300:]
+                            _c_body = (
+                                f"{_anchor}{_c_head}\n"
+                                f"[...{_raw_obs_len - 800} chars compactes...]\n"
+                                f"{_c_tail}"
+                            )
                     elif _tool_name_compact in (
                         "delegate_task", "create_project", "generate_website",
                         "write_website_files", "website_build",
@@ -7299,11 +13747,15 @@ Maintenant, reflechis et reponds:"""
                         _c_body = (
                             f"{_anchor}{_c_head}\n[...sortie tronquée ({_raw_obs_len} chars)...]\n{_c_tail}"
                         )
-                    elif _tool_name_compact in (
-                        "read_file", "search_in_code", "grep_search", "find_files",
-                    ):
+                    elif _tool_name_compact in _OBS_FILE_READ_TOOLS:
                         # Lectures fichiers : seuil élevé atteint → garder 3000 chars (début)
                         # Pas d'ancre ici : le contenu brut est déjà préservé intégralement
+                        #
+                        # LOT Z12 — cette liste était écrite EN DUR et ne connaissait que
+                        # `read_file`/`search_in_code`/`grep_search`/`find_files`. Elle
+                        # partage désormais `_OBS_FILE_READ_TOOLS` avec le seuil ci-dessus :
+                        # un outil protégé jusqu'à 8000 chars ne peut plus se retrouver
+                        # réduit à 800 dès qu'il les dépasse.
                         _c_body = (
                             step.observation.content[:3000]
                             + f"\n[...{_raw_obs_len - 3000} chars omis — relire avec plage de lignes si nécessaire...]"
@@ -7320,6 +13772,8 @@ Maintenant, reflechis et reponds:"""
                         observation=Observation(
                             content=_c_body,
                             success=step.observation.success,
+                            sub_results=getattr(step.observation, "sub_results", ()),
+                            origin=getattr(step.observation, "origin", "tool"),
                         ),
                     )
                     logger.debug(
@@ -7343,14 +13797,107 @@ Maintenant, reflechis et reponds:"""
                             self._successful_session_tools.add(_sub)
             self.history.append(step)
 
+            # Mission artifacts must be visible before run_mission returns: the
+            # lead may publish during this same loop. Only explicit file-producing
+            # tools and existing paths under workspace are persisted.
+            if self._is_mission_run and observation.success and self._orchestrator_enabled():
+                try:
+                    from src.runtime.peer_artifacts import persist_created_files
+                    from src.utils.paths import WORKSPACE_DIR
+                    _new_artifacts = persist_created_files(
+                        self.task_orchestrator,
+                        self.task_id,
+                        [step],
+                        base_dir=WORKSPACE_DIR,
+                    )
+                    if _new_artifacts:
+                        logger.info(
+                            "[MISSION ARTIFACTS] {} new artifact(s) persisted for {}",
+                            len(_new_artifacts), self.task_id,
+                        )
+                except Exception as _artifact_exc:
+                    logger.debug("[MISSION ARTIFACTS] persistence skipped: {}", _artifact_exc)
+
+            _document_manifest_progress = False
+            _document_workflow_progress = False
+            if self._task_plan:
+                try:
+                    self._reconcile_document_plan_from_manifest(i)
+                    self._reconcile_document_catalog_plan(i)
+                    self._reconcile_document_workflow_plan(i)
+                    from src.documents.delivery_manifest import (
+                        manifest_has_new_proof,
+                        manifest_progress_signature,
+                        workflow_has_new_proof,
+                    )
+                    _manifest, _missing, _unverified = self._structured_document_delivery_manifest()
+                    _current_manifest_signature = manifest_progress_signature(_manifest)
+                    _document_manifest_progress = manifest_has_new_proof(
+                        getattr(self, "_last_document_manifest_signature", ()),
+                        _current_manifest_signature,
+                    )
+                    self._last_document_manifest_signature = _current_manifest_signature
+                    _current_workflow_signature = self._document_workflow_progress_signature()
+                    _document_workflow_progress = workflow_has_new_proof(
+                        getattr(
+                            self, "_last_document_workflow_progress_signature",
+                            (0, "", "", "", "", ()),
+                        ),
+                        _current_workflow_signature,
+                    )
+                    self._last_document_workflow_progress_signature = (
+                        _current_workflow_signature
+                    )
+
+                except Exception as _doc_plan_exc:
+                    logger.debug("[PLAN DOCUMENT] reconciliation ignoree: {}", _doc_plan_exc)
+
+            # Receipt persistence is a workflow invariant, not a plan-LLM
+            # feature. Keep it active even when the model emits no TODO list.
+            if action.tool_name in {
+                "generate_studio_document", "generate_studio_documents",
+            } and observation.success:
+                _reference_id = self._ensure_document_delivery_reference()
+                _pending_workflow = self._document_workflow_pending_action()
+                if (
+                    _reference_id
+                    and getattr(_pending_workflow, "operation", "") == "open"
+                    and not getattr(self, "_document_reference_announced", False)
+                ):
+                    self._document_reference_announced = True
+                    step.observation.content += (
+                        "\n\nWORKFLOW DOCUMENTAIRE: la livraison exacte est complete. "
+                        "Ouvre maintenant son recu agrege avec "
+                        f"`open_document_delivery(receipt_id='{_reference_id}')`, "
+                        "puis poursuis la revision et la verification demandees."
+                    )
+
             # 6.1 Guard: progression du plan TODO
             if self._task_plan:
                 completed_count = sum(1 for t in self._task_plan if t.completed)
                 if completed_count == self._last_completed_task_count:
-                    self._iterations_without_progress += 1
-                    # Outil réussi (✅) = progression partielle, ralentir le compteur
-                    if step.observation and step.observation.content and "\u2705" in step.observation.content:
-                        self._iterations_without_progress = max(0, self._iterations_without_progress - 1)
+                    # PG-1.a (run SkiLoc) : une MUTATION REUSSIE est une progression
+                    # REELLE meme si le plan ne bouge pas (taches restantes souvent
+                    # verrouillees PUBLISH-ONLY/BROWSER-ONLY pendant le debogage) :
+                    # compteur remis a ZERO au lieu de compter le travail reel
+                    # comme de la stagnation.
+                    _pg1_mutation_ok = bool(
+                        step.action
+                        and (step.action.tool_name or "") in _PG1_MUTATION_TOOLS
+                        and step.observation
+                        and step.observation.success
+                    )
+                    if (
+                        _pg1_mutation_ok
+                        or _document_manifest_progress
+                        or _document_workflow_progress
+                    ):
+                        self._iterations_without_progress = 0
+                    else:
+                        self._iterations_without_progress += 1
+                        # Outil réussi (✅) = progression partielle, ralentir le compteur
+                        if step.observation and step.observation.content and "\u2705" in step.observation.content:
+                            self._iterations_without_progress = max(0, self._iterations_without_progress - 1)
                 else:
                     self._iterations_without_progress = 0
                     self._last_completed_task_count = completed_count
@@ -7398,6 +13945,49 @@ Maintenant, reflechis et reponds:"""
                         self._iterations_without_progress = 0
 
                 if self._iterations_without_progress >= _guard_limit:
+                    # PG-1.b (run SkiLoc) — en MISSION avec budget confortable et
+                    # tests présents, UN sauvetage dirigé avant de couper : le
+                    # FINAL forcé court-circuitait le PYTEST GATE et a tué SkiLoc
+                    # avec 2 048 s de budget, à une itération de la victoire.
+                    # Helper pur, 1 seul tir, hors mission strictement inchangé.
+                    if self._is_mission_run and not getattr(self, "_no_progress_rescue_used", False):
+                        try:
+                            from src.subagents.mission_budget import (
+                                mission_budget, no_progress_rescue_allowed,
+                            )
+                            _bud_pg1 = {}
+                            if self._orchestrator_enabled():
+                                _bud_pg1 = mission_budget(
+                                    self.task_orchestrator.get_task(self.task_id) or {}
+                                )
+                            _tests_pg1 = self._mission_tests_present_for_gate()
+                            if no_progress_rescue_allowed(
+                                is_mission=True,
+                                tests_present=bool(_tests_pg1),
+                                gate_shots=getattr(self, "_pytest_gate_shots", 0),
+                                remaining_s=_bud_pg1.get("remaining_s"),
+                                ratio_used=_bud_pg1.get("ratio_used"),
+                                already_rescued=False,
+                            ):
+                                self._no_progress_rescue_used = True
+                                self._iterations_without_progress = 0
+                                logger.warning(
+                                    "[PLAN GUARD PG-1] stagnation en mission mais budget "
+                                    "confortable et mutations réelles → sauvetage dirigé "
+                                    "(unique). task={}", self.task_id)
+                                query = (
+                                    f"Requête originale: {original_query}\n\n"
+                                    "🛟 STOP diagnostic — tu tournes en rond alors que ton "
+                                    "budget est confortable et que tes corrections sont déjà "
+                                    "écrites. Enchaîne MAINTENANT, dans cet ordre : "
+                                    "1) relance `python -m pytest` depuis le dossier de la "
+                                    "mission ; 2) si vert, publie via publish_mission_workspace ; "
+                                    "3) PUIS conclus honnêtement. Aucune relecture supplémentaire."
+                                )
+                                _finish_iteration(status="ok", summary="plan_no_progress_rescue")
+                                continue
+                        except Exception as _pg1_exc:
+                            logger.debug("[PLAN GUARD PG-1] rescue skip: {}", _pg1_exc)
                     logger.warning("[PLAN GUARD] Aucune progression en {} iterations, FINAL force", _guard_limit)
                     _finish_iteration(status="error", error=f"plan_no_progress_{_guard_limit}_iter")
                     done_desc = ", ".join(t.description for t in self._task_plan if t.completed)
@@ -7426,6 +14016,8 @@ Maintenant, reflechis et reponds:"""
                         step.observation = Observation(
                             content=(step.observation.content or "") + plan_stag_msg,
                             success=step.observation.success,
+                            sub_results=getattr(step.observation, "sub_results", ()),
+                            origin=getattr(step.observation, "origin", "tool"),
                         )
 
             # 7. Mettre à jour la requête avec l'observation (plus de contexte)
@@ -7497,7 +14089,9 @@ Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{
                 action.tool_name == "create_project"
                 and observation.success
                 and obs_text
-                and _post_delegate_web_verify_enabled()
+                # 2.6.3 (run MiniQuiz §5) — JAMAIS en mission : la preuve navigateur
+                # appartient au LEAD (serve_website + BROWSER GATE + truth-lock).
+                and self._post_delegate_web_verify_allowed()
                 and _looks_like_web_delegate_delivery(original_query, _tool_args_for_project, obs_text)
             )
             if _is_create_project_web_success:
@@ -7572,6 +14166,461 @@ Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{
                 _finish_iteration(status="ok", summary="create_project_web_verify_ok")
                 continue
 
+            # ── Post-succès create_mission : ACCUSÉ RÉCEPTION direct (déterministe) ──
+            # La création de mission n'a AUCUNE mutation à « raconter » au tour suivant :
+            # demander un FINAL au LLM ici déclenche le THOUGHT-leak régime A → 3 repairs →
+            # final vide → fallback « Je n'ai pas trouvé de réponse pertinente. » (≈6375).
+            # On rend un accusé STABLE, pré-rendu, sans round-trip LLM.
+            # LOT 2.7 — l'ACK force-final est réservé au CHAT : dans une mission, il
+            # tuait le lead avant contrat/delegate/tests (run NoteFlash 2026-07-02).
+            # (create_mission est de toute façon REFUSÉ en mission désormais — ceinture
+            # et bretelles si un chemin de création légitime réapparaissait.)
+            if action.tool_name == "create_mission" and observation.success \
+                    and not self._is_mission_run \
+                    and "Mission lancée en arrière-plan" in (obs_text or ""):
+                import re as _re_cm
+                _m_cm = _re_cm.search(r"id:\s*(task_\w+)", obs_text or "")
+                _mid_cm = _m_cm.group(1) if _m_cm else None
+                # LOT M3 (demande utilisateur 2026-08-14) — l'accusé n'est plus une
+                # phrase figée : il dit ce qu'elle a RETENU et comment elle va s'y
+                # prendre. Toujours déterministe (aucun tour LLM) : le régime A
+                # existe parce que DeepSeek leake son THOUGHT en réponse finale.
+                # Il ne prétend RIEN sur les sous-agents : à cet instant le contrat
+                # n'est pas posé et aucun worker n'existe.
+                _args_cm = action.tool_args or {}
+                try:
+                    from src.subagents.mission_ack import build_mission_ack
+                    from .final_guards import objective_requires_contract_protocol
+
+                    _obj_cm = str(_args_cm.get("objective") or "")
+                    _ack = build_mission_ack(
+                        objective=_obj_cm,
+                        mission_id=_mid_cm or "",
+                        deadline=str(_args_cm.get("deadline") or ""),
+                        multi_worker=bool(
+                            objective_requires_contract_protocol(_obj_cm)
+                            or objective_requires_contract_protocol(original_query or "")
+                        ),
+                    )
+                except Exception as _e_ack:
+                    logger.debug("[MISSION ACK] accusé enrichi indisponible: {}", _e_ack)
+                    _ack = (
+                        "✨ C'est lancé ! La mission tourne en arrière-plan"
+                        + (f" (id : `{_mid_cm}`)" if _mid_cm else "")
+                        + ".\n\nTu peux continuer à me parler — demande-moi l'avancement quand tu "
+                        "veux (« alors, ça avance ? ») ou le résultat final."
+                    )
+                logger.info(
+                    "[MISSION ACK] accusé réception direct (id={}) — pas de FINAL LLM "
+                    "(anti thought-leak régime A).", _mid_cm)
+                _finish_iteration(status="ok", summary="create_mission_direct_ack")
+                return self._stream_and_return_final(_ack)
+
+            # Le reçu a déjà ouvert les chemins exacts. Retour direct afin d'éviter
+            # un tour LLM supplémentaire et les repairs THOUGHT vus sur « ouvre-les ».
+            if action.tool_name == "open_document_delivery" and observation.success:
+                try:
+                    from src.documents.delivery_receipt import build_open_delivery_final
+
+                    # `step.observation` may already be compacted for the LLM;
+                    # the raw tool observation is still available here and is
+                    # the authoritative JSON payload.
+                    _open_payload = self._document_open_payload(observation)
+                    if _open_payload is None:
+                        raise ValueError("open_document_delivery returned invalid JSON")
+                    _open_final = build_open_delivery_final(_open_payload)
+                    _pending_after_open = self._document_workflow_pending_action()
+                    if _pending_after_open is None:
+                        logger.info(
+                            "[DOCUMENT DELIVERY OPEN] retour direct exact receipt={} opened={}/{}",
+                            _open_payload.get("receipt_id"), _open_payload.get("opened"),
+                            _open_payload.get("requested"),
+                        )
+                        _finish_iteration(status="ok", summary="document_delivery_open_direct_final")
+                        return self._stream_and_return_final(_open_final)
+                    logger.info(
+                        "[DOCUMENT WORKFLOW] ouverture receipt={} opened={}/{}; "
+                        "suite={} conservee dans ReAct",
+                        _open_payload.get("receipt_id"), _open_payload.get("opened"),
+                        _open_payload.get("requested"),
+                        getattr(_pending_after_open, "operation", "unknown"),
+                    )
+                except Exception as _open_exc:
+                    logger.debug("[DOCUMENT DELIVERY OPEN] direct final skip: {}", _open_exc)
+
+            # ── 5.7.4a — preuve de livraison : un write_file réussi sur le FICHIER
+            # CIBLE de la mission pose `deadline_artifact_written`. Le PLAN GUARD
+            # pourra alors autoriser un FINAL propre (sortie nette après partiel écrit,
+            # au lieu de boucler jusqu'au cancel). On exige la VRAIE écriture, pas le
+            # simple flag de steer (posé en amont, avant l'écriture).
+            if (action.tool_name == "write_file" and observation.success
+                    and self._is_mission_run and self._orchestrator_enabled()):
+                try:
+                    from src.subagents.mission_budget import extract_unambiguous_target_file as _etf
+                    _recw = self.task_orchestrator.get_task(self.task_id) or {}
+                    _tgt = _etf((_recw.get("metadata") or {}).get("objective")
+                                or _recw.get("message_preview") or "")
+                    if _tgt:
+                        import os as _osw
+                        _written_path = ((action.tool_args or {}).get("path", "") or "").lower()
+                        _base = _osw.path.basename(_tgt).lower()
+                        if _base and (_base in _written_path or _base in (obs_text or "").lower()):
+                            self.task_orchestrator.set_task_metadata(
+                                self.task_id, deadline_artifact_written=True)
+                            # Mémorise le résumé d'écriture (chemin + taille) pour la
+                            # finalisation déterministe ci-dessous (sans round-trip LLM).
+                            self._mission_artifact_summary = (obs_text or "").strip()[:300]
+                            # Basename cible mémorisé → sert à détecter la RELECTURE de
+                            # l'artefact au point de finalisation (Cas 2, même si plan vide).
+                            self._mission_target_base = _base
+                            # Sanity-check qualité : le content écrit porte-t-il les
+                            # stigmates d'un parsing pollué (`"` de tête, queue force_rewrite) ?
+                            # → on ne clamera pas « vérifié » (message honnête, cf. finalize).
+                            self._mission_artifact_malformed = deliverable_looks_malformed(
+                                ((action.tool_args or {}).get("content", "") or ""))
+                            logger.info(
+                                "[5.7.4a] artefact cible écrit ({}) → sortie FINAL autorisée "
+                                "task={}", _base, self.task_id)
+                            # Réconciliation plan : le livrable CIBLE est sur disque →
+                            # créditer les tâches de délégation (si délégation réussie) et
+                            # de récupération/fusion (le livrable les prouve). La vérif reste
+                            # au crédit réel par relecture (#3) ; side-effects externes exclus.
+                            try:
+                                _has_deleg = (
+                                    self.execution_ledger.has_successful_action("delegate_and_wait")
+                                    or self.execution_ledger.has_successful_action("delegate_task")
+                                )
+                                if reconcile_plan_on_artifact_delivery(
+                                    self._task_plan, has_delegation_success=_has_deleg, iteration=i,
+                                ):
+                                    self._emit_plan_state(context_tool="write_file")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+            # ── Finalisation DÉTERMINISTE du LEAD (anti thought-leak post-complétion) ──
+            # Quand le livrable CIBLE est sur disque ET que le plan métier est ENTIÈREMENT
+            # terminé (toutes tâches completed → relecture/vérif faite cf. #3, ou pas de
+            # vérif au plan ; et AUCUNE tâche à effet de bord laissée ouverte), on CONCLUT
+            # sans FINAL LLM. Sinon DeepSeek leake son raisonnement (≈3 repairs, ~30 s) et
+            # retarde le `done` → mission_status « en cours » alors que le fichier existe.
+            # Mirror déterministe de MISSION ACK / MISSION DELIVERY.
+            if (observation.success and self._is_mission_run and self._orchestrator_enabled()
+                    and not getattr(self, "_mission_det_finalized", False)):
+                try:
+                    _recf = self.task_orchestrator.get_task(self.task_id) or {}
+                    _meta_completion = _recf.get("metadata") or {}
+                    _completion = self._mission_completion_evidence()
+                    _artifact_ok = bool(
+                        _meta_completion.get("deadline_artifact_written")
+                        or _meta_completion.get("mission_published")
+                        or self.execution_ledger.has_published()
+                    )
+                    # Cas 2 : la relecture de l'artefact CIBLE est une preuve de vérif
+                    # indépendante du plan (worker sans plan / verify non crédité).
+                    _tgt_base = getattr(self, "_mission_target_base", "") or ""
+                    _reread_now = bool(
+                        _tgt_base
+                        and action.tool_name in ("read_file", "read_document")
+                        and observation.success
+                        and _tgt_base in ((action.tool_args or {}).get("path", "") or "").lower()
+                    )
+                    _legacy_finalizable = mission_deliverable_finalizable(
+                        self._task_plan,
+                        artifact_written=_artifact_ok,
+                        target_reread=_reread_now,
+                    )
+                    if _legacy_finalizable or _completion.get("complete"):
+                        self._mission_det_finalized = True
+                        _note = getattr(self, "_mission_artifact_summary", "") or ""
+                        if _completion.get("scope") == "worker":
+                            _worker_files = list(_completion.get("assigned_files") or [])
+                            _latest_worker_test = self.execution_ledger.last_test_outcome() or {}
+                            if not _latest_worker_test:
+                                _latest_worker_test = _meta_completion.get("last_test_outcome") or {}
+                            _note = (
+                                f"Worker: {len(_worker_files)}/{len(_worker_files)} fichiers "
+                                "assignes remplis"
+                            )
+                            if _completion.get("tests_required"):
+                                _note += (
+                                    f" ; pytest vert ({int(_latest_worker_test.get('passed') or 0)} passed)"
+                                )
+                            _note += "."
+                        if not _note and _meta_completion.get("published_workspace"):
+                            _note = (
+                                f"Livrable publie dans "
+                                f"{_meta_completion.get('published_workspace')} "
+                                f"({_meta_completion.get('published_files') and len(_meta_completion.get('published_files')) or 0} fichiers)."
+                            )
+                        # C — honnêteté : « vérifié » SEULEMENT si le sanity-check est passé.
+                        _malformed = bool(getattr(self, "_mission_artifact_malformed", False))
+                        # Titre du livrable (1er H1 Markdown relu) → message informatif SANS LLM.
+                        _title = ""
+                        _tm = re.search(r'(?m)^\s*#\s+(.+)$', obs_text or "")
+                        if _tm:
+                            _title = _tm.group(1).strip()[:120]
+                        # Vérité de finalisation câblée sur le LEDGER : le chemin
+                        # déterministe passe par la MÊME vérité que le FINAL LLM.
+                        # Cf. run taskflow : « produit et vérifié 🎉 » alors que le
+                        # ledger portait 7 tests rouges.
+                        try:
+                            _o_led = self.execution_ledger.last_test_outcome()
+                            _has_green = self._current_green_test_proof()
+                        except Exception:
+                            _o_led, _has_green = None, False
+                        _test_ran_not_green = bool((_o_led or {}).get("is_test_cmd")) and not _has_green
+                        # P0.2 (cf. run PollApp multi-worker) : une suite de tests peut
+                        # EXISTER sur disque (écrite par un worker → hors ledger du lead)
+                        # alors que le lead n'a lancé aucun pytest. Dans ce cas le lead ne
+                        # doit pas dire « vérifié structurellement ». Scan RESTREINT aux
+                        # DOSSIERS D'ARTEFACTS de la mission (jamais large → sinon on verrait
+                        # les tests de Lumena et on rétrograderait à tort).
+                        _tests_expected_not_run = False
+                        if (not _has_green and not _test_ran_not_green
+                                and _completion.get("scope") != "worker"):
+                            try:
+                                import os as _os_p02
+                                from src.reasoning.test_proof import (
+                                    tests_present_in_dir as _tests_in_dir,
+                                    tests_present_in_contract as _tests_in_contract,
+                                )
+                                _meta_f = _recf.get("metadata") or {}
+                                _arts = _meta_f.get("artifacts") or []
+                                _dirs = {
+                                    _os_p02.path.dirname(str(_a))
+                                    for _a in _arts if _a and _os_p02.path.dirname(str(_a))
+                                }
+                                # LOT 2.5 — le dossier de MISSION (2.1) est la source
+                                # déterministe : les tests des workers n'apparaissent pas
+                                # dans les artefacts du lead (delegate ne les persiste pas).
+                                _mission_dir_25 = None
+                                _mws_25 = str(_meta_f.get("mission_workspace") or "").strip()
+                                if _mws_25:
+                                    from src.utils.paths import WORKSPACE_DIR as _WS_25
+                                    _mission_dir_25 = str(_WS_25 / _mws_25)
+                                    _dirs.add(_mission_dir_25)
+                                _tests_expected_not_run = any(_tests_in_dir(_d) for _d in _dirs)
+                                # LOT 2.5 — source CONTRACTUELLE : contract.json déclare les
+                                # fichiers (plus fiable que le disque — couvre un test promis
+                                # par le contrat mais pas encore écrit au moment du scan).
+                                if not _tests_expected_not_run and _mission_dir_25:
+                                    _cj_25 = _os_p02.path.join(_mission_dir_25, "contract.json")
+                                    if _os_p02.path.isfile(_cj_25):
+                                        import json as _json_25
+                                        with open(_cj_25, encoding="utf-8", errors="replace") as _fh_25:
+                                            _tests_expected_not_run = _tests_in_contract(
+                                                _json_25.load(_fh_25))
+                            except Exception:
+                                _tests_expected_not_run = False
+                        # C0.4 (run FrigoZen) — FINALIZE branché sur le PYTEST GATE :
+                        # des tests existent pour la mission et AUCUN pytest n'a tourné
+                        # dans ce run → PAS de clôture avec bannière « non exécutés »
+                        # tant que le gate a des tirs et qu'il reste des itérations.
+                        # Relance dirigée (même filet que le FINAL LLM, cf. 2.10) — le
+                        # lead FrigoZen a été coupé avec 23 min de budget, sans pytest,
+                        # sans navigateur, sans publication.
+                        _gate_shots_det = getattr(self, "_pytest_gate_shots", 0)
+                        _defer_to_pytest_gate = bool(
+                            _tests_expected_not_run
+                            and _gate_shots_det < 2
+                            and i < self.max_iterations - 2
+                        )
+                        if _defer_to_pytest_gate:
+                            self._mission_det_finalized = False
+                            self._pytest_gate_shots = _gate_shots_det + 1
+                            self._pytest_gate_relaunched = True
+                            logger.warning(
+                                "[PYTEST GATE] FINALIZE déterministe intercepté : tests "
+                                "présents sans aucun run pytest → relance dirigée {}/2. "
+                                "task={}", self._pytest_gate_shots, self.task_id)
+                            try:
+                                observation.content = (
+                                    str(observation.content or "")
+                                    + "\n\n⛔ STOP — ne conclus PAS encore : des tests "
+                                    "existent pour cette mission et AUCUN pytest n'a "
+                                    "tourné dans ce run. Lance MAINTENANT `python -m "
+                                    "pytest tests/ -v` via run_command (cwd = dossier de "
+                                    "la mission). S'ils sont rouges, corrige LE CODE par "
+                                    "MUTATION (edit_file) puis relance. Ensuite publie le "
+                                    "livrable avec publish_mission_workspace et conclus "
+                                    "honnêtement."
+                                )
+                            except Exception:
+                                pass
+                        # LOT 2.7 (run Converto) — FINALIZE branché sur le BROWSER
+                        # GATE (patron C0.4) : Converto est sorti par plan_complet
+                        # (étape navigateur créditée à tort) AVANT de servir — le
+                        # gate navigateur ne vivait que sur la voie FINAL LLM.
+                        elif (i < self.max_iterations - 2
+                              and self._finalize_browser_gate_pending(_note, original_query)):
+                            _web_where_det = self._finalize_browser_gate_pending(
+                                _note, original_query)
+                            self._mission_det_finalized = False
+                            self._browser_gate_shots = getattr(
+                                self, "_browser_gate_shots", 0) + 1
+                            self._browser_gate_relaunched = True
+                            logger.warning(
+                                "[BROWSER GATE] FINALIZE déterministe intercepté : "
+                                "livrable web sans action navigateur ({}) → relance "
+                                "dirigée 1/1. task={}", _web_where_det, self.task_id)
+                            try:
+                                if self._truth_lock_interaction_flag():
+                                    observation.content = (
+                                        str(observation.content or "")
+                                        + "\n\n⛔ STOP — livrable WEB interactif sans preuve "
+                                        "stricte. Appelle `browser_verify_local_project` sur le "
+                                        "dossier publié : il doit remplir les champs, soumettre "
+                                        "et constater un changement DOM observable. Corrige puis "
+                                        "relance en cas d'échec, ensuite seulement conclus."
+                                    )
+                                else:
+                                    observation.content = (
+                                        str(observation.content or "")
+                                        + "\n\n⛔ STOP — livrable WEB et AUCUNE action "
+                                        "navigateur (browser_*) dans ce run. SERS-le "
+                                        "MAINTENANT avec l'outil serve_website("
+                                        "directory='<dossier du livrable publié>', port=8081), "
+                                        "puis browser_navigate sur l'URL retournée et "
+                                        "CONTRÔLE le DOM (le flux demandé), ENFIN conclus "
+                                        "honnêtement."
+                                    )
+                            except Exception:
+                                pass
+                        elif (i < self.max_iterations - 2
+                              and self._finalize_interaction_gate_pending(
+                                  _note, original_query
+                              )):
+                            _interaction_where_det = (
+                                self._finalize_interaction_gate_pending(
+                                    _note, original_query
+                                )
+                            )
+                            self._mission_det_finalized = False
+                            self._interaction_gate_shots = getattr(
+                                self, "_interaction_gate_shots", 0
+                            ) + 1
+                            logger.warning(
+                                "[INTERACTION GATE] FINALIZE after browser open ({}) "
+                                "-> directed retry {}/{}. task={}",
+                                _interaction_where_det,
+                                self._interaction_gate_shots,
+                                _MAX_INTERACTION_GATE_SHOTS,
+                                self.task_id,
+                            )
+                            try:
+                                observation.content = (
+                                    str(observation.content or "")
+                                    + "\n\nSTOP -- la page est ouverte, mais "
+                                    "l'interaction demandee n'est pas encore prouvee. "
+                                    "Execute le parcours exact demande (saisies, "
+                                    "selection, clic), puis relis l'etat avec "
+                                    "browser_dom_state ou browser_evaluate et constate "
+                                    "le changement avant/apres. Ne conclus pas sur la "
+                                    "seule navigation ou une capture."
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            # B — message déterministe MAIS chaleureux (voix Lumena), toujours sans LLM.
+                            _det_final = build_mission_final_message(
+                                _note, _title, malformed=_malformed,
+                                has_green_test=_has_green, test_ran_not_green=_test_ran_not_green,
+                                tests_expected_not_run=_tests_expected_not_run,
+                            )
+                            if _tests_expected_not_run:
+                                logger.info(
+                                    "[MISSION FINALIZE] tests présents mais non passés verts par le "
+                                    "lead → PAS de « vérifié structurellement » (P0.2). task={}", self.task_id)
+                            # Filet : neutralise tout claim « tests verts / vérifié » résiduel
+                            # (ex. dans _note) sans preuve verte au ledger.
+                            try:
+                                _det_final, _det_lock = apply_mission_truth_lock(
+                                    _det_final, has_green_test=_has_green, last_test_outcome=_o_led,
+                                    has_browser_proof=self._current_browser_proof(),
+                                    # 2.8.2 (run TriboBlog) — HARMONISATION : sans ces
+                                    # 2 params, overclaim_delivery/note_tests_not_run
+                                    # étaient morts à ce site FINALIZE aussi.
+                                    tests_present_not_run=self._tests_present_but_not_run(),
+                                    has_any_mutation=self.execution_ledger.has_any_mutation(),
+                                    has_published=self.execution_ledger.has_published(),  # LOT E
+                                    project_root=Path(__file__).resolve().parents[2],  # 2.11.E
+                                    web_deliverable=self._truth_lock_web_flag(),  # M1
+                                    file_deliverables_expected=self._mission_expects_file_deliverables(),  # H8
+                                    unpublished_writes=self._mission_unpublished_writes(),  # Z24
+                                    has_server_started=self._server_started_proof(),  # LOT 2.3
+                                    browser_content_seen=self._browser_content_seen(),  # 2.7.4
+                                    interaction_proven=self._truth_lock_interaction_proven(),
+                                    interaction_required=self._truth_lock_interaction_flag(),
+                                    objective_is_game=self._truth_lock_game_flag(),  # 2.13.A
+                                    browser_runtime_failed=self._browser_runtime_failed_for_truth_lock(),  # M100.4
+                                )
+                                self._note_truth_lock_outcome(_det_lock)  # F1.b
+                                if _det_lock.get("changed"):
+                                    logger.warning(
+                                        "[MISSION TRUTH-LOCK] FINALIZE déterministe rétrogradé "
+                                        "honnêtement — détails={} task={}",
+                                        {k: v for k, v in _det_lock.items() if v and k != "changed"},
+                                        self.task_id)
+                            except Exception:
+                                pass
+                            if _malformed:
+                                logger.warning(
+                                    "[MISSION FINALIZE] livrable potentiellement mal formé (parser) — "
+                                    "message honnête (pas de « vérifié »). task={}", self.task_id)
+                            logger.info(
+                                "[MISSION FINALIZE] sortie déterministe (artefact écrit ; voie={} ; "
+                                "plan={} tâches) — pas de FINAL LLM (anti thought-leak). task={}",
+                                "reread" if _reread_now else "plan_complet",
+                                len(self._task_plan or []), self.task_id,
+                            )
+                            try:
+                                self.task_orchestrator.set_task_metadata(
+                                    self.task_id,
+                                    completion_proven=True,
+                                    completion_proof=dict(_completion),
+                                    terminal_reason_code="completed",
+                                    terminal_reason_detail=(
+                                        "worker termine: fichiers assignes remplis et preuves requises acquises"
+                                        if _completion.get("scope") == "worker"
+                                        else "cloture deterministe apres publication et preuves requises"
+                                        if _completion.get("complete")
+                                        else "cloture deterministe de l'artefact cible"
+                                    ),
+                                )
+                            except Exception as exc:
+                                logger.debug("[M106] completion persistence skipped: {}", exc)
+                            _finish_iteration(status="ok", summary="mission_artifact_deterministic_final")
+                            return self._stream_and_return_final(_det_final)
+                except Exception:
+                    pass
+
+            # ── Post-succès mission_result : retour DIRECT (vrai, sans round-trip LLM) ──
+            # Le result_summary du lead EST déjà la réponse finale polie. Lui demander
+            # de « reformuler » (chemin générique) déclenche le régime catastrophique du
+            # THOUGHT leak (3 repairs + fallback + cruft) à reformuler un texte déjà prêt.
+            # On livre tel quel (remask anti-secret préservé).
+            if action.tool_name == "mission_result" and observation.success:
+                _mission_deliverable = extract_mission_deliverable(obs_text)
+                if _mission_deliverable:
+                    _mission_deliverable = self._remask_observed_masked_values(_mission_deliverable)
+                    # PAS de truth-lock ici (P0.1, 2026-07-02) : DELIVERY RELAIE un
+                    # résultat de mission déjà produit. Ce texte est DÉJÀ passé par le
+                    # truth-lock à la production (FINAL LLM / FINALIZE déterministe, avec
+                    # le ledger de la MISSION). Le re-juger ici avec le ledger du tour de
+                    # relais (souvent vide, task≠mission) causait une FAUSSE rétrogradation
+                    # d'un vert prouvé (« 16/16 verts » → « tests non exécutés » — run calc).
+                    logger.info(
+                        "[MISSION DELIVERY] mission_result livré en direct ({} chars) "
+                        "— pas de reformulation LLM (anti thought-leak).",
+                        len(_mission_deliverable),
+                    )
+                    _finish_iteration(status="ok", summary="mission_result_direct_final")
+                    # skip explicite = seule exemption du chokepoint (relais P0.1).
+                    return self._stream_and_return_final(
+                        _mission_deliverable, skip_mission_truth_lock=True)
+
             # ── Post-succès delegate_task : chemin FINAL direct ──
             # Après un delegate_task ✅, le rapport du CodeAgent EST la vérification.
             # On force le chemin FINAL sans repasser par "continue" pour éviter
@@ -7590,7 +14639,10 @@ Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{
                 _tool_args_for_delegate = action.tool_args if isinstance(action.tool_args, dict) else {}
                 _web_delivery = (
                     action.tool_name == "delegate_task"
-                    and _post_delegate_web_verify_enabled()
+                    # 2.6.3 (run MiniQuiz §5) — JAMAIS en mission (workers NI lead) :
+                    # ce vérifieur sert le dossier en statique → 404 structurels sur
+                    # une app Flask → boucles de fausses corrections chez les workers.
+                    and self._post_delegate_web_verify_allowed()
                     and _looks_like_web_delegate_delivery(original_query, _tool_args_for_delegate, obs_text)
                 )
                 if _web_delivery:
@@ -7747,6 +14799,11 @@ Continue à répondre à la question initiale.{_conclusion_hint}"""
         self._plan_emitted = False
         self._iterations_without_progress = 0
         self._last_completed_task_count = 0
+        self._last_document_manifest_signature = ()
+        self._last_document_workflow_progress_signature = (0, "", "")
+        self._document_delivery_reference_id = ""
+        self._document_delivery_reference_signature = ()
+        self._document_reference_announced = False
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

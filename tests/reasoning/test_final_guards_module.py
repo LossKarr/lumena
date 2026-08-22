@@ -14,7 +14,28 @@ import src.reasoning.react as r
 _PUBLIC = [
     "_INTENTION_MARKERS", "_DELIVERABLE_MARKERS", "_INTERNAL_PREFIXES",
     "_looks_like_intention", "strip_thought_leak_prefix", "remask_secrets",
+    "extract_mission_deliverable",
 ]
+
+
+def test_extract_mission_deliverable():
+    f = fg.extract_mission_deliverable
+    # vrai résultat livrable → renvoie le corps SANS le préfixe "Résultat de <id> :"
+    body = "✅ **Mission accomplie !** Le dossier est prêt.\n📦 1 livrable(s) : a.md"
+    assert f(f"Résultat de task_abc123 :\n{body}") == body
+    # multi-lignes conservées
+    assert f("Résultat de task_x :\nLigne 1\nLigne 2").splitlines() == ["Ligne 1", "Ligne 2"]
+    # EN COURS (ne commence pas par "Résultat de") → None
+    assert f("Mission task_x pas encore terminée — EN COURS (état technique=checkpointed).") is None
+    # terminée sans résultat → None
+    assert f("Mission task_x terminée sans résultat (état=failed).") is None
+    # résumé vide → None
+    assert f("Résultat de task_x :\n(pas de résumé)") is None
+    # corps vide / pas de saut de ligne / vide → None
+    assert f("Résultat de task_x :\n   ") is None
+    assert f("Résultat de task_x :") is None
+    assert f("") is None
+    assert f(None) is None  # type: ignore
 
 
 def test_module_auto_contenu_pas_de_cycle():
@@ -26,7 +47,9 @@ def test_module_auto_contenu_pas_de_cycle():
         elif isinstance(node, ast.ImportFrom):
             imported.add(node.module or "")
     assert not [m for m in imported if "react" in m], f"cycle: {imported}"
-    assert imported <= {"re", "typing", "__future__"}, f"imports inattendus: {imported}"
+    # LOT 2.11.E : `pathlib` (stdlib, auto-contenu, aucun cycle) rejoint le set
+    # autorisé — published_target_missing_on_disk vérifie l'existence disque.
+    assert imported <= {"re", "typing", "__future__", "pathlib"}, f"imports inattendus: {imported}"
 
 
 def test_react_reexporte_les_memes_objets():

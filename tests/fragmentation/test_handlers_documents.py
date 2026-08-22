@@ -21,6 +21,7 @@ from src.reasoning.handlers.documents import (
     create_pptx_handler,
     read_document_handler,
     get_documents_handler_defs,
+    normalize_pdf_content,
 )
 
 # Note: create_invoice_pdf_handler also exists but is tested via handler_defs
@@ -52,6 +53,40 @@ async def test_create_pdf_failure(ctx):
     }
     r = await create_pdf_handler(ctx, filename="test.pdf", title="T", content="xyz")
     assert not r.success
+
+
+def test_normalize_pdf_content_preserves_historical_text_exactly():
+    content = "# Titre\n\nTexte deja formate."
+    assert normalize_pdf_content(content) == content
+
+
+def test_normalize_pdf_content_accepts_structured_blocks():
+    content = [
+        {"type": "heading", "level": 2, "text": "Synthese"},
+        {"type": "paragraph", "text": "Resultats du mois."},
+        {"type": "list", "items": ["Ventes: 12", "Marge: 30 %"]},
+    ]
+    assert normalize_pdf_content(content) == (
+        "## Synthese\n\nResultats du mois.\n\n- Ventes: 12\n\n- Marge: 30 %"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_pdf_structured_content_is_normalized_before_hub(ctx):
+    ctx._document_hub.create_pdf.return_value = {
+        "success": True, "filename": "test.pdf", "path": "/data/test.pdf", "pages": 1,
+    }
+    result = await create_pdf_handler(
+        ctx,
+        filename="test.pdf",
+        title="Rapport",
+        content=[
+            {"type": "heading", "text": "Rapport"},
+            {"type": "paragraph", "text": "OK"},
+        ],
+    )
+    assert result.success
+    assert ctx._document_hub.create_pdf.call_args.kwargs["content"] == "# Rapport\n\nOK"
 
 
 # ─── create_docx ───────────────────────────────────────────────────────────

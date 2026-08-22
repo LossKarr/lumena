@@ -16,7 +16,8 @@ Usage:
 
 from __future__ import annotations
 import random
-from typing import Any
+import re
+from typing import Any, Optional
 
 # ─────────────────────────────────────────────────────────────
 # PALETTES PROFESSIONNELLES (WCAG-compliant, by product type)
@@ -2663,19 +2664,83 @@ def _score_font(font: dict, msg_lower: str) -> int:
     return sum(1 for kw in font["keywords"] if kw in msg_lower)
 
 
+_THEME_DARK_RE = re.compile(
+    r"dark\s*[- ]?mode|mode\s+sombre|th[èe]me\s+sombre|ambiance\s+sombre"
+    r"|palette\s+sombre|design\s+sombre|fond\s+(?:noir|sombre)|version\s+sombre"
+    r"|en\s+sombre|nocturne",
+    re.IGNORECASE,
+)
+_THEME_LIGHT_RE = re.compile(
+    r"light\s*[- ]?mode|mode\s+clair|th[èe]me\s+clair|ambiance\s+claire"
+    r"|palette\s+claire|design\s+clair|fond\s+(?:blanc|clair)|version\s+claire"
+    r"|en\s+clair",
+    re.IGNORECASE,
+)
+_THEME_NEG_RE = re.compile(
+    r"\b(?:pas|sans|aucun[e]?|ni|non|jamais)\b[^.\n]{0,14}?$",
+    re.IGNORECASE,
+)
+
+
+def _negated(msg: str, start: int) -> bool:
+    """Une négation colle-t-elle juste avant la demande de thème ?"""
+    return bool(_THEME_NEG_RE.search(msg[max(0, start - 22):start]))
+
+
+def requested_theme(user_message: str) -> Optional[str]:
+    """LOT Z27 — l'ambiance a-t-elle été demandée EXPLICITEMENT ? "dark"/"light"/None.
+
+    Mesuré avant correctif : « boulangerie artisanale, ambiance SOMBRE et
+    élégante, dark mode » produisait une palette **LIGHT** (« AI/Chatbot
+    Purple »), et « dark mode impératif demandé par le client » aussi. Le brief
+    ordonne pourtant « Applique EXACTEMENT ces choix. Ne substitue PAS » : Lumena
+    sommait le worker d'ignorer l'ambiance que l'utilisateur avait exigée.
+
+    Exigeant à dessein : « sombre » nu ne compte pas (« une histoire sombre »
+    n'est pas une consigne de design). Il faut un qualifieur de design — mode,
+    thème, ambiance, palette, fond. Négation-aware (« sans dark mode »).
+    Demande contradictoire → None : on ne devine pas.
+    """
+    if not user_message:
+        return None
+    d = next((m for m in _THEME_DARK_RE.finditer(user_message)
+              if not _negated(user_message, m.start())), None)
+    c = next((m for m in _THEME_LIGHT_RE.finditer(user_message)
+              if not _negated(user_message, m.start())), None)
+    if d and c:
+        return None
+    return "dark" if d else ("light" if c else None)
+
+
 def select_pro_palette(user_message: str) -> dict:
-    """Sélectionne la palette professionnelle la plus adaptée (WCAG-compliant)."""
+    """Sélectionne la palette professionnelle la plus adaptée (WCAG-compliant).
+
+    LOT Z27 — une ambiance explicitement demandée prime sur le score de domaine :
+    on restreint d'abord le vivier au thème voulu, PUIS on score dedans. Le
+    domaine continue donc de choisir la palette, mais parmi les bonnes.
+    Repli sur le vivier complet si le thème demandé n'existe pas — mieux vaut une
+    palette du mauvais thème qu'aucune palette.
+    """
     msg_lower = user_message.lower()
+    vivier = PRO_PALETTES
+    _theme = requested_theme(user_message)
+    if _theme:
+        _restreint = [p for p in PRO_PALETTES if p.get("theme") == _theme]
+        if _restreint:
+            vivier = _restreint
     best_score = 0
     candidates: list[dict] = []
-    for p in PRO_PALETTES:
+    for p in vivier:
         score = _score_palette(p, msg_lower)
         if score > best_score:
             best_score = score
             candidates = [p]
         elif score == best_score and score > 0:
             candidates.append(p)
-    return random.choice(candidates) if candidates else random.choice(PRO_PALETTES)
+    # Z27 — repli DANS le vivier : sur « site vitrine, dark mode » aucun mot-clé
+    # de domaine ne score, et un repli sur PRO_PALETTES reperdrait le thème
+    # demandé au dernier moment.
+    return random.choice(candidates) if candidates else random.choice(vivier)
 
 
 def select_pro_font(user_message: str) -> dict:

@@ -39,6 +39,86 @@ def fix_json_text(text: str) -> str:
     return text
 
 
+# ── DS-1 : format DSML natif de deepseek ────────────────────────────
+# (run SkiLoc 2026-07-12) deepseek émet parfois ses tool-calls au format DSML
+# en TEXTE brut : `<｜｜DSML｜｜tool_calls>` + `<｜｜DSML｜｜invoke name="X">` +
+# `<｜｜DSML｜｜parameter name="p" string="true">v</…>`. Le parser les traitait
+# en « THOUGHT halluciné » / « ACTION inline » → nom d'outil récupéré mais
+# PARAMÈTRES PERDUS → « Paramètre(s) requis manquant(s) » en boucle (×8 dans le
+# run), et du DSML brut streamé dans un FINAL chat. On CONVERTIT au lieu de
+# jeter — même doctrine que CA-1 (wrapper args du CodeAgent).
+# `｜` = U+FF5C ; tolérance 1-2 barres et barre ASCII.
+
+_DSML_MARK = r"<[｜|]{1,2}DSML[｜|]{1,2}"
+_DSML_ANY_RE = re.compile(_DSML_MARK)
+_DSML_INVOKE_RE = re.compile(
+    _DSML_MARK + r'invoke\s+name="([^"]+)"[^>]*>(.*?)</[｜|]{1,2}DSML[｜|]{1,2}invoke>',
+    re.DOTALL,
+)
+_DSML_PARAM_RE = re.compile(
+    _DSML_MARK + r'parameter\s+name="([^"]+)"([^>]*)>(.*?)</[｜|]{1,2}DSML[｜|]{1,2}parameter>',
+    re.DOTALL,
+)
+_DSML_RESIDUAL_RE = re.compile(r"</?[｜|]{1,2}DSML[｜|]{1,2}[^>]*>")
+
+
+def _dsml_invoke_args(body: str) -> dict:
+    """Paramètres d'un invoke DSML. `string="true"` = valeur brute ; sinon JSON
+    d'abord (listes/objets/nombres), repli valeur brute."""
+    args: dict = {}
+    for pm in _DSML_PARAM_RE.finditer(body or ""):
+        pname, attrs, pval = pm.group(1).strip(), pm.group(2) or "", pm.group(3).strip()
+        if 'string="true"' in attrs:
+            args[pname] = pval
+        else:
+            try:
+                args[pname] = json.loads(pval)
+            except (json.JSONDecodeError, ValueError):
+                args[pname] = pval
+    return args
+
+
+def convert_dsml_tool_calls(text: str) -> str:
+    """Convertit les invokes DSML en blocs canoniques `ACTION:`/`ACTION_INPUT:`
+    (le multi-invoke retombe sur la mécanique multi-action existante du parser),
+    puis retire tout marqueur DSML résiduel. Texte sans DSML → inchangé."""
+    if not text or not _DSML_ANY_RE.search(text):
+        return text
+
+    def _conv(m: "re.Match") -> str:
+        name = m.group(1).strip()
+        args = _dsml_invoke_args(m.group(2))
+        return (
+            "\nACTION: " + name
+            + "\nACTION_INPUT: " + json.dumps(args, ensure_ascii=False) + "\n"
+        )
+
+    out = _DSML_INVOKE_RE.sub(_conv, text)
+    return _DSML_RESIDUAL_RE.sub("", out)
+
+
+def strip_dsml_markup(text: str) -> str:
+    """Retire les blocs/marqueurs DSML d'un texte destiné à l'AFFICHAGE (FINAL) :
+    l'utilisateur ne doit jamais voir de DSML brut. Sans DSML → inchangé."""
+    if not text or not _DSML_ANY_RE.search(text):
+        return text
+    out = _DSML_INVOKE_RE.sub("", text)
+    return _DSML_RESIDUAL_RE.sub("", out).strip()
+
+
+def dsml_first_action(text: str) -> Optional[dict]:
+    """DS-1.3 (CodeAgent) — premier invoke DSML sous forme d'action dict
+    `{"action": name, **params}`, ou None si aucun DSML. Pur."""
+    if not text or not _DSML_ANY_RE.search(text):
+        return None
+    m = _DSML_INVOKE_RE.search(text)
+    if not m:
+        return None
+    action = {"action": m.group(1).strip()}
+    action.update(_dsml_invoke_args(m.group(2)))
+    return action
+
+
 # ── extract_json_object ────────────────────────────────────────────
 
 def extract_json_object(text: str) -> Optional[dict]:

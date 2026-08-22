@@ -12,6 +12,7 @@ Chaque handler est une fonction async standalone:
 from __future__ import annotations
 
 import ast
+import asyncio
 import os
 import platform
 import re
@@ -67,6 +68,269 @@ def _assert_write_boundary(resolved: Path, ctx: HandlerContext) -> None:
         raise
     except Exception:
         pass  # Erreur de résolution — ne pas bloquer, laisser le handler gérer
+
+
+def _mission_relative_hint(ctx: HandlerContext, path: str) -> str:
+    """A1 (run FitLog) — un worker en mission qui rate un chemin `missions/…` a
+    presque toujours RECOPIÉ (mal) l'identifiant de mission (afee→af1e). Le guider
+    vers le chemin relatif au lieu de le laisser explorer et se désaxer."""
+    try:
+        sub = ctx.mission_workspace_subdir() if hasattr(ctx, "mission_workspace_subdir") else ""
+    except Exception:
+        sub = ""
+    p = (path or "").replace("\\", "/").lstrip("/").lower()
+    if sub and (p.startswith("missions/") or p.startswith("workspace/missions/")):
+        return (
+            "\n💡 Tu es en MISSION : ton dossier de travail EST déjà le dossier de la "
+            "mission — utilise un chemin RELATIF (ex. CONTRAT.md, storage.py), sans "
+            "préfixe missions/<id>/ (l'identifiant recopié est peut-être erroné)."
+        )
+    return ""
+
+
+def _assert_mission_file_allowed(resolved: Path, ctx: HandlerContext, *, is_dir: bool = False) -> None:
+    """LOT 2.3 — refuse une ÉCRITURE hors des fichiers assignés à CE worker.
+
+    Actif SEULEMENT si run de mission AVEC `allowed_files` non vide (option A stricte) ;
+    sinon no-op total (chat, CodeAgent, lead, worker sans liste). La lecture n'est
+    JAMAIS concernée (ce garde n'est appelé que par les chemins mutatifs). La liste
+    est relative au dossier de la mission (scope 2.1). Un dossier est autorisé s'il
+    est parent d'un fichier possédé (pour héberger les livrables du worker).
+    """
+    _fn = getattr(ctx, "mission_allowed_files_set", None)
+    owned = _fn() if callable(_fn) else None
+    if not owned:
+        # A3 (run FitLog) — même sans périmètre (lead), les tests CONTRACTUELS
+        # restent intouchables : on corrige le CODE, jamais les tests.
+        _assert_contract_tests_untouched(resolved, ctx, is_dir=is_dir)
+        # H3 — le lead n'a pas d'`allowed_files` (il intègre), mais il ne doit pas
+        # écrire un fichier dont le worker owner travaille ENCORE.
+        _assert_not_owned_by_live_worker(resolved, ctx, is_dir=is_dir)
+        return
+    _sub_fn = getattr(ctx, "mission_workspace_subdir", None)
+    sub = _sub_fn() if callable(_sub_fn) else ""
+    if not sub or ctx.file_guardrails is None:
+        # FAIL CLOSED (note de revue 2.3) : un périmètre existe mais le dossier de
+        # mission est introuvable/malformé → impossible de VÉRIFIER le contrat →
+        # refus propre. Sinon un worker mal métadonné redeviendrait libre.
+        raise PathSecurityError(
+            "⛔ Écriture refusée : un périmètre de fichiers (allowed_files) est défini "
+            "mais le dossier de mission (mission_workspace) est absent — impossible de "
+            "vérifier le contrat. Signale ce problème de configuration au lead."
+        )
+    try:
+        mission_root = (ctx.file_guardrails._workspace_root().resolve() / sub)
+        rel = resolved.resolve().relative_to(mission_root.resolve()).as_posix()
+    except ValueError:
+        # Écriture hors du dossier de la mission alors qu'un scope existe → refus.
+        raise PathSecurityError(
+            "⛔ Écriture hors de ton périmètre de mission. Tu ne peux écrire que "
+            f"tes fichiers assignés : {sorted(owned)}."
+        )
+    except Exception:
+        return  # résolution impossible → ne pas bloquer (laisser les autres gardes gérer)
+    if is_dir:
+        if rel == "" or any(f == rel or f.startswith(rel + "/") for f in owned):
+            return
+    elif rel in owned:
+        return
+    _record_out_of_scope_attempt(ctx, rel)  # F3.a — le blocage doit remonter au parent
+    raise PathSecurityError(
+        f"⛔ Fichier '{rel}' hors de ton périmètre. Tu possèdes : {sorted(owned)}. "
+        "Écris UNIQUEMENT ces fichiers ; laisse les autres aux workers concernés."
+    )
+
+
+def _record_out_of_scope_attempt(ctx: HandlerContext, rel: str) -> None:
+    """F3.a — mémorise sur la tâche du worker qu'il a buté sur un fichier étranger.
+
+    Le refus de périmètre est un FAIT déterministe : on sait quel fichier était visé.
+    Jusqu'ici il était seulement loggué, donc perdu — le lead ne pouvait apprendre le
+    blocage que par le `result_summary` en texte libre, tronqué à la fusion (cause de
+    la vrille MiniQuiz : le worker tests voit `static/script.js` invalide, ne peut pas
+    l'écrire, et le signal se dissout).
+
+    On n'exige AUCUNE déclaration du modèle : c'est précisément ce que ce projet
+    combat. `delegate_and_wait` transforme ensuite ces faits en issues routables,
+    l'owner probable étant lu dans `contract.json`.
+
+    FAIL-OPEN STRICT : ce mouchard ne doit JAMAIS empêcher le refus de refuser.
+    Idempotent : un worker retente souvent le même fichier ; borné à 20 entrées.
+    """
+    try:
+        task_id = getattr(ctx, "runtime_task_id", None)
+        core = getattr(ctx, "lumena", None)
+        orch = getattr(core, "task_orchestrator", None) if core is not None else None
+        if not task_id or orch is None or not rel:
+            return
+        meta = (orch.get_task(task_id) or {}).get("metadata") or {}
+        current = list(meta.get("blocked_out_of_scope") or [])
+        if rel in current or len(current) >= 20:
+            return
+        current.append(rel)
+        orch.set_task_metadata(task_id, blocked_out_of_scope=current)
+    except Exception:
+        pass
+
+
+def _assert_not_owned_by_live_worker(
+    resolved: Path, ctx: HandlerContext, *, is_dir: bool = False
+) -> None:
+    """H3 — le lead ne réécrit pas le fichier d'un worker encore vivant.
+
+    Run SuiviDepenses (2026-08-12) : croyant ses workers bloqués, le lead a
+    « repris leur périmètre » et écrit `app.py` pendant que le CodeAgent de
+    `w_backend` l'écrivait aussi. Le lease `files:<chemin>` sérialise bien les
+    écritures simultanées, mais n'arbitre aucune propriété dans la durée.
+
+    Actif UNIQUEMENT pour un run de mission sans `allowed_files` (le lead) et
+    seulement si un `contract.json` existe : hors de ce cas, no-op total.
+    Fail-open sur toute erreur — mieux vaut laisser passer que bloquer une
+    intégration légitime.
+    """
+    if is_dir:
+        return
+    try:
+        if not getattr(ctx, "is_mission_run", False):
+            return
+        lead_id = getattr(ctx, "runtime_task_id", None)
+        core = getattr(ctx, "lumena", None)
+        orch = getattr(core, "task_orchestrator", None) if core is not None else None
+        if not lead_id or orch is None:
+            return
+        children = orch.get_children(lead_id) or []
+        if not children:
+            return  # aucun worker → rien à protéger (cas le plus courant)
+
+        _sub_fn = getattr(ctx, "mission_workspace_subdir", None)
+        sub = _sub_fn() if callable(_sub_fn) else ""
+        guardrails = getattr(ctx, "file_guardrails", None)
+        if not sub or guardrails is None:
+            return
+        import json as _json
+
+        from src.subagents.mission_contract import CONTRACT_JSON, live_owner_of_path
+
+        mission_root = guardrails._workspace_root().resolve() / sub
+        contract_file = mission_root / CONTRACT_JSON
+        if not contract_file.is_file():
+            return  # pas de contrat → pas d'owners → rien à arbitrer
+        data = _json.loads(contract_file.read_text(encoding="utf-8", errors="replace"))
+        try:
+            rel = resolved.resolve().relative_to(mission_root).as_posix()
+        except ValueError:
+            return  # hors du dossier de mission : d'autres gardes s'en chargent
+
+        owner = live_owner_of_path(rel, data, children)
+        if owner:
+            logger.warning(
+                "[H3] écriture du lead refusée sur '{}' — owner '{}' encore actif",
+                rel, owner,
+            )
+            raise PathSecurityError(
+                f"⛔ `{rel}` appartient au worker **{owner}**, qui travaille ENCORE. "
+                "Écrire maintenant écraserait son travail en cours.\n\n"
+                "Attends sa fin (`mission_status(<id>)`), ou annule-le explicitement "
+                "(`cancel_mission(<id>)`) avant de reprendre son périmètre."
+            )
+    except PathSecurityError:
+        raise
+    except Exception as exc:
+        logger.debug("[H3] arbitrage de propriété ignoré: {}", exc)
+
+
+def _contract_test_paths(ctx: HandlerContext) -> frozenset:
+    """A3 — chemins (posix, relatifs au dossier mission) des fichiers de TEST
+    déclarés au contract.json de la mission courante. Vide hors mission/contrat."""
+    _sub_fn = getattr(ctx, "mission_workspace_subdir", None)
+    sub = _sub_fn() if callable(_sub_fn) else ""
+    if not sub or getattr(ctx, "file_guardrails", None) is None:
+        return frozenset()
+    try:
+        import json as _json
+        cj = ctx.file_guardrails._workspace_root().resolve() / sub / "contract.json"
+        if not cj.is_file():
+            return frozenset()
+        data = _json.loads(cj.read_text(encoding="utf-8", errors="replace"))
+        out = set()
+        for f in (data.get("files") or []):
+            p = str(f.get("path") or "").replace("\\", "/").strip("/")
+            base = p.rsplit("/", 1)[-1]
+            if base.startswith("test_") and base.endswith(".py"):
+                out.add(p)
+        return frozenset(out)
+    except Exception:
+        return frozenset()
+
+
+def _is_pure_stub_test(resolved: Path) -> bool:
+    """2.9.C — le test contractuel est-il ENCORE un stub non rempli ?
+
+    True SSI son contenu actuel porte la marque de stub (raise NotImplementedError
+    ou « TODO worker ») ET ne contient AUCUNE assertion réelle (`assert `,
+    `pytest.raises`, `self.assert…`, `response.status_code`…). Un tel fichier est
+    un livrable NON FAIT — le remplir ne trahit pas le contrat. Un fichier absent
+    n'est pas un stub (on ne relâche pas). Défensif : False sur toute erreur."""
+    try:
+        txt = resolved.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return False
+    if "raise NotImplementedError" not in txt and "TODO worker" not in txt:
+        return False
+    import re as _re
+    _real = _re.compile(
+        r"^\s*assert\b|pytest\.raises|self\.assert|\.status_code\b|\bassert_",
+        _re.MULTILINE,
+    )
+    return not bool(_real.search(txt))
+
+
+def _assert_contract_tests_untouched(resolved: Path, ctx: HandlerContext, *, is_dir: bool = False) -> None:
+    """A3 (run FitLog) — les tests contractuels sont la VÉRITÉ du contrat.
+
+    Le lead FitLog, face à des tests qui ne collaient pas à son code réinventé, a
+    décidé de « réécrire les tests adaptés à l'implémentation réelle » — le mauvais
+    sens. Ici : quiconque écrit SANS périmètre (lead) ne peut pas muter un test
+    déclaré au contrat — ni dans le dossier mission, ni sa copie publiée (même
+    basename ailleurs dans le workspace). Si tests ↔ code divergent : corriger le
+    CODE par mutation, ou dire l'écart honnêtement au rapport. Le worker OWNER
+    (allowed_files) n'est pas concerné (il remplit ses stubs)."""
+    if is_dir:
+        return
+    tests = _contract_test_paths(ctx)
+    if not tests:
+        return
+    # 2.9.C (re-run MotCompteur 2026-07-08) — un test encore STUB (corps
+    # NotImplementedError/TODO, AUCUNE assertion réelle) n'est PAS un test qu'on
+    # affaiblit : le REMPLIR est licite. Le run MotCompteur est mort ici — le
+    # CodeAgent du worker a clamé « rempli » sans écrire, le test est resté un stub,
+    # et ce guard a EMPÊCHÉ le lead de le remplir → 16 iters à vide, rien livré.
+    # On ne relâche QUE sur un stub pur ; un test à vraies assertions reste verrouillé.
+    if _is_pure_stub_test(resolved):
+        return
+    _sub_fn = getattr(ctx, "mission_workspace_subdir", None)
+    sub = _sub_fn() if callable(_sub_fn) else ""
+    _msg = (
+        " est un TEST CONTRACTUEL : il ne se réécrit pas. Si les tests échouent, "
+        "corrige le CODE par mutation (edit_file sur les modules) ; si le contrat "
+        "lui-même est erroné, dis-le honnêtement dans ton rapport final."
+    )
+    try:
+        mission_root = ctx.file_guardrails._workspace_root().resolve() / sub
+        rel = resolved.resolve().relative_to(mission_root.resolve()).as_posix()
+        if rel in tests:
+            raise PathSecurityError(f"⛔ '{rel}'" + _msg)
+    except PathSecurityError:
+        raise
+    except Exception:
+        pass
+    # Protection par BASENAME partout (dossier mission, sous-dossiers, copie
+    # publiée) : une copie d'un test contractuel porte le même nom — la muter
+    # revient à muter le contrat.
+    _base = resolved.name
+    if _base in {t.rsplit("/", 1)[-1] for t in tests}:
+        raise PathSecurityError(f"⛔ '{_base}'" + _msg)
+
 
 # Imports optionnels (même pattern que react.py)
 try:
@@ -412,8 +676,9 @@ async def read_file_handler(
         if not resolved.exists():
             _home = Path.home()
             return HandlerResult.ok(
-                f"❌ Fichier non trouvé: {path}\n"
-                f"💡 Chemins essayés: workspace/, lumena/, cwd/\n"
+                f"❌ Fichier non trouvé: {path}"
+                + _mission_relative_hint(ctx, path)
+                + f"\n💡 Chemins essayés: workspace/, lumena/, cwd/\n"
                 f"💡 Home utilisateur: {_home}\n"
                 f"💡 Bureau: {_home / 'Desktop'}",
                 handler_name="read_file",
@@ -472,8 +737,9 @@ async def list_directory_handler(ctx: HandlerContext, path: str = ".") -> Handle
         if not dir_path.exists():
             _home = Path.home()
             return HandlerResult.ok(
-                f"❌ Répertoire non trouvé: {path}\n"
-                f"💡 Essayé: workspace/, lumena/, cwd/\n"
+                f"❌ Répertoire non trouvé: {path}"
+                + _mission_relative_hint(ctx, path)
+                + f"\n💡 Essayé: workspace/, lumena/, cwd/\n"
                 f"💡 Home utilisateur: {_home}\n"
                 f"💡 Bureau: {_home / 'Desktop'}\n"
                 f"💡 Si tu cherches le bureau, utilise le chemin EXACT: {_home / 'Desktop'}",
@@ -629,8 +895,16 @@ async def find_files_handler(ctx: HandlerContext, pattern: str, path: str = "wor
         return HandlerResult.fail(f"Erreur find_files: {e}", handler_name="find_files")
 
 
-async def open_file_handler(ctx: HandlerContext, path: str) -> HandlerResult:
+async def open_file_handler(
+    ctx: HandlerContext, path: str = None, file_path: str = None,
+) -> HandlerResult:
     """Ouvre un fichier dans son application par défaut."""
+    if path is None:
+        path = file_path
+    if not path:
+        return HandlerResult.fail(
+            "Parametre 'path' (ou 'file_path') requis", handler_name="open_file",
+        )
     resolved = ctx.resolve_path(path)
     if not resolved.exists():
         return HandlerResult.ok(
@@ -673,6 +947,20 @@ async def write_file_handler(
     if content is None:
         return HandlerResult.ok("❌ Erreur: parametre 'content' (ou 'input') requis", handler_name="write_file")
 
+    # LOT 2.10 (run StockPilot) — en MISSION, le contrat se pose via l'OUTIL
+    # write_mission_contract, JAMAIS à la main : le bypass manuel (après un refus
+    # de format) courcircuitait stubs contractuels et allowed_files (rails 2.2/2.3).
+    if getattr(ctx, "is_mission_run", False):
+        _base_210 = Path(path).name.lower()
+        if _base_210 in ("contract.json", "contrat.md"):
+            return HandlerResult.fail(
+                "⛔ En mission, contract.json/CONTRAT.md se posent UNIQUEMENT via "
+                "write_mission_contract (objet JSON strict) — pas à la main. "
+                "Rappelle l'outil : il génère aussi les stubs et les objectifs "
+                "workers avec leurs périmètres.",
+                handler_name="write_file",
+            )
+
     try:
         ide_runtime = ctx.is_ide_runtime()
         requested_path = Path(path)
@@ -685,10 +973,12 @@ async def write_file_handler(
             target_path, _redirected, resolved_workspace_relative = ctx.file_guardrails.resolve_write_target(
                 path,
                 project_name=project,
+                mission_workspace_subdir=ctx.mission_workspace_subdir(),
             )
         # P0.2: vérifier la boundary avant toute écriture (couvre le chemin IDE direct)
         try:
             _assert_write_boundary(target_path, ctx)
+            _assert_mission_file_allowed(target_path, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="write_file")
         # P0.2: block writes to protected zones (.env, data/, models/, backups/)
@@ -700,15 +990,19 @@ async def write_file_handler(
         existed_before, before_content = _before_snapshot(target_path)
 
         patch_strict = ctx.patch_strict_enabled()
+        # C0.2 (run FrigoZen) : un REFUS d'écriture est un ÉCHEC (HandlerResult.fail),
+        # jamais un succès — sinon le ledger croit le fichier écrit (written_basenames/
+        # has_any_mutation pollués) et la garde anti-boucle A4 tue le worker avec un
+        # faux « déjà écrit » (mort de w_web sur index.html resté stub).
         if patch_strict and existed_before and not force_rewrite:
-            return HandlerResult.ok(
+            return HandlerResult.fail(
                 "❌ Patch strict actif: fichier existant. "
                 "Utilise edit_file/apply_patch pour modifier une partie, "
                 "ou force_rewrite=true avec rewrite_reason explicite.",
                 handler_name="write_file",
             )
         if patch_strict and existed_before and force_rewrite and not str(rewrite_reason or "").strip():
-            return HandlerResult.ok(
+            return HandlerResult.fail(
                 "❌ Patch strict actif: rewrite_reason est requis quand force_rewrite=true.",
                 handler_name="write_file",
             )
@@ -719,7 +1013,7 @@ async def write_file_handler(
             target_path, before_content, content, force_rewrite, rewrite_reason,
         )
         if _destructive_err:
-            return HandlerResult.ok(_destructive_err, handler_name="write_file")
+            return HandlerResult.fail(_destructive_err, handler_name="write_file")
         # Backup auto avant toute écriture écrasant un fichier existant
         if existed_before:
             _auto_backup_before_write(target_path, before_content)
@@ -729,13 +1023,13 @@ async def write_file_handler(
             target_path.write_text(content, encoding="utf-8")
             # Readback validation (même protection que write_file_strict)
             if not target_path.exists():
-                return HandlerResult.ok(
+                return HandlerResult.fail(
                     f"❌ Écriture échouée: le fichier n'a pas été créé sur disque ({target_path})",
                     handler_name="write_file",
                 )
             readback = target_path.read_text(encoding="utf-8")
             if readback != content:
-                return HandlerResult.ok(
+                return HandlerResult.fail(
                     f"❌ Écriture corrompue: readback != contenu attendu ({target_path})",
                     handler_name="write_file",
                 )
@@ -748,10 +1042,11 @@ async def write_file_handler(
                 content=content,
                 project_name=project,
                 require_non_empty=True,
+                mission_workspace_subdir=ctx.mission_workspace_subdir(),
             )
             if not write_result.success:
                 details = "; ".join(write_result.validation_errors) if write_result.validation_errors else write_result.message
-                return HandlerResult.ok(f"❌ Validation ecriture echouee: {details}", handler_name="write_file")
+                return HandlerResult.fail(f"❌ Validation ecriture echouee: {details}", handler_name="write_file")
             write_file_path = write_result.file_path
             write_workspace_relative = write_result.workspace_relative
             write_message = write_result.message
@@ -791,6 +1086,11 @@ async def delete_file_handler(ctx: HandlerContext, path: str) -> HandlerResult:
             return HandlerResult.fail(f"❌ Fichier introuvable: {path}", handler_name="delete_file")
         if not file_path.is_file():
             return HandlerResult.fail(f"❌ N'est pas un fichier: {path}", handler_name="delete_file")
+        # LOT 2.3 : un worker ne supprime que ses fichiers assignés (no-op hors scope).
+        try:
+            _assert_mission_file_allowed(file_path, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="delete_file")
         # P0.2: Only allow deletions inside workspace/ by default
         if check_delete_allowed is not None:
             try:
@@ -861,6 +1161,7 @@ async def create_zip_handler(
             out_zip = out_zip.with_suffix(".zip")
         try:
             _assert_write_boundary(out_zip, ctx)
+            _assert_mission_file_allowed(out_zip, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="create_zip")
         if out_zip.exists() and out_zip.is_dir():
@@ -928,6 +1229,7 @@ async def edit_file_handler(
         resolved = ctx.resolve_path(file_path)
         try:
             _assert_write_boundary(resolved, ctx)
+            _assert_mission_file_allowed(resolved, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="edit_file")
         existed_before, before_content = _before_snapshot(resolved)
@@ -1017,6 +1319,13 @@ async def multi_edit_file_handler(ctx: HandlerContext, edits: list) -> HandlerRe
             if not fp:
                 continue
             resolved = ctx.resolve_path(fp)
+            # LOT 2.3 (+ frontière, absente jusqu'ici sur ce chemin) : chaque fichier
+            # édité doit rester dans les limites ET dans le périmètre du worker.
+            try:
+                _assert_write_boundary(resolved, ctx)
+                _assert_mission_file_allowed(resolved, ctx)
+            except PathSecurityError as sec_err:
+                return HandlerResult.fail(str(sec_err), handler_name="multi_edit_file")
             existed_before, before_content = _before_snapshot(resolved)
             before_map[str(resolved)] = {
                 "path": resolved,
@@ -1166,6 +1475,7 @@ async def insert_at_anchor_handler(
         resolved = ctx.resolve_path(path)
         try:
             _assert_write_boundary(resolved, ctx)
+            _assert_mission_file_allowed(resolved, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="insert_at_anchor")
         if check_write_blacklist is not None:
@@ -1240,6 +1550,7 @@ async def apply_patch_handler(
         resolved = ctx.resolve_path(file_path)
         try:
             _assert_write_boundary(resolved, ctx)
+            _assert_mission_file_allowed(resolved, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
 
@@ -1303,6 +1614,16 @@ async def apply_patch_new_handler(ctx: HandlerContext, patch_content: str) -> Ha
         return HandlerResult.ok("❌ Module apply_patch non disponible", handler_name="apply_patch")
     try:
         lumena_root = ctx.lumena_root
+        # LOT 2.1/2.3 — FIN DU BYPASS : ce handler résolvait les hunks en dur via
+        # `lumena_root / hunk_path`, contournant le scope workspace mission (2.1) ET
+        # le périmètre worker (2.3). En mission, la racine de patch devient le dossier
+        # ISOLÉ de la mission ; hors mission → lumena_root (comportement inchangé).
+        _sub_fn = getattr(ctx, "mission_workspace_subdir", None)
+        _sub = _sub_fn() if callable(_sub_fn) else ""
+        if _sub and ctx.file_guardrails is not None:
+            patch_root = (ctx.file_guardrails._workspace_root() / _sub)
+        else:
+            patch_root = lumena_root
         patch_hunks = _parse_patch_fn(patch_content)
 
         touched: Dict[str, Dict[str, Any]] = {}
@@ -1311,13 +1632,19 @@ async def apply_patch_new_handler(ctx: HandlerContext, patch_content: str) -> Ha
             hunk_path = getattr(hunk, "path", "")
             if not hunk_path:
                 continue
-            resolved = (lumena_root / hunk_path).resolve()
+            resolved = (patch_root / hunk_path).resolve()
             # P0.2: block patches to protected zones
             if check_write_blacklist is not None:
                 try:
                     check_write_blacklist(resolved, lumena_root)
                 except PathSecurityError as sec_err:
                     return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
+            # Frontière + périmètre worker (2.3) sur CHAQUE fichier patché.
+            try:
+                _assert_write_boundary(resolved, ctx)
+                _assert_mission_file_allowed(resolved, ctx)
+            except PathSecurityError as sec_err:
+                return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
             existed_before, before_content = _before_snapshot(resolved)
             touched[str(resolved)] = {
                 "path": resolved,
@@ -1327,7 +1654,7 @@ async def apply_patch_new_handler(ctx: HandlerContext, patch_content: str) -> Ha
                 "hunk_path": hunk_path,
             }
 
-        result = await _apply_patch_fn(patch_content=patch_content, workspace_root=lumena_root)
+        result = await _apply_patch_fn(patch_content=patch_content, workspace_root=patch_root)
         summary = result.summary()
 
         if result.success:
@@ -1411,6 +1738,73 @@ async def view_outline_handler(ctx: HandlerContext, path: str) -> HandlerResult:
     except Exception as e:
         return HandlerResult.fail(f"❌ Erreur: {e}", handler_name="view_outline")
 
+# 2.11.a anti-freeze : dossiers jamais scannés par grep_search (arbres massifs
+# ou générés — node_modules d'un seul projet remotion suffit à geler l'app).
+_GREP_EXCLUDED_DIRS = frozenset({
+    "node_modules", ".git", ".backups", "__pycache__", "venv", ".venv",
+    "env", "dist", "build", ".pytest_cache", "site-packages",
+    ".mypy_cache", ".ruff_cache", "chroma_db",
+})
+_GREP_MAX_FILES = 4000
+_GREP_MAX_SECONDS = 8.0
+_GREP_MAX_FILE_SIZE = 1_000_000  # 1 Mo
+
+
+def _grep_search_sync(
+    target: Path,
+    regex: "re.Pattern[str]",
+    root: Path,
+    max_results: int,
+) -> tuple[list, int, str]:
+    """Cœur synchrone de grep_search — exécuté hors event loop (to_thread).
+
+    Itération paresseuse (os.walk avec élagage des dossiers exclus) sous
+    double budget dur (fichiers + temps). Retourne (résultats, nb fichiers
+    scannés, raison de troncature ou chaîne vide).
+    """
+    import time as _time
+
+    results: list = []
+    scanned = 0
+    deadline = _time.monotonic() + _GREP_MAX_SECONDS
+
+    def _search_file(file_path: Path) -> bool:
+        """Cherche dans un fichier ; True si max_results atteint."""
+        nonlocal scanned
+        scanned += 1
+        try:
+            if file_path.stat().st_size > _GREP_MAX_FILE_SIZE:
+                return False
+            content = file_path.read_text(encoding="utf-8", errors="ignore")
+        except (IOError, OSError):
+            return False
+        for i, line in enumerate(content.split("\n"), 1):
+            if regex.search(line):
+                try:
+                    rel = file_path.relative_to(root)
+                except ValueError:
+                    rel = file_path
+                results.append(f"{rel}:{i}: {line.strip()[:100]}")
+                if len(results) >= max_results:
+                    return True
+        return False
+
+    if target.is_file():
+        _search_file(target)
+        return results, scanned, ""
+
+    for dirpath, dirnames, filenames in os.walk(target):
+        dirnames[:] = [d for d in dirnames if d not in _GREP_EXCLUDED_DIRS]
+        for name in filenames:
+            if scanned >= _GREP_MAX_FILES:
+                return results, scanned, f"budget de {_GREP_MAX_FILES} fichiers atteint"
+            if _time.monotonic() > deadline:
+                return results, scanned, f"budget de {_GREP_MAX_SECONDS:.0f}s atteint"
+            if _search_file(Path(dirpath) / name):
+                return results, scanned, ""
+    return results, scanned, ""
+
+
 async def grep_search_handler(
     ctx: HandlerContext,
     pattern: str = "",
@@ -1446,7 +1840,6 @@ async def grep_search_handler(
             )
 
         max_results = max(1, min(int(max_results), 200))
-        max_file_size = 1_000_000  # 1 Mo
 
         flags = _re.IGNORECASE if ignore_case else 0
         if is_regex:
@@ -1459,38 +1852,46 @@ async def grep_search_handler(
         else:
             regex = _re.compile(_re.escape(pattern), flags)
 
-        files_to_search = [target] if target.is_file() else list(target.rglob("*"))
+        # 2.11.a : scan borné hors event loop — grep_search ne peut plus
+        # geler l'app (exclusions dures + budgets fichiers/temps).
+        results, scanned, budget_note = await asyncio.to_thread(
+            _grep_search_sync, target, regex, root, max_results
+        )
 
-        results = []
-        for file_path in files_to_search:
-            if not file_path.is_file():
-                continue
-            try:
-                if file_path.stat().st_size > max_file_size:
-                    continue
-                content = file_path.read_text(encoding="utf-8", errors="ignore")
-                for i, line in enumerate(content.split("\n"), 1):
-                    if regex.search(line):
-                        try:
-                            rel = file_path.relative_to(root)
-                        except ValueError:
-                            rel = file_path
-                        results.append(f"{rel}:{i}: {line.strip()[:100]}")
-                        if len(results) >= max_results:
-                            break
-            except (IOError, OSError):
-                continue
-            if len(results) >= max_results:
-                break
+        partial_note = ""
+        if budget_note:
+            partial_note = (
+                f"\n\n⏱ Recherche bornée ({budget_note}, {scanned} fichiers scannés) — "
+                f"résultats partiels. Précise un sous-dossier via path= pour cibler."
+            )
+
+        # LOT Z30 — « aucun résultat » sur une regex cherchée COMME DU TEXTE est
+        # un mensonge par omission. Run « Papier Cousu » (2026-08-19, 18:12:29) :
+        # pattern `canvas|requestAnimationFrame|getContext` passé sans
+        # `is_regex=True` → `re.escape()` cherche la chaîne littérale, 0 résultat.
+        # Or `index.html` contient bien `<canvas id="bookCanvas">`. Lumena a
+        # failli conclure que l'animation demandée n'existait pas.
+        # On ne change PAS le comportement (chercher littéralement reste le
+        # défaut) — on dit ce qu'on a réellement cherché.
+        _litteral_note = ""
+        if not is_regex and any(c in pattern for c in "|*+?[](){}^$\\"):
+            _litteral_note = (
+                f"\n\n⚠️ '{pattern}' contient des métacaractères mais a été cherché "
+                "comme TEXTE LITTÉRAL (is_regex=false par défaut). "
+                "Relance avec `is_regex=true` pour l'interpréter comme une "
+                "expression régulière."
+            )
 
         if not results:
             return HandlerResult.ok(
-                f"🔍 Aucun résultat pour '{pattern}' dans {path}",
+                f"🔍 Aucun résultat pour '{pattern}' dans {path}"
+                + partial_note + _litteral_note,
                 handler_name="grep_search",
             )
         header = f"🔍 {len(results)} résultat(s) pour '{pattern}':\n\n"
         return HandlerResult.ok(
-            header + "\n".join(results), handler_name="grep_search"
+            header + "\n".join(results) + partial_note + _litteral_note,
+            handler_name="grep_search",
         )
     except Exception as e:
         return HandlerResult.fail(
@@ -1534,6 +1935,7 @@ async def undo_edit_handler(ctx: HandlerContext, file_path: str = "") -> Handler
         target = ctx.resolve_path(file_path)
         try:
             _assert_write_boundary(target, ctx)
+            _assert_mission_file_allowed(target, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="undo_edit")
 
@@ -1585,12 +1987,26 @@ async def create_directory_handler(
                 stripped = path_posix[len("workspace/"):]
                 if stripped:
                     target = _Path(stripped)
-            # P3 — en mission (projet épinglé), aligner create_directory sur le
-            # routage de write_file (workspace/<date>/<projet>/…) pour éviter le
-            # piège « dossier vide » (création à la racine pendant que les fichiers
-            # vont dans le sous-dossier épinglé).
+            # LOT 2.1 — scope mission : aligner create_directory sur le dossier ISOLÉ
+            # de la mission (missions/<slug>_<id>/…), param explicite depuis le ctx,
+            # AVANT le legacy _pinned_project (réservé au mono-agent, jamais partagé
+            # entre workers concurrents). Sinon piège « dossier vide » à la racine.
+            _mws_fn = getattr(ctx, "mission_workspace_subdir", None)
+            _mws = _mws_fn() if callable(_mws_fn) else ""
             from src.tools.file_guardrails import WorkspaceFileGuardrails as _WFG
-            if _WFG._pinned_project:
+            if _mws:
+                # Même racine que write_file (guardrails._workspace_root, qui respecte
+                # l'override lumena_root) → cohérence write/create_directory.
+                # LOT 2.8 — strip défensif anti-duplication missions/<id>/missions/<id>.
+                from src.tools.file_guardrails import strip_mission_workspace_prefix as _smwp
+                target = _Path(_smwp(target.as_posix(), _mws))
+                if ctx.file_guardrails is not None:
+                    _ws_root = ctx.file_guardrails._workspace_root()
+                else:
+                    from src.utils.paths import WORKSPACE_DIR as _WS_DIR
+                    _ws_root = _WS_DIR
+                target = _ws_root / _mws / target
+            elif _WFG._pinned_project:
                 from datetime import datetime as _dt
                 from src.utils.paths import WORKSPACE_DIR as _WS_DIR
                 target = _WS_DIR / _dt.now().strftime("%Y-%m-%d") / _WFG._pinned_project / target
@@ -1598,6 +2014,7 @@ async def create_directory_handler(
                 target = ctx.runtime_root / target
         try:
             _assert_write_boundary(target, ctx)
+            _assert_mission_file_allowed(target, ctx, is_dir=True)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="create_directory")
         target.mkdir(parents=True, exist_ok=exist_ok)
@@ -1858,8 +2275,9 @@ def get_file_handler_defs() -> List[HandlerDef]:
             parameters={
                 "properties": {
                     "path": {"type": "string", "description": "Chemin du fichier a ouvrir"},
+                    "file_path": {"type": "string", "description": "Alias compatible de path"},
                 },
-                "required": ["path"],
+                "required": [],
             },
             handler=open_file_handler,
             category="files",

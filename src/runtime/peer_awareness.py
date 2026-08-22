@@ -156,6 +156,75 @@ def get_peer_awareness_snapshot(user_id: Optional[str] = None) -> dict:
     return {"enabled": True, "peers": result}
 
 
+def _seconds_since(iso: str) -> Optional[float]:
+    """Secondes écoulées depuis une date ISO, ou None si invalide."""
+    try:
+        if not iso:
+            return None
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt).total_seconds()
+    except Exception:
+        return None
+
+
+def build_capability_map(fresh_sec: int = 300) -> dict:
+    """C2 — Carte des capacités VIVANTE : qui sait faire quoi, joignable, en forme.
+
+    Substrat de décision de C3 (et lisible côté UI). Pure lecture/agrégation —
+    AUCUNE action, AUCune sonde réseau (la joignabilité est dérivée de la fraîcheur
+    de `last_seen`, rafraîchie en continu par la boucle d'autonomie). Indépendant
+    des flags (donnée brute) ; n'expose aucun secret.
+
+    Par pair : capacités, scopes accordés, niveau, joignabilité, quarantaine, et un
+    booléen `delegable` (= appelable ET joignable ET non-quarantaine ET scopes>0).
+    """
+    fresh_sec = max(30, min(86400, int(fresh_sec)))
+    data = _load_peers()
+    try:
+        from src.runtime.peer_quarantine import is_quarantined
+    except Exception:
+        is_quarantined = lambda _pid: False  # noqa: E731
+
+    peers = []
+    for peer in (data.values() if isinstance(data, dict) else []):
+        if peer.get("trust") != "trusted":
+            continue
+        can_call = bool(peer.get("peer_token_outbound"))
+        if not can_call and not peer.get("peer_token_hash"):
+            continue
+        pid = peer.get("instance_id", "")
+        since = _seconds_since(peer.get("last_seen", ""))
+        reachable = since is not None and since <= fresh_sec
+        quarantined = bool(is_quarantined(pid))
+        scopes = list(peer.get("allowed_scopes") or [])
+        delegable = bool(can_call and reachable and not quarantined and scopes)
+        peers.append({
+            "instance_id": pid,
+            "name": peer.get("alias") or peer.get("instance_name") or (pid[:12] if pid else "?"),
+            "host": peer.get("host", ""),
+            "port": peer.get("port", 0),
+            "capabilities": list(peer.get("capabilities") or []),
+            "allowed_scopes": scopes,
+            "capability_level": peer.get("capability_level", "chat"),
+            "can_call": can_call,
+            "reachable": reachable,
+            "quarantined": quarantined,
+            "delegable": delegable,
+            "last_seen": peer.get("last_seen", ""),
+            "seen_seconds_ago": int(since) if since is not None else None,
+        })
+    # Trie : délégables d'abord, puis joignables, puis le reste.
+    peers.sort(key=lambda p: (not p["delegable"], not p["reachable"], p["name"].lower()))
+    return {
+        "peers": peers,
+        "count": len(peers),
+        "delegable_count": sum(1 for p in peers if p["delegable"]),
+        "fresh_sec": fresh_sec,
+    }
+
+
 def _fmt_last_seen(iso: str) -> str:
     """Convertit une date ISO en durée relative lisible. Silencieux si invalide."""
     try:

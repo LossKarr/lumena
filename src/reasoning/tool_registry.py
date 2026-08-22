@@ -25,6 +25,17 @@ from .react_config import (
 from .caller_context import CallerContext, UNKNOWN as _CALLER_UNKNOWN
 from .file_categories import requires_codeagent as _requires_codeagent, CONFIG_FILENAMES as _CONFIG_FILENAMES
 from .tool_categories import get_category_contract, get_semantic_category
+from ..documents.document_intent import (
+    DOCUMENT_OPERATION_TOOLS,
+    DocumentRoute,
+    STUDIO_BYPASS_TOOLS,
+    document_action_kind,
+)
+from .plan_evidence import (
+    ProofCapability, get_tool_capabilities, tool_capabilities_are_known_readonly,
+)
+from src.runtime.permissions import is_owner
+from src.runtime.voice_security import get_voice_confirmation_broker
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -39,12 +50,67 @@ from .tool_categories import get_category_contract, get_semantic_category
 # le détecteur dans agent_service.think_and_act_silent.
 A4_CHAT_REFUSAL_MARKER: str = "n'a que le niveau 'chat'"
 
+# ──────────────────────────────────────────────────────────────────────
+# BR-1 — les outils browser_* sont BORNÉS : un Playwright zombie (relance de
+# singleton pendue, verrou empoisonné) gelait le tour ReAct pour toujours
+# (aucun timeout côté outils, seul le LLM en avait un). Défaut 240 s = aligné
+# sur le timeout LLM ; le pire cas LÉGITIME d'un navigate (relance 90 s +
+# goto 30 s + load_state 10 s + vision ~12 s ≈ 140 s) passe sans faux positif.
+# Sur timeout : reset du singleton (relance à froid, prouvée fiable) +
+# observation d'échec honnête → le ReAct CONTINUE au lieu de geler.
+_BROWSER_TIMEOUT_EXEMPT: frozenset = frozenset()  # extensible (attente humaine longue)
+
+
+def _browser_tool_timeout_s() -> float:
+    try:
+        return float(os.getenv("LUMENA_BROWSER_TOOL_TIMEOUT", "240"))
+    except (TypeError, ValueError):
+        return 240.0
+
+
+_VOICE_CRITICAL_CAPABILITIES = frozenset({
+    ProofCapability.PAYMENT_MUTATION,
+    ProofCapability.DEPLOY_MUTATION,
+    ProofCapability.MESSAGE_SEND,
+    ProofCapability.EXT_RESOURCE_CREATE,
+})
+_VOICE_CRITICAL_PREFIXES = (
+    "delete_", "remove_", "kill_", "ban_", "send_", "publish_", "deploy_",
+    "stripe_", "github_push", "git_push", "ionos_deploy", "discord_set_",
+)
+
+
+def _voice_confirmation_required(
+    tool_name: str,
+    *,
+    module_category: str = "",
+    semantic_category: str = "",
+) -> bool:
+    name = (tool_name or "").strip().lower()
+    capabilities = get_tool_capabilities(
+        name,
+        module_category=module_category,
+        semantic_category=semantic_category,
+    )
+    return bool(capabilities & _VOICE_CRITICAL_CAPABILITIES) or name.startswith(
+        _VOICE_CRITICAL_PREFIXES
+    )
+
 _MUTATE_TOOLS_CODE: frozenset[str] = frozenset({
     "write_file", "edit_file", "multi_edit_file", "apply_patch", "apply_patches",
     "insert_at_anchor", "edit_by_lines", "str_replace",
     "delete_file", "delete_directory", "create_directory",
     "run_command", "run_shell", "exec_command",
     "write_website_files",
+})
+
+# Outils d'ÉCRITURE d'artefact autorisés pour un worker de mission dans le sandbox.
+# Whitelist stricte (durcissement 2026-07-01) : PAS de shell, PAS de delete_file/
+# delete_directory (aucune exemption de suppression), PAS de write_website_files
+# (multi-fichiers au path non borné). On ouvre juste ce qu'il faut pour PRODUIRE.
+_MISSION_SANDBOX_WRITE_TOOLS: frozenset[str] = frozenset({
+    "write_file", "edit_file", "multi_edit_file", "apply_patch", "apply_patches",
+    "insert_at_anchor", "edit_by_lines", "str_replace", "create_directory",
 })
 
 
@@ -355,6 +421,58 @@ def _extract_path_from_args(tool_name: str, args: Dict[str, Any]) -> Optional[st
     return None
 
 
+def _is_local_mission_workspace_write_allowed(
+    tool_name: str,
+    ctx: Any,
+    path_str: Optional[str],
+    workspace_root: "Path",
+    lumena_root: "Path",
+) -> bool:
+    """True si un worker de mission LOCALE peut produire un artefact code dans le sandbox.
+
+    Conditions cumulatives (toutes requises) :
+      - `tool_name` ∈ whitelist d'écriture (`_MISSION_SANDBOX_WRITE_TOOLS` : pas de shell,
+        pas de delete_*, pas de write_website_files) ;
+      - `ctx.is_mission_run` True — VRAI run de mission (double-verrou task_id +
+        metadata.kind=="mission", propagé par react.py — PAS un simple runtime_task_id) ;
+      - `path_str` résolu en absolu (relatif → contre `lumena_root`, `resolve()` neutralise
+        les `..`) STRICTEMENT sous `workspace_root` ;
+      - hors sous-arbres protégés du repo Lumena (`src/`, `web/`, `tests/`, `data/`) et pas un
+        fichier `.env` réel — ceinture+bretelles (redondant avec la borne sandbox car ces
+        dossiers sont DISJOINTS de workspace/, mais documente l'intention et couvre une
+        éventuelle mauvaise config de `workspace_root`).
+
+    Ne s'applique JAMAIS au shell ni à la suppression. NOTE P2P (futur) : une mission issue
+    d'un PAIR devra passer par une vérification capability/scope AVANT toute exemption —
+    `is_mission_run` local ne suffira pas.
+    """
+    if tool_name not in _MISSION_SANDBOX_WRITE_TOOLS:
+        return False
+    if not bool(getattr(ctx, "is_mission_run", False)):
+        return False
+    if not path_str:
+        return False
+    try:
+        p = Path(str(path_str)).expanduser()
+        if not p.is_absolute():
+            p = lumena_root / p
+        p = p.resolve()
+        ws = Path(workspace_root).resolve()
+    except Exception:
+        return False
+    if not p.is_relative_to(ws):
+        return False  # hors sandbox → jamais exempté (protège src/, web/, .env du repo…)
+    try:
+        for _d in ("src", "web", "tests", "data"):
+            if p.is_relative_to((lumena_root / _d).resolve()):
+                return False
+    except Exception:
+        return False
+    if p.name.lower() == ".env":
+        return False
+    return True
+
+
 
 class DynamicRegistryError(Exception):
     """Erreur d'enregistrement dynamique de handler (Phase 8)."""
@@ -467,6 +585,13 @@ class ToolRegistry:
         # Stockage handlers dynamiques (Phase 8 — séparé des natifs)
         self._dynamic_handlers: Dict[str, Any] = {}
         self._dynamic_provenance: Dict[str, Dict[str, Any]] = {}
+        # Lot 5.6 — read-through MCP (registres de MISSION uniquement) : le registre
+        # mission reste ISOLÉ (on ne copie JAMAIS _dynamic_handlers) ; il LIT les MCP
+        # actifs du registre boot pour la découverte + l'exécution (forward avec liveness).
+        self._mcp_readthrough_on: bool = False
+        self._mcp_boot_registry: Any = None
+        self._mcp_catalog: Any = None
+        self._mcp_watcher: Any = None
         # Phase 9: policy MCP par handler dynamique (obligatoire au register)
         self._dynamic_policies: Dict[str, Any] = {}
         # Phase E: cohabitation native ↔ MCP — overlap detector pushe ici
@@ -506,6 +631,7 @@ class ToolRegistry:
             (".handlers.git",            "get_git_handler_defs",           "git"),
             (".handlers.github",         "get_github_handler_defs",        "github"),
             (".handlers.autonomy",       "get_autonomy_handler_defs",      "autonomy"),
+            (".handlers.missions",       "get_missions_handler_defs",      "missions"),
             (".handlers.security",       "get_security_handler_defs",      "security"),
             (".handlers.custom",         "get_custom_tool_handler_defs",   "custom"),
             (".handlers.heartbeat_self", "get_heartbeat_self_handler_defs","autonomy"),
@@ -954,7 +1080,8 @@ class ToolRegistry:
 
     # ── Filtrage contextuel des outils ────────────────────────────────────
     # Catégories toujours injectées quel que soit le contexte
-    _ALWAYS_INCLUDE_CATEGORIES: set = {"system"}
+    # `missions` : Lumena doit pouvoir se créer/suivre une mission dans N'IMPORTE quelle conversation.
+    _ALWAYS_INCLUDE_CATEGORIES: set = {"system", "missions"}
     # Catégories de fallback quand aucune règle ne matche
     _FALLBACK_CATEGORIES: set = {"files", "system", "web", "memory"}
 
@@ -1066,6 +1193,7 @@ class ToolRegistry:
             {"fichier", "file", "dossier", "folder", "directory",
              "répertoire", "repertoire", "écrire", "ecrire",
              "write", "lire", "read", "créer", "creer", "create",
+             "ouvre", "ouvrir", "open",
              "supprimer", "delete", "renommer", "rename", "copier",
              "copy", "déplacer", "deplacer", "move", "patch",
              "zip", "archive", "liste les fichiers", "quel contenu"},
@@ -1250,7 +1378,12 @@ class ToolRegistry:
     ]
 
     # ── Phase 1.1-1.4: Filtrage contextuel des outils ──────────────────────
-    def apply_context_filter(self, query: str, intent: Optional[str] = None) -> None:
+    def apply_context_filter(
+        self,
+        query: str,
+        intent: Optional[str] = None,
+        document_route: Optional[DocumentRoute] = None,
+    ) -> None:
         """Filtre les outils disponibles en fonction du contexte de la requête.
 
         Matche *query* contre _CONTEXT_RULES, collecte les catégories pertinentes,
@@ -1262,15 +1395,32 @@ class ToolRegistry:
             intent: Intent classifié (chat/tool_direct/project/react). Si "chat",
                     restreint aux catégories memory/system pour économiser le
                     contexte d'outils.
+            document_route: Décision Document Studio immuable calculée à la
+                    frontière de la requête. None conserve le routage historique.
         """
         if not query or not getattr(self, "_tool_modules", None):
             # Pas de modules mappés → on ne peut pas filtrer, tout reste ouvert
             return
 
         query_lower = query.lower()
+        if document_route is None:
+            structured_document = document_action_kind(query)
+            studio_required = False
+            document_tools_required = bool(structured_document)
+        else:
+            structured_document = document_route.kind if document_route.actionable else None
+            studio_required = bool(
+                document_route.requires_studio
+                and getattr(document_route, "owns_run", True)
+            )
+            document_tools_required = bool(document_route.requires_document_tools)
         ionos_db_context = _looks_like_ionos_db_intent(query_lower)
         peer_team_query = _is_peer_team_query(query_lower)
-        matched_categories: set = set()
+        matched_categories: set = (
+            {"documents", "files"}
+            if structured_document or document_tools_required
+            else set()
+        )
 
         for keywords, categories in self._CONTEXT_RULES:
             for kw in keywords:
@@ -1312,6 +1462,8 @@ class ToolRegistry:
                 matched_categories = {"peers", "network", "web", "memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
             elif "autonomy" in matched_categories:
                 matched_categories = {"autonomy", "memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
+            elif structured_document or document_tools_required:
+                matched_categories = {"documents", "files", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
             else:
                 matched_categories = {"memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
         elif intent == "tool_direct" and matched_categories != self._ALWAYS_INCLUDE_CATEGORIES:
@@ -1332,6 +1484,22 @@ class ToolRegistry:
             if tool_name in ("final_answer", "ask_user") or tool_name.startswith("plan_"):
                 allowed.add(tool_name)
 
+        # A Studio-routed request must not silently fall back to a generic PDF
+        # generator before Studio was tried. ReAct owns the bounded fallback.
+        if studio_required:
+            allowed.difference_update(STUDIO_BYPASS_TOOLS)
+        elif document_route is not None and document_route.operation in DOCUMENT_OPERATION_TOOLS:
+            operation_tools = DOCUMENT_OPERATION_TOOLS[document_route.operation]
+            allowed = {
+                name for name in allowed
+                if self._tool_modules.get(name) != "documents" or name in operation_tools
+            }
+
+        # Lot 5.6 — MCP actifs en read-through (mission) : toujours visibles (liveness
+        # = seul gate) → ne jamais les filtrer hors contexte, sinon execute() les refuse.
+        for _rt_name, _ in self._mcp_readthrough_items():
+            allowed.add(_rt_name)
+
         # P1.3: Guard — si le filtre ne matche aucun outil réel, ne pas filtrer
         if not allowed:
             return
@@ -1344,6 +1512,32 @@ class ToolRegistry:
         self._ionos_db_block_count = 0  # nouveau contexte → compteur de blocage réinitialisé
         if old_allowed != allowed:
             self._tools_desc_cache = None
+
+    def force_allow_tools(self, names) -> list:
+        """2.6.1 (run MiniQuiz §5) — garantit des outils dans le prompt malgré le
+        filtre contextuel.
+
+        Le lead d'une mission web a répondu « serve_website n'est pas dans ma
+        liste » (catégorie filtrée) et a servi Flask à la main → serveur hors
+        registre SSRF → browser_navigate bloqué → fabrication. Le soft-filter
+        exécute pourtant l'outil — mais le modèle ne peut pas appeler un outil
+        dont il ignore l'existence. Ici : ajout déterministe au set autorisé.
+
+        No-op si aucun filtre actif (tout est déjà visible). N'ajoute que des
+        outils réellement enregistrés. Retourne la liste des noms ajoutés.
+        """
+        if self._allowed_tools is None:
+            return []
+        added: list = []
+        for name in names or ():
+            if name in self._allowed_tools:
+                continue
+            if name in self._tool_modules or name in self.tools:
+                added.append(name)
+        if added:
+            self._allowed_tools = set(self._allowed_tools) | set(added)
+            self._tools_desc_cache = None
+        return added
 
     def clear_context_filter(self) -> None:
         """Retire le filtre contextuel — tous les outils redeviennent disponibles."""
@@ -1681,6 +1875,96 @@ class ToolRegistry:
             )
         return None
 
+    # ── Lot 5.6 — read-through MCP (registres de mission) ────────────────────
+    def attach_mcp_readthrough(self, boot_registry: Any, catalog: Any = None,
+                               watcher: Any = None) -> None:
+        """Branche un read-through vers les MCP actifs du `boot_registry` (registre du
+        chat/boot). Le registre courant (mission) garde son ISOLATION : on ne copie
+        JAMAIS `_dynamic_handlers` — on LIT seulement les MCP vivants du boot.
+        Idempotent ; no-op si `boot_registry` est invalide ou est soi-même."""
+        if boot_registry is None or boot_registry is self:
+            return
+        self._mcp_boot_registry = boot_registry
+        self._mcp_catalog = catalog
+        self._mcp_watcher = watcher
+        self._mcp_readthrough_on = True
+        self._tools_desc_cache = None  # invalider la découverte
+        self._tool_collection = None
+
+    def _mcp_readthrough_live(self, name: str) -> bool:
+        """True si `name` est un outil MCP actif VIVANT du registre boot (liveness).
+        Gate : présent dans les handlers dynamiques du boot **+** catalog ACTIVE
+        (si dispo). La désactivation d'un MCP `unregister` déjà le handler côté boot,
+        donc l'absence du boot suffit le plus souvent ; le catalog couvre QUARANTINED."""
+        if not getattr(self, "_mcp_readthrough_on", False):
+            return False
+        boot = self._mcp_boot_registry
+        if boot is None or name in self.tools:
+            return False
+        try:
+            if not boot.is_dynamic_handler(name) or name not in boot.tools:
+                return False
+        except Exception:
+            return False
+        try:
+            sid = (boot._dynamic_provenance.get(name) or {}).get("server_id")
+        except Exception:
+            sid = None
+        cat = self._mcp_catalog
+        if cat is not None and sid:
+            try:
+                if not cat.is_callable(sid):
+                    return False
+            except Exception:
+                pass
+        # Watcher : liveness process si l'API est dispo (best-effort, « si disponible »).
+        w = self._mcp_watcher
+        if w is not None and sid:
+            for _m in ("is_running", "is_alive", "is_healthy"):
+                _fn = getattr(w, _m, None)
+                if callable(_fn):
+                    try:
+                        if not _fn(sid):
+                            return False
+                    except Exception:
+                        pass
+                    break
+        return True
+
+    def _resolve_readthrough_mcp(self, name: str) -> "Optional[str]":
+        """Renvoie le nom CANONIQUE d'un MCP read-through vivant pour `name`, ou None.
+        Gère l'alias court `server__tool` → `mcp__server__tool` (même convention que
+        Fix R dans execute), pour que le forward marche aussi en read-through."""
+        if not getattr(self, "_mcp_readthrough_on", False) or not name:
+            return None
+        if self._mcp_readthrough_live(name):
+            return name
+        if "__" in name and not name.startswith("mcp__"):
+            alias = f"mcp__{name}"
+            if self._mcp_readthrough_live(alias):
+                return alias
+        return None
+
+    def _mcp_readthrough_items(self):
+        """Yield (name, tool_entry) des MCP actifs vivants — read-through, JAMAIS
+        copiés dans `self.tools`. Vide si le read-through n'est pas branché."""
+        if not getattr(self, "_mcp_readthrough_on", False):
+            return
+        boot = self._mcp_boot_registry
+        if boot is None:
+            return
+        try:
+            names = boot.list_dynamic_handlers()
+        except Exception:
+            return
+        for name in names:
+            if name in self.tools:
+                continue
+            if self._mcp_readthrough_live(name):
+                entry = boot.tools.get(name)
+                if entry:
+                    yield name, entry
+
     def get_tools_description(self) -> str:
         """Retourne une description compacte des outils (1 ligne chacun). Résultat mis en cache."""
         if self._tools_desc_cache is not None:
@@ -1709,6 +1993,20 @@ class ToolRegistry:
                     for p in params
                 )
                 descriptions.append(f"- {name}({param_list}): {tool['description']}")
+        # Lot 5.6 — MCP actifs en read-through (mission) : toujours visibles (liveness
+        # = seul gate), jamais écrits dans self.tools.
+        for name, tool in self._mcp_readthrough_items():
+            if name in phase_e_hidden:
+                continue
+            params = tool.get("parameters") or {}
+            required_params = set(tool.get("required", []))
+            if not params:
+                descriptions.append(f"- {name}(): {tool['description']}")
+            else:
+                param_list = ", ".join(
+                    f"{p}" if p in required_params else f"{p}?" for p in params
+                )
+                descriptions.append(f"- {name}({param_list}): {tool['description']}")
         # Directive contextuelle BDD IONOS : injectée UNIQUEMENT quand le filtre a
         # détecté une intention BDD IONOS (coût nul sinon). Évite que le modèle
         # raisonne à lire config.php / lancer mysql-php-node avant d'être bloqué.
@@ -1730,7 +2028,8 @@ class ToolRegistry:
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """Retourne le schéma des outils pour l'API."""
         schemas = []
-        for name, tool in self.tools.items():
+
+        def _append_schema(name: str, tool: Dict[str, Any]) -> None:
             required = tool.get("required", None)
             if required is None:
                 required = list(tool["parameters"].keys())
@@ -1750,6 +2049,12 @@ class ToolRegistry:
                     },
                 }
             )
+
+        for name, tool in self.tools.items():
+            _append_schema(name, tool)
+        # Lot 5.6 — MCP actifs en read-through (mission), jamais dans self.tools.
+        for name, tool in self._mcp_readthrough_items():
+            _append_schema(name, tool)
         return schemas
 
     # ──────────────────────────────────────────────────────────────
@@ -1791,6 +2096,19 @@ class ToolRegistry:
         path_str = _extract_path_from_args(name, args or {})
         if not path_str:
             return None  # pas de path identifiable → laisser passer (ex: run_command "curl …")
+
+        # ── Exemption sandbox MISSION (2026-07-01) ──────────────────────────────
+        # Un worker de mission LOCALE produit ses artefacts CODE dans le sandbox
+        # workspace/. Le forcer vers CodeAgent cassait tout (run taskman : sous-dossier
+        # parasite, delegate_task refusé, placeholders, copies MCP). Exemption ÉTROITE :
+        # whitelist d'écriture (pas shell, pas delete_*), bornée au sandbox, repo protégé,
+        # gardée par le vrai `is_mission_run`. Plus stricte que la notion de projet → placée
+        # avant find_project_by_path.
+        if _is_local_mission_workspace_write_allowed(
+            name, getattr(self, "_v2_context", None), path_str,
+            self.default_workspace_root, self.lumena_root,
+        ):
+            return None
 
         # Le path appartient-il à un projet du registry ?
         try:
@@ -2001,6 +2319,12 @@ class ToolRegistry:
                 )
 
             _append_candidate((getattr(self, "ide_context", {}) or {}).get("workspace_path"), trusted=True)
+
+            # LOT I.1 — registre de MISSION tagué avec son dossier (runner.run_mission) : le
+            # worker (caller=react) a alors un workspace → la catégorie 'agents' (delegate_task
+            # → CodeAgent, process_status) passe. Présent UNIQUEMENT sur un registre mission →
+            # zéro effet sur le registre du chat.
+            _append_candidate(getattr(self, "_mission_workspace_abs", None), trusted=True)
 
             explicit_workspace_keys = (
                 "workspace_path",
@@ -2224,6 +2548,70 @@ class ToolRegistry:
         *,
         caller: Optional[CallerContext] = None,
     ) -> Observation:
+        """Wrapper d'exécution avec lease de ressource (Lot 0.c / 1.4).
+
+        Si l'outil touche une ressource physique EXCLUSIVE (navigateur, Computer Use,
+        fichier, MCP à état) → on tient un lease PAR ACTION → exclusion mutuelle
+        mission ⇄ chat / mission ⇄ mission. Outil non-exclusif → AUCUN lease (comportement
+        strictement identique à avant). Best-effort : si le module lease est indisponible,
+        on dégrade vers l'exécution directe → le hot-path ne casse jamais.
+        """
+        # ── Lot 5.6.2 — MCP read-through : forward AVANT le lease local ──────────
+        # Un MCP read-through n'est PAS dans self.tools (jamais copié). On le route
+        # vers le registre boot, qui prend LE lease MCP (une seule fois → pas de
+        # double lease). Liveness vérifiée À L'INSTANT de l'appel : si le MCP a été
+        # désactivé entre la découverte et ici, _resolve_readthrough_mcp renvoie None
+        # → chemin normal (échec « outil inconnu » propre, jamais d'exécution fantôme).
+        if name not in self.tools and getattr(self, "_mcp_readthrough_on", False):
+            _rt_name = self._resolve_readthrough_mcp(name)
+            _boot = self._mcp_boot_registry
+            if _rt_name is not None and _boot is not None and _boot is not self:
+                logger.debug("[mission-registry] forward MCP read-through: {} -> boot", _rt_name)
+                return await _boot.execute(_rt_name, args, caller=caller)
+        try:
+            from src.subagents.resource_lease import (
+                resource_key_for, get_resource_lease, lease_wait_timeout,
+                get_browser_exclusivity, current_browser_owner,
+            )
+            _key = resource_key_for(name, args or {})
+        except Exception:
+            _key = None
+        if _key is None:
+            return await self._execute_inner(name, args, caller=caller)
+        _to = lease_wait_timeout()
+        try:
+            # #4 — NAVIGATEUR : exclusivité PAR MISSION (sticky) ; chat = par-action.
+            if _key == "browser":
+                excl = get_browser_exclusivity()
+                owner = current_browser_owner()
+                if owner is not None:  # mission → garde l'exclusivité toute sa session
+                    async with excl.action(owner, timeout=_to):
+                        return await self._execute_inner(name, args, caller=caller)
+                _call_owner = object()  # chat/legacy → owner éphémère, libéré aussitôt
+                try:
+                    async with excl.action(_call_owner, timeout=_to):
+                        return await self._execute_inner(name, args, caller=caller)
+                finally:
+                    await excl.release_owner(_call_owner)
+            # Autres ressources (computer_use / files / mcp) → lease BORNÉ par-action.
+            async with get_resource_lease().hold(_key, timeout=_to):
+                return await self._execute_inner(name, args, caller=caller)
+        except asyncio.TimeoutError:
+            return Observation(
+                content=(
+                    f"⏳ Ressource « {_key} » occupée trop longtemps — action {name!r} "
+                    f"abandonnée pour éviter un blocage. Réessaie dans un instant."
+                ),
+                success=False,
+            )
+
+    async def _execute_inner(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        *,
+        caller: Optional[CallerContext] = None,
+    ) -> Observation:
         """Exécute un outil.
 
         Args:
@@ -2235,6 +2623,60 @@ class ToolRegistry:
                 les mutations de code projet.
         """
         caller = caller or _CALLER_UNKNOWN
+
+        # Voice V2 : le wake word/la proximité du micro ne donnent aucun droit.
+        # Une session non appairée reste read-only ; les autres canaux conservent
+        # strictement leur comportement historique.
+        try:
+            _voice_ctx = get_current_runtime_context()
+        except Exception:
+            _voice_ctx = None
+        if _voice_ctx is not None and getattr(_voice_ctx, "channel", "") == "voice":
+            _voice_role = getattr(_voice_ctx, "user_role", "guest")
+            if not is_owner(_voice_role):
+                _module_category = self.get_tool_module_category(name)
+                _semantic_category = self.get_tool_semantic_category(name)
+                if not tool_capabilities_are_known_readonly(
+                    name,
+                    module_category=_module_category,
+                    semantic_category=_semantic_category,
+                ):
+                    return Observation(
+                        content=(
+                            "Action refusée : la session vocale n'est pas appairée comme owner. "
+                            "Les outils en lecture restent disponibles ; appaire la session depuis "
+                            "l'interface administrateur pour autoriser les mutations."
+                        ),
+                        success=False,
+                    )
+            _module_category = self.get_tool_module_category(name)
+            _semantic_category = self.get_tool_semantic_category(name)
+            if _voice_confirmation_required(
+                name,
+                module_category=_module_category,
+                semantic_category=_semantic_category,
+            ):
+                _conversation_id = getattr(_voice_ctx, "conversation_id", "")
+                _confirmed = get_voice_confirmation_broker().consume(
+                    conversation_id=_conversation_id,
+                    tool_name=name,
+                    arguments=args or {},
+                )
+                if not _confirmed:
+                    _request_id = get_voice_confirmation_broker().request_confirmation(
+                        conversation_id=_conversation_id,
+                        tool_name=name,
+                        arguments=args or {},
+                    )
+                    return Observation(
+                        content=(
+                            "Confirmation écran requise pour cette action vocale sensible. "
+                            "L'autorisation doit être liée à cette action et expire après usage ; "
+                            "une confirmation prononcée ne suffit pas. "
+                            f"Demande : {_request_id}."
+                        ),
+                        success=False,
+                    )
 
         # ── Policy middleware : délégation forcée vers CodeAgent ──
         # Bloque les mutations de code/config de projet quand l'appelant est ReAct.
@@ -2454,8 +2896,18 @@ class ToolRegistry:
                     else:
                         _ex_parts.append(f'"{_mp}": "valeur"')
                 _hint = f' — exemple: {{{", ".join(_ex_parts)}}}' if _ex_parts else ""
+                # A4 (run FitLog) : les gros write_file dépassent la fenêtre de
+                # sortie du modèle → réponse tronquée → params manquants en boucle.
+                # Guider vers le découpage au lieu de laisser le cycle tourner.
+                _trunc_hint = ""
+                if name in ("write_file", "edit_file", "multi_edit_file", "apply_patch", "apply_patches"):
+                    _trunc_hint = (
+                        "\n💡 Si ta réponse a été TRONQUÉE (fichier volumineux) : écris "
+                        "d'abord un squelette COURT via write_file, puis complète en "
+                        "PLUSIEURS petits edit_file/insert_at_anchor."
+                    )
                 return Observation(
-                    content=f"Paramètre(s) requis manquant(s) pour '{name}': {', '.join(_missing)}{_hint}",
+                    content=f"Paramètre(s) requis manquant(s) pour '{name}': {', '.join(_missing)}{_hint}{_trunc_hint}",
                     success=False,
                 )
 
@@ -2540,7 +2992,34 @@ class ToolRegistry:
                     except Exception:
                         _phase26_token = None
                 try:
-                    result = await handler(**args)
+                    if name.startswith("browser_") and name not in _BROWSER_TIMEOUT_EXEMPT:
+                        _br_to = _browser_tool_timeout_s()
+                        try:
+                            result = await asyncio.wait_for(handler(**args), timeout=_br_to)
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "⏱️ Outil {} sans réponse après {:.0f}s — "
+                                "reset du navigateur (BR-1)", name, _br_to,
+                            )
+                            try:
+                                from src.tools.playwright_browser import (
+                                    force_reset_playwright_browser,
+                                )
+                                force_reset_playwright_browser()
+                            except Exception:
+                                pass  # reset best-effort : l'observation part quand même
+                            return Observation(
+                                content=(
+                                    f"⏱️ Le navigateur n'a pas répondu en {_br_to:.0f}s — "
+                                    "instance réinitialisée (elle repartira à froid). "
+                                    f"Réessaie ton action ({name} …) ; si ça échoue encore, "
+                                    "signale honnêtement que la vérification navigateur "
+                                    "n'a pas pu être faite."
+                                ),
+                                success=False,
+                            )
+                    else:
+                        result = await handler(**args)
                 finally:
                     if _phase26_token is not None:
                         try:
@@ -2563,6 +3042,14 @@ class ToolRegistry:
                 # périmée (Cache hit) après édition → boucles. Corrigé.
                 "insert_at_anchor", "str_replace", "multi_edit_file",
                 "update_skill", "delete_skill", "create_skill",
+                # LOT N3 (run HuffPack 2026-08-14) : le CodeAgent délégué écrit sur
+                # disque SANS passer par les outils ci-dessus — la délégation est,
+                # vue du worker, un muteur. Sans ça : CodeAgent remplit
+                # tests/test_huffpack.py (79 lignes, prouvé par un pytest qui
+                # exécute les vrais tests 8 s plus tard), puis le worker relit →
+                # « Cache hit » → il reçoit le STUB, conclut que le CodeAgent a
+                # menti, et tente une réparation inutile sur du travail correct.
+                "delegate_task", "delegate_and_wait",
             }
             if name in _WRITE_TOOLS and self._observation_cache:
                 _stale = [k for k in self._observation_cache

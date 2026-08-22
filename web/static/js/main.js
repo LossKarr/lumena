@@ -24,7 +24,7 @@ import {
 
 // ── Chat ──
 import {
-  setupTextarea, quickSend, sendMessage, retryLastMessage, cancelStream,
+  setupTextarea, quickSend, sendMessage, retryLastMessage, cancelStream, toggleChatDictation,
   addMsg, buildMetaHtml, normalizeEdit, mergeEdits,
   toggleDiffView, copyDiffContent, buildDiffViewerHtml,
   toggleDiffFile, toggleAllDiffs, acceptAllEdits, buildDocumentsHtml,
@@ -32,13 +32,13 @@ import {
   handleFileSelect, addAttachment, removeAttachment, clearAttachments,
   renderAttachments, loadChatHistory, clearChatHistory, exportChatMarkdown,
   resumeSessionInChat
-} from './chat.js';
+} from './chat.js?v=1';
 
 // ── API ──
 import {
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
-  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI,
+  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput,
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats
@@ -49,7 +49,7 @@ import {
   loadJournal, renderJournal, loadFacts, loadProviders, loadAlerts,
   loadTraining, loadFinetuning, loadLogsRecent, renderLogs, loadConfig, toggleSecret,
   saveConfig, showCfgMsg, setCfgLevel, loadSessions, filterSessions,
-  loadSessionDetail, closeSessionDetail, archiveSession, exportSessionMarkdown, loadOverview,
+  loadSessionDetail, closeSessionDetail, archiveSession, exportSessionMarkdown,
   loadTelegramDetails, loadAutonomyDetails, loadWhatsAppDetails,
   loadDocs, switchDoc, saveDoc,
   loadProductDocs, switchDocSection,
@@ -66,14 +66,18 @@ import {
   generatePairingCode, acceptPairing, loadFirewallCommand, applyFirewallRule,
   loadNetworkSimple, toggleNetworkAdvanced, showSimplePairingForm, blockPeerSimple,
   loadPeerHistory, filterPeerHistory, selectPeerExchange,
-  showNetworkHistory, backToNetworkSimple, togglePeerMaster, togglePeerHalt, releasePeerQuarantine, loadDeliverables, cancelPeerMission, relaunchPeerMission,
+  showNetworkHistory, backToNetworkSimple, togglePeerMaster, togglePeerHalt, releasePeerQuarantine, loadDeliverables, cancelPeerMission, relaunchPeerMission, setAutonomyMode, testSuggestion,
   deletePeerSimple, deleteLocalInstance, cleanupLocalInstances,
   testDelegation, loadNetworkDiagnostic, hideNetworkDiagnostic,
   loadCollaborationPanel, createSharedKnowledgeFromUi, shareKnowledgeFromUi,
   revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope, setPeerCapability,
   setPeerAlias, setPeerScopesBulk, revokePeerToken, probePeer,
-  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive
-} from './panels.js';
+  loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive,
+  loadMissions, cancelMissionUi, closeMissionStream, toggleMissionCard
+} from './panels.js?v=13';
+
+// ── Overview ──
+import { loadOverview, stopOverview } from './overview.js?v=2';
 
 // ── Stripe ──
 import {
@@ -88,6 +92,8 @@ import {
   toggleWsTree, filterWorkspaces, sortWorkspaces
 } from './workspaces.js';
 
+import { loadDocumentStudio } from './document-studio.js?v=14';
+
 // ── Tasks ──
 import {
   showNewTaskForm, createTask, startTaskPoll, cancelTask,
@@ -99,10 +105,10 @@ import {
 // ── Startup ──
 import {
   loadStartupModels, selectStartupModel, startLumena,
-  toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, filterModelSearch,
-  loadModels, loadImageModels, switchModel, toggleAgent,
+  toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, setModelSource, filterModelSearch,
+  loadModels, loadImageModels, switchModel, switchCatalogModel, toggleAgent,
   startLiveRefreshLoops, scheduleStatusRefresh
-} from './startup.js';
+} from './startup.js?v=2';
 
 // ── Expose ALL public functions on window for onclick compat ──
 Object.assign(window, {
@@ -112,11 +118,12 @@ Object.assign(window, {
   setupNavigation, switchPanel, toggleSection, toggleNavCollapse,
   toggleMobileNav, toggleFocus, toggleTheme, applyTheme,
   loadPanelData, openCommandPalette, closeCommandPalette, filterCommands,
+  loadDocumentStudio,
   // activity
   openSidebar, closeSidebar, toggleSidebar, startActivityFeed, pushActivity,
   updateActivityStats, stopActivityFeed,
   // chat
-  setupTextarea, quickSend, sendMessage, retryLastMessage, cancelStream,
+  setupTextarea, quickSend, sendMessage, retryLastMessage, cancelStream, toggleChatDictation,
   addMsg, buildMetaHtml, normalizeEdit, mergeEdits,
   toggleDiffView, copyDiffContent, buildDiffViewerHtml,
   toggleDiffFile, toggleAllDiffs, acceptAllEdits, buildDocumentsHtml,
@@ -127,7 +134,7 @@ Object.assign(window, {
   // api
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
-  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI,
+  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput,
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats,
@@ -135,7 +142,7 @@ Object.assign(window, {
   loadJournal, renderJournal, loadFacts, loadProviders, loadAlerts,
   loadTraining, loadFinetuning, loadLogsRecent, renderLogs, loadConfig, toggleSecret,
   saveConfig, showCfgMsg, setCfgLevel, loadSessions, filterSessions,
-  loadSessionDetail, closeSessionDetail, archiveSession, exportSessionMarkdown, loadOverview,
+  loadSessionDetail, closeSessionDetail, archiveSession, exportSessionMarkdown, loadOverview, stopOverview,
   loadTelegramDetails, loadAutonomyDetails, loadWhatsAppDetails,
   loadDocs, switchDoc, saveDoc,
   loadProductDocs, switchDocSection,
@@ -152,13 +159,14 @@ Object.assign(window, {
   generatePairingCode, acceptPairing, loadFirewallCommand, applyFirewallRule,
   loadNetworkSimple, toggleNetworkAdvanced, showSimplePairingForm, blockPeerSimple,
   loadPeerHistory, filterPeerHistory, selectPeerExchange,
-  showNetworkHistory, backToNetworkSimple, togglePeerMaster, togglePeerHalt, releasePeerQuarantine, loadDeliverables, cancelPeerMission, relaunchPeerMission,
+  showNetworkHistory, backToNetworkSimple, togglePeerMaster, togglePeerHalt, releasePeerQuarantine, loadDeliverables, cancelPeerMission, relaunchPeerMission, setAutonomyMode, testSuggestion,
   deletePeerSimple, deleteLocalInstance, cleanupLocalInstances,
   testDelegation, loadNetworkDiagnostic, hideNetworkDiagnostic,
   loadCollaborationPanel, createSharedKnowledgeFromUi, shareKnowledgeFromUi,
   revokeKnowledgeFromUi, importKnowledgeFromUi, setPeerScope, setPeerCapability,
   setPeerAlias, setPeerScopesBulk, revokePeerToken, probePeer,
   loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive,
+  loadMissions, cancelMissionUi, closeMissionStream, toggleMissionCard,
   // stripe
   loadStripeOverview, loadStripePayments,
   loadStripeSubscriptions, loadStripeProducts,
@@ -173,8 +181,8 @@ Object.assign(window, {
   renderTaskProgress, resetTaskProgress, hideTaskProgressDelayed,
   // startup
   loadStartupModels, selectStartupModel, startLumena,
-  toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, filterModelSearch,
-  loadModels, loadImageModels, switchModel, toggleAgent,
+  toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, setModelSource, filterModelSearch,
+  loadModels, loadImageModels, switchModel, switchCatalogModel, toggleAgent,
   startLiveRefreshLoops, scheduleStatusRefresh,
 });
 
@@ -216,6 +224,7 @@ window._shutdownLumena = async function() {
   q('btn-export-md', () => exportChatMarkdown());
   q('btn-clear-chat', () => { if (confirm('Effacer la conversation ?')) clearChatHistory(); });
   q('btn-attach-file', () => document.getElementById('file-upload-input').click());
+  q('btn-chat-dictation', () => toggleChatDictation());
   q('btn-toggle-focus', () => toggleFocus());
   q('send-btn', () => { if(isLoading) cancelStream(); else sendMessage(); });
   const fileInput = document.getElementById('file-upload-input');

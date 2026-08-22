@@ -71,6 +71,7 @@ websockets>=12.0
 # Documents (PDF / DOCX / XLSX / PPTX / Conversion)
 reportlab>=4.0.0           # PDF (déjà installé — génération de PDFs)
 pypdf>=3.0.0               # PDF (déjà installé — lecture/fusion de PDFs)
+pypdfium2>=5.11.0          # Rasterisation locale des apercus PDF Document Studio
 python-docx>=1.1.0         # Fichiers Word .docx
 openpyxl>=3.1.0            # Fichiers Excel .xlsx
 python-pptx>=0.6.23        # Présentations PowerPoint .pptx
@@ -93,6 +94,7 @@ stripe>=8.0.0               # Stripe API (produits, prix, paiements, abonnements
 # Web Server
 fastapi>=0.100.0
 uvicorn>=0.24.0
+Flask>=3.1,<4.0             # Preview/runtime des applications Flask generees
 python-multipart>=0.0.6    # FastAPI file upload (UploadFile)
 filelock>=3.12.0
 

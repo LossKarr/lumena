@@ -796,6 +796,15 @@ Sois précis et concis."""
             await telegram_file.download_to_drive(str(save_path))
             logger.info(f"📎 Document reçu depuis Telegram: {save_path}")
 
+            from ..documents.ingest import index_received_document
+            asyncio.create_task(asyncio.to_thread(
+                index_received_document,
+                save_path,
+                source_kind="telegram",
+                source_uri=f"telegram:{chat_id}:{message.message_id}",
+                metadata={"user_id": str(user_id), "original_filename": original_name},
+            ))
+
             mime_type = (document.mime_type or "application/octet-stream").lower()
             file_size = int(document.file_size or 0)
             suffix = save_path.suffix.lower()

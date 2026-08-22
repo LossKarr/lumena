@@ -142,6 +142,139 @@ class TestVerifyGate:
         self._run_update(loop, "read_file", "contenu du fichier app.js\n" * 5)
         assert "Vérifier que tout est fonctionnel" in _pending_tasks(loop)
 
+    # ── #3 (2026-06-30) : relecture d'artefact écrit → vérification créditée ──────
+
+    def test_verify_credited_by_reread_of_written_artifact(self):
+        """read_file qui relit un artefact RÉELLEMENT écrit avant (mutation dans le
+        ledger) coche 'Vérifier le fichier final'. C'est le bug du run peintres :
+        write_file workspace/peintres.md puis read_file du même fichier laissait la
+        tâche en SKIP."""
+        from src.runtime.execution_ledger import ExecutionLedger
+        loop = _make_loop_with_plan([
+            "Fusionner les résultats dans workspace/peintres.md",
+            "Vérifier le fichier final",
+        ])
+        loop._task_plan[0].completed = True  # fusion déjà faite
+        loop.execution_ledger = ExecutionLedger()
+        loop.execution_ledger.append(
+            iteration=2, action="write_file", target="workspace/peintres.md", success=True,
+        )
+        # read_file du MÊME fichier (chemin absolu → match par basename)
+        self._run_update(
+            loop, "read_file",
+            "📄 C:\\Users\\charl\\Desktop\\lumena\\workspace\\peintres.md (lignes 1-121/121)\n"
+            "# Guide Comparatif : 6 Peintres",
+            iteration=3,
+            args={"path": "C:\\Users\\charl\\Desktop\\lumena\\workspace\\peintres.md"},
+        )
+        assert "Vérifier le fichier final" in _completed_tasks(loop)
+
+    def test_verify_not_credited_when_file_never_written(self):
+        """Garde-fou intact : read_file d'un fichier JAMAIS muté ne coche pas 'vérifier'
+        (pas de sur-crédit de lecture arbitraire)."""
+        from src.runtime.execution_ledger import ExecutionLedger
+        loop = _make_loop_with_plan(["Vérifier le fichier final"])
+        loop.execution_ledger = ExecutionLedger()
+        loop.execution_ledger.append(
+            iteration=1, action="write_file", target="workspace/autre.md", success=True,
+        )
+        self._run_update(
+            loop, "read_file",
+            "📄 C:\\Users\\charl\\Desktop\\lumena\\workspace\\peintres.md (lignes 1-50/50)",
+            iteration=2,
+            args={"path": "C:\\Users\\charl\\Desktop\\lumena\\workspace\\peintres.md"},
+        )
+        assert "Vérifier le fichier final" in _pending_tasks(loop)
+
+
+    # ── #3b (2026-07-01) : mission checkpointée, ledger in-memory VIDE au read ────
+
+    def test_verify_credited_via_mission_signal_when_ledger_empty(self):
+        """Reproduction fidèle du run soirée-cinéma : dans un worker de mission
+        CHECKPOINTÉ, l'execution_ledger in-memory est vide à la relecture (clear()
+        par run, jamais restauré du checkpoint). Le write iter1 n'y est donc plus →
+        l'ancien reread-credit (ledger seul) laissait 'Relire le fichier pour vérifier'
+        en SKIP → plan 1/2 → [MISSION FINALIZE] jamais déclenché.
+        Le filet mission (#3b) crédite la vérif via deadline_artifact_written, qui
+        survit au checkpoint (task_orchestrator)."""
+        from unittest.mock import MagicMock
+        from src.runtime.execution_ledger import ExecutionLedger
+        loop = _make_loop_with_plan([
+            "Créer le fichier workspace/soiree_cinema.md avec le contenu complet",
+            "Relire le fichier pour vérifier",
+        ])
+        loop._task_plan[0].completed = True
+        loop.execution_ledger = ExecutionLedger()  # VIDE (checkpoint a wipé le write)
+        # Contexte mission : l'artefact cible a été confirmé écrit (signal 5.7.4a).
+        # _is_mission_run est une property dérivée de metadata.kind == "mission".
+        loop._orchestrator_enabled = lambda: True
+        loop.task_id = "task_soiree"
+        loop.task_orchestrator = MagicMock()
+        loop.task_orchestrator.get_task.return_value = {
+            "metadata": {
+                "kind": "mission",
+                "deadline_artifact_written": True,
+                "objective": "Prépare un guide soirée cinéma dans workspace/soiree_cinema.md",
+            }
+        }
+        self._run_update(
+            loop, "read_file",
+            "📄 C:\\Users\\charl\\Desktop\\lumena\\workspace\\soiree_cinema.md (lignes 1-60/60)\n"
+            "# 🎬 Guide « Soirée Cinéma Cosy »",
+            iteration=3,
+            args={"path": "C:\\Users\\charl\\Desktop\\lumena\\workspace\\soiree_cinema.md"},
+        )
+        assert "Relire le fichier pour vérifier" in _completed_tasks(loop), (
+            "Le filet mission doit créditer la vérif malgré le ledger vide"
+        )
+
+    def test_mission_signal_does_not_credit_other_file(self):
+        """Garde-fou : le filet mission ne crédite que la relecture de l'artefact
+        CIBLE. Relire un AUTRE fichier (ledger vide) ne coche pas la vérif."""
+        from unittest.mock import MagicMock
+        from src.runtime.execution_ledger import ExecutionLedger
+        loop = _make_loop_with_plan(["Relire le fichier pour vérifier"])
+        loop.execution_ledger = ExecutionLedger()  # VIDE
+        loop._orchestrator_enabled = lambda: True
+        loop.task_id = "task_soiree"
+        loop.task_orchestrator = MagicMock()
+        loop.task_orchestrator.get_task.return_value = {
+            "metadata": {
+                "kind": "mission",
+                "deadline_artifact_written": True,
+                "objective": "Prépare workspace/soiree_cinema.md",
+            }
+        }
+        self._run_update(
+            loop, "read_file",
+            "📄 C:\\Users\\charl\\Desktop\\lumena\\workspace\\autre_fichier.md (lignes 1-10/10)",
+            iteration=3,
+            args={"path": "C:\\Users\\charl\\Desktop\\lumena\\workspace\\autre_fichier.md"},
+        )
+        assert "Relire le fichier pour vérifier" in _pending_tasks(loop)
+
+    def test_mission_signal_absent_without_artifact_written(self):
+        """Garde-fou : sans deadline_artifact_written (artefact PAS confirmé écrit),
+        le filet mission ne s'active pas — pas de crédit de complaisance."""
+        from unittest.mock import MagicMock
+        from src.runtime.execution_ledger import ExecutionLedger
+        loop = _make_loop_with_plan(["Relire le fichier pour vérifier"])
+        loop.execution_ledger = ExecutionLedger()  # VIDE
+        loop._orchestrator_enabled = lambda: True
+        loop.task_id = "task_soiree"
+        loop.task_orchestrator = MagicMock()
+        loop.task_orchestrator.get_task.return_value = {
+            "metadata": {"kind": "mission",
+                         "objective": "Prépare workspace/soiree_cinema.md"}  # pas de flag
+        }
+        self._run_update(
+            loop, "read_file",
+            "📄 C:\\Users\\charl\\Desktop\\lumena\\workspace\\soiree_cinema.md (1-60/60)",
+            iteration=3,
+            args={"path": "C:\\Users\\charl\\Desktop\\lumena\\workspace\\soiree_cinema.md"},
+        )
+        assert "Relire le fichier pour vérifier" in _pending_tasks(loop)
+
     def test_verify_task_blocked_by_node_check_syntax_only(self):
         """run_command avec juste un check syntaxique n'est pas une preuve fonctionnelle
         si l'observation ne contient pas de marqueur de preuve (port, running, 200...)."""
@@ -231,6 +364,82 @@ class TestVerifyGate:
 # ─────────────────────────────────────────────────────────────────────────────
 # C. subagent_audit : success=False pour résultat contenant "non trouvé"
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ── Réconciliation livraison artefact (5.7.4a) — bilan honnête sous échéance ──
+
+class TestArtifactDeliveryReconcile:
+    def _plan(self, descs):
+        return [TaskItem(description=d) for d in descs]
+
+    def test_credits_delegation_and_aggregation_not_verify(self):
+        """Livrable cible sur disque → délégation + fusion créditées ; vérif laissée à #3."""
+        from src.reasoning.plan_evidence import reconcile_plan_on_artifact_delivery as rec
+        plan = self._plan([
+            "Lancer 6 sous-agents en parallèle pour chaque compositeur",  # délégation
+            "Récupérer les résultats fusionnés",                          # fusion
+            "Assembler le guide dans workspace/compositeurs.md",          # assemblage
+            "Vérifier le fichier final",                                  # vérif → PAS ici
+        ])
+        n = rec(plan, has_delegation_success=True, iteration=3)
+        done = {t.description for t in plan if t.completed}
+        assert "Lancer 6 sous-agents en parallèle pour chaque compositeur" in done
+        assert "Récupérer les résultats fusionnés" in done
+        assert "Assembler le guide dans workspace/compositeurs.md" in done
+        assert "Vérifier le fichier final" not in done
+        assert n == 3
+
+    def test_delegation_requires_ledger_success(self):
+        """Sans délégation prouvée (ledger), une tâche 'Lancer N sous-agents' n'est pas créditée."""
+        from src.reasoning.plan_evidence import reconcile_plan_on_artifact_delivery as rec
+        plan = self._plan(["Lancer 3 sous-agents en parallèle"])
+        n = rec(plan, has_delegation_success=False, iteration=1)
+        assert n == 0 and not plan[0].completed
+
+    def test_never_credits_external_side_effects(self):
+        """Mail / déploiement / push ne sont JAMAIS crédités par une livraison fichier."""
+        from src.reasoning.plan_evidence import reconcile_plan_on_artifact_delivery as rec
+        plan = self._plan([
+            "Envoyer le rapport par mail",
+            "Déployer le site en production",
+            "Publier sur Slack le résultat",
+        ])
+        n = rec(plan, has_delegation_success=True, iteration=1)
+        assert n == 0 and not any(t.completed for t in plan)
+
+    def test_verify_never_credited_here(self):
+        from src.reasoning.plan_evidence import reconcile_plan_on_artifact_delivery as rec
+        plan = self._plan(["Vérifier que tout est fonctionnel"])
+        n = rec(plan, has_delegation_success=True, iteration=1)
+        assert n == 0 and not plan[0].completed
+
+    def test_reconcile_then_read_yields_full_plan(self):
+        """Synergie : la réconciliation débloque l'ordre → la relecture réelle (#3)
+        crédite enfin 'Vérifier le fichier final' → plan 4/4 honnête (bug compositeurs)."""
+        from src.runtime.execution_ledger import ExecutionLedger
+        from src.reasoning.plan_evidence import reconcile_plan_on_artifact_delivery as rec
+        loop = _make_loop_with_plan([
+            "Lancer 6 sous-agents en parallèle pour chaque compositeur",
+            "Récupérer les résultats fusionnés",
+            "Assembler le guide dans workspace/compositeurs.md",
+            "Vérifier le fichier final",
+        ])
+        _attach_tool_categories(loop)
+        loop.execution_ledger = ExecutionLedger()
+        loop.execution_ledger.append(
+            iteration=1, action="delegate_and_wait", target="6 workers", success=True)
+        loop.execution_ledger.append(
+            iteration=2, action="write_file", target="workspace/compositeurs.md", success=True)
+        # 1) hook 5.7.4a : réconciliation à l'écriture du fichier cible
+        rec(loop._task_plan, has_delegation_success=True, iteration=2)
+        # 2) relecture réelle de la cible → #3 crédite la dernière tâche (vérif)
+        loop._update_plan_progress(
+            "read_file",
+            {"path": "C:\\Users\\charl\\Desktop\\lumena\\workspace\\compositeurs.md"},
+            "📄 workspace/compositeurs.md (lignes 1-110/110)\n# Portrait Comparé des 6 compositeurs",
+            3,
+        )
+        assert _pending_tasks(loop) == [], f"plan pas 4/4 : reste {_pending_tasks(loop)}"
+
 
 class TestSubAgentAuditErrorDetection:
     """Vérifie que _RESULT_ERROR_PATTERNS détecte correctement les erreurs textuelles."""

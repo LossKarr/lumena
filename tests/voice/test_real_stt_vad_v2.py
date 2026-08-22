@@ -421,6 +421,20 @@ async def test_mic_source_transcribes_long_enough_utterance():
 
 
 @pytest.mark.asyncio
+async def test_mic_source_discards_browser_dictation_without_duplicate_turn():
+    long = b"\x00" * 12000
+    stt = _CountingSTT()
+    tm = TurnManager()
+    src = MicConversationSource(
+        _ScriptedVAD(long), stt, tm, min_utterance_ms=300,
+        suppress_input_fn=lambda: True,
+    )
+    await src.run()
+    assert _drain(tm) == []
+    assert stt.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_mic_source_can_save_captured_utterance(tmp_path):
     long = b"\x01\x02" * 6000
     stt = _CountingSTT()

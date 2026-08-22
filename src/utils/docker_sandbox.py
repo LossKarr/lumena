@@ -104,6 +104,48 @@ _LOCALHOST_PATTERN = _re.compile(
 )
 
 
+# ─── Commandes de test Python : venv Lumena, jamais le Docker jetable ─────────
+# Le sandbox Docker est éphémère (chaque `docker run` neuf → `pip install` ne
+# persiste pas) et son image n'a pas pytest → `No module named pytest`. Le venv
+# Lumena, lui, A pytest. Ces commandes DOIVENT donc rester locales.
+# (cf. run budgeto 2026-07-01 : worker bloqué ~15 itérations sur pytest en Docker.)
+_PYTEST_CMD_RE = _re.compile(
+    r"(?:^|&&|;|\|)\s*"
+    r"(?:pytest\b|(?:python3?|py)(?:\.exe)?\s+-m\s+pytest\b)",
+    _re.IGNORECASE,
+)
+
+
+def is_python_test_command(command: str) -> bool:
+    """True si la commande lance pytest (bare `pytest …`, ou `python|py|python3 -m pytest …`).
+
+    Volontairement étroit : ne matche QUE pytest (pas `python app.py`, pas
+    `pip install pytest`, pas un `echo pytest`). Sert à router ces tests vers
+    le venv local et à cibler le fallback Docker→local.
+    """
+    if not command:
+        return False
+    return bool(_PYTEST_CMD_RE.search(command))
+
+
+def sandbox_error_needs_local_fallback(stderr: str) -> bool:
+    """True si l'échec sandbox justifie un repli LOCAL.
+
+    Cas historiques : outil absent du container (`not found`/`no such file`).
+    AJOUT ciblé : `No module named pytest` UNIQUEMENT — le Docker jetable n'a
+    pas pytest. On NE généralise PAS à tous les `ModuleNotFoundError` : une vraie
+    dépendance projet manquante (ex. `flask`) ne doit PAS être masquée par les
+    libs installées sur l'hôte (sinon Lumena validerait un projet incomplet).
+    """
+    low = (stderr or "").lower()
+    return (
+        "not found" in low
+        or "no such file" in low
+        or "no module named pytest" in low
+        or "no module named 'pytest'" in low
+    )
+
+
 def should_use_sandbox(command: str) -> bool:
     """
     Détermine si une commande doit passer par le sandbox Docker.
@@ -115,6 +157,10 @@ def should_use_sandbox(command: str) -> bool:
     """
     mode = get_sandbox_mode()
     if mode == "never":
+        return False
+    # Les tests pytest restent TOUJOURS locaux (venv Lumena), même en mode always :
+    # le Docker jetable ne peut pas les exécuter.
+    if is_python_test_command(command):
         return False
     if mode == "always":
         return True

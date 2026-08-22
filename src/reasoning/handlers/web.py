@@ -179,11 +179,30 @@ async def web_fetch_handler(ctx: HandlerContext, url: str) -> HandlerResult:
         urllib_err = urllib_err_exc  # fallback Playwright ci-dessous
 
     # --- Tentative 2 : Playwright stealth (anti-bot / SPA) ---
+    # Priorité 1 : web_fetch n'est PLUS verrouillé « browser » au niveau registry
+    # (urllib-first, parallélisable). MAIS si on bascule sur le navigateur PARTAGÉ, on
+    # prend l'exclusivité ICI, owner-aware (même mécanisme que tool_registry) → aucune
+    # collision d'onglet entre missions/chat. Sticky pour une mission, éphémère au chat.
     try:
         from ...tools.playwright_browser import get_playwright_browser
+        from ...subagents.resource_lease import (
+            get_browser_exclusivity, current_browser_owner, lease_wait_timeout,
+        )
 
         browser = get_playwright_browser()
-        result = await browser.get_page_content(url)
+        _excl = get_browser_exclusivity()
+        _owner = current_browser_owner()
+        _to = lease_wait_timeout()
+        if _owner is not None:  # mission → garde l'exclusivité sticky de sa session
+            async with _excl.action(_owner, timeout=_to):
+                result = await browser.get_page_content(url)
+        else:  # chat/legacy → owner éphémère, libéré aussitôt
+            _eph = object()
+            try:
+                async with _excl.action(_eph, timeout=_to):
+                    result = await browser.get_page_content(url)
+            finally:
+                await _excl.release_owner(_eph)
         if result.get("success") and result.get("content"):
             text = result["content"]
             if len(text) > 2000:

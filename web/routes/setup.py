@@ -292,9 +292,10 @@ async def setup_schema():
                 "name": "Moonshot (Kimi)",
                 "cost": "Payant",
                 "prefix": "sk-",
-                "url": "https://platform.moonshot.cn/console/api-keys",
+                "url": "https://platform.kimi.ai/console/api-keys",
                 "steps": [
-                    "Va sur platform.moonshot.cn",
+                    "Va sur platform.kimi.ai",
+                    "Ajoute au moins 1 $ de crÃ©dit",
                     "Crée un compte (email ou GitHub)",
                     "Va dans API Keys dans le menu",
                     "Clique sur 'New API Key'",
@@ -464,26 +465,26 @@ async def setup_schema():
             "LUMENA_BRAIN_VISION": {
                 "icon": "eye",
                 "desc": "Analyse d'images, photos, captures d'écran, PDF visuels",
-                "top": ["gpt-5.5", "gpt-5.4", "gemini-3.1-pro", "claude-opus-4.7", "grok-4.3", "grok-4.20-0309-reasoning"],
+                "top": ["claude-opus-5", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "claude-sonnet-5", "claude-opus-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning"],
                 "top_free": ["nvidia-step-3.7-flash", "nvidia-kimi-k2.6"],
             },
             "LUMENA_BRAIN_CODE": {
                 "icon": "code-2",
                 "desc": "Génération de code, debug, analyse de projets, refactoring",
-                "top": ["gpt-5.5", "gpt-5.4", "grok-4.3", "claude-sonnet-4.6"],
+                "top": ["claude-opus-5", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "grok-4.6", "grok-4.5", "grok-build-0.1", "grok-4.3", "gemini-3.6-flash", "claude-sonnet-5", "claude-sonnet-4.6"],
                 "top_free": ["nvidia-deepseek-v4-flash", "nvidia-gpt-oss-120b", "nvidia-kimi-k2.6"],
             },
             "LUMENA_BRAIN_WEB": {
                 "icon": "globe",
                 "desc": "Recherche web, analyse de pages, veille d'actualités",
-                "top": ["gpt-5.5", "gpt-5.4", "gemini-3.1-pro", "grok-4.3", "grok-4.20-0309-reasoning", "kimi-k2.5"],
+                "top": ["claude-opus-5", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "kimi-k2.5"],
                 "top_free": ["nvidia-gpt-oss-120b", "nvidia-step-3.7-flash"],
             },
             "LUMENA_BRAIN_IMAGE_GEN": {
                 "icon": "image",
                 "desc": "Génération d'images à partir de descriptions textuelles",
-                "top": ["gemini-3.1-flash-image", "huggingface-sdxl", "gpt-image-1-mini", "ideogram-v4-turbo", "flux-2-pro"],
-                "top_free": ["gemini-3.1-flash-image", "gemini-2.5-flash-image", "huggingface-sdxl"],
+                "top": ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "grok-imagine-image-2.0", "huggingface-sdxl", "gpt-image-1-mini", "ideogram-v4-turbo", "flux-2-pro"],
+                "top_free": ["gemini-3.1-flash-image", "gemini-2.5-flash-image", "gemini-3.1-flash-lite-image", "huggingface-sdxl"],
             },
         },
     })
@@ -638,7 +639,14 @@ async def setup_schema():
 
     # Step 7: Voice
     voice_keys = {"LUMENA_TTS_AUTO", "LUMENA_TTS_MODE", "LUMENA_STT_MODEL",
-                  "LUMENA_VOICE_AUTO", "LUMENA_VOICE_CONV_TIMEOUT", "LUMENA_TTS_TELEGRAM", "LUMENA_TTS_WHATSAPP"}
+                  "LUMENA_VOICE_AUTO", "LUMENA_VOICE_V2_AUTO", "LUMENA_VOICE_V2_MODE",
+                  "LUMENA_VOICE_V2_FALLBACK_LEGACY", "LUMENA_VOICE_V2_MAX_RESTARTS",
+                  "LUMENA_VOICE_V2_RESTART_BACKOFF_S", "LUMENA_VOICE_SESSION_TRUSTED",
+                  "LUMENA_VOICE_SESSION_ROLE", "LUMENA_VOICE_SESSION_USER_ID",
+                  "LUMENA_VOICE_PROFILE_PATH",
+                  "LUMENA_VOICE_INPUT_DEVICE",
+                  "LUMENA_VOICE_CONV_TIMEOUT",
+                  "LUMENA_TTS_TELEGRAM", "LUMENA_TTS_WHATSAPP"}
     voice_fields = [s for s in _CONFIG_SCHEMA if s["key"] in voice_keys]
     steps.append({
         "id": "voice",
@@ -1039,7 +1047,8 @@ async def setup_complete(request: Request, _: None = Depends(deps.verify_admin_t
         "TWITTER_BEARER_TOKEN", "TWITTER_API_KEY",
         "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID",
         "STRIPE_API_KEY", "N8N_AUTO_START",
-        "LUMENA_WEB_AUTONOMY_ENABLED", "LUMENA_VOICE_AUTO",
+        "LUMENA_WEB_AUTONOMY_ENABLED", "LUMENA_VOICE_AUTO", "LUMENA_VOICE_V2_AUTO",
+        "LUMENA_VOICE_V2_MODE",
         "LUMENA_HOST", "LUMENA_PORT", "LUMENA_CORS_ORIGINS",
         "LUMENA_IDE_WS_PORT",
     }
@@ -1323,7 +1332,7 @@ async def test_api_key(request: Request, _: None = Depends(deps.verify_admin_tok
                       {}, None),
         "nvidia":    ("GET",  "https://integrate.api.nvidia.com/v1/models",
                       {"Authorization": f"Bearer {key}"}, None),
-        "moonshot":  ("GET",  "https://api.moonshot.cn/v1/models",
+        "moonshot":  ("GET",  f"{os.getenv('MOONSHOT_BASE_URL', 'https://api.moonshot.ai/v1').rstrip('/')}/models",
                       {"Authorization": f"Bearer {key}"}, None),
         "xai":       ("GET",  "https://api.x.ai/v1/models",
                       {"Authorization": f"Bearer {key}"}, None),

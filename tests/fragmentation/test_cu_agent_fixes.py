@@ -289,10 +289,17 @@ class TestPlaywrightProfileLock:
     """Tests que la logique de récupération de profil verrouillé existe."""
 
     def test_start_method_has_lock_recovery(self):
-        """Vérifie que le start() contient la logique de lock recovery."""
+        """Vérifie que le chemin de démarrage contient la logique de lock recovery.
+
+        BR-1 : start() est devenu un wrapper borné (asyncio.wait_for) ; le corps
+        — dont la récupération de profil verrouillé — vit dans _start_inner().
+        L'invariant reste : le chemin de démarrage sait récupérer un profil locké.
+        """
         import inspect
         from src.tools.playwright_browser import PlaywrightBrowser
-        source = inspect.getsource(PlaywrightBrowser.start)
+        source = inspect.getsource(PlaywrightBrowser.start) + inspect.getsource(
+            PlaywrightBrowser._start_inner
+        )
         assert "verrouillé" in source or "lock" in source.lower()
         assert "taskkill" in source
         assert "SingletonLock" in source

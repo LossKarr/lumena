@@ -58,6 +58,19 @@ class ToolCategoryContract:
 
 _CONTRACTS: Dict[str, ToolCategoryContract] = {
 
+    "missions": ToolCategoryContract(
+        name="missions",
+        role="Créer, suivre et annuler des missions exécutées par des sous-agents Lumena en arrière-plan.",
+        preconditions=[],
+        allowed_effects=["création de mission", "annulation de mission", "lecture état/résultat"],
+        refusal_reasons=[
+            "profondeur de mission maximale atteinte (anti-récursion)",
+        ],
+        autonomy_allowed=False,
+        requires_workspace=False,
+        delegate_code_threshold=0,
+    ),
+
     "files": ToolCategoryContract(
         name="files",
         role="Lecture, écriture et édition de fichiers dans le workspace.",

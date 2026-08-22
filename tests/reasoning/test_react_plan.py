@@ -85,6 +85,24 @@ class TestParsePlan:
         assert tasks[0].completed is False
         assert tasks[1].completed is False  # [X] initial ignoré
 
+    @pytest.mark.parametrize("marker", ["THOUGHT", "ACTION", "OBSERVATION"])
+    def test_parse_plan_strips_inline_control_marker(self, marker):
+        raw = (
+            "PLAN:\n"
+            "- [ ] Verifier les modeles\n"
+            f"- [ ] Fournir le bilan final{marker}: contenu parasite\n"
+            "ACTION: FINAL\n"
+            "ACTION_INPUT: done\n"
+        )
+        loop = self._make_loop()
+
+        tasks = loop._parse_plan(raw)
+
+        assert [task.description for task in tasks] == [
+            "Verifier les modeles",
+            "Fournir le bilan final",
+        ]
+
 
 # ── Tests _update_plan_progress ────────────────────────────────────
 

@@ -6,6 +6,7 @@ Utilise faster-whisper pour la transcription locale.
 """
 
 import asyncio
+import importlib.util
 import os
 import sys
 import tempfile
@@ -14,9 +15,17 @@ import wave
 import io
 import numpy as np
 from pathlib import Path
-from typing import Optional, Callable, Generator
+from typing import Any, Optional, Callable, Dict, Generator
 from threading import Thread, Event
 from loguru import logger
+
+
+class STTUnavailableError(RuntimeError):
+    """Le moteur STT ne peut pas transcrire l'audio fourni."""
+
+
+class STTAudioDecodeError(STTUnavailableError):
+    """Le conteneur audio n'est pas décodable par le moteur STT."""
 
 # Vérifier les dépendances
 try:
@@ -32,39 +41,41 @@ try:
 except ImportError:
     SR_AVAILABLE = False
 
-try:
-    from faster_whisper import WhisperModel
-    WHISPER_AVAILABLE = True
-    
-    # Phase 4.10.1: Fix CUDA DLL Loading on Windows
-    if os.name == 'nt':
-        import site
-        # Base du venv
-        venv_base = Path(sys.executable).parent.parent
-        site_packages = venv_base / "Lib" / "site-packages"
-        
-        # Chemins des DLL NVIDIA (depuis les paquets pip)
-        cuda_paths = [
-            site_packages / "nvidia" / "cublas" / "bin",
-            site_packages / "nvidia" / "cudnn" / "bin",
-            # Fallback pour certains environnements
-            venv_base / "Scripts",
-            Path(os.environ.get("CUDA_PATH", "")) / "bin"
-        ]
-        
-        for path in cuda_paths:
-            if path and path.exists():
-                logger.debug(f"🌟 Adding DLL directory to search path: {path}")
-                try:
-                    os.add_dll_directory(str(path))
-                except Exception:
-                    pass  # DLL directory ajout best-effort
-                # Ajouter au PATH pour les bibliothèques qui ne respectent pas add_dll_directory
-                os.environ["PATH"] = str(path) + os.pathsep + os.environ["PATH"]
+WhisperModel = None
+WHISPER_AVAILABLE = importlib.util.find_spec("faster_whisper") is not None
+_DLL_DIRECTORY_HANDLES = []
 
-except ImportError:
-    WHISPER_AVAILABLE = False
+# Phase 4.10.1: Fix CUDA DLL Loading on Windows. Les chemins sont préparés
+# maintenant, mais faster-whisper reste lazy pour ne pas ralentir Lumena voix OFF.
+if WHISPER_AVAILABLE and os.name == 'nt':
+    venv_base = Path(sys.executable).parent.parent
+    site_packages = venv_base / "Lib" / "site-packages"
+    cuda_paths = [
+        site_packages / "nvidia" / "cublas" / "bin",
+        site_packages / "nvidia" / "cudnn" / "bin",
+        venv_base / "Scripts",
+        Path(os.environ.get("CUDA_PATH", "")) / "bin",
+    ]
+    for path in cuda_paths:
+        if path and path.exists():
+            logger.debug(f"🌟 Adding DLL directory to search path: {path}")
+            try:
+                _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(path)))
+            except Exception:
+                pass
+            os.environ["PATH"] = str(path) + os.pathsep + os.environ["PATH"]
+
+if not WHISPER_AVAILABLE:
     logger.warning("faster-whisper non installé. Installez avec: pip install faster-whisper")
+
+
+def _whisper_model_class():
+    """Importe CTranslate2 uniquement au premier besoin de transcription."""
+    global WhisperModel
+    if WhisperModel is None:
+        from faster_whisper import WhisperModel as _WhisperModel
+        WhisperModel = _WhisperModel
+    return WhisperModel
 
 
 class LumenaSTT:
@@ -102,7 +113,9 @@ class LumenaSTT:
         self.language = language
         
         # Modèle Whisper
-        self.model: Optional[WhisperModel] = None
+        self.model: Optional[Any] = None
+        self.last_error: str = ""
+        self.runtime_fallback_used = False
         
         # État d'enregistrement
         self.is_recording = False
@@ -184,7 +197,8 @@ class LumenaSTT:
         for device, compute_type in devices_to_try:
             try:
                 logger.info(f"Chargement du modèle Whisper {self.model_size} ({device})...")
-                self.model = WhisperModel(
+                model_class = _whisper_model_class()
+                self.model = model_class(
                     self.model_size,
                     device=device,
                     compute_type=compute_type
@@ -218,54 +232,137 @@ class LumenaSTT:
                     return sum(abs(s) for s in samples) / len(samples)
         except Exception:
             return 1000  # Par défaut, on considère qu'il y a du son en cas d'erreur
-            
-    async def transcribe_file(self, audio_path: str) -> str:
-        """
-        Transcrit un fichier audio.
-        
-        Args:
-            audio_path: Chemin vers le fichier audio
-            
-        Returns:
-            Texte transcrit
-        """
-        # Vérifier l'énergie avant de charger le modèle
+
+    @staticmethod
+    def _is_cuda_runtime_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(marker in message for marker in (
+            "cublas", "cudnn", "cuda", "cufft", "curand", "nvcuda",
+        ))
+
+    @staticmethod
+    def _is_audio_decode_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(marker in message for marker in (
+            "invalid data", "could not open input", "failed to decode",
+            "averror", "decode error", "invalid argument",
+        ))
+
+    def _transcribe_once(self, audio: Any, **kwargs: Any):
+        """Matérialise les segments ici : les erreurs CTranslate2 sont différées."""
+        segments_iter, info = self.model.transcribe(audio, **kwargs)
+        return list(segments_iter), info
+
+    def _transcribe_with_runtime_fallback(self, audio: Any, **kwargs: Any):
+        """Un seul repli CUDA -> CPU int8, puis l'erreur reste autoritative."""
+        try:
+            return self._transcribe_once(audio, **kwargs)
+        except Exception as first_error:
+            if self.device != "cuda" or not self._is_cuda_runtime_error(first_error):
+                raise
+            logger.warning(
+                "⚠️ STT CUDA indisponible à l'inférence ({}) — repli CPU int8 unique",
+                first_error,
+            )
+            self.model = None
+            self.device = "cpu"
+            self.compute_type = "int8"
+            self.runtime_fallback_used = True
+            if not self.load_model():
+                raise STTUnavailableError(
+                    f"Fallback STT CPU impossible après erreur CUDA: {first_error}"
+                ) from first_error
+            return self._transcribe_once(audio, **kwargs)
+
+    @staticmethod
+    def _segment_payload(segment: Any) -> Dict[str, Any]:
+        return {
+            "text": str(getattr(segment, "text", "") or "").strip(),
+            "start_s": float(getattr(segment, "start", 0.0) or 0.0),
+            "end_s": float(getattr(segment, "end", 0.0) or 0.0),
+            "avg_logprob": float(getattr(segment, "avg_logprob", 0.0) or 0.0),
+        }
+
+    async def transcribe_file_detailed(
+        self, audio_path: str, *, strict: bool = False
+    ) -> Dict[str, Any]:
+        """Transcrit un fichier et expose les segments uniquement aux appelants opt-in."""
         energy = self._calculate_energy(audio_path)
         logger.debug(f"🔉 Niveau sonore détecté: {energy:.1f} (seuil: {self.energy_threshold:.1f})")
         if energy < self.energy_threshold:
-            logger.debug(f"🔇 Silence détecté, transcription sautée.")
-            return ""
-        
-        # Phase 4.10.3: Normalisation Bloom-style pour Whisper
+            logger.debug("🔇 Silence détecté, transcription sautée.")
+            return {
+                "text": "", "segments": [], "status": "no_speech",
+                "device": self.device, "compute_type": self.compute_type,
+                "fallback_used": self.runtime_fallback_used,
+            }
+
+        # Les WAV historiques sont normalisés. WebM/Ogg restent intacts et sont
+        # décodés directement par PyAV/faster-whisper.
         try:
             with wave.open(audio_path, 'rb') as wf:
                 params = wf.getparams()
                 frames = wf.readframes(params.nframes)
-            
             norm_frames = self.normalize_audio(frames)
-            
             with wave.open(audio_path, 'wb') as wf:
                 wf.setparams(params)
                 wf.writeframes(norm_frames)
-        except Exception as e:
-            logger.debug(f"⚠️ Normalisation skip: {e}")
-            
-        logger.info(f"🎤 Son détecté (niveau: {energy:.1f}), analyse en cours...")
+        except Exception as exc:
+            logger.debug(f"⚠️ Normalisation skip: {exc}")
 
+        logger.info(f"🎤 Son détecté (niveau: {energy:.1f}), analyse en cours...")
         if not self.load_model():
-            return ""
-        
+            self.last_error = "Whisper indisponible"
+            if strict:
+                raise STTUnavailableError(self.last_error)
+            return {
+                "text": "", "segments": [], "status": "stt_unavailable",
+                "error": self.last_error, "device": self.device,
+                "compute_type": self.compute_type,
+                "fallback_used": self.runtime_fallback_used,
+            }
+
         try:
-            segments, info = self.model.transcribe(
-                audio_path,
-                language=self.language,
-                beam_size=5
+            segments, _info = self._transcribe_with_runtime_fallback(
+                audio_path, language=self.language, beam_size=5
             )
-            text = " ".join([segment.text for segment in segments]).strip()
-            return self._clean_elite(text)
-        except Exception as e:
-            logger.error(f"Erreur transcription: {e}")
-            return ""
+            payload = [self._segment_payload(segment) for segment in segments]
+            text = self._clean_elite(" ".join(
+                item["text"] for item in payload if item["text"]
+            ).strip())
+            self.last_error = ""
+            return {
+                "text": text, "segments": payload,
+                "status": "ok" if text else "no_speech",
+                "device": self.device, "compute_type": self.compute_type,
+                "fallback_used": self.runtime_fallback_used,
+            }
+        except Exception as exc:
+            self.last_error = str(exc)
+            logger.error(f"Erreur transcription: {exc}")
+            if strict:
+                if self._is_audio_decode_error(exc):
+                    raise STTAudioDecodeError(str(exc)) from exc
+                raise STTUnavailableError(str(exc)) from exc
+            return {
+                "text": "", "segments": [], "status": "stt_unavailable",
+                "error": self.last_error, "device": self.device,
+                "compute_type": self.compute_type,
+                "fallback_used": self.runtime_fallback_used,
+            }
+
+    async def transcribe_file(self, audio_path: str) -> str:
+        """
+        Transcrit un fichier audio.
+
+        Args:
+            audio_path: Chemin vers le fichier audio
+
+        Returns:
+            Texte transcrit
+        """
+        result = await self.transcribe_file_detailed(audio_path, strict=False)
+        return str(result.get("text", "") or "")
 
     async def transcribe_memory(self, audio_bytes: bytes, fast: bool = True) -> str:
         """Transcrit l'audio directement depuis la mémoire (Vitesse Alpha)."""
@@ -281,12 +378,9 @@ class LumenaSTT:
                 "dis-moi, aide-moi, analyse, joue, arrête, démarre, crée, montre."
             ) if fast else None
             
-            segments, info = self.model.transcribe(
-                audio_np, 
-                language=self.language, 
-                beam_size=beam_size,
-                initial_prompt=initial_prompt,
-                vad_filter=True,
+            segments, _info = self._transcribe_with_runtime_fallback(
+                audio_np, language=self.language, beam_size=beam_size,
+                initial_prompt=initial_prompt, vad_filter=True,
                 condition_on_previous_text=False,
             )
             text = " ".join([s.text for s in segments]).strip()

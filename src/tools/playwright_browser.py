@@ -38,6 +38,9 @@ except ImportError:
 
 
 MAX_TABS = int(os.getenv("LUMENA_BROWSER_MAX_TABS", "10"))  # Phase 2.3 — auto-fermeture du plus ancien si dépassé
+# BR-1 — un démarrage pendu (driver node zombie, profil verrouillé) ne doit
+# jamais geler l'appelant : start() est borné, l'échec devient un False propre.
+BROWSER_START_TIMEOUT_S = float(os.getenv("LUMENA_BROWSER_START_TIMEOUT", "90"))
 MAX_NETWORK_LOG = 500  # Ring buffer pour les requêtes réseau interceptées
 MAX_BATCH_ACTIONS = 50  # Limite batch actions
 
@@ -51,6 +54,27 @@ DEVICE_PRESETS: Dict[str, Dict[str, Any]] = {
     "desktop_1080p": {"width": 1920, "height": 1080, "scale": 1, "mobile": False, "ua": None},
     "desktop_1440p": {"width": 2560, "height": 1440, "scale": 1, "mobile": False, "ua": None},
 }
+
+
+def _same_url_requires_reload(current_url: str, target_url: str) -> bool:
+    """Same loopback URL must reload because its preview process may have changed."""
+    try:
+        current = urlparse(str(current_url or ""))
+        target = urlparse(str(target_url or ""))
+
+        def normalize(parsed):
+            return (
+                parsed.scheme.lower(),
+                (parsed.hostname or "").lower(),
+                parsed.port,
+                (parsed.path or "/").rstrip("/") or "/",
+            )
+
+        if normalize(current) != normalize(target):
+            return False
+        return (target.hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
+    except (TypeError, ValueError):
+        return False
 
 
 class PlaywrightBrowser:
@@ -651,12 +675,34 @@ class PlaywrightBrowser:
     async def start(self) -> bool:
         """
         Démarre le navigateur.
-        
+
         Si profile_name est défini, utilise un profil persistant (cookies gardés).
-        
+        BR-1 : borné par BROWSER_START_TIMEOUT_S — un driver/profil zombie rend
+        False au lieu de pendre indéfiniment (l'annulation relâche le verrou).
+
         Returns:
             True si succès
         """
+        try:
+            # LOT Z28 — on retient la boucle PROPRIÉTAIRE. Un run de mission
+            # crée le navigateur sur SA boucle ; quand le run meurt, la boucle
+            # meurt et le singleton, lui, survit. Le tour suivant l'utilise
+            # depuis une autre boucle et pend jusqu'au timeout BR-1.
+            try:
+                self._owner_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._owner_loop = None
+            return await asyncio.wait_for(
+                self._start_inner(), timeout=BROWSER_START_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "⏱️ Démarrage Playwright sans réponse après {:.0f}s — abandon "
+                "(état considéré cassé)", BROWSER_START_TIMEOUT_S,
+            )
+            return False
+
+    async def _start_inner(self) -> bool:
         async with self._lock:
             if not PLAYWRIGHT_AVAILABLE:
                 logger.error("Playwright non disponible")
@@ -933,15 +979,59 @@ class PlaywrightBrowser:
             except Exception as e:
                 logger.error(f"Erreur arrêt Playwright: {e}")
     
+    async def _goto_collect_failures(self, url: str, wait_until: str) -> tuple:
+        """2.7.2 (run MiniPanier) — goto en collectant les ressources du MÊME host
+        qui répondent ≥400. Le run MiniPanier a navigué sur une page dont /style.css
+        et /script.js étaient en 404 → page cassée à l'écran, mais browser_navigate
+        disait juste « ✅ Navigué ». Ici, le lead VOIT les échecs. Renvoie
+        (response, failed:list[str]). Même-host only (pas les trackers externes),
+        plafonné. Fail-open : toute erreur du listener → []."""
+        failed: List[str] = []
+        try:
+            nav_host = urlparse(url).netloc
+        except Exception:
+            nav_host = ""
+
+        def _on_resp(resp):
+            try:
+                st = resp.status
+                if st < 400:
+                    return
+                ru = resp.url
+                if nav_host and urlparse(ru).netloc != nav_host:
+                    return  # ressource externe → hors de notre responsabilité
+                path = urlparse(ru).path or ru
+                entry = f"{path} ({st})"
+                if entry not in failed and len(failed) < 5:
+                    failed.append(entry)
+            except Exception:
+                pass
+
+        listener_attached = False
+        try:
+            self._page.on("response", _on_resp)
+            listener_attached = True
+        except Exception:
+            pass
+        try:
+            response = await self._page.goto(url, wait_until=wait_until, timeout=30000)
+        finally:
+            if listener_attached:
+                try:
+                    self._page.remove_listener("response", _on_resp)
+                except Exception:
+                    pass
+        return response, failed
+
     async def navigate(self, url: str, wait_until: str = "domcontentloaded") -> Dict[str, Any]:
         """
         Navigue vers une URL.
-        
+
         Args:
             url: URL à visiter
             wait_until: Quand considérer le chargement terminé
                         ("load", "domcontentloaded", "networkidle")
-        
+
         Returns:
             Dict avec le statut et les infos de la page
         """
@@ -962,7 +1052,11 @@ class PlaywrightBrowser:
             # Normaliser les URLs pour comparaison (ignorer trailing slash)
             def _norm_url(u: str) -> str:
                 return u.rstrip("/").split("?")[0].split("#")[0].lower()
-            if current_url and _norm_url(current_url) == _norm_url(url):
+            if (
+                current_url
+                and _norm_url(current_url) == _norm_url(url)
+                and not _same_url_requires_reload(current_url, url)
+            ):
                 logger.debug(f"🔄 Navigation idempotente: déjà sur {url}")
                 return {
                     "success": True,
@@ -998,7 +1092,7 @@ class PlaywrightBrowser:
                         return {"success": False, "error": f"Impossible de créer un onglet: {e_new}"}
                 else:
                     return {"success": False, "error": "Aucun onglet actif — relancez le navigateur"}
-            response = await self._page.goto(url, wait_until=wait_until, timeout=30000)
+            response, _failed_resources = await self._goto_collect_failures(url, wait_until)
             self._pages_visited += 1
 
             # Fix 7: Réinitialiser le backoff si succès, augmenter si rate limited
@@ -1021,7 +1115,8 @@ class PlaywrightBrowser:
                 "success": True,
                 "url": self._page.url,
                 "title": await self._page.title(),
-                "status": response.status if response else None
+                "status": response.status if response else None,
+                "failed_resources": _failed_resources,  # 2.7.2 — ressources ≥400 de la page
             }
         except PlaywrightTimeout:
             return {"success": False, "error": f"Timeout: {url}"}
@@ -1039,13 +1134,14 @@ class PlaywrightBrowser:
                 self._playwright = None
                 if await self.start():
                     try:
-                        response = await self._page.goto(url, wait_until=wait_until, timeout=30000)
+                        response, _failed_resources = await self._goto_collect_failures(url, wait_until)
                         self._pages_visited += 1
                         return {
                             "success": True,
                             "url": self._page.url,
                             "title": await self._page.title(),
                             "status": response.status if response else None,
+                            "failed_resources": _failed_resources,  # 2.7.2
                         }
                     except Exception as e2:
                         return {"success": False, "error": str(e2)}
@@ -4064,6 +4160,35 @@ class PlaywrightBrowser:
 _playwright_browser: Optional[PlaywrightBrowser] = None
 
 
+def _owner_loop_is_dead(browser) -> bool:
+    """LOT Z28 — la boucle qui possède ce navigateur est-elle MORTE ?
+
+    Run « Papier Cousu » (2026-08-19), au log :
+
+        18:02:48  Playwright démarré avec profil 'lumena'   ← par la MISSION
+        18:05     la mission meurt, personne n'arrête le navigateur
+        18:07:56  browser_navigate depuis le chat
+        18:11:56  sans réponse après 240s — reset BR-1
+        18:11:56  Erreur arrêt Playwright: Future attached to a DIFFERENT LOOP
+
+    **4 minutes de gel.** BR-1 rattrape, mais après coup ; Z28 supprime l'attente.
+
+    Condition STRICTE — morte, pas « autre » : une mission et le chat peuvent
+    tourner en parallèle sur deux boucles vivantes, et réinitialiser à chaque
+    alternance les ferait s'entretuer. Un doute quelconque → False (comportement
+    historique conservé, le filet BR-1 reste en place).
+    """
+    loop = getattr(browser, "_owner_loop", None)
+    if loop is None:
+        return False  # jamais démarré, ou boucle inconnue → on ne touche à rien
+    try:
+        if loop.is_closed():
+            return True
+        return not loop.is_running()
+    except Exception:
+        return False
+
+
 def get_playwright_browser(headless: bool | None = None, profile_name: Optional[str] = "lumena") -> PlaywrightBrowser:
     """Retourne l'instance singleton du navigateur Playwright.
     
@@ -4073,6 +4198,15 @@ def get_playwright_browser(headless: bool | None = None, profile_name: Optional[
     if headless is None:
         import os
         headless = os.getenv("LUMENA_BROWSER_HEADLESS", "false").lower() in ("1", "true", "yes")
+    if _playwright_browser is not None and _owner_loop_is_dead(_playwright_browser):
+        # LOT Z28 — la boucle qui possédait ce navigateur est morte : l'instance
+        # est inutilisable, tout `await` dessus pend. On lâche la référence,
+        # SANS l'attendre (c'est justement l'attente qui a coûté 240 s).
+        logger.warning(
+            "[Z28] navigateur hérité d'une boucle morte — instance lâchée, "
+            "redémarrage à froid (évite le gel de 240s vu le 19/08)"
+        )
+        _playwright_browser = None
     if _playwright_browser is None:
         _playwright_browser = PlaywrightBrowser(headless=headless, profile_name=profile_name)
     elif _playwright_browser.headless != headless and not _playwright_browser.is_running:
@@ -4087,6 +4221,31 @@ async def close_playwright_browser():
     if _playwright_browser is not None:
         await _playwright_browser.stop()
         _playwright_browser = None
+
+
+def force_reset_playwright_browser() -> None:
+    """BR-1 — remplace le singleton par un état vierge SANS attendre l'instance
+    courante. Appelé après un timeout d'outil navigateur : l'instance est par
+    définition injoignable et son verrou interne peut être tenu par la tâche
+    pendue — un stop() bloquant regèlerait l'appelant. Le prochain get renvoie
+    un objet NEUF (verrou neuf) → relance à froid, l'état prouvé fiable.
+    L'ancienne instance est fermée en tâche de fond, best-effort."""
+    global _playwright_browser
+    stale = _playwright_browser
+    _playwright_browser = None
+    if stale is None:
+        return
+
+    async def _cleanup() -> None:
+        try:
+            await asyncio.wait_for(stale.stop(), timeout=15)
+        except Exception:
+            pass  # instance zombie : rien de bloquant, le GC/OS finira le travail
+
+    try:
+        asyncio.get_running_loop().create_task(_cleanup())
+    except RuntimeError:
+        pass  # pas de boucle active → pas de cleanup async possible ici
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

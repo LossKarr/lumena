@@ -105,13 +105,17 @@ def _parse_delay(delay_str: str) -> Optional[timedelta]:
     return None
 
 
-def _parse_run_at(when_str: str) -> Optional[datetime]:
+def _parse_run_at(when_str: str, *, now: Optional[datetime] = None) -> Optional[datetime]:
     """
     Parse une heure absolue ou une date.
     Exemples : "08:00", "2026-03-10 18:00", "demain à 9h", "lundi 8h"
+
+    `now` est injectable (défaut = datetime.now()) pour des tests déterministes et
+    pour le calcul de budget des missions (mission_budget.py). Backward-compatible :
+    les appels existants sans `now` se comportent à l'identique.
     """
     s = when_str.strip().lower()
-    now = datetime.now()
+    now = now or datetime.now()
 
     # Format HH:MM seul → aujourd'hui ou demain si passé
     m = re.match(r"^(\d{1,2})[h:](\d{0,2})$", s)

@@ -66,6 +66,41 @@ class TestParallelToolsStructured:
         assert result.sub_results[0].success is True
         assert result.sub_results[0].status_code == "success"
 
+    def test_long_json_preview_shows_late_fields(self):
+        # Fix B (Lot 5.6) : un JSON dont le champ utile arrive tard (Open-Meteo :
+        # `current_weather` après ~450 car. d'en-tête) doit rester VISIBLE dans
+        # l'observation (sinon le modèle refait les appels un par un).
+        from src.reasoning.handlers.system import parallel_tools_handler
+        payload = (
+            '{"latitude": 48.86, "longitude": 2.34, "generationtime_ms": 0.06, '
+            '"utc_offset_seconds": 7200, "timezone": "Europe/Paris", "elevation": 43, '
+            '"pad": "' + ("x" * 350) + '", '
+            '"current_weather": {"temperature": 32.4, "windspeed": 12.2}}'
+        )
+
+        async def _fn(name, args):
+            return _make_obs(payload, success=True)
+
+        result = self._run(parallel_tools_handler(
+            self._ctx(), tool_calls=[{"name": "weather", "args": {}}], execute_fn=_fn))
+        # défaut 800 → la valeur (placée après ~450 car.) est visible
+        assert "current_weather" in result.output
+        assert "32.4" in result.output
+
+    def test_preview_cap_configurable(self, monkeypatch):
+        from src.reasoning.handlers.system import parallel_tools_handler
+        monkeypatch.setenv("LUMENA_PARALLEL_TOOL_PREVIEW_CHARS", "200")
+        payload = "DEBUT " + ("y" * 400) + " VALEUR_TARDIVE_42"
+
+        async def _fn(name, args):
+            return _make_obs(payload, success=True)
+
+        result = self._run(parallel_tools_handler(
+            self._ctx(), tool_calls=[{"name": "t", "args": {}}], execute_fn=_fn))
+        # cap 200 → le début est visible, la valeur tardive (>200) est coupée
+        assert "DEBUT" in result.output
+        assert "VALEUR_TARDIVE_42" not in result.output
+
     def test_partial_success_sub_results(self):
         from src.reasoning.handlers.system import parallel_tools_handler
 

@@ -237,3 +237,107 @@ def test_category_contract_accepts_absolute_file_path_parent(registry, monkeypat
         REACT,
     )
     assert obs is None
+
+
+# ── Exemption sandbox MISSION (2026-07-01) ──────────────────────────────────
+# Un worker de mission LOCALE doit pouvoir produire ses artefacts code dans le
+# sandbox workspace/ (run taskman : la policy les bloquait → chaos create_project/
+# delegate_task/copies MCP). Exemption ÉTROITE : whitelist d'écriture, bornée au
+# sandbox, repo protégé, gardée par le VRAI is_mission_run (pas runtime_task_id brut).
+from types import SimpleNamespace
+from src.reasoning.tool_registry import _is_local_mission_workspace_write_allowed as _mission_allow
+
+
+def _mctx(is_mission=True):
+    return SimpleNamespace(is_mission_run=is_mission)
+
+
+def _ws(registry, *parts):
+    return str(registry.default_workspace_root.joinpath(*parts))
+
+
+class TestMissionSandboxExemption:
+    def test_helper_mission_write_in_sandbox_allowed(self, registry):
+        p = _ws(registry, "taskman", "core.py")
+        assert _mission_allow("write_file", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is True
+
+    def test_helper_chat_not_allowed(self, registry):
+        p = _ws(registry, "taskman", "core.py")
+        assert _mission_allow("write_file", _mctx(False), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_no_ctx_not_allowed(self, registry):
+        p = _ws(registry, "taskman", "core.py")
+        assert _mission_allow("write_file", None, p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_src_refused(self, registry):
+        p = str(registry.lumena_root / "src" / "core.py")
+        assert _mission_allow("write_file", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_web_refused(self, registry):
+        p = str(registry.lumena_root / "web" / "server.py")
+        assert _mission_allow("write_file", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_escape_dotdot_refused(self, registry):
+        assert _mission_allow("write_file", _mctx(True), "workspace/../src/core.py",
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_delete_not_whitelisted(self, registry):
+        p = _ws(registry, "taskman")
+        assert _mission_allow("delete_directory", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+        assert _mission_allow("delete_file", _mctx(True), _ws(registry, "taskman", "x.py"),
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_shell_not_whitelisted(self, registry):
+        p = _ws(registry, "taskman")
+        assert _mission_allow("run_command", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_write_website_files_not_whitelisted(self, registry):
+        p = _ws(registry, "site", "index.html")
+        assert _mission_allow("write_website_files", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_env_file_refused(self, registry):
+        p = _ws(registry, "proj", ".env")
+        assert _mission_allow("write_file", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is False
+
+    def test_helper_project_src_subdir_still_allowed(self, registry):
+        # Un projet de mission qui a SON PROPRE sous-dossier src/ reste autorisé
+        # (la protection src/ vise le repo Lumena, pas un src/ interne au sandbox).
+        p = _ws(registry, "monapp", "src", "main.py")
+        assert _mission_allow("write_file", _mctx(True), p,
+                              registry.default_workspace_root, registry.lumena_root) is True
+
+    # ── Intégration _policy_check ──
+    def test_policy_check_mission_write_allowed(self, registry):
+        from src.reasoning.caller_context import REACT
+        registry._v2_context = _mctx(True)
+        obs = registry._policy_check(
+            "write_file", {"path": _ws(registry, "taskman", "core.py")}, REACT)
+        assert obs is None  # exemption → autorisé
+
+    def test_policy_check_chat_write_refused(self, registry, monkeypatch):
+        from src.reasoning.caller_context import REACT
+        registry._v2_context = _mctx(False)
+
+        def _fp(path):
+            return {"slug": "taskman", "path": str(registry.default_workspace_root / "taskman")}
+        monkeypatch.setattr("src.utils.project_registry.find_project_by_path", _fp)
+        obs = registry._policy_check(
+            "write_file", {"path": _ws(registry, "taskman", "core.py")}, REACT)
+        assert obs is not None  # pas d'exemption (chat) → policy normale refuse
+
+    def test_policy_check_mode_off_unchanged(self, registry, monkeypatch):
+        from src.reasoning.caller_context import REACT
+        monkeypatch.setenv("LUMENA_STRICT_CODE_DELEGATION", "off")
+        registry._v2_context = _mctx(False)
+        obs = registry._policy_check(
+            "write_file", {"path": str(registry.lumena_root / "src" / "x.py")}, REACT)
+        assert obs is None  # off → jamais de refus (inchangé)

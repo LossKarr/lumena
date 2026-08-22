@@ -339,6 +339,30 @@ def _neutralize_peer_master(monkeypatch):
     """
     monkeypatch.delenv("LUMENA_PEER_ENABLED", raising=False)
     monkeypatch.delenv("LUMENA_PEER_HALT", raising=False)
+    monkeypatch.delenv("LUMENA_PEER_AUTONOMY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _neutralize_codex_subscription(monkeypatch):
+    """LOT Z33 — la suite est ÉTANCHE à l'abonnement Codex.
+
+    Même cause, même remède que `_neutralize_peer_master` juste au-dessus :
+    `LUMENA_OPENAI_ACCESS_MODE=chatgpt_codex` fuit du `.env` du dev dès qu'il
+    active l'abonnement dans l'UI. Mesuré le 21/08 :
+
+      • la suite passe de **9 à 47 minutes** ;
+      • 5 tests échouent — dont `test_delegate_task_success` — parce qu'ils font
+        de VRAIS tours Codex (au log : « [Agent/Codex] tour termine
+        model=gpt-5.6-sol ») au lieu de leurs doublures ;
+      • du quota d'abonnement est consommé pour rien.
+
+    Preuve : ces 5 tests passent (74/74) dès que le mode est forcé à `api`.
+
+    Un test ne doit jamais dépendre d'un abonnement réel : ni pour son résultat,
+    ni pour sa durée. Les tests qui veulent l'abonnement l'activent
+    explicitement via `monkeypatch.setenv` — ils continuent de fonctionner.
+    """
+    monkeypatch.setenv("LUMENA_OPENAI_ACCESS_MODE", "api")
 
 
 # ============================================================================

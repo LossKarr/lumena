@@ -20,6 +20,11 @@ except Exception:  # pragma: no cover - optional dependency
     yaml = None
 
 
+# LOT Z10 — score minimal pour qu'un skill soit injecté dans un prompt.
+# Le matcher a un PLANCHER structurel à 5.5 : un skill totalement hors sujet
+# marque déjà 5.5. Tout seuil ≤ 5.5 laisse donc passer l'intégralité du bruit.
+_MIN_SKILL_SCORE: float = 6.0
+
 ACTION_VERBS = {
     # French infinitives
     "creer", "generer", "modifier", "editer", "corriger",
@@ -70,7 +75,9 @@ EXTENSION_TRIGGER_MAP = {
     "pdf": {"pdf"},
     "docx": {"docx", "word", "rapport", "lettre", "memo", "courrier"},
     "pptx": {"pptx", "powerpoint", "deck", "presentation", "slides", "slide", "diapo", "diaporama"},
-    "xlsx": {"xlsx", "excel", "sheet", "tableur", "spreadsheet", "csv", "calcul"},
+    # "calcul" seul est trop generique : une app web de calcul ne doit pas
+    # activer Excel. Les formats et termes tableur explicites restent suffisants.
+    "xlsx": {"xlsx", "excel", "sheet", "tableur", "spreadsheet", "csv"},
     # ── Web / Frontend ────────────────────────────────────────────────────────
     "website": {"site", "website", "landing", "portfolio", "ecommerce", "boutique", "vitrine", "homepage"},
     "frontend": {"frontend", "html", "css", "javascript", "interface", "ui", "ux", "dashboard", "navbar", "composant", "component", "page"},
@@ -670,7 +677,20 @@ class SkillLoader:
         matches = self.match_skills(query=query, max_results=max_results)
         # Seuil minimum: eviter d'injecter des skills sur des matchs faibles
         # (ex: "parle moi de mon site web" ne doit pas activer website-generator)
-        matches = [m for m in matches if m.score >= 5.0]
+        #
+        # LOT Z10 (2026-08-16) — le seuil était à 5.0 et laissait passer TOUT le
+        # bruit, parce que le matcher a un plancher structurel à **5.5** : un
+        # skill sans aucun rapport marque 5.5, donc au-dessus de 5.0.
+        # Conséquence mesurée : le worker qui code `donnees.js` (persistance
+        # localStorage) recevait `algorithmic-art` + `datagouv`, et celui qui code
+        # `chrono.js` recevait `algorithmic-art` — injectés par `delegate_task`
+        # sous le titre « Instructions spécifiques à appliquer dans ton code ».
+        # Du bruit présenté comme des ordres, sur des tâches de code.
+        #
+        # 6.0 mesuré sur un corpus de 13 cas réels (workers + chat) : 3 cas
+        # changent, les 3 sont du bruit à 5.5 ; AUCUN cas pertinent n'est perdu
+        # (css 17.5, html 17.5, design 26, pdf 21.5, xlsx 15.5 — tous conservés).
+        matches = [m for m in matches if m.score >= _MIN_SKILL_SCORE]
         if not matches:
             return ""
 

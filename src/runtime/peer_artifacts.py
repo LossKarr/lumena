@@ -70,6 +70,8 @@ def sha256_bytes(data: bytes) -> str:
 _FILE_CREATING_TOOLS = frozenset({
     "write_file", "str_replace", "multi_edit_file", "insert_at_anchor",
     "create_pdf", "create_docx", "create_xlsx", "create_pptx", "create_zip",
+    "create_csv", "generate_studio_document", "generate_studio_documents",
+    "revise_studio_document", "export_library_document",
     "create_vcard", "create_meeting_report", "create_batch_documents",
     "save_template", "export_website_zip", "fill_pdf_form", "watermark_pdf",
     "sign_pdf", "protect_pdf", "image_to_pdf", "merge_pdf",
@@ -168,6 +170,38 @@ def extract_created_files(history, *, base_dir: Path) -> List[str]:
             seen.add(key)
             out.append(key)
     return out
+
+
+def persist_created_files(orchestrator, task_id: str, history, *, base_dir: Path) -> List[str]:
+    """Persist newly observed mission artifacts while the ReAct loop is running.
+
+    Mission publication can happen before ``run_mission`` returns. Persisting at
+    the successful tool boundary makes those files visible to the publisher
+    without scanning unrelated workspace content.
+    """
+    if orchestrator is None or not task_id:
+        return []
+    created = extract_created_files(history, base_dir=base_dir)
+    if not created:
+        return []
+    try:
+        record = orchestrator.get_task(task_id) or {}
+        metadata = record.get("metadata") or {}
+        existing = [str(p) for p in (metadata.get("artifacts") or []) if p]
+        merged = list(existing)
+        seen = set(existing)
+        added: List[str] = []
+        for path in created:
+            if path in seen:
+                continue
+            seen.add(path)
+            merged.append(path)
+            added.append(path)
+        if added:
+            orchestrator.set_task_metadata(task_id, artifacts=merged)
+        return added
+    except Exception:
+        return []
 
 
 # ── Manifeste (côté producteur B) ─────────────────────────────────────────────

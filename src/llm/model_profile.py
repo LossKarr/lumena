@@ -230,6 +230,19 @@ _PROVIDER_DEFAULTS: Dict[str, ModelBehaviorProfile] = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
+    "claude-opus-5": ModelBehaviorProfile(
+        parser_severity="strict",
+        thought_leak_risk="low",
+        action_inline_risk="low",
+        loop_risk="low",
+        tool_call_quality="excellent",
+        react_stability="stable",
+        sub_agent_stability="stable",
+        empty_response_risk="rare",
+        retry_on_empty=False,
+        timeout_multiplier=1.0,
+        compact_ctx_threshold=0.80,
+    ),
     # ── Anthropic flagship (très stable) ────────────────────────────────────
     "claude-opus-4.8": ModelBehaviorProfile(
         parser_severity="strict",
@@ -258,6 +271,19 @@ _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
         compact_ctx_threshold=0.80,
     ),
     "claude-opus-4.6": ModelBehaviorProfile(
+        parser_severity="strict",
+        thought_leak_risk="low",
+        action_inline_risk="low",
+        loop_risk="low",
+        tool_call_quality="excellent",
+        react_stability="stable",
+        sub_agent_stability="stable",
+        empty_response_risk="rare",
+        retry_on_empty=False,
+        timeout_multiplier=1.0,
+        compact_ctx_threshold=0.80,
+    ),
+    "claude-sonnet-5": ModelBehaviorProfile(
         parser_severity="strict",
         thought_leak_risk="low",
         action_inline_risk="low",
@@ -326,6 +352,21 @@ _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
         sub_agent_iter_cap=30,
     ),
     # ── Kimi K2 — grand modèle MoE, lent et thought-leaky ───────────────────
+    # Profil prudent tant que les longues missions K3 n'ont pas produit
+    # suffisamment de preuves runtime propres à Lumena.
+    "kimi-k3": ModelBehaviorProfile(
+        parser_severity="strict",
+        thought_leak_risk="medium",
+        action_inline_risk="low",
+        loop_risk="low",
+        tool_call_quality="excellent",
+        react_stability="stable",
+        sub_agent_stability="stable",
+        empty_response_risk="occasional",
+        retry_on_empty=True,
+        timeout_multiplier=1.35,
+        compact_ctx_threshold=0.80,
+    ),
     "kimi-k2.5": ModelBehaviorProfile(
         parser_severity="forgiving",
         thought_leak_risk="high",

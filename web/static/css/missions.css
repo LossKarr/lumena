@@ -1,0 +1,171 @@
+/* Lot 5.4 — Panneau Missions : arbre lead → workers, interactif, produit-fini.
+ * S'appuie sur les tokens (tokens.css). Aucune couleur en dur. */
+
+#missions-list { display: flex; flex-direction: column; gap: 10px; }
+
+.mission-empty { color: var(--muted); font-size: 12px; padding: 6px 2px; }
+
+/* ── Carte LEAD ───────────────────────────────────────────────────────────── */
+.mission-card {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  transition: border-color .18s var(--ease-out), box-shadow .18s var(--ease-out);
+}
+.mission-card.is-active {
+  border-color: var(--accent-muted, var(--accent));
+  box-shadow: 0 0 0 1px var(--accent-subtle, transparent);
+}
+.mission-card.is-active::before {
+  content: "";
+  display: block;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent 70%);
+}
+
+.mission-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.mission-obj {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--card-foreground, inherit);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mission-elapsed {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.mission-prog {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-subtle, var(--bg-muted));
+  border: 1px solid var(--accent-muted, var(--border));
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Toggle déplier/replier */
+.mission-toggle,
+.mission-toggle-spacer {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px; height: 20px;
+  flex: 0 0 20px;
+}
+.mission-toggle {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 5px;
+  padding: 0;
+  transition: background .15s, color .15s;
+}
+.mission-toggle:hover { background: var(--bg-hover); color: var(--accent); }
+.mission-toggle i { width: 15px; height: 15px; }
+
+/* Annuler (lead + worker) */
+.mission-cancel {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: all .15s;
+}
+.mission-cancel:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-subtle, transparent); }
+.mission-cancel i { width: 12px; height: 12px; }
+
+/* ── Corps repliable ─────────────────────────────────────────────────────── */
+.mission-body {
+  padding: 0 12px 10px 12px;
+  border-top: 1px solid var(--border);
+  animation: missionFade .16s var(--ease-out);
+}
+@keyframes missionFade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
+
+.mission-result {
+  font-size: 11.5px;
+  color: var(--muted-strong, var(--muted));
+  line-height: 1.45;
+  margin-top: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mission-arts {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; color: var(--ok);
+  margin-top: 6px;
+}
+.mission-arts i { width: 12px; height: 12px; }
+
+/* Log live (lead ou worker) */
+.mission-log {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--muted);
+  max-height: 120px;
+  overflow: auto;
+  font-family: var(--mono, monospace);
+  background: var(--bg-muted, transparent);
+  border-radius: 6px;
+  padding: 6px 8px;
+  line-height: 1.5;
+}
+.mission-log:empty { display: none; }
+.mission-log > div { white-space: nowrap; }
+
+/* ── Sous-liste WORKERS ──────────────────────────────────────────────────── */
+.mission-workers { margin-top: 10px; }
+.mission-workers-title {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--muted);
+  margin-bottom: 6px;
+}
+.mission-workers-title i { width: 12px; height: 12px; }
+
+.mission-worker {
+  position: relative;
+  padding: 7px 8px 7px 12px;
+  margin-left: 4px;
+  border-left: 2px solid var(--border-strong, var(--border));
+  background: var(--bg-elevated, transparent);
+  border-radius: 0 8px 8px 0;
+}
+.mission-worker + .mission-worker { margin-top: 5px; }
+.mission-worker-head {
+  display: flex; align-items: center; gap: 7px;
+}
+.mission-worker-obj {
+  flex: 1; min-width: 0;
+  font-size: 12px;
+  color: var(--card-foreground, inherit);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mission-sub-result {
+  font-size: 10.5px; color: var(--muted);
+  margin-top: 4px; line-height: 1.4;
+  white-space: pre-wrap; word-break: break-word;
+}
+.mission-worker .mission-log { max-height: 90px; }

@@ -209,6 +209,7 @@
   transition:border-color .15s,box-shadow .15s;
 }
 .compose-box:focus-within{border-color:var(--accent);box-shadow:var(--focus-glow)}
+.compose-input-wrap{display:flex;flex-direction:column;flex:1;min-width:0;gap:4px}
 .compose-textarea{
   flex:1;min-height:36px;max-height:min(34vh,320px);padding:6px 4px;
   background:transparent;border:none;color:var(--text);
@@ -225,8 +226,18 @@
 .compose-toolbar .char-counter{font-size:11px;color:var(--muted);font-family:var(--mono)}
 .compose-toolbar .char-counter.warn{color:var(--warn)}
 .compose-toolbar .char-counter.error{color:var(--danger);font-weight:600}
+.compose-toolbar .btn-icon.recording{
+  color:#fff;background:var(--danger);border-color:var(--danger);
+  animation:dictation-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dictation-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.35)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)}}
 
 /* Activity toggle tab — small button on sidebar edge */
+@media(max-width:480px){
+  .compose-box{flex-direction:column;align-items:stretch;gap:6px}
+  .compose-toolbar{width:100%;justify-content:flex-end}
+}
+
 .activity-toggle-tab{
   position:relative;align-self:flex-start;margin-top:12px;
   width:32px;height:40px;border:1px solid var(--border);border-right:none;

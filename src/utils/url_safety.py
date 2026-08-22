@@ -14,8 +14,12 @@ from urllib.parse import urlparse
 
 _BLOCKED_SCHEMES = frozenset({"file", "ftp", "gopher", "data", "javascript", "vbscript", ""})
 _SSRF_ALLOW_PRIVATE = False  # True uniquement en debug local
-# Ports localhost autorisés pour les serveurs web Lumena self-hosted
-_SSRF_ALLOWED_LOCAL_PORTS: frozenset = frozenset({3000, 4200, 5000, 8000, 8080, 8888, 9000})
+# Ports localhost autorisés pour les serveurs web self-hosted (dev previews).
+# LOT E (run CéramiShop) : 8080 RETIRÉ — c'est le port de contrôle de Lumena.
+# L'agent ne doit jamais atteindre l'UI/l'API de Lumena via son navigateur ; les
+# vraies previews (start_preview_server, http.server de mission) montent sur un
+# port libre ≥ 8081 qu'elles ENREGISTRENT (is_preview_allowed), pas via 8080.
+_SSRF_ALLOWED_LOCAL_PORTS: frozenset = frozenset({3000, 4200, 5000, 8000, 8888, 9000})
 
 
 def _is_private_host(hostname: str) -> bool:
@@ -62,7 +66,17 @@ def assert_url_safe(url: str) -> None:
     # Ports localhost autorisés pour serveurs self-hosted Lumena
     if hostname in ("localhost", "127.0.0.1", "::1"):
         port = parsed.port or (443 if scheme == "https" else 80)
+        # LOT E : les ports de CONTRÔLE de Lumena (web 8080, IDE 8245, Ollama) sont
+        # interdits AVANT tout — ni l'allowlist ni une preview ne peut les rouvrir.
+        from src.utils.local_preview import is_preview_allowed, reserved_lumena_ports
+        if port in reserved_lumena_ports():
+            raise ValueError(f"Accès réseau privé interdit: port réservé Lumena {port}")
         if port in _SSRF_ALLOWED_LOCAL_PORTS:
+            return
+        # Preview locale CONTRÔLÉE : port loopback enregistré par Lumena elle-même
+        # (serve_website / http.server de mission). Autorise UNIQUEMENT les previews
+        # délibérément servies — pas un allow-localhost large. Cf. run todolist.
+        if is_preview_allowed(hostname, port):
             return
 
     # Check IP littérale directe

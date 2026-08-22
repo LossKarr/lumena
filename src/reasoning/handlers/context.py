@@ -23,6 +23,12 @@ try:
 except ImportError:
     OutsideAccessGrant = None  # type: ignore[assignment,misc]
 
+try:
+    from ...tools.file_guardrails import strip_mission_workspace_prefix
+except ImportError:  # mode test léger
+    def strip_mission_workspace_prefix(path_str: str, subdir: str) -> str:  # type: ignore[misc]
+        return path_str
+
 
 @dataclass
 class HandlerContext:
@@ -58,6 +64,29 @@ class HandlerContext:
     # Mis à jour par react.py avant chaque appel outil.
     # Permet aux handlers (ex: delegate_task) de surveiller le cancel parent.
     runtime_task_id: Optional[str] = None
+
+    # --- Exemption écriture code en sandbox mission (cf. tool_registry._policy_check) ---
+    # Vérité propagée par react.py avant chaque appel outil : True SEULEMENT pour un vrai
+    # run de mission (double-verrou task_id + metadata.kind=="mission" via _is_mission_run),
+    # PAS un simple runtime_task_id. Autorise un worker de mission LOCALE à produire ses
+    # artefacts code dans le sandbox workspace/ sans passer par CodeAgent.
+    is_mission_run: bool = False
+
+    # --- LOT 2.1 : dossier de mission ISOLÉ (scope workspace par mission) ---
+    # Sous-dossier (relatif au workspace) partagé par tous les workers d'un même
+    # lead, posé par react.py depuis la meta mission (elle-même écrite par
+    # delegate_and_wait). Vide hors mission → résolution actuelle inchangée.
+    # JAMAIS un état de classe/global : c'est une donnée de tour, comme
+    # is_mission_run / runtime_task_id. Cf. race _pinned_project (file_guardrails).
+    mission_workspace: str = ""
+
+    # --- LOT 2.3 : fichiers assignés au WORKER (scope d'écriture par worker) ---
+    # Liste (relative au dossier mission) que CE worker a le droit d'ÉCRIRE. Propre
+    # à chaque enfant (≠ mission_workspace qui est partagé). Le LEAD n'en a pas →
+    # non restreint (intégration 2.5). Lecture jamais concernée. Posé par react.py
+    # depuis la meta mission (écrite par delegate_and_wait). Vide → aucune
+    # restriction (chat, CodeAgent, lead, worker sans liste = inchangés).
+    mission_allowed_files: List[str] = field(default_factory=list)
 
     # --- Phase 0.6 : Demande utilisateur originale (verbatim) ---
     # Mise à jour par react.py avant chaque appel outil (même pattern que
@@ -132,6 +161,52 @@ class HandlerContext:
         raw = os.getenv("LUMENA_PATCH_STRICT", "1")
         return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+    def mission_workspace_subdir(self) -> str:
+        """Sous-dossier de scope mission (helper PUR). Non-vide UNIQUEMENT en run de
+        mission (`is_mission_run`) portant un `mission_workspace` sain. Sinon "" →
+        résolution actuelle inchangée (chat, CodeAgent, mission sans workspace).
+
+        Anti-traversal : jamais de `..`, jamais de chemin absolu → sinon "".
+        """
+        if not self.is_mission_run or not self.runtime_task_id:
+            return ""
+        raw = (self.mission_workspace or "").strip().replace("\\", "/")
+        if not raw:
+            return ""
+        # Rejet absolu AVANT le strip (sinon "/abs" → "abs" passerait) : posix "/…"
+        # ou lecteur Windows "C:/…".
+        if raw.startswith("/") or (len(raw) >= 2 and raw[1] == ":"):
+            return ""
+        sub = raw.strip("/")
+        if not sub or ".." in sub.split("/"):
+            return ""
+        return sub
+
+    def mission_allowed_files_set(self) -> Optional[frozenset]:
+        """LOT 2.3 — ensemble NORMALISÉ (posix relatif, sans `..`/absolu) des fichiers
+        que ce worker peut ÉCRIRE. `None` si pas de scope (hors mission ou liste vide)
+        → aucune restriction. Helper PUR.
+
+        LOT 2.8 (run BudgetBuddy) : les entrées sont ramenées au RELATIF du dossier
+        de mission (strip `workspace/` + `<mission_workspace>/`) — MÊME base que le
+        `rel` comparé par le garde. Avant : owned=`missions/<id>/storage.py` vs
+        rel=`storage.py` → le worker était refusé sur SES PROPRES fichiers, et la
+        seule écriture acceptée était la duplication missions/<id>/missions/<id>."""
+        if not self.is_mission_run or not self.runtime_task_id:
+            return None
+        sub = self.mission_workspace_subdir()
+        norm = set()
+        for f in (self.mission_allowed_files or []):
+            s = str(f or "").strip().replace("\\", "/").strip("/")
+            if not s or s.startswith("/") or (len(s) >= 2 and s[1] == ":"):
+                continue
+            if ".." in s.split("/"):
+                continue
+            s = strip_mission_workspace_prefix(s, sub).strip("/")
+            if s:
+                norm.add(s)
+        return frozenset(norm) or None
+
     def resolve_path(self, path: str, *, want_dir: bool = False) -> Path:
         """
         Résout un chemin utilisateur via file_guardrails.
@@ -139,6 +214,7 @@ class HandlerContext:
         Equivalent de ToolRegistry._resolve_path(path).
         """
         p = Path(path)
+        sub = self.mission_workspace_subdir()
 
         # Priorité au runtime_root pour les chemins relatifs: en mode agent/IDE,
         # "." doit pointer sur le workspace effectif, pas forcément sur lumena_root.
@@ -154,6 +230,20 @@ class HandlerContext:
             else:
                 rel = p
 
+            # LOT 2.1 — read-après-write en mission : le fichier du dossier de la
+            # mission PRIME sur un homonyme (runtime_root ou ailleurs). Sinon un
+            # worker qui écrit missions/x/app.py pourrait relire un vieux app.py.
+            # LOT 2.8 — strip défensif : chemin complet recopié → pas de duplication.
+            if sub and self.file_guardrails is not None:
+                try:
+                    ws_root = self.file_guardrails._workspace_root()
+                    _rel_28 = Path(strip_mission_workspace_prefix(rel.as_posix(), sub))
+                    mission_candidate = (ws_root / sub / _rel_28).resolve()
+                    if mission_candidate.exists():
+                        return mission_candidate
+                except Exception:
+                    pass
+
             runtime_candidate = (self.runtime_root / rel).resolve()
             if runtime_candidate.exists():
                 return runtime_candidate
@@ -162,7 +252,8 @@ class HandlerContext:
 
         if self.file_guardrails is not None:
             return self.file_guardrails.resolve_user_path(
-                path, want_dir=want_dir, outside_grant=self.outside_access_grant
+                path, want_dir=want_dir, outside_grant=self.outside_access_grant,
+                mission_workspace_subdir=sub,
             )
 
         # Fallback sans guardrails (tests légers)

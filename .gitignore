@@ -59,7 +59,7 @@ htmlcov/
 .coverage
 
 # Models locaux
-models/
+
 
 # Fichiers internes / artefacts racine
 _test_out.txt
@@ -95,3 +95,20 @@ installer/
 /lumi-ide
 #/REPO
 /REPO
+/video
+/.backups
+/tmp
+/artifacts
+/workspace_campaign_20260812
+/web/node_modules
+/SWL
+/output
+/audit_edit
+books.json
+export.py
+test_export.py
+test_log_fixes.py
+test_run_desktop.py
+/models/lumena-v1.0.0/unsloth_compiled_cache
+README_TEST.md
+/models

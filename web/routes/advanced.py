@@ -2,11 +2,13 @@
 from __future__ import annotations
 import asyncio
 import json as _json
+import os
 import socket
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
 
 from web.routes import deps
 
@@ -287,6 +289,186 @@ async def toggle_voice():
             return {"running": True, "message": "Assistant vocal démarré"}
         else:
             raise HTTPException(status_code=500, detail="Impossible de démarrer l'assistant vocal")
+
+
+@router.post("/api/voice/stop-audio", dependencies=[Depends(deps.verify_admin_token)])
+async def stop_voice_audio():
+    """Coupe immédiatement l'audio V2 sans annuler le travail en cours."""
+    from src.voice.v2.observability import get_voice_telemetry
+
+    stopped = get_voice_telemetry().stop_audio()
+    return {"stopped": stopped, "task_continues": True}
+
+
+@router.post("/api/voice/mute", dependencies=[Depends(deps.verify_admin_token)])
+async def set_voice_mute(enabled: bool = True):
+    """Mute global autoritatif, partagé avec le coeur historique."""
+    if not deps.lumena or not hasattr(deps.lumena, "set_global_mute"):
+        raise HTTPException(status_code=503, detail="Lumena not available")
+    deps.lumena.set_global_mute(bool(enabled))
+    from src.voice.v2.observability import get_voice_telemetry
+    get_voice_telemetry().update(muted=bool(enabled))
+    return {"muted": bool(enabled)}
+
+
+@router.post("/api/voice/test-output", dependencies=[Depends(deps.verify_admin_token)])
+async def test_voice_output():
+    """Synthétise et joue réellement une phrase via le runtime V2 actif."""
+    from src.voice.v2.observability import get_voice_telemetry
+
+    ok = await get_voice_telemetry().test_voice()
+    if not ok:
+        raise HTTPException(status_code=503, detail="Voice V2 audio runtime not active")
+    return {"ok": True}
+
+
+@router.post("/api/voice/test-micro", dependencies=[Depends(deps.verify_admin_token)])
+async def test_voice_micro(duration_ms: int = 350):
+    """Ouvre réellement le micro et mesure son bruit, sans conserver l'audio."""
+    from src.voice.v2.providers.real_vad import RealVADProvider
+
+    raw = os.getenv("LUMENA_VOICE_INPUT_DEVICE", "").strip()
+    try:
+        device = int(raw) if raw else None
+    except ValueError:
+        device = None
+    vad = RealVADProvider(input_device_index=device)
+    if not vad.is_available():
+        raise HTTPException(status_code=503, detail="Microphone/PyAudio unavailable")
+    result = await vad.calibrate(duration_ms=max(150, min(int(duration_ms), 2000)))
+    return {"ok": not result.get("fallback", False), "calibration": result}
+
+
+@router.post("/api/voice/dictation-state", dependencies=[Depends(deps.verify_admin_token)])
+async def set_voice_dictation_state(active: bool):
+    """Suspend l'écoute autonome pendant une dictée explicite du compositeur."""
+    from src.voice.v2.observability import get_voice_telemetry
+
+    max_capture_s = _bounded_env_int(
+        "LUMENA_CHAT_DICTATION_MAX_S", 60, 5, 300
+    )
+    # Le lease couvre aussi le premier chargement/fallback Whisper CPU. Le
+    # frontend le libère explicitement dès la fin, cette durée n'est qu'un filet.
+    get_voice_telemetry().set_dictation_active(
+        bool(active), lease_s=max_capture_s + 180
+    )
+    return {"active": bool(active)}
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return max(minimum, min(maximum, int(os.getenv(name, str(default)))))
+    except (TypeError, ValueError):
+        return default
+
+
+@router.get("/api/voice/dictation-config", dependencies=[Depends(deps.verify_admin_token)])
+async def get_chat_dictation_config():
+    """Configuration navigateur bornée ; aucune valeur secrète n'est exposée."""
+    return {
+        "max_duration_ms": 1000 * _bounded_env_int(
+            "LUMENA_CHAT_DICTATION_MAX_S", 60, 5, 300
+        ),
+        "silence_ms": _bounded_env_int(
+            "LUMENA_CHAT_DICTATION_SILENCE_MS", 1800, 800, 5000
+        ),
+    }
+
+
+@router.post("/api/voice/transcribe", dependencies=[Depends(deps.verify_admin_token)])
+async def transcribe_chat_dictation(audio: UploadFile = File(...)):
+    """Transcrit un enregistrement navigateur sans le conserver ni l'envoyer."""
+    content = await audio.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Enregistrement audio vide")
+    if len(content) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Enregistrement trop volumineux")
+    content_type = (audio.content_type or "").lower()
+    if content_type and not (
+        content_type.startswith("audio/") or content_type == "application/octet-stream"
+    ):
+        raise HTTPException(status_code=415, detail="Format audio non supporté")
+    suffix = ".webm"
+    if "ogg" in content_type:
+        suffix = ".ogg"
+    elif "wav" in content_type:
+        suffix = ".wav"
+    fd, raw_path = tempfile.mkstemp(prefix="lumena_dictation_", suffix=suffix)
+    os.close(fd)
+    path = Path(raw_path)
+    try:
+        path.write_bytes(content)
+        from src.voice.v2.observability import get_voice_telemetry
+
+        telemetry = get_voice_telemetry()
+        try:
+            result = await telemetry.transcribe_detailed(path)
+            if result is None:
+                text = await telemetry.transcribe(path)
+                result = None if text is None else {
+                    "text": text, "segments": [],
+                    "status": "ok" if text else "no_speech",
+                }
+            if result is None:
+                from src.voice.v2.providers.real_stt import RealSTTAdapter
+                result = await RealSTTAdapter(language="fr").transcribe_detailed(
+                    path, language="fr", strict=True
+                )
+        except Exception as exc:
+            from src.voice.stt import STTAudioDecodeError
+            telemetry.update(dictation_last_error=str(exc))
+            if isinstance(exc, STTAudioDecodeError):
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": "audio_decode_failed", "message": "Audio illisible"},
+                ) from exc
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "stt_unavailable", "message": "Transcription locale indisponible"},
+            ) from exc
+
+        from src.voice.v2.dictation import extract_dictation_send_command
+        decision = extract_dictation_send_command(
+            str(result.get("text", "") or ""), result.get("segments", [])
+        )
+        telemetry.update(
+            dictation_last_error="",
+            dictation_stt_device=result.get("device"),
+            dictation_stt_compute=result.get("compute_type"),
+            dictation_stt_fallback=bool(result.get("fallback_used", False)),
+        )
+        return {
+            "text": decision.text,
+            "should_send": decision.should_send,
+            "command": decision.command,
+            "command_boundary": decision.boundary,
+            "status": str(result.get("status", "ok")),
+            "segments": list(result.get("segments", [])),
+            "retained": False,
+        }
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@router.get("/api/voice/confirmations", dependencies=[Depends(deps.verify_admin_token)])
+async def list_voice_confirmations():
+    """Demandes critiques Voice V2 en attente, sans arguments ni secrets."""
+    from src.runtime.voice_security import get_voice_confirmation_broker
+
+    return {"requests": get_voice_confirmation_broker().list_requests()}
+
+
+@router.post(
+    "/api/voice/confirmations/{request_id}/approve",
+    dependencies=[Depends(deps.verify_admin_token)],
+)
+async def approve_voice_confirmation(request_id: str):
+    """Autorise une seule exécution exacte. Impossible à appeler par la voix seule."""
+    from src.runtime.voice_security import get_voice_confirmation_broker
+
+    if not get_voice_confirmation_broker().approve(request_id):
+        raise HTTPException(status_code=404, detail="Confirmation vocale absente ou expirée")
+    return {"approved": True, "request_id": request_id}
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

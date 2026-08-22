@@ -1024,7 +1024,7 @@ class TestPlaywrightBrowserTypingAndSubmit:
 class TestBrowserHandlerDefs:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 75
+        assert len(defs) == 76  # +1 : browser_select_index (LOT Z19)
 
     def test_names_unique(self):
         defs = get_browser_handler_defs()

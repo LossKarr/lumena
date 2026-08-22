@@ -56,6 +56,49 @@ def test_extract_created_files_from_observation(tmp_path):
     assert str(produced.resolve()) in files
 
 
+def test_extract_created_files_from_document_studio_and_csv(tmp_path):
+    pdf = _mkfile(tmp_path / "documents" / "aquawatch.pdf", b"%PDF")
+    csv = _mkfile(tmp_path / "exports" / "aquawatch.csv", b"date,litres\n")
+    history = [
+        _Step("generate_studio_document", {}, obs=f"Document genere: {pdf}"),
+        _Step("create_csv", {"output_path": str(csv)}),
+    ]
+
+    assert set(pa.extract_created_files(history, base_dir=tmp_path)) == {
+        str(pdf.resolve()),
+        str(csv.resolve()),
+    }
+
+
+def test_persist_created_files_merges_task_metadata(tmp_path):
+    first = _mkfile(tmp_path / "documents" / "first.pdf", b"%PDF-1")
+    second = _mkfile(tmp_path / "documents" / "second.pdf", b"%PDF-2")
+
+    class _Orchestrator:
+        def __init__(self):
+            self.metadata = {"artifacts": [str(first.resolve())]}
+            self.updates = []
+
+        def get_task(self, task_id):
+            return {"metadata": dict(self.metadata)} if task_id == "task_1" else None
+
+        def set_task_metadata(self, task_id, **values):
+            self.metadata.update(values)
+            self.updates.append((task_id, values))
+
+    orch = _Orchestrator()
+    added = pa.persist_created_files(
+        orch,
+        "task_1",
+        [_Step("generate_studio_document", {}, obs=f"Document genere: {second}")],
+        base_dir=tmp_path,
+    )
+
+    assert added == [str(second.resolve())]
+    assert orch.metadata["artifacts"] == [str(first.resolve()), str(second.resolve())]
+    assert len(orch.updates) == 1
+
+
 def test_extract_ignores_files_outside_workspace(tmp_path):
     outside = _mkfile(tmp_path.parent / "elsewhere.txt", b"x")
     try:

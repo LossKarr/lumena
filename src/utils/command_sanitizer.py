@@ -7,6 +7,7 @@ au lieu d'une blacklist facilement contournable.
 
 from __future__ import annotations
 
+import os
 import shlex
 import re
 from typing import Tuple, Optional, Set
@@ -142,6 +143,11 @@ _DEPLOY_NETWORK_MSG = (
 )
 _DEPLOY_NETWORK_EXES = frozenset({"ssh", "scp", "sftp", "rsync", "ftp", "psftp", "pscp", "winscp"})
 
+# M1 (run RévizIA) — exécutables SERVEUR WEB hors whitelist : le refus doit guider
+# vers start_preview_server (registre de preview → browser_navigate autorisé),
+# pas vers la guidance souris/clavier générique.
+_WEB_SERVER_EXES = frozenset({"flask", "uvicorn", "gunicorn", "waitress", "waitress-serve", "http-server"})
+
 # Verbes PowerShell autorisés (lecture / diagnostic / formatage / lancement)
 _PS_SAFE_VERBS: Set[str] = {
     "get", "test", "format", "select", "where", "sort", "measure",
@@ -238,6 +244,104 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
             logger.warning("Commande bloquee (injection potentielle): {}", command_stripped[:80])
             return False, "Commande bloquee: substitution de commande non autorisee"
 
+    # 2b. M1bis-F2 (run MiniQuiz 2026-07-06) — serveurs lancés par des voies
+    # WHITELISTÉES : `Start-Process python app.py` (verbe PS `start` autorisé,
+    # python whitelisté) a contourné la guidance serveur M1.b et laissé un Flask
+    # orphelin qui tenait les pipes → run_command pendu, worker gelé à jamais.
+    # GUIDANCE seulement (doctrine revue M1), au niveau commande COMPLÈTE,
+    # AVANT les branches whitelist/verbes PS.
+    _cmd_low_full = command_stripped.lower()
+    if re.search(
+        r"start-process\b[^|;]*\b(?:python3?|py|node|npm|npx|flask|uvicorn|"
+        r"gunicorn|waitress(?:-serve)?|http-server)\b",
+        _cmd_low_full,
+    ):
+        logger.warning("Commande bloquee (Start-Process serveur/détaché): {}", command_stripped[:80])
+        return False, (
+            "Processus détaché refusé : Start-Process lance un process que le "
+            "runner ne peut ni suivre ni arrêter (il garde les sorties ouvertes "
+            "et gèle run_command). Pour un serveur web : APPELLE L'OUTIL "
+            "serve_website(directory='<dossier de l'app>', port=8081) — il "
+            "enregistre le port au registre de preview, ce qui autorise ensuite "
+            "browser_navigate. Pour un simple script : lance-le DIRECTEMENT "
+            "(python script.py), sans Start-Process."
+        )
+    if re.search(
+        r"(?:\s-m\s+(?:flask|uvicorn|gunicorn|http\.server)\b|\bflask\s+(?:--app\s+\S+\s+)?run\b)",
+        _cmd_low_full,
+    ):
+        logger.warning("Commande bloquee (serveur web via module whitelisté): {}", command_stripped[:80])
+        return False, (
+            "Serveur web : ne lance PAS de serveur a la main. APPELLE L'OUTIL "
+            "serve_website(directory='<dossier de l'app>', port=8081) : il "
+            "enregistre le port au registre de preview, ce qui autorise ensuite "
+            "browser_navigate pour la verification. Un serveur lance a la main "
+            "est bloque par la protection SSRF (navigateur inutilisable dessus)."
+        )
+
+    # 2c. 2.6.2 (run MiniQuiz §5) — Start-Job : job PowerShell détaché que le
+    # runner ne voit pas. `powershell -Command "$j=Start-Job -ScriptBlock
+    # {python app.py}; ..."` a lancé 3 serveurs Flask fantômes hors de tout
+    # contrôle (le verbe `start` est whitelisté et le contenu de la chaîne
+    # -Command n'était pas re-scanné). Blocage au niveau commande COMPLÈTE.
+    if re.search(r"\bstart-job\b", _cmd_low_full):
+        logger.warning("Commande bloquee (Start-Job détaché): {}", command_stripped[:80])
+        return False, (
+            "Processus détaché refusé : Start-Job lance un job invisible pour le "
+            "runner (impossible à suivre ou arrêter). Pour un serveur web : "
+            "APPELLE L'OUTIL serve_website(directory='<dossier de l'app>', "
+            "port=8081). Pour un simple script : lance-le DIRECTEMENT "
+            "(python script.py), en avant-plan."
+        )
+
+    # 2d. 2.6.2 — écriture de fichier via cmdlets PS, y compris IMBRIQUÉS dans
+    # `powershell -Command "..."` : `(Get-Content app.py) -replace 'port=8081',
+    # 'port=8085' | Set-Content app.py` a contourné le périmètre I.2 du CodeAgent
+    # et VIOLÉ le contrat (port muté). Le check de verbe (4a) ne voit que le
+    # cmdlet de TÊTE — ici on scanne toute la commande. Out-File/Add-Content ont
+    # des verbes whitelistés (out/add… `out` est safe) → même trou, même fermeture.
+    if re.search(r"\b(?:set-content|out-file|add-content)\b", _cmd_low_full):
+        logger.warning("Commande bloquee (écriture fichier via cmdlet PS): {}",
+                       command_stripped[:80])
+        return False, (
+            "Écriture de fichier via le shell refusée (Set-Content/Out-File/"
+            "Add-Content, même dans powershell -Command). Utilise tes outils "
+            "d'édition : write_file / edit_file / apply_patch — le périmètre de "
+            "mission s'applique à eux, pas au shell."
+        )
+
+    # 2e. 2.6.2 — python -c qui ÉCRIT un fichier ou LANCE un serveur : deux
+    # contournements du même run (création de test_run_desktop.py par
+    # open(...,'w').write(...), et le lead servant Flask via
+    # `python -c "from app import create_app; app.run(port=8085)"` → serveur
+    # hors registre SSRF → navigateur bloqué → fabrication).
+    if re.search(
+        r"(?:python3?|py)(?:\.exe)?\b[^|;&]*\s-c\s.*"
+        r"(?:open\s*\([^)]*['\"](?:w|a|r\+|w\+|a\+)['\"]|\.write\s*\()",
+        _cmd_low_full,
+    ):
+        logger.warning("Commande bloquee (écriture fichier via python -c): {}",
+                       command_stripped[:80])
+        return False, (
+            "Écriture de fichier via `python -c \"open(...).write(...)\"` refusée. "
+            "Utilise tes outils d'édition : write_file / edit_file / apply_patch — "
+            "le périmètre de mission s'applique à eux, pas au shell."
+        )
+    if re.search(
+        r"(?:python3?|py)(?:\.exe)?\b[^|;&]*\s-c\s.*"
+        r"(?:\bapp\s*\.\s*run\s*\(|\bcreate_app\s*\(|serve_forever|make_server\s*\()",
+        _cmd_low_full,
+    ):
+        logger.warning("Commande bloquee (serveur lancé via python -c): {}",
+                       command_stripped[:80])
+        return False, (
+            "Serveur web : ne lance PAS l'app à la main via python -c. APPELLE "
+            "L'OUTIL serve_website(directory='<dossier de l'app>', port=8081) : il "
+            "détecte app.py, lance la vraie app Flask et enregistre le port au "
+            "registre de preview — sinon browser_navigate restera bloqué (SSRF) "
+            "et ta vérification navigateur sera impossible."
+        )
+
     # 3. Extraire l'executable principal
     executable = _extract_executable(command_stripped)
     if not executable:
@@ -277,6 +381,24 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
         # Message spécialisé pour les protocoles de déploiement réseau
         if exe_base in _DEPLOY_NETWORK_EXES:
             return False, _DEPLOY_NETWORK_MSG.format(exe=executable)
+        # M1 (run RévizIA 2026-07-05) — message spécialisé SERVEUR WEB : le refus de
+        # `flask run` renvoyait la guidance souris/clavier (aucun rapport) → le lead
+        # abandonnait la vérif navigateur et fabriquait. GUIDANCE seulement, jamais
+        # de redirection silencieuse (revue M1) : on indique la voie officielle.
+        _cmd_low_srv = command_stripped.lower()
+        if (
+            exe_base in _WEB_SERVER_EXES
+            or "http.server" in _cmd_low_srv
+            or "runserver" in _cmd_low_srv
+        ):
+            return False, (
+                f"Executable '{executable}' non autorise. Serveur web : ne lance PAS "
+                "de serveur a la main. APPELLE L'OUTIL "
+                "serve_website(directory='<dossier de l'app>', port=8081) : il "
+                "enregistre le port au registre de preview, ce qui autorise ensuite "
+                "browser_navigate pour la verification. Un serveur lance a la main "
+                "est bloque par la protection SSRF (navigateur inutilisable dessus)."
+            )
         reason = (
             f"Executable '{executable}' non autorise par la whitelist de securite. "
             "Pour controler la souris ou le clavier, utilise directement les outils natifs : "
@@ -318,7 +440,13 @@ def _extract_executable(command: str) -> Optional[str]:
         first_cmd = first_cmd.lstrip('(')
 
     try:
-        parts = shlex.split(first_cmd)
+        # B0.4a (run PlantCare) — shlex en mode POSIX MANGE les backslashes d'un
+        # chemin Windows quoté ("C:\...\python.exe" → C:Users...python.exe) : plus
+        # aucun séparateur → l'extraction du basename ne s'applique pas → le chemin
+        # mutilé entier est comparé à la whitelist → faux blocage du venv python.
+        # On normalise les séparateurs AVANT le parsing (le basename est déjà
+        # extrait en '/').
+        parts = shlex.split(first_cmd.replace("\\", "/"))
         if not parts:
             return None
 
@@ -425,6 +553,172 @@ def sanitize_chained_command(command: str, extra_allowed: Optional[Set[str]] = N
             return False, f"Sous-commande bloquee: {reason}"
 
     return True, ""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOT G1 — garde de CIBLE pour les commandes destructives en mission
+#
+# Le reste de ce module juge la DANGEROSITE d'une commande : `rm -rf` et
+# `del /s /f /q` sont bloques, tandis que `del <fichier>` est explicitement
+# autorise (un worker doit pouvoir nettoyer SES fichiers).
+#
+# Il manquait la seconde dimension : la PROPRIETE de la cible. Le 2026-08-12, une
+# mission a execute `del C:\...\lumena\pytest.ini` (exit 0) pour contourner un
+# conflit de configuration pytest — supprimant un fichier du depot de
+# l'utilisateur. `Rename-Item` sur le meme fichier avait ete bloque (verbe
+# interdit) ; `pyproject.toml` n'a survecu que par hasard de sequence.
+#
+# `del rapport.md` dans le dossier de mission est legitime.
+# `del <depot>/pytest.ini` ne l'est pas. Meme commande, meme verdict jusqu'ici.
+#
+# Ce garde est ADDITIF : il ne retire rien a l'allowlist, aux BLOCKED_PATTERNS ni
+# aux verbes PowerShell. Il est CONSERVATEUR : tout doute (chemin ambigu, racine
+# inconnue) laisse passer — sur-bloquer casserait les missions.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Verbes qui DETRUISENT ou DEPLACENT un fichier existant. `move`/`ren` en font
+# partie : deplacer `pytest.ini` equivaut a le supprimer de sa place.
+_DESTRUCTIVE_VERBS: Set[str] = {
+    "del", "del.exe", "erase", "rm", "rmdir", "rd", "unlink",
+    "move", "mv", "ren", "rename",
+    "remove-item", "move-item", "rename-item", "clear-content", "set-content",
+}
+
+# G1.b — L'INTENTION destructive, ou qu'elle se trouve dans la ligne.
+#
+# La v1 de ce garde n'inspectait que le PREMIER mot de chaque sous-commande. Cinq
+# contournements triviaux passaient : `python -c "os.remove(...)"`,
+# `node -e "unlinkSync(...)"`, `powershell -Command "del ..."`, `cmd /c del ...`
+# et l'ecrasement par redirection `echo x > fichier`.
+#
+# Enumerer les facons de detruire est une course perdue (le meme piege que la
+# course aux regex sur le texte des finals). On inverse donc la logique :
+#   (un chemin PROTEGE apparait) x (une intention destructive apparait) -> refus
+# quel que soit l'enrobage : shell, interpreteur, redirection.
+#
+# Motifs volontairement SPECIFIQUES (`os.remove`, `unlinkSync`, `rmtree`...) pour
+# ne pas se declencher sur de la prose : le mot nu « remove » ne compte pas.
+_DESTRUCTIVE_INTENT_RE = re.compile(
+    r"(?:"
+    r"(?<![\w.-])(?:del|erase|rm|rmdir|rd|unlink|move|mv|ren|rename)(?![\w.-])"
+    r"|remove-item|move-item|rename-item|clear-content|set-content"
+    r"|os\.(?:remove|unlink|rmdir|rename|replace|truncate)"
+    r"|shutil\.(?:rmtree|move)"
+    r"|pathlib|\.unlink\s*\(|\.rmdir\s*\("
+    r"|unlinksync|rmsync|rmdirsync|renamesync|truncatesync"
+    r"|fs\.(?:unlink|rm|rmdir|rename|truncate|writefile)"
+    r"|file_put_contents|>\s*&?\s*\S|>>"
+    r")",
+    re.IGNORECASE,
+)
+
+# Extraction des chemins PARTOUT dans la ligne, y compris a l'interieur d'une
+# chaine passee a un interpreteur (`python -c "... 'C:/…/pytest.ini' ..."`).
+_EMBEDDED_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/][^\"'\s,;)]*|(?:\.\.[\\/])+[^\"'\s,;)]*|/[^\"'\s,;)]{2,})"
+)
+
+# Tokens d'une ligne de commande, guillemets respectes (les chemins Windows
+# contiennent des espaces : "C:\Program Files\...").
+_CMD_TOKEN_RE = re.compile(r'"([^"]*)"|\'([^\']*)\'|(\S+)')
+
+
+def _looks_like_path(token: str) -> bool:
+    """Heuristique conservatrice : ce token designe-t-il un chemin ?"""
+    if not token or token.startswith("-") or token.startswith("/"):
+        return False  # option de ligne de commande, pas une cible
+    return ("/" in token) or ("\\" in token) or ("." in token.strip("."))
+
+
+def _normalized_parts(path_str: str) -> Optional[Tuple[str, ...]]:
+    """Chemin -> tuple de segments normalises (minuscules), sans I/O disque.
+
+    Purement lexical : `os.path.normpath` resout `..` et `.` sans toucher au
+    systeme de fichiers, ce qui garde le helper testable hors runtime.
+    """
+    try:
+        cleaned = str(path_str).strip().strip('"').strip("'").replace("\\", "/")
+        if not cleaned:
+            return None
+        normalized = os.path.normpath(cleaned).replace("\\", "/")
+        return tuple(p.lower() for p in normalized.split("/") if p not in ("", "."))
+    except Exception:
+        return None
+
+
+def _is_within(parts: Tuple[str, ...], root: Tuple[str, ...]) -> bool:
+    """`parts` est-il egal a `root` ou situe dessous ?"""
+    return bool(root) and len(parts) >= len(root) and parts[: len(root)] == root
+
+
+def destructive_command_target_violation(
+    command: str,
+    *,
+    mission_root: Optional[str] = None,
+    repo_root: Optional[str] = None,
+) -> str:
+    """Retourne le chemin fautif si une commande DESTRUCTIVE vise un fichier du
+    depot situe HORS du workspace de la mission ; `""` sinon.
+
+    Args:
+        command: la ligne de commande complete (chainages compris).
+        mission_root: dossier de mission du worker. `None`/vide -> helper INERTE
+            (hors mission : chat, CodeAgent direct, autonomie — inchanges).
+        repo_root: racine du depot Lumena a proteger.
+
+    Conservateur par construction :
+    - une commande sans verbe destructif n'est jamais signalee (`pytest`, `git
+      status`, `node --check` restent libres, meme sur des chemins du depot) ;
+    - un chemin relatif simple est resolu depuis le dossier de mission (cas
+      normal) ; il ne devient fautif que s'il en sort via `..` ;
+    - un chemin hors du depot n'est pas notre affaire (les autres gardes s'en
+      chargent) ;
+    - toute erreur d'analyse -> `""` (on ne bloque jamais sur un doute).
+    """
+    if not command or not mission_root or not repo_root:
+        return ""
+    try:
+        repo_parts = _normalized_parts(repo_root)
+        mission_parts = _normalized_parts(mission_root)
+        if not repo_parts or not mission_parts:
+            return ""
+
+        for sub in _split_shell_operators_respecting_quotes(command):
+            sub = (sub or "").strip()
+            if not sub:
+                continue
+            # G1.b — l'intention destructive peut etre n'importe ou : premier mot
+            # (`del x`), corps d'un interpreteur (`python -c "os.remove(...)"`),
+            # ou simple redirection (`echo x > fichier`).
+            if not _DESTRUCTIVE_INTENT_RE.search(sub):
+                continue
+
+            # Candidats : tokens de la ligne ET chemins noyes dans une chaine.
+            candidates = [
+                (m.group(1) or m.group(2) or m.group(3) or "")
+                for m in _CMD_TOKEN_RE.finditer(sub)
+            ]
+            candidates += [m.group(0) for m in _EMBEDDED_PATH_RE.finditer(sub)]
+
+            for raw in candidates:
+                token = (raw or "").strip().strip("\"'()[],;")
+                if not token or not _looks_like_path(token):
+                    continue
+                candidate = token.replace("\\", "/")
+                is_absolute = candidate.startswith("/") or re.match(r"^[A-Za-z]:", candidate)
+                parts = (
+                    _normalized_parts(candidate)
+                    if is_absolute
+                    else _normalized_parts(f"{mission_root}/{candidate}")
+                )
+                if not parts:
+                    continue
+                # Dans le depot ET hors du workspace de la mission -> violation.
+                if _is_within(parts, repo_parts) and not _is_within(parts, mission_parts):
+                    return token
+        return ""
+    except Exception:
+        return ""
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

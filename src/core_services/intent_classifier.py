@@ -13,6 +13,8 @@ import re
 from enum import Enum
 from typing import Optional
 
+from ..documents.document_intent import DocumentRoute, resolve_document_route
+
 
 class RequestMode(str, Enum):
     CHAT = "chat"
@@ -122,12 +124,19 @@ _CREATE_ARTIFACT = re.compile(
     r"\b(rapp?ort|rapp?rot|document|doc|pdf|docx|xlsx|pptx|csv|"
     r"note|lettre|mail|email|courriel|r[ée]sum[ée]|synth[èe]se|"
     r"compte[\s-]?rendu|brief|m[ée]mo|memo|script|fichier|texte|"
-    r"article|post|tweet|facture|invoice|template|mod[èe]le)\b",
+    r"article|post|tweet|facture|invoice|devis|avoir|proforma|"
+    r"bon[\s-]?de[\s-]?commande|note[\s-]?de[\s-]?frais|attestation|"
+    r"contrat|nda|bulletin[\s-]?de[\s-]?paie|fiche[\s-]?de[\s-]?poste|"
+    r"proc[èe]s[\s-]?verbal|relance[\s-]?impay[ée]e?|template|mod[èe]le)\b",
     re.IGNORECASE,
 )
 
 
-def classify_intent(query: str, runtime_ctx: Optional[object] = None) -> RequestMode:
+def classify_intent(
+    query: str,
+    runtime_ctx: Optional[object] = None,
+    document_route: Optional[DocumentRoute] = None,
+) -> RequestMode:
     """
     Classifie la requête sans appel LLM : regex + heuristiques.
 
@@ -141,6 +150,9 @@ def classify_intent(query: str, runtime_ctx: Optional[object] = None) -> Request
     lower = text.lower()
     words = lower.split()
     n_words = len(words)
+    _runtime_mode = str(getattr(runtime_ctx, "mode", "chat") or "chat").strip().lower()
+    _document_route = document_route or resolve_document_route(text, mode=_runtime_mode)
+    _structured_document = _document_route.kind if _document_route.actionable else None
 
     # ── CHAT : salutations, meta, opinions ────────────────────────────────────
     if _CHAT_GREET.match(text):
@@ -168,11 +180,10 @@ def classify_intent(query: str, runtime_ctx: Optional[object] = None) -> Request
     _is_agent_channel = False
     if runtime_ctx is not None:
         _src = getattr(runtime_ctx, "source_channel", "") or ""
-        _mode = getattr(runtime_ctx, "mode", "") or ""
-        if _src in ("telegram", "whatsapp") and _mode == "agent":
+        if _src in ("telegram", "whatsapp") and _runtime_mode == "agent":
             _is_agent_channel = True
 
-    if n_words <= _CHAT_SHORT_MAX_WORDS and not _REACT_SEARCH.search(text) and not _REACT_CODE.search(text) and not _CREATE_ARTIFACT.search(text):
+    if n_words <= _CHAT_SHORT_MAX_WORDS and not _REACT_SEARCH.search(text) and not _REACT_CODE.search(text) and not _CREATE_ARTIFACT.search(text) and not _structured_document:
         if not _PROJECT_KW.search(text) and not _has_tool_signal and not _has_send_keyword:
             if not _REACT_MULTI.search(text):
                 # En mode agent Telegram, les phrases référençant un résultat précédent
@@ -209,7 +220,7 @@ def classify_intent(query: str, runtime_ctx: Optional[object] = None) -> Request
     # ── Création d'artefact (rapport, document, pdf…) → REACT ─────────────────
     # Laisse la boucle ReAct choisir l'outil (create_pdf, write_file, etc.)
     # et permet au classifieur LLM hybride d'escalader si besoin vers CodeAgent.
-    if _CREATE_ARTIFACT.search(text):
+    if _CREATE_ARTIFACT.search(text) or _structured_document:
         return RequestMode.REACT
 
     # ── REACT : tout le reste ─────────────────────────────────────────────────

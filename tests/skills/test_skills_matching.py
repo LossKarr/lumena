@@ -40,6 +40,30 @@ def test_extension_queries_match_expected_skills(tmp_path: Path):
     assert loader.match_skills("tableur xlsx", max_results=3)[0].name == "xlsx"
 
 
+def test_generic_web_calculation_does_not_activate_xlsx_extension_intent(tmp_path: Path):
+    skills_dir = tmp_path / "skills"
+    _write_skill(skills_dir, "xlsx", "Traitement de tableurs Excel", "xlsx,excel,tableur")
+    _write_skill(skills_dir, "frontend-design", "Design d'interfaces web", "frontend,html,css")
+
+    loader = SkillLoader(base_dirs=[skills_dir])
+    loader.load_all()
+
+    web_matches = loader.match_skills(
+        "Cree une interface web HTML CSS qui calcule un score impact effort",
+        max_results=3,
+    )
+    assert web_matches
+    assert web_matches[0].name == "frontend-design"
+    assert all("extension intent:xlsx" not in match.reasons for match in web_matches)
+
+    spreadsheet_matches = loader.match_skills(
+        "Cree un tableur Excel avec les calculs et exporte-le en xlsx",
+        max_results=3,
+    )
+    assert spreadsheet_matches[0].name == "xlsx"
+    assert "extension intent:xlsx" in spreadsheet_matches[0].reasons
+
+
 def test_build_active_skills_context_is_bounded(tmp_path: Path):
     skills_dir = tmp_path / "skills"
     _write_skill(skills_dir, "pdf", "PDF handler", "pdf")

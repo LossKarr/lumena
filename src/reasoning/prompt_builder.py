@@ -71,6 +71,51 @@ def is_single_file_creation_request(query: str) -> bool:
     return asks_creation and mentions_file and not is_web_project
 
 
+def is_explicit_mission_request(query: str) -> bool:
+    """Détecte une demande EXPLICITE de créer/lancer une mission en arrière-plan.
+
+    But : quand l'utilisateur dit « crée une mission… », Lumena DOIT appeler
+    create_mission au lieu de faire le travail elle-même en direct (bug observé :
+    la mémoire d'échecs passés la fait basculer en inline, ignorant la consigne).
+
+    Serré volontairement (verbe de lancement + « mission »), avec exclusions pour ne
+    JAMAIS matcher une question d'identité (« ta mission de vie ») ni un SUIVI de
+    mission existante (« alors la mission ? », « où en est la mission »).
+    Pur/déterministe → verrouillé par tests.
+    """
+    q = (query or "").lower()
+    if not q or "mission" not in q:
+        return False
+    # Exclusions : identité / suivi / clôture — pas une demande de création.
+    _neg = (
+        "mission de vie", "ta mission", "ma mission", "quelle est la mission",
+        "quelle est ta mission", "où en est", "ou en est", "alors la mission",
+        "la mission est", "statut de la mission", "avancement de la mission",
+        "mission accomplie", "mission terminée", "mission finie",
+    )
+    if any(n in q for n in _neg):
+        return False
+    # Positif : un verbe de LANCEMENT proche de « mission », ou une locution d'arrière-plan.
+    _launch = (
+        "crée une mission", "cree une mission", "créer une mission", "creer une mission",
+        "crée une vraie mission", "cree une vraie mission",
+        "lance une mission", "lancer une mission", "lance une vraie mission",
+        "démarre une mission", "demarre une mission", "démarrer une mission",
+        "planifie une mission", "planifier une mission",
+        "mets en place une mission", "met en place une mission",
+        "mission en arrière-plan", "mission en arriere-plan",
+        "mission en tâche de fond", "mission en tache de fond",
+        "nouvelle mission", "crée-moi une mission", "cree-moi une mission",
+        # « Enregistrer » = le verbe CANONIQUE de create_mission (« Enregistre une
+        # mission et la lance en arrière-plan ») — absent jusqu'au run NoteFlash
+        # 2026-07-02 : « Enregistre une mission : construis… » → détecteur muet →
+        # aucun nudge → le chat a routé delegate_task/CodeAgent au lieu de la mission.
+        "enregistre une mission", "enregistrer une mission", "enregistres une mission",
+        "enregistre-moi une mission", "enregistre une vraie mission",
+    )
+    return any(p in q for p in _launch)
+
+
 def is_project_creation_request(query: str) -> bool:
     """Detecte une demande de creation/structuration de projet complet."""
     q = (query or "").lower()

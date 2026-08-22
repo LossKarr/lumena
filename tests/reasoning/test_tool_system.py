@@ -48,7 +48,10 @@ class TestToolRegistration:
         assert "write_website_files" in names
         assert "list_website_projects" in names
         assert "browser_verify_local_project" in names
-        assert len(defs) == 9
+        # LOT 2.0 (run MotDuJour) : +1 = start_preview_server, alias RÉEL de
+        # serve_website (l'outil fantôme que toute la guidance nommait).
+        assert "start_preview_server" in names
+        assert len(defs) == 10
 
     def test_required_tools_known_via_is_known_tool(self):
         """Les outils core sont reconnus via _is_known_tool (legacy ou V2)."""

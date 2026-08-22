@@ -13,6 +13,46 @@ import pytest
 from web.routes import config as config_mod
 
 
+def test_privileged_voice_role_requires_explicit_pairing():
+    current = {
+        "LUMENA_VOICE_SESSION_ROLE": "guest",
+        "LUMENA_VOICE_SESSION_TRUSTED": "",
+    }
+    error = config_mod._voice_pairing_error(
+        {"LUMENA_VOICE_SESSION_ROLE": "owner"}, current,
+    )
+    assert "appairée" in error
+    assert config_mod._voice_pairing_error(
+        {
+            "LUMENA_VOICE_SESSION_ROLE": "owner",
+            "LUMENA_VOICE_SESSION_TRUSTED": "1",
+        },
+        current,
+    ) == ""
+
+
+def test_voice_session_identity_fields_require_restart():
+    fields = {
+        item["key"]: item for item in config_mod._CONFIG_SCHEMA
+        if item["key"].startswith("LUMENA_VOICE_SESSION_")
+    }
+    assert fields["LUMENA_VOICE_SESSION_TRUSTED"]["restart"] is True
+    assert fields["LUMENA_VOICE_SESSION_ROLE"]["restart"] is True
+    assert fields["LUMENA_VOICE_SESSION_USER_ID"]["restart"] is True
+
+
+def test_paired_owner_gets_coherent_owner_user_id():
+    updates = config_mod._normalize_voice_pairing_updates(
+        {
+            "LUMENA_VOICE_SESSION_ROLE": "owner",
+            "LUMENA_VOICE_SESSION_TRUSTED": "1",
+            "LUMENA_VOICE_SESSION_USER_ID": "voice:guest",
+        },
+        {"LUMENA_OWNER_USER_ID": "local:owner"},
+    )
+    assert updates["LUMENA_VOICE_SESSION_USER_ID"] == "local:owner"
+
+
 def _mini_schema() -> list[dict]:
     return [
         {"key": "LUMENA_PORT", "label": "Port", "group": "Serveur", "type": "number", "default": "8080", "level": "avancé", "restart": True, "hint": "Port FastAPI."},

@@ -11,6 +11,7 @@ Fonctionnalités:
 import asyncio
 import tempfile
 import os
+import re
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -238,7 +239,10 @@ class LumenaTTS:
             asyncio.create_task(self._play_audio(audio_file))
         return audio_file
 
-    async def _synthesize(self, text: str, *, local_only: bool = False) -> Optional[Path]:
+    async def _synthesize(
+        self, text: str, *, local_only: bool = False, allow_xtts: bool = True,
+        piper_model: Optional[str] = None,
+    ) -> Optional[Path]:
         """Phase SYNTHÈSE seule (V2) — cascade de providers → fichier audio, SANS playback.
 
         Ne prend JAMAIS le chemin `_speak_sentences` (réservé à `speak()`).
@@ -255,9 +259,19 @@ class LumenaTTS:
         success = False
         audio_file = None
         provider = None  # provider effectivement utilisé (pour statut V2 : pyttsx3 -> degraded)
+        effective_piper_model = None
+        if self.piper is not None:
+            try:
+                if piper_model and self.piper.is_available(piper_model):
+                    effective_piper_model = piper_model
+            except (TypeError, ValueError):
+                effective_piper_model = None
+        piper_model_name = effective_piper_model or getattr(self.piper, "model_name", "default")
+        piper_cache_tag = re.sub(r"[^A-Za-z0-9_-]+", "_", str(piper_model_name))
 
         # 0. XTTS v2 — ultra-naturel local (prioritaire si mode premium/offline)
-        if not success and self._tts_mode in ("premium", "offline") and self.xtts is not None and self.xtts.is_available():
+        if (allow_xtts and not success and self._tts_mode in ("premium", "offline")
+                and self.xtts is not None and self.xtts.is_available()):
             provider = "xtts"
             audio_file = self.cache_dir / f"lumena_xtts_{text_hash}.wav"
             try:
@@ -275,13 +289,16 @@ class LumenaTTS:
 
         # 1. Piper (Local ONNX — dernier recours avant pyttsx3, qualité correcte)
         # NOTE: Piper passe APRÈS Edge-TTS en mode premium/fast — uniquement si tout le reste échoue
-        if not success and self._tts_mode == "offline" and self.piper is not None and self.piper.is_available():
+        if (not success and self._tts_mode == "offline" and self.piper is not None
+                and self.piper.is_available(effective_piper_model)):
             provider = "piper"
-            audio_file = self.cache_dir / f"lumena_{text_hash}.wav"
+            audio_file = self.cache_dir / f"lumena_piper_utf8_v2_{piper_cache_tag}_{text_hash}.wav"
             try:
                 if audio_file.exists():
                     success = True
-                elif await self.piper.generate(text, audio_file):
+                elif await self.piper.generate(
+                    text, audio_file, model_name=effective_piper_model,
+                ):
                     success = True
                 
                 if success:
@@ -322,7 +339,8 @@ class LumenaTTS:
                 self.metrics.record_failure(provider, error_msg)
         
         # 2b. XTTS v2 (fallback offline en mode fast si edge-tts indisponible)
-        if not success and self._tts_mode == "fast" and self.xtts is not None and self.xtts.is_available():
+        if (allow_xtts and not success and self._tts_mode == "fast"
+                and self.xtts is not None and self.xtts.is_available()):
             provider = "xtts"
             audio_file = self.cache_dir / f"lumena_xtts_{text_hash}.wav"
             try:
@@ -339,13 +357,16 @@ class LumenaTTS:
                 self.metrics.record_failure(provider, str(e))
 
         # 2c. Piper (fallback local si Edge-TTS échoue en mode fast/premium)
-        if not success and self._tts_mode != "offline" and self.piper is not None and self.piper.is_available():
+        if (not success and self._tts_mode != "offline" and self.piper is not None
+                and self.piper.is_available(effective_piper_model)):
             provider = "piper"
-            audio_file = self.cache_dir / f"lumena_{text_hash}.wav"
+            audio_file = self.cache_dir / f"lumena_piper_utf8_v2_{piper_cache_tag}_{text_hash}.wav"
             try:
                 if audio_file.exists():
                     success = True
-                elif await self.piper.generate(text, audio_file):
+                elif await self.piper.generate(
+                    text, audio_file, model_name=effective_piper_model,
+                ):
                     success = True
                 if success:
                     latency_ms = (time.time() - start_time) * 1000

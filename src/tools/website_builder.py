@@ -14,6 +14,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -280,6 +281,20 @@ def build_design_directives(user_message: str) -> str:
         random.setstate(_prev_state)
 
 
+def _theme_origin_note(user_message: str) -> str:
+    """LOT Z27 — dire que le thème vient de la DEMANDE, pas du hasard.
+
+    Le brief ordonne « Applique EXACTEMENT ces choix ». Quand l'ambiance a été
+    exigée, le worker doit savoir qu'obéir, ici, c'est obéir à l'utilisateur —
+    et non à une palette tirée au sort. Vide si rien n'a été demandé.
+    """
+    try:
+        from .ui_ux_knowledge import requested_theme as _rt
+        return " (DEMANDÉ EXPLICITEMENT)" if _rt(user_message) else ""
+    except Exception:
+        return ""
+
+
 def _build_pro_design_directives(user_message: str) -> str:
     """Directives de design pro — palettes WCAG + fonts contextuels + UX rules."""
     design = _get_pro_design(user_message)
@@ -305,7 +320,7 @@ Applique EXACTEMENT ces choix. Ne substitue PAS par tes valeurs par défaut.
 Palette validée WCAG 2.1 AA pour l'accessibilité.
 
 🎨 PALETTE: "{palette['name']}" (type: {palette['product_type']})
-Thème: {"DARK" if design['is_dark'] else "LIGHT"} — Note: {palette['notes']}
+Thème: {"DARK" if design['is_dark'] else "LIGHT"}{_theme_origin_note(user_message)} — Note: {palette['notes']}
 ```css
 {css_root}
 ```
@@ -722,15 +737,164 @@ if __name__ == "__main__":
 """
 
 
-def start_preview_server(directory: Path, port: int = 8080) -> Dict[str, Any]:
-    """Lance un serveur HTTP local pour prévisualiser le site."""
+# 2.5 (runs MotDuJour/Converto 2026-07-06) — la preview statique ne fait PAS
+# tourner Flask : une app à /api/* charge sa page mais tous les fetch échouent →
+# la jambe navigateur d'une mission Flask était structurellement impossible.
+# Même patron que le script statique : process isolé, cwd=dossier, AUCUN pipe
+# tenu (F1-safe). use_reloader=False = un seul process → stop_preview_server
+# (terminate) le tue proprement.
+_FLASK_PREVIEW_SCRIPT = r"""
+import importlib.util
+import sys
+
+port = int(sys.argv[1])
+spec = importlib.util.spec_from_file_location("app", "app.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+app = m.create_app() if hasattr(m, "create_app") else m.app
+app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+"""
+
+
+def _flask_entry(directory: Path) -> bool:
+    """2.5 — le dossier contient-il une app Flask servable (`app.py` avec
+    `create_app` ou `Flask(`) ? Lecture bornée, pur/testable."""
+    try:
+        app_py = Path(directory) / "app.py"
+        if not app_py.is_file():
+            return False
+        head = app_py.read_text(encoding="utf-8", errors="replace")[:50_000]
+        return "create_app" in head or "Flask(" in head
+    except Exception:
+        return False
+
+
+def _wait_port_ready(port: int, proc: subprocess.Popen, timeout_s: float = 6.0) -> bool:
+    """2.5 — attend que le serveur ÉCOUTE réellement (avant : « success » aveugle
+    dès le spawn). False si le process meurt ou si rien n'écoute à l'échéance."""
+    import socket
+    import time
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False  # mort avant d'écouter (import cassé, erreur app.py…)
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                return True
+        except OSError:
+            time.sleep(0.15)
+    return False
+
+
+def _probe_page_assets(port: int, timeout_s: float = 4.0) -> List[str]:
+    """2.7.1 (run MiniPanier) — GÉNÉRIQUE, aucun framework en dur : télécharge la
+    page racine servie, extrait les ressources locales qu'elle référence
+    (href/src), et renvoie la liste de celles qui répondent ≥400.
+
+    Le run MiniPanier a servi une page dont `/style.css` et `/script.js` étaient
+    en 404 (le stub fige des liens frères, Flask sert sous /static/) → CSS/JS
+    jamais chargés, UI cassée à l'écran, et RIEN ne le mesurait (pytest ignore
+    les assets, node --check ignore le runtime). Ici : on regarde ce que la page
+    réclame VRAIMENT et on vérifie que ça charge. Vrai pour Flask, statique, ou
+    n'importe quel serveur. Fail-open : toute erreur de sonde → [] (ne casse
+    jamais un serve qui marche).
+    """
+    import re
+    import urllib.error
+    import urllib.request
+    from urllib.parse import urljoin, urlparse
+
+    base = f"http://127.0.0.1:{port}/"
+    try:
+        with urllib.request.urlopen(base, timeout=timeout_s) as r:
+            ctype = (r.headers.get("Content-Type") or "").lower()
+            if "html" not in ctype:
+                return []  # pas une page HTML (API pure) → rien à sonder
+            html = r.read(200_000).decode("utf-8", errors="replace")
+    except Exception:
+        return []
+
+    # href="..." et src="..." (guillemets simples ou doubles).
+    refs = re.findall(r"""(?:href|src)\s*=\s*["']([^"']+)["']""", html, re.IGNORECASE)
+    broken: List[str] = []
+    seen: set = set()
+    for ref in refs:
+        ref = ref.strip()
+        if not ref or ref.startswith(("#", "data:", "javascript:", "mailto:", "tel:")):
+            continue
+        parsed = urlparse(ref)
+        # Ressource EXTERNE (autre host) → hors de notre responsabilité.
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            continue
+        target = urljoin(base, ref)
+        if urlparse(target).netloc not in ("127.0.0.1:%d" % port, "localhost:%d" % port):
+            continue
+        if target in seen:
+            continue
+        seen.add(target)
+        try:
+            req = urllib.request.Request(target, method="HEAD")
+            with urllib.request.urlopen(req, timeout=timeout_s) as rr:
+                status = getattr(rr, "status", 200)
+        except urllib.error.HTTPError as he:
+            status = he.code
+        except Exception:
+            continue  # timeout/refus : on ne peut pas conclure → on n'accuse pas
+        if status >= 400:
+            broken.append(urlparse(target).path or ref)
+        if len(broken) >= 5:  # plafond : liste utile, pas un déluge
+            break
+    return broken
+
+
+def _unlinked_stylesheets(directory) -> List[str]:
+    """2.9.B (run TriboBlog2) — un `.css` est présent dans le dossier servi mais
+    AUCUN `.html` ne le référence par `<link ... href=...css>` → SITE NU (le worker
+    a oublié le lien, ou le CSS a été créé hors contrat donc jamais injecté au stub).
+
+    Distinct de _probe_page_assets (qui détecte un 404) : ici le fichier EXISTE et
+    se sert, il n'est simplement pas LIÉ → aucun 404, l'ancien filet ne voit rien.
+    Pur (filesystem, pas de serveur), fail-open : toute erreur → []."""
+    import re
+    from pathlib import Path as _P
+    try:
+        d = _P(directory)
+        css_files = {p.name.lower() for p in d.rglob("*.css")}
+        if not css_files:
+            return []
+        linked: set = set()
+        for html in list(d.rglob("*.html")) + list(d.rglob("*.htm")):
+            try:
+                txt = html.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            for m in re.finditer(r"""href\s*=\s*["']([^"']+\.css)["']""", txt, re.IGNORECASE):
+                linked.add(m.group(1).rsplit("/", 1)[-1].lower())
+            for m in re.finditer(
+                r"url_for\(\s*[\"']static[\"']\s*,\s*filename\s*=\s*[\"']([^\"']+\.css)[\"']",
+                txt,
+                re.IGNORECASE,
+            ):
+                linked.add(m.group(1).rsplit("/", 1)[-1].lower())
+        return sorted(css_files - linked)
+    except Exception:
+        return []
+
+
+def start_preview_server(directory: Path, port: int = 8081) -> Dict[str, Any]:
+    """Lance un serveur de preview local : app FLASK si `app.py` servable est
+    présent (2.5), sinon serveur statique. Enregistre le port au registre SSRF."""
     global _preview_process, _preview_port
 
     # Arrêter le serveur précédent si actif
     stop_preview_server()
 
+    directory = Path(directory)
     if not directory.exists():
         return {"success": False, "error": f"Dossier introuvable: {directory}"}
+
+    # 2.5 — jamais en dessous de 8081 : 8080 est le port RÉSERVÉ Lumena (E.0).
+    port = max(int(port or 8081), 8081)
 
     # Trouver un port libre
     import socket
@@ -743,14 +907,55 @@ def start_preview_server(directory: Path, port: int = 8080) -> Dict[str, Any]:
         except OSError:
             continue
 
+    mode = "flask" if _flask_entry(directory) else "static"
+    script = _FLASK_PREVIEW_SCRIPT if mode == "flask" else _PREVIEW_SERVER_SCRIPT
+
     try:
+        _process_group_kwargs: Dict[str, Any]
+        if os.name == "nt":
+            _process_group_kwargs = {
+                "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            }
+        else:
+            _process_group_kwargs = {"start_new_session": True}
+
         _preview_process = subprocess.Popen(
-            [sys.executable, "-c", _PREVIEW_SERVER_SCRIPT, str(port)],
+            [sys.executable, "-c", script, str(port)],
             cwd=str(directory),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            **_process_group_kwargs,
         )
         _preview_port = port
+
+        # 2.5 — readiness RÉELLE : le port doit écouter avant de dire « success »
+        # (une app.py cassée mourait en silence et l'appelant naviguait sur rien).
+        if not _wait_port_ready(port, _preview_process):
+            stop_preview_server()
+            return {
+                "success": False,
+                "error": (
+                    f"le serveur {mode} n'a pas démarré (rien n'écoute sur {port} — "
+                    "erreur au chargement d'app.py ?)" if mode == "flask" else
+                    f"le serveur {mode} n'a pas démarré (rien n'écoute sur {port})"
+                ),
+            }
+
+        # P1 : enregistrer la preview loopback sur le port RÉELLEMENT lié (peut
+        # différer du port demandé si occupé) → browser_navigate pourra l'atteindre
+        # (SSRF guard). Boundary authoritatif du cycle de vie serveur.
+        try:
+            from src.utils.local_preview import register_preview
+            register_preview(port, workspace=str(directory))
+        except Exception:
+            pass
+
+        # 2.7.1 — sonde les ressources de la page : une page qui charge sans son
+        # CSS/JS (404 sur les liens) est cassée à l'écran mais l'agent ne le voit
+        # nulle part. On lui rend la liste des 404 pour qu'il CORRIGE avant de
+        # naviguer/conclure (fail-open : sonde vide = silence).
+        broken_assets = _probe_page_assets(port)
+        unlinked_css = _unlinked_stylesheets(directory)  # 2.9.B — CSS présent non lié
 
         return {
             "success": True,
@@ -758,6 +963,9 @@ def start_preview_server(directory: Path, port: int = 8080) -> Dict[str, Any]:
             "port": port,
             "directory": str(directory),
             "pid": _preview_process.pid,
+            "mode": mode,  # 2.5 — flask = l'API tourne ; static = fichiers seuls
+            "broken_assets": broken_assets,  # 2.7.1 — ressources 404 de la page /
+            "unlinked_css": unlinked_css,    # 2.9.B — .css servi mais lié par aucun HTML
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -768,17 +976,37 @@ def stop_preview_server() -> Dict[str, Any]:
     global _preview_process, _preview_port
 
     if _preview_process is not None:
+        process = _preview_process
         try:
-            _preview_process.terminate()
-            _preview_process.wait(timeout=5)
+            if process.poll() is None and os.name == "nt":
+                stopped = subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    timeout=8,
+                    check=False,
+                )
+                if stopped.returncode != 0 and process.poll() is None:
+                    process.terminate()
+            elif process.poll() is None:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            process.wait(timeout=5)
         except Exception:
             try:
-                _preview_process.kill()
+                if os.name != "nt" and process.poll() is None:
+                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                elif process.poll() is None:
+                    process.kill()
             except Exception:
                 pass  # process cleanup best-effort
         _preview_process = None
         old_port = _preview_port
         _preview_port = 0
+        # P1 : désenregistrer la preview (port authoritatif connu ici).
+        try:
+            from src.utils.local_preview import unregister_preview
+            unregister_preview(old_port)
+        except Exception:
+            pass
         return {"success": True, "message": f"Serveur arrêté (port {old_port})"}
     
     return {"success": True, "message": "Aucun serveur actif"}
@@ -934,14 +1162,51 @@ Progression:
         return f"❌ Erreur lors de l'écriture:\n{errors_text}"
 
 
+def _resolve_directory_arg(directory: str) -> Path:
+    """LOT Z30 — résoudre un `directory` comme le font les autres outils.
+
+    `directory` était la SEULE entrée à ne pas chercher dans le workspace :
+    `Path(directory)` brut, donc un chemin relatif est interprété depuis le cwd
+    du process. Run « Papier Cousu » (2026-08-19, 18:07:46) :
+
+        serve_website(directory='2026-08-19/papier-cousu')
+        → « Dossier introuvable: 2026-08-19\\papier-cousu »
+
+    alors que `list_directory` sur LE MÊME chemin venait de réussir. Quatre
+    itérations perdues à chercher le chemin absolu — pour un chemin correct.
+
+    Trois handlers partageaient la ligne fautive (serve/edit/export). Un chemin
+    absolu ou déjà valide est rendu inchangé : la résolution ne s'applique qu'à
+    ce qui, autrement, échouerait.
+    """
+    cible = Path(directory)
+    if cible.exists():
+        return cible
+    try:
+        from ..utils.paths import WORKSPACE_DIR as _WS_Z30
+        essais = [_WS_Z30 / directory, Path.cwd() / directory]
+        # workspace/<date>/<projet> : on tente aussi les sous-dossiers datés,
+        # comme le fait déjà la branche `project_name`.
+        if _WS_Z30.exists() and not Path(directory).is_absolute():
+            for _d in sorted(_WS_Z30.iterdir(), reverse=True):
+                if _d.is_dir():
+                    essais.append(_d / directory)
+        for essai in essais:
+            if essai.exists():
+                return essai
+    except Exception:
+        pass
+    return cible
+
+
 async def serve_website_handler(
     project_name: str = "",
-    port: int = 8080,
+    port: int = 8081,
     directory: str = "",
 ) -> str:
     """Lance un serveur de preview pour un site généré."""
     if directory:
-        target = Path(directory)
+        target = _resolve_directory_arg(directory)
     elif project_name:
         from ..utils.paths import WORKSPACE_DIR
         workspace = WORKSPACE_DIR
@@ -972,12 +1237,62 @@ async def serve_website_handler(
     result = start_preview_server(target, port)
     
     if result["success"]:
+        _mode = result.get("mode", "static")
+        _mode_line = ("⚙️ Mode: app FLASK (les routes /api/* tournent)" if _mode == "flask"
+                      else "⚙️ Mode: statique (fichiers seuls)")
+        # 2.7.1 — la page se charge-t-elle en ENTIER ? (CSS/JS référencés)
+        _broken = result.get("broken_assets") or []
+        _asset_block = ""
+        if _broken:
+            _asset_block = (
+                "\n\n⚠️ RESSOURCES 404 — la page les référence mais elles ne se "
+                f"chargent PAS : {', '.join(_broken)}\n"
+                "→ La page s'affichera SANS son style/JavaScript (donc cassée et "
+                "non-interactive à l'écran). CORRIGE avant de conclure : soit les "
+                "chemins dans index.html, soit la config du serveur (une app Flask "
+                "avec index.html dans static/ doit exposer static_url_path='' pour "
+                "servir /style.css et /script.js à la racine). Puis relance "
+                "serve_website et re-vérifie."
+            )
+        # 2.9.B — un CSS existe mais AUCUN HTML ne le lie → site NU (pas de 404,
+        # invisible pour la sonde ci-dessus). Fréquent quand le CSS est créé hors
+        # contrat : le stub HTML n'a pas injecté le <link>.
+        _unlinked = result.get("unlinked_css") or []
+        if _unlinked:
+            _asset_block += (
+                "\n\n⚠️ FEUILLE(S) DE STYLE NON LIÉE(S) : " + ", ".join(_unlinked) +
+                " existe(nt) dans le dossier mais AUCUNE page HTML ne les référence "
+                "→ le site s'affiche SANS style (nu). Ajoute "
+                '`<link rel="stylesheet" href="style.css">` dans le <head> de CHAQUE '
+                "page HTML (via edit_file), puis relance serve_website. NE conclus PAS "
+                "« site validé » tant qu'une page n'est pas liée à son style."
+            )
+        # LOT Z7 (run Palier, 2026-08-15) — la couverture de style DÈS la preview.
+        #
+        # La mesure du lot Q existait, elle était juste, et elle n'arrivait qu'au
+        # message de `publish_mission_workspace` : un accusé de fin, lu comme une
+        # confirmation. Sur les deux missions à couverture basse du corpus (40 %
+        # et 37 %), AUCUNE correction n'a jamais suivi — même avec 24 appels
+        # d'outil de marge restante. Sur Palier, il n'en restait qu'un seul.
+        #
+        # `serve_website` précède TOUJOURS la publication (9 appels sur 9 dans le
+        # corpus), avec 12 à 139 outils de marge : c'est l'instant où la mission
+        # s'apprête à REGARDER sa page, donc le seul où le constat peut encore
+        # changer quelque chose. Un chiffre, pas une interdiction — comme au
+        # LOT N. Inerte si pas de HTML ou moins de 3 classes.
+        try:
+            from ..subagents.style_coverage import style_coverage_note
+
+            _asset_block += style_coverage_note(target)
+        except Exception as _exc_z7:
+            logger.debug("[Z7] couverture de style non mesurée: {}", _exc_z7)
         return f"""✅ Serveur de preview lancé !
+{_mode_line}
 
 🌐 URL: {result['url']}
 📂 Dossier: {result['directory']}
 🔌 Port: {result['port']}
-🆔 PID: {result['pid']}
+🆔 PID: {result['pid']}{_asset_block}
 
 Ouvre ton navigateur sur {result['url']} pour voir le site.
 
@@ -1006,7 +1321,7 @@ async def edit_website_handler(
 
     # Trouver le projet
     if directory:
-        target = Path(directory)
+        target = _resolve_directory_arg(directory)
     elif project_name:
         from ..utils.paths import WORKSPACE_DIR
         target = WORKSPACE_DIR / project_name
@@ -1078,7 +1393,7 @@ async def export_website_zip_handler(
     """
     # Trouver le projet
     if directory:
-        target = Path(directory)
+        target = _resolve_directory_arg(directory)
     elif project_name:
         from ..utils.paths import WORKSPACE_DIR
         target = WORKSPACE_DIR / project_name
@@ -1224,7 +1539,7 @@ def register_website_tools(tool_system) -> int:
             ),
             "parameters": {
                 "project_name": {"type": "string", "description": "Nom du projet à servir", "default": ""},
-                "port": {"type": "integer", "description": "Port HTTP (défaut: 8080)", "default": 8080},
+                "port": {"type": "integer", "description": "Port HTTP 8081-8099 (défaut: 8081)", "default": 8081},
                 "directory": {"type": "string", "description": "Dossier à servir (alternatif)", "default": ""},
             },
             "handler": serve_website_handler,

@@ -283,8 +283,96 @@ async def test_runtime_marks_degraded_on_pyttsx3():
     player = LocalAudioPlayer(play_fn=lambda x: _noop(), stop_fn=lambda: None)
     rt = VoiceRuntime(tm, _Pyttsx3TTS(), player, respond_fn=lambda t: "ok", enabled=True)
     await rt._handle(VoiceCommand("start_llm", {"generation_id": "a_1", "turn_id": "u_1", "text": "x"}))
+    for _ in range(20):
+        if rt.degraded:
+            break
+        await asyncio.sleep(0)
     assert rt.degraded is True
     assert rt.status_report()["degraded"] is True and rt.status_report()["provider"] == "pyttsx3"
+
+
+@pytest.mark.asyncio
+async def test_slow_llm_never_blocks_actor_and_cancel_is_real():
+    tm = TurnManager()
+    gate = asyncio.Event()
+    calls = {"cancelled": False}
+
+    async def slow(_text):
+        try:
+            await gate.wait()
+            return "trop tard"
+        except asyncio.CancelledError:
+            calls["cancelled"] = True
+            raise
+
+    rt = VoiceRuntime(
+        tm, FakeTTSProvider(),
+        LocalAudioPlayer(play_fn=lambda x: _noop(), stop_fn=lambda: None),
+        respond_fn=slow, enabled=True,
+    )
+    t0 = asyncio.get_running_loop().time()
+    await rt._handle(VoiceCommand("start_llm", {
+        "generation_id": "a_slow", "turn_id": "u_1", "text": "attends",
+    }))
+    assert asyncio.get_running_loop().time() - t0 < 0.05
+    await asyncio.sleep(0)  # la coroutine est entree dans respond_fn
+    await rt._handle(VoiceCommand("cancel_llm", {"generation_id": "a_slow"}))
+    await asyncio.sleep(0)
+    assert calls["cancelled"] is True
+    assert rt.ledger.order == []
+    await rt.aclose()
+
+
+@pytest.mark.asyncio
+async def test_global_mute_prevents_synthesis():
+    calls = {"synth": 0}
+
+    class _CountTTS(TTSProvider):
+        name = "count"; locality = "local"
+        def is_available(self): return True
+        async def synthesize(self, text, voice, cancel=None):
+            calls["synth"] += 1
+            return AudioResult(ok=True, text=text)
+
+    rt = VoiceRuntime(
+        TurnManager(), _CountTTS(), LocalAudioPlayer(play_fn=lambda x: _noop()),
+        is_muted_fn=lambda: True, enabled=True,
+    )
+    assert await rt.speak("Tu ne dois pas entendre ceci") == ""
+    assert calls["synth"] == 0
+
+
+@pytest.mark.asyncio
+async def test_replacing_same_generation_cannot_drop_new_task():
+    gates = [asyncio.Event(), asyncio.Event()]
+    calls = {"n": 0}
+
+    async def respond(_text):
+        index = calls["n"]
+        calls["n"] += 1
+        await gates[index].wait()
+        return f"reponse {index}"
+
+    rt = VoiceRuntime(
+        TurnManager(), FakeTTSProvider(), LocalAudioPlayer(play_fn=lambda x: _noop()),
+        respond_fn=respond, enabled=True,
+    )
+    command = VoiceCommand("start_llm", {
+        "generation_id": "same", "turn_id": "u", "text": "x",
+    })
+    await rt._handle(command)
+    await asyncio.sleep(0)
+    await rt._handle(command)
+    await asyncio.sleep(0)
+    assert "same" in rt._llm_tasks
+    gates[1].set()
+    for _ in range(30):
+        if rt.ledger.order:
+            break
+        await asyncio.sleep(0)
+    assert rt.ledger.order == ["same"]
+    assert rt.ledger.get("same").text_unplayed == "reponse 1"
+    await rt.aclose()
 
 
 # ── VoiceRuntime : interruption (stop + truncate + stale drop) ────────────────

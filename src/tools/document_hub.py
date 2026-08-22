@@ -2527,7 +2527,19 @@ class DocumentHub:
             from reportlab.lib.units import cm
             from reportlab.pdfgen.canvas import Canvas
 
-            annotations = self._parse_json_arg(annotations, [])
+            annotations = self._parse_json_arg(annotations, None)
+            if not isinstance(annotations, list) or not all(
+                isinstance(ann, dict) for ann in annotations
+            ):
+                return {
+                    "success": False,
+                    "error": "annotations doit etre une liste JSON d'objets",
+                }
+            if not annotations:
+                return {
+                    "success": False,
+                    "error": "au moins une annotation est requise",
+                }
             pp = Path(input_path)
             if not pp.exists():
                 found = self._find_in_workspace(input_path)
@@ -2540,19 +2552,41 @@ class DocumentHub:
             writer = PdfWriter()
             total_pages = len(reader.pages)
 
-            # Group annotations by page
+            # Validate the complete request before creating any output file.
             page_annots: Dict[int, list] = {}
             for ann in annotations:
-                page = ann.get("page", 0)
+                try:
+                    page = int(ann.get("page", 0))
+                except (TypeError, ValueError):
+                    return {"success": False, "error": "page d'annotation invalide"}
                 if page == -1:
                     page = total_pages - 1
+                if page < 0 or page >= total_pages:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"page d'annotation hors limites: {page}. "
+                            f"Pages valides (index zero-based): 0 a {max(total_pages - 1, 0)}"
+                        ),
+                    }
+                atype = str(ann.get("type", "text")).strip().lower()
+                if atype not in {"text", "highlight", "stamp"}:
+                    return {
+                        "success": False,
+                        "error": f"type d'annotation non supporte: {atype}",
+                    }
+                ann = dict(ann)
+                ann["page"] = page
+                ann["type"] = atype
                 page_annots.setdefault(page, []).append(ann)
 
+            applied_count = 0
             for page_idx in range(total_pages):
                 page = reader.pages[page_idx]
+                writer.add_page(page)
                 if page_idx not in page_annots:
-                    writer.add_page(page)
                     continue
+                page = writer.pages[-1]
 
                 # Create overlay
                 mbox = page.mediabox
@@ -2574,6 +2608,7 @@ class DocumentHub:
                             c.setFillColor(HexColor("#000000"))
                         c.setFont("Helvetica", fs)
                         c.drawString(x, y, text)
+                        applied_count += 1
 
                     elif atype == "highlight":
                         x1 = float(ann.get("x1", 50))
@@ -2584,6 +2619,7 @@ class DocumentHub:
                         c.setFillAlpha(0.3)
                         c.rect(x1, y1, x2 - x1, y2 - y1, fill=1, stroke=0)
                         c.setFillAlpha(1.0)
+                        applied_count += 1
 
                     elif atype == "stamp":
                         text = ann.get("text", "VALIDÉ")
@@ -2598,19 +2634,24 @@ class DocumentHub:
                         else:
                             c.drawString(40, ph - 60, text)
                         c.setFillAlpha(1.0)
+                        applied_count += 1
 
                 c.save()
                 overlay_buf.seek(0)
                 overlay_reader = PdfReader(overlay_buf)
                 page.merge_page(overlay_reader.pages[0])
-                writer.add_page(page)
 
             out = Path(output_path) if output_path else self._output_path(f"{pp.stem}_annotated.pdf")
             out.parent.mkdir(parents=True, exist_ok=True)
             with open(str(out), "wb") as f:
                 writer.write(f)
             logger.info(f"📄 PDF annoté: {out}")
-            return {"success": True, "path": str(out), "filename": out.name, "annotations_count": len(annotations)}
+            return {
+                "success": True,
+                "path": str(out),
+                "filename": out.name,
+                "annotations_count": applied_count,
+            }
         except Exception as e:
             logger.error(f"Erreur annotate_pdf: {e}")
             return {"success": False, "error": str(e)}

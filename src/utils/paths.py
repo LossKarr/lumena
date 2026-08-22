@@ -66,6 +66,9 @@ INSTALLED_SKILLS_DIR: Path = DATA_DIR / "installed_skills"
 CAPTURES_DIR: Path = DATA_DIR / "captures"
 CHROMADB_DIR: Path = DATA_DIR / "chromadb"
 TEMPLATES_DIR: Path = ROOT_DIR / "assets" / "templates"
+DOCUMENT_STUDIO_DIR: Path = Path(
+    os.getenv("LUMENA_DOCUMENT_STUDIO_DIR", str(DATA_DIR / "document_studio"))
+)
 
 # ── Well-known files ────────────────────────────────────────────────────────
 JOURNAL_JSON: Path = DATA_DIR / "journal.json"
@@ -162,6 +165,7 @@ _CRITICAL_DIRS: tuple[Path, ...] = (
     RECEIVED_IMAGES_DIR,
     GENERATED_IMAGES_DIR,
     RECEIVED_DOCS_DIR,
+    DOCUMENT_STUDIO_DIR,
     TRAINING_VALIDATED_DIR,
     FINETUNED_MODELS_DIR,
 )

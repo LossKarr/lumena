@@ -335,12 +335,20 @@ def find_and_replace(content: str, old_lines: List[str], new_lines: List[str], c
 
 
 def _backup_file(path: Path, content: str) -> None:
-    """Sauvegarde `content` dans `<path.parent>/.backups/<path.name>`.
-    Crée le dossier .backups s'il n'existe pas — les backups restent
-    hors de la vue principale du projet."""
+    """Sauvegarde `content` dans `<path.parent>/.backups/<path.name>.<timestamp>`.
+    Crée le dossier .backups s'il n'existe pas — les backups restent hors de la
+    vue principale du projet.
+
+    LOT C (run CoVoit'Éco 2026-07-04) : le suffixe timestamp est CRITIQUE. Sans
+    lui, un apply_patch sur `tests/test_x.py` créait `.backups/test_x.py` (nom
+    exact) que pytest collectait comme un 2e module `test_x` → `import file
+    mismatch` → 0 test collecté. Timestampé (`test_x.py.20260704_...`), le backup
+    ne matche plus `test_*.py` et n'est jamais collecté. Aligné sur la convention
+    de `_auto_backup_before_write` (write_file)."""
     backup_dir = path.parent / ".backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    (backup_dir / path.name).write_text(content, encoding="utf-8")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    (backup_dir / f"{path.name}.{ts}").write_text(content, encoding="utf-8")
 
 
 def apply_update_hunk(file_path: Path, hunk: UpdateFileHunk) -> Tuple[bool, str]:

@@ -173,6 +173,8 @@ def select_model_menu(console: Optional[Console] = None) -> str:
         print("3. GPT-4o (OpenAI)")
         print("4. Claude Sonnet 4 (Anthropic)")
         print("5. Kimi K2.5 (Moonshot)")
+        print("6. Claude Opus 5 (Anthropic)")
+        print("7. Kimi K3 (Moonshot)")
         
         choice = input("\nVotre choix [1]: ").strip() or "1"
         
@@ -181,7 +183,9 @@ def select_model_menu(console: Optional[Console] = None) -> str:
             "2": "gemini-2.5-pro",
             "3": "gpt-4o",
             "4": "claude-sonnet-4.6",
-            "5": "kimi-k2.5"
+            "5": "kimi-k2.5",
+            "6": "claude-opus-5",
+            "7": "kimi-k3",
         }
         
         return choices.get(choice, "qwen3-8b")

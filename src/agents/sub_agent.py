@@ -320,6 +320,172 @@ def _failure_meta(
     }
 
 
+# LOT I.2 — actions d'ÉCRITURE du CodeAgent (les lectures ne sont jamais filtrées).
+_CODEAGENT_WRITE_ACTIONS = frozenset({
+    "str_replace", "edit_lines", "apply_patch", "write_file", "edit_file", "insert_at_anchor",
+    # M3b-clôture (run MiniQuiz 2026-07-06) : `apply_patches` (pluriel) manquait —
+    # la voie PRÉFÉRÉE du CodeAgent contournait le périmètre I.2 (le CodeAgent de
+    # w_frontend a patché app.py, fichier du backend).
+    "apply_patches",
+})
+
+
+def _action_write_paths(action: Any) -> list:
+    """M3b-clôture — TOUS les chemins qu'une action d'écriture CodeAgent vise :
+    `path`/`file` simples + la liste `patches[*].file/path` d'`apply_patches`
+    (liste, ou chaîne repr/JSON — formes réellement émises par les LLM). Pur."""
+    paths: list = []
+    if not isinstance(action, dict):
+        return paths
+    for key in ("path", "file", "file_path"):
+        v = action.get(key)
+        if isinstance(v, str) and v.strip():
+            paths.append(v.strip())
+    patches = action.get("patches")
+    if isinstance(patches, str) and patches.strip():
+        try:
+            import json as _json
+            patches = _json.loads(patches)
+        except Exception:
+            try:
+                import ast as _ast
+                patches = _ast.literal_eval(patches)
+            except Exception:
+                patches = None
+    if isinstance(patches, (list, tuple)):
+        for p in patches:
+            if isinstance(p, dict):
+                v = p.get("file") or p.get("path") or p.get("file_path")
+                if isinstance(v, str) and v.strip():
+                    paths.append(v.strip())
+    # LOT J-a (run NoteFlow 2026-08-13) — `apply_patch` (SINGULIER) ne porte aucun
+    # chemin en clé : le CodeAgent lit `action["patch"]` (cf. dispatch `act ==
+    # "apply_patch"`) et le chemin vit DANS le texte, sous `*** Add File:`.
+    # L'extracteur ne lisait que les clés → il rendait [] → le garde de périmètre
+    # I.2, pourtant branché sur `apply_patch`, n'avait rien à refuser. C'est par là
+    # que `test_run_desktop.py` a été créé hors périmètre, fichier non déclaré qui a
+    # ensuite fait échouer la publication de toute la mission.
+    _patch_text = action.get("patch")
+    if isinstance(_patch_text, str) and _patch_text.strip():
+        for _line in _patch_text.splitlines():
+            _s = _line.strip()
+            for _marker in ("*** Add File:", "*** Update File:", "*** Delete File:",
+                            "*** Move to:"):
+                if _s.startswith(_marker):
+                    _p = _s[len(_marker):].strip()
+                    if _p:
+                        paths.append(_p)
+                    break
+    return paths
+
+
+def _write_within_perimeter(path_str: Any, allowed_files: Any, workspace_root: Any = None) -> bool:
+    """LOT I.2 — une écriture CodeAgent est-elle DANS le périmètre du worker ?
+
+    `allowed_files` vide/None → toujours True (hors mission : ZÉRO effet, comportement
+    CodeAgent identique). Sinon match par chemin relatif normalisé OU par basename
+    (même logique que le garde de périmètre mission 2.3). Un chemin vide → True (on
+    laisse les autres gardes gérer)."""
+    if not allowed_files:
+        return True
+    wp = str(path_str or "").replace("\\", "/").strip().lstrip("./").strip("/")
+    if not wp:
+        return True
+    try:
+        p = Path(wp)
+        if p.is_absolute() and workspace_root:
+            wp = p.resolve().relative_to(Path(str(workspace_root)).resolve()).as_posix()
+    except Exception:
+        pass
+    allowed = {str(a).replace("\\", "/").strip().strip("/") for a in allowed_files if str(a).strip()}
+    if wp in allowed:
+        return True
+    # LOT J-b (run NoteFlow 2026-08-13) — la tolérance par BASENAME acceptait le bon
+    # nom dans N'IMPORTE QUEL dossier : `static/style.css` passait parce que
+    # `noteflow/static/style.css` était autorisé. Le CodeAgent a ainsi écrit un
+    # doublon à la racine de la mission ; ce fichier non déclaré a fait REFUSER la
+    # publication, et comme aucune voie de suppression n'existe, la mission est morte
+    # avec un livrable pourtant vert (12/12 tests).
+    # La tolérance reste NÉCESSAIRE pour un nom NU (`app.py` pour `noteflow/app.py`,
+    # forme réellement émise par les workers) — mais dès que le chemin porte un
+    # dossier, il désigne un emplacement PRÉCIS : on exige alors l'égalité stricte.
+    if "/" in wp:
+        return False
+    bases = {a.rsplit("/", 1)[-1] for a in allowed}
+    return wp in bases
+
+
+# LOT N2 (run HuffPack 2026-08-14) — le périmètre était défini par une LISTE
+# D'OUTILS (`_CODEAGENT_WRITE_ACTIONS`). Tout outil hors liste le contourne : le
+# CodeAgent, après un refus explicite sur `test_structured_state.py`, a écrit le
+# fichier via `run_command` — et l'a annoncé : « seul canal non intercepté ».
+# Trois fichiers créés ainsi, deux publiés dans le livrable final.
+#
+# Analyser la commande (`write_text`, `>`, `tee`…) ne suffirait pas : une commande
+# peut écrire de mille façons (`open(p,'w')`, `shutil.copy`, un script tiers). On
+# regarde donc le DISQUE, pas la commande — exhaustif par construction, et ça
+# survit à la prochaine astuce.
+_SNAPSHOT_IGNORED_DIRS: frozenset = frozenset({
+    "__pycache__", ".backups", ".lumena_backups", ".pytest_cache", ".git",
+})
+
+
+def snapshot_mission_files(root: Any) -> frozenset:
+    """Chemins relatifs POSIX des fichiers présents sous `root` (bruit exclu).
+
+    frozenset() si `root` est absent/illisible : un instantané impossible ne doit
+    JAMAIS faire échouer une action — la garde est un filet, pas un obstacle.
+    """
+    # Une racine VIDE résoudrait vers le répertoire courant : on scannerait alors
+    # tout le dépôt Lumena (258 321 fichiers mesurés) à chaque action. Refus net.
+    raw_root = str(root or "").strip()
+    if not raw_root:
+        return frozenset()
+    try:
+        base = Path(raw_root).resolve()
+        if not base.is_dir():
+            return frozenset()
+    except Exception:
+        return frozenset()
+    found = set()
+    try:
+        for path in base.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                rel = path.resolve().relative_to(base)
+                if any(part in _SNAPSHOT_IGNORED_DIRS for part in rel.parts):
+                    continue
+                found.add(rel.as_posix())
+            except Exception:
+                continue
+    except Exception:
+        return frozenset()
+    return frozenset(found)
+
+
+def files_created_outside_perimeter(
+    before: Any, after: Any, allowed_files: Any, workspace_root: Any = None
+) -> list:
+    """Fichiers APPARUS entre deux instantanés et hors du périmètre du worker.
+
+    Pur/testable. `allowed_files` vide/None → [] (hors mission : zéro effet).
+    Ne considère QUE les apparitions : un fichier modifié en place est déjà
+    couvert par le garde d'écriture, et une DISPARITION n'est jamais signalée ici
+    (ce helper ne supprime rien et ne juge rien d'autre).
+    """
+    if not allowed_files:
+        return []
+    try:
+        new_paths = set(after or ()) - set(before or ())
+    except TypeError:
+        return []
+    return sorted(
+        p for p in new_paths
+        if not _write_within_perimeter(p, allowed_files, workspace_root)
+    )
+
+
 class SubAgent:
     """
     Agent spécialisé de base.
@@ -354,7 +520,13 @@ class SubAgent:
         self.history: List[AgentResult] = []
         self._history_max: int = 100  # garde-fou memory leak sur daemon 24/7
         self._task_workspace_root: Optional[Path] = None  # Root pour write_file si workspace_path dans context
-        
+        self._allowed_files: Optional[frozenset] = None  # LOT I.2 \u2014 p\u00e9rim\u00e8tre mission (None hors mission)
+        # LOT 2.12.A \u2014 le SubAgent est un singleton partag\u00e9 ; deux workers de mission
+        # qui d\u00e9l\u00e8guent EN PARALL\u00c8LE (delegate_and_wait) ex\u00e9cutent sur la M\u00caME instance
+        # \u2192 tout l'\u00e9tat task-scoped self. (_allowed_files, current_task\u2026) se clobbe.
+        # Ce verrou s\u00e9rialise execute() : une t\u00e2che \u00e0 la fois, chacune r\u00e9arm\u00e9e propre.
+        self._exec_lock = asyncio.Lock()
+
         logger.info(f"\U0001f916 SubAgent cr\u00e9\u00e9: {name} ({agent_type.value})")
 
     @staticmethod
@@ -422,12 +594,16 @@ class SubAgent:
                     f"sort du workspace {_ws_root}"
                 )
                 return _ws_root / Path(file_path).name  # Fichier seul, pas le chemin traversal
-            # Guard: si le chemin relatif pointe vers du code source Lumena, bloquer
+            # Guard: chemin relatif au vocabulaire source Lumena (src/, tests/…) →
+            # RÉSOLU dans le workspace mission (rien n'est bloqué : le préfixe est
+            # simplement ré-ancré). 2.13.E (M8) : l'ancien warning « BLOCKED read
+            # of Lumena source » criait des dizaines de fois par run pour un
+            # comportement NORMAL → faux signal qui polluait tout diagnostic.
             if (any(_fp_clean.startswith(pfx.replace("\\", "/")) for pfx in self._LUMENA_SOURCE_PREFIXES)
                     or _fp_clean in self._LUMENA_SOURCE_FILES):
-                logger.warning(
-                    f"[CodeAgent] BLOCKED read of Lumena source '{file_path}' — "
-                    f"workspace actif: {_ws_root}"
+                logger.debug(
+                    f"[CodeAgent] chemin '{file_path}' résolu dans le workspace "
+                    f"mission (préfixe Lumena ré-ancré) — workspace actif: {_ws_root}"
                 )
                 return _ws_root / file_path
             try:
@@ -498,13 +674,53 @@ class SubAgent:
             logger.warning(f"\U0001f916 [{self.name}] LLM router fallback ({best} \u2192 core.llm): {exc}")
             return core.llm
 
+    def _reset_task_scoped_state(self) -> None:
+        """LOT 2.10 — remet à zéro l'état de mission AVANT chaque tâche.
+
+        Le SubAgent est un singleton persistant réutilisé pour TOUTES les tâches (chat,
+        delegate_task d'un worker de mission, fanout_tasks, …). Une contrainte posée par
+        une tâche (périmètre d'écriture `_allowed_files`, racine workspace) DOIT mourir
+        avec elle : sinon elle fuit silencieusement sur la tâche SUIVANTE, quel que soit
+        le type de travail. `_build_initial_messages` ré-arme ces champs depuis le
+        contexte de la nouvelle tâche quand il en fournit un (worker de mission) ; sans
+        contexte (fanout / chat) on repart propre au lieu d'hériter d'un vieux périmètre.
+        """
+        self._allowed_files = None
+        self._task_workspace_root = None
+        # LOT 2.11.A — MÊME invariant : le rapport de fin (« 📝 Fichiers modifiés »,
+        # via _session_memory['edits_done']) et les erreurs vues sont task-scoped. Sans
+        # ce reset ils SURVIVENT entre missions sur le CodeAgent singleton → une mission
+        # (ex. genere_notes.py) affiche les fichiers d'une mission d'avant (ex. app.py) :
+        # rapport périmé qui MENT sur ce qui a été touché. On garde files_read/grep déjà
+        # gérés ailleurs ; ici on purge ce qui alimente le rapport rendu au parent.
+        _mem = getattr(self, "_session_memory", None)
+        if isinstance(_mem, dict):
+            _mem["edits_done"] = []
+            _mem["errors_seen"] = []
+
     async def execute(self, task: AgentTask) -> AgentResult:
-        """Exécute une tâche (sans timeout par défaut, configurable via env)."""
+        """Exécute une tâche — SÉRIALISÉE par instance (LOT 2.12.A).
+
+        Le CodeAgent singleton est partagé entre workers de mission concurrents.
+        Sans ce verrou, deux `execute()` en parallèle se clobbent l'état task-scoped
+        (`_allowed_files` : run tasksapi = le CodeAgent de w_api hérite du périmètre
+        ['test_api.py'] de w_tests → refuse d'écrire app.py). Le verrou garantit
+        « une tâche à la fois » : l'état est réarmé proprement (2.10) pour chacune.
+        Pas de ré-entrance possible (le CodeAgent ne se délègue jamais à lui-même).
+        """
+        async with self._exec_lock:
+            return await self._execute_locked(task)
+
+    async def _execute_locked(self, task: AgentTask) -> AgentResult:
+        """Corps réel d'execute(), exécuté sous `_exec_lock` (voir execute())."""
         import os
         start_time = datetime.now()
         self.status = AgentStatus.RUNNING
         self.current_task = task
-        
+
+        # LOT 2.10 — INVARIANT GÉNÉRAL : l'état de mission est STRICTEMENT task-scoped.
+        self._reset_task_scoped_state()
+
         # Timeout configurable — 0 = pas de limite (défaut, comme Copilot)
         timeout_seconds = int(os.getenv("LUMENA_SUBAGENT_TIMEOUT", "0"))
         
@@ -691,6 +907,24 @@ class SubAgent:
 
         args = arguments or {}
         audit = get_audit_log()
+
+        # LOT J-c (run NoteFlow 2026-08-13) — `run_tests` appelé avec un `test_path`
+        # VIDE échoue toujours (« ❌ test_path requis »), et ce message est listé comme
+        # marqueur de NON-EXÉCUTION par `_suspicious_delegate_success_reason` : la
+        # livraison entière est alors refusée. Au run, le CodeAgent est ainsi mort en
+        # 0.0s, trois fois de suite, ce qui a supprimé le DERNIER recours de la mission
+        # pour se débloquer. Plusieurs sites peuvent produire cet appel (raccourci
+        # explicite, auto-test) : on résout au point de passage UNIQUE.
+        # Le workspace de la tâche est le chemin naturel ; sans lui, on ne fabrique
+        # rien — l'appelant reçoit l'erreur claire d'origine.
+        if tool_name == "run_tests" and not str(args.get("test_path") or "").strip():
+            _ws_j = str(getattr(self, "_task_workspace_root", "") or "").strip()
+            if _ws_j:
+                args = {**args, "test_path": _ws_j}
+                logger.info(
+                    "🤖 [{}] run_tests sans test_path → workspace de la tâche: {}",
+                    self.name, _ws_j,
+                )
 
         # Scope check — pour la propreté architecturale, pas pour bloquer
         if self.allowed_tools and tool_name not in self.allowed_tools:
@@ -1354,9 +1588,16 @@ def _build_system_prompt(
 
 
 def _parse_action_json(text: str) -> dict | None:
-    """Extrait un objet JSON action depuis une réponse LLM."""
-    from src.llm.output_normalizer import extract_json_object
-    return extract_json_object(text)
+    """Extrait un objet JSON action depuis une réponse LLM.
+
+    DS-1.3 — si la réponse est au format DSML natif de deepseek
+    (`<｜｜DSML｜｜invoke name="X">…`), on en extrait la PREMIÈRE action complète
+    (nom + paramètres) au lieu de la perdre : même filet que le parser ReAct."""
+    from src.llm.output_normalizer import dsml_first_action, extract_json_object
+    action = extract_json_object(text)
+    if isinstance(action, dict) and action:
+        return action
+    return dsml_first_action(text)
 
 
 # ── F4: Bracket counting aware of strings/comments ──────────────────────────
@@ -2874,6 +3115,41 @@ class CodeAgent(SubAgent):
                         f.lower(),
                     ))
                     _candidates = _all_matching[:_arch_max_files]
+                # ── LOT Z14 — un CSS se style sur les HTML du DISQUE ──────────
+                # Run « Verdure » (2026-08-16), à la milliseconde :
+                #   17:48:47.363  le CodeAgent FINIT index.html  → les vraies
+                #                 classes (.prestation-card, .tarif) sont sur le
+                #                 disque
+                #   17:48:47.560  il COMMENCE styles.css — 200 ms plus tard
+                #   17:48:47.949  « 4 fichier(s) cible(s) injecté(s) »
+                # Il avait donc le bon HTML sous les yeux. Il a écrit
+                # `.prestations-list` et `.card`. Pourquoi ? Parce que le worker
+                # CSS lui avait dicté, 76 s plus tôt, une liste de classes
+                # « possibles » devinée sur des STUBS vides — les autres workers
+                # tournent en parallèle et n'avaient encore rien écrit. Le worker
+                # le dit lui-même au log : « Les HTML sont encore des stubs vides.
+                # Je ne peux pas relever les classes réelles. »
+                #
+                # Deux failles se cumulaient :
+                #   1. `_candidates` ne retient un fichier que si son nom est cité
+                #      dans la description — une page non nommée n'entrait même
+                #      pas dans le contexte ;
+                #   2. rien ne disait au modèle que le FICHIER prime sur la
+                #      consigne quand les deux se contredisent.
+                # D'où l'aléa mesuré sur 29 missions, de 0 % à 100 % de couverture
+                # sans logique apparente : tout dépendait de l'ordre de passage
+                # dans le CodeAgent sérialisé.
+                _styling_task = ".css" in _desc_lower
+                if _styling_task:
+                    _pages = [
+                        _pf for _pf in _project_files_clean
+                        if _pf.lower().endswith((".html", ".htm"))
+                    ]
+                    if _pages:
+                        # Les pages passent DEVANT : la troncature à
+                        # `_arch_max_files` ne doit jamais les évincer, c'est
+                        # d'elles que viennent les sélecteurs.
+                        _candidates = _pages + [c for c in _candidates if c not in _pages]
                 _target_content_blocks: list[str] = []
                 _ws_for_read = _workspace_path
                 for _cand in _candidates[:_arch_max_files]:
@@ -2893,9 +3169,24 @@ class CodeAgent(SubAgent):
                         continue
                 _content_section = ""
                 if _target_content_blocks:
+                    # LOT Z14 — le fichier prime sur la consigne. Injecter la page
+                    # ne suffisait pas : sur Verdure, le CodeAgent avait le vrai
+                    # `index.html` en contexte et a suivi la liste de classes que
+                    # le worker avait devinée sur des stubs. Il faut lui dire
+                    # laquelle des deux sources fait foi quand elles divergent.
+                    _styling_rule = (
+                        "\n⚠️ TÂCHE DE STYLE — les sélecteurs de ton CSS se lisent dans les "
+                        "fichiers HTML ci-dessus, JAMAIS dans la description de la tâche. "
+                        "Celle-ci a pu être rédigée avant que les pages soient écrites : si "
+                        "elle nomme des classes absentes du HTML, elle a tort et le fichier a "
+                        "raison. N'invente aucun sélecteur « au cas où » — un `.maclasse` qui "
+                        "ne figure dans aucune page ci-dessus est du CSS mort.\n"
+                    ) if _styling_task else ""
                     _content_section = (
                         "\n\n## CONTENU EXACT DES FICHIERS CIBLES (avec numéros de ligne)\n"
-                        "Utilise CE contenu pour citer le code à remplacer — ne devine rien.\n\n"
+                        "Utilise CE contenu pour citer le code à remplacer — ne devine rien.\n"
+                        + _styling_rule
+                        + "\n"
                         + "\n\n".join(_target_content_blocks)
                         + "\n"
                     )
@@ -3737,7 +4028,77 @@ class CodeAgent(SubAgent):
                     )
                     messages.append({"role": "user", "content": _refusal})
                     continue
+            # LOT I.2 — périmètre mission : refuser toute ÉCRITURE hors des fichiers assignés
+            # au worker. Hors mission (_allowed_files None) → aucun effet. Lectures jamais
+            # concernées. Ferme le cas « le CodeAgent d'un worker écrit le fichier d'un autre ».
+            if (
+                getattr(self, "_allowed_files", None)
+                and action_type in _CODEAGENT_WRITE_ACTIONS
+                and isinstance(action, dict)
+            ):
+                # M3b-clôture : UN SEUL chemin hors périmètre suffit à refuser
+                # (apply_patches peut viser plusieurs fichiers en un appel).
+                _wp_bad = [
+                    _wp for _wp in _action_write_paths(action)
+                    if not _write_within_perimeter(_wp, self._allowed_files, self._task_workspace_root)
+                ]
+                if _wp_bad:
+                    logger.warning(
+                        "[CodeAgent] écriture hors périmètre refusée: {} (autorisés: {})",
+                        _wp_bad, sorted(self._allowed_files),
+                    )
+                    report.append(f"[iter {iteration}] {action_type} hors périmètre refusé ({_wp_bad})")
+                    messages.append({"role": "assistant", "content": raw_text})
+                    messages.append({"role": "user", "content": (
+                        f"⛔ ÉCRITURE HORS PÉRIMÈTRE : {_wp_bad} n'est pas dans tes fichiers "
+                        f"assignés ({sorted(self._allowed_files)}). Écris UNIQUEMENT ces "
+                        "fichiers — les autres appartiennent à d'autres workers. Corrige ta "
+                        "cible et réessaie."
+                    )})
+                    continue
+
+            # LOT N2 — instantané AVANT toute action non couverte par le garde
+            # d'écriture (typiquement `run_command`) : c'est par là que le
+            # périmètre a été contourné dans HuffPack.
+            _snap_before_n2 = frozenset()
+            _watch_disk_n2 = bool(
+                getattr(self, "_allowed_files", None)
+                and getattr(self, "_task_workspace_root", None)
+                and action_type not in _CODEAGENT_WRITE_ACTIONS
+            )
+            if _watch_disk_n2:
+                _snap_before_n2 = snapshot_mission_files(self._task_workspace_root)
+
             observation = await self._execute_loop_action(action, snapshots=_session_snapshots)
+
+            if _watch_disk_n2:
+                _created_out = files_created_outside_perimeter(
+                    _snap_before_n2,
+                    snapshot_mission_files(self._task_workspace_root),
+                    self._allowed_files,
+                    self._task_workspace_root,
+                )
+                if _created_out:
+                    logger.warning(
+                        "[CodeAgent] N2 — fichier(s) créé(s) HORS périmètre par '{}' : {} "
+                        "(autorisés: {})",
+                        action_type, _created_out, sorted(self._allowed_files),
+                    )
+                    self._out_of_scope_created = sorted(
+                        set(getattr(self, "_out_of_scope_created", []) or []) | set(_created_out)
+                    )
+                    report.append(
+                        f"[iter {iteration}] {action_type} a créé hors périmètre {_created_out}"
+                    )
+                    messages.append({"role": "user", "content": (
+                        f"⛔ HORS PÉRIMÈTRE — ton action `{action_type}` a créé {_created_out}, "
+                        f"qui n'est PAS dans tes fichiers assignés ({sorted(self._allowed_files)}).\n\n"
+                        "Le périmètre vaut pour TOUTES les voies d'écriture, y compris les "
+                        "commandes shell — il n'existe pas de canal non intercepté. Ces fichiers "
+                        "ne feront pas partie du livrable.\n\n"
+                        "Reviens à tes fichiers assignés. Si tu es bloqué par un mécanisme "
+                        "interne, dis-le dans ton `done` plutôt que de le contourner."
+                    )})
 
             # ── Lever le garde-fou + re-injecter le contenu après un edit réussi ──
             # Dès qu'un edit (str_replace/edit_lines/apply_patch/write_file) réussit sur un
@@ -4049,6 +4410,18 @@ class CodeAgent(SubAgent):
         _ctx_intent_from_tc = _tc.intent if _tc and _tc.intent not in ("auto", None) else None
         if _ws:
             self._task_workspace_root = Path(str(_ws))
+            # LOT I.2 (mission) — périmètre OPTIONNEL : le worker de mission passe la liste de
+            # SES fichiers via context['allowed_files']. Le CodeAgent ne pourra ÉCRIRE que
+            # ceux-là. Clé absente (chat / vraie Lumena) → None → comportement inchangé.
+            try:
+                _perim_i2 = (task.context or {}).get("allowed_files")
+                if _perim_i2:
+                    self._allowed_files = frozenset(
+                        str(p).replace("\\", "/").strip().strip("/")
+                        for p in _perim_i2 if str(p).strip()
+                    )
+            except Exception:
+                self._allowed_files = None
             # Intent déjà résolu par l'appelant (ReAct) ? On le récupère pour que la phase
             # Architect puisse se déclencher (sinon getattr('_resolved_intent', 'auto')
             # renvoie 'auto' et _is_complex_modify reste toujours False).
@@ -4287,12 +4660,23 @@ class CodeAgent(SubAgent):
                     if not _validation.valid:
                         report.append(f"[iter {iteration}] action schema invalid")
                         logger.warning("[CodeAgent] Action invalide: {}", _validation.message[:300])
+                        # CA-1 — observabilité : sans le brut, ce refus est
+                        # indiagnosticable (run démineur : 4 refus aveugles).
+                        logger.debug(
+                            "[CodeAgent] réponse brute refusée (400 1ers chars): {}",
+                            raw_text[:400],
+                        )
                         messages.append({"role": "assistant", "content": raw_text[:800]})
                         messages.append({
                             "role": "user",
                             "content": (
                                 f"{_validation.message}\n"
-                                "Reponds avec UNE action JSON valide, sans prose, sans markdown."
+                                "Reponds avec UNE action JSON valide, sans prose, sans markdown.\n"
+                                "⚠️ Les champs vont au NIVEAU RACINE du JSON, PAS sous "
+                                "\"args\"/\"parameters\". Exemple correct : "
+                                '{"action": "str_replace", "path": "script.js", '
+                                '"old_str": "<texte exact présent dans le fichier>", '
+                                '"new_str": "<remplacement>"}'
                             ),
                         })
                         return ("continue", None)
@@ -6258,10 +6642,17 @@ def _is_simple_edit(description: str, context: dict) -> bool:
 
 def _is_simple_test(description: str) -> bool:
     import re as _re_test
-    return bool(_re_test.search(r'\btest(s|er|ez|ing)?\b', description)) and not any(
-        kw in description for kw in [
+    import unicodedata as _ud_test
+
+    folded = "".join(
+        char for char in _ud_test.normalize("NFKD", description or "")
+        if not _ud_test.combining(char)
+    ).lower()
+    return bool(_re_test.search(r'\btest(s|er|ez|ing)?\b', folded)) and not any(
+        kw in folded for kw in [
             "modifier", "edit", "fix", "implement", "corrig", "debug",
-            "crée", "creer", "create", "build", "genere", "generate",
+            "cree", "creer", "create", "build", "genere", "generate",
+            "ecri", "rempli", "redig", "coder", "developper",
             "tetris", "contest", "latest", "protest", "attest",
         ]
     )

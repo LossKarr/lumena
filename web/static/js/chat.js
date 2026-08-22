@@ -1,6 +1,217 @@
 /* ============================================================
    CHAT — Lumena Control Panel
    ============================================================ */
+let _dictationRecorder=null;
+let _dictationStream=null;
+let _dictationChunks=[];
+let _dictationTimer=null;
+let _dictationBusy=false;
+let _dictationAudioContext=null;
+let _dictationAnalyser=null;
+let _dictationVadFrame=null;
+let _dictationSessionId=0;
+let _dictationDiscard=false;
+let _dictationSendDoneFor=0;
+let _dictationConfig={max_duration_ms:60000,silence_ms:1800};
+
+function _dictationHeaders(){
+  const headers={};
+  if(ADMIN_TOKEN)headers.Authorization=`Bearer ${ADMIN_TOKEN}`;
+  return headers;
+}
+
+async function _setVoiceDictationActive(active){
+  const r=await fetch(`${API_BASE}/api/voice/dictation-state?active=${active?'true':'false'}`,{
+    method:'POST',headers:_dictationHeaders()
+  });
+  if(!r.ok)throw new Error(`HTTP ${r.status}`);
+}
+
+async function _loadDictationConfig(){
+  try{
+    const r=await fetch(`${API_BASE}/api/voice/dictation-config`,{headers:_dictationHeaders()});
+    if(!r.ok)return;
+    const data=await r.json();
+    _dictationConfig={
+      max_duration_ms:Math.max(5000,Math.min(300000,Number(data.max_duration_ms)||60000)),
+      silence_ms:Math.max(800,Math.min(5000,Number(data.silence_ms)||1800)),
+    };
+  }catch(_e){}
+}
+
+function _setDictationButton(active,busy=false){
+  const btn=document.getElementById('btn-chat-dictation');if(!btn)return;
+  btn.classList.toggle('recording',active);
+  btn.disabled=busy;
+  btn.setAttribute('aria-pressed',active?'true':'false');
+  btn.title=active?'Arrêter la dictée':busy?'Transcription en cours':'Dicter un message';
+  btn.innerHTML=active?'<i data-lucide="square"></i>':'<i data-lucide="mic"></i>';
+  if(window.lucide)window.lucide.createIcons();
+}
+
+function _releaseDictationMedia(){
+  if(_dictationTimer){clearTimeout(_dictationTimer);_dictationTimer=null;}
+  if(_dictationVadFrame){cancelAnimationFrame(_dictationVadFrame);_dictationVadFrame=null;}
+  _dictationAnalyser=null;
+  if(_dictationAudioContext){
+    try{_dictationAudioContext.close();}catch(_e){}
+    _dictationAudioContext=null;
+  }
+  if(_dictationStream){for(const track of _dictationStream.getTracks())track.stop();}
+  _dictationStream=null;_dictationRecorder=null;
+}
+
+function _stopChatDictation(){
+  if(!_dictationRecorder||_dictationRecorder.state!=='recording')return;
+  _dictationBusy=true;
+  _setDictationButton(false,true);
+  if(_dictationVadFrame){cancelAnimationFrame(_dictationVadFrame);_dictationVadFrame=null;}
+  _dictationRecorder.stop();
+}
+
+function _startDictationSilenceDetector(stream){
+  const AudioCtx=window.AudioContext||window.webkitAudioContext;
+  if(!AudioCtx)return;
+  try{
+    _dictationAudioContext=new AudioCtx();
+    const source=_dictationAudioContext.createMediaStreamSource(stream);
+    _dictationAnalyser=_dictationAudioContext.createAnalyser();
+    _dictationAnalyser.fftSize=1024;
+    source.connect(_dictationAnalyser);
+    const samples=new Uint8Array(_dictationAnalyser.fftSize);
+    const startedAt=performance.now();
+    let lastVoiceAt=startedAt;
+    let speechSeen=false;
+    let noiseFloor=0.008;
+    const tick=()=>{
+      if(!_dictationAnalyser||!_dictationRecorder||_dictationRecorder.state!=='recording')return;
+      _dictationAnalyser.getByteTimeDomainData(samples);
+      let sum=0;
+      for(const sample of samples){const value=(sample-128)/128;sum+=value*value;}
+      const rms=Math.sqrt(sum/samples.length);
+      const now=performance.now();
+      // N'apprend le bruit que sur un niveau bas : si l'utilisateur parle dès
+      // le clic, sa voix ne doit jamais devenir le nouveau seuil de silence.
+      if(now-startedAt<500&&!speechSeen&&rms<0.025){
+        noiseFloor=(noiseFloor*0.8)+(rms*0.2);
+      }
+      const threshold=Math.max(0.018,noiseFloor*2.8);
+      if(rms>=threshold){speechSeen=true;lastVoiceAt=now;}
+      if(speechSeen&&now-lastVoiceAt>=_dictationConfig.silence_ms){_stopChatDictation();return;}
+      _dictationVadFrame=requestAnimationFrame(tick);
+    };
+    _dictationVadFrame=requestAnimationFrame(tick);
+  }catch(_e){
+    _dictationAnalyser=null;
+  }
+}
+
+function _insertDictationAtCursor(input,text){
+  if(!text)return;
+  const start=Number.isInteger(input.selectionStart)?input.selectionStart:input.value.length;
+  const end=Number.isInteger(input.selectionEnd)?input.selectionEnd:start;
+  const before=input.value.slice(0,start);
+  const after=input.value.slice(end);
+  const leftJoin=before&&!/\s$/.test(before)&&!/^[,.;!?]/.test(text)?' ':'';
+  const rightJoin=after&&!/^\s/.test(after)&&!/[\s([{]$/.test(text)?' ':'';
+  const inserted=leftJoin+text+rightJoin;
+  input.value=before+inserted+after;
+  const cursor=before.length+inserted.length;
+  input.setSelectionRange(cursor,cursor);
+  input.dispatchEvent(new Event('input',{bubbles:true}));
+}
+
+async function _finishChatDictation(blob,sessionId){
+  if(sessionId!==_dictationSessionId||_dictationDiscard)return;
+  _dictationBusy=true;_setDictationButton(false,true);
+  try{
+    if(!blob||blob.size<256)throw new Error('Enregistrement audio vide ou trop court');
+    const form=new FormData();
+    const ext=blob.type.includes('ogg')?'ogg':blob.type.includes('wav')?'wav':'webm';
+    form.append('audio',blob,`dictation.${ext}`);
+    const r=await fetch(`${API_BASE}/api/voice/transcribe`,{
+      method:'POST',headers:_dictationHeaders(),body:form
+    });
+    const data=await r.json();
+    if(!r.ok){
+      const detail=typeof data.detail==='object'?(data.detail.message||data.detail.code):data.detail;
+      throw new Error(detail||`HTTP ${r.status}`);
+    }
+    const text=(data.text||'').trim();
+    const input=document.getElementById('message-input');
+    _insertDictationAtCursor(input,text);
+    input.focus();
+    if(data.should_send){
+      if(!input.value.trim()){
+        logC('Commande Envoyer ignorée : le message est vide','warning');
+      }else if(isLoading){
+        logC('Commande Envoyer détectée, mais Lumena répond déjà : texte conservé','warning');
+      }else if(_dictationSendDoneFor!==sessionId){
+        _dictationSendDoneFor=sessionId;
+        logC('Commande Envoyer détectée','success');
+        sendMessage();
+        return;
+      }
+    }
+    if(!text){logC('Aucune parole détectée','warning');return;}
+    logC('Dictée ajoutée au message','success');
+  }catch(e){
+    logC(`Dictée impossible: ${e.message}`,'error');
+  }finally{
+    _dictationBusy=false;
+    _releaseDictationMedia();
+    try{await _setVoiceDictationActive(false);}catch(e){}
+    _setDictationButton(false,false);
+  }
+}
+
+export async function toggleChatDictation(){
+  if(_dictationBusy)return;
+  if(_dictationRecorder&&_dictationRecorder.state==='recording'){
+    _stopChatDictation();
+    return;
+  }
+  if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){
+    logC('La dictée micro n’est pas disponible dans ce navigateur','warning');
+    return;
+  }
+  try{
+    await _loadDictationConfig();
+    await _setVoiceDictationActive(true);
+    _dictationStream=await navigator.mediaDevices.getUserMedia({audio:true});
+    const candidates=['audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'];
+    const mime=candidates.find(x=>MediaRecorder.isTypeSupported?.(x))||'';
+    const sessionId=++_dictationSessionId;
+    _dictationDiscard=false;
+    _dictationChunks=[];
+    _dictationRecorder=new MediaRecorder(_dictationStream,mime?{mimeType:mime}:undefined);
+    _dictationRecorder.ondataavailable=e=>{if(e.data&&e.data.size)_dictationChunks.push(e.data);};
+    _dictationRecorder.onerror=e=>{
+      _dictationDiscard=true;
+      logC(`Erreur micro: ${e.error?.message||'inconnue'}`,'error');
+      _releaseDictationMedia();
+      _dictationBusy=false;_setDictationButton(false,false);
+      _setVoiceDictationActive(false).catch(()=>{});
+    };
+    _dictationRecorder.onstop=()=>{
+      const type=_dictationRecorder?.mimeType||mime||'audio/webm';
+      const blob=new Blob(_dictationChunks,{type});
+      _finishChatDictation(blob,sessionId);
+    };
+    _dictationRecorder.start(250);
+    _setDictationButton(true,false);
+    _startDictationSilenceDetector(_dictationStream);
+    _dictationTimer=setTimeout(()=>{
+      if(_dictationRecorder?.state==='recording')_stopChatDictation();
+    },_dictationConfig.max_duration_ms);
+  }catch(e){
+    _releaseDictationMedia();
+    try{await _setVoiceDictationActive(false);}catch(_e){}
+    _setDictationButton(false,false);
+    logC(`Micro indisponible: ${e.message}`,'error');
+  }
+}
+
 export function setupTextarea(){
   const ta=document.getElementById('message-input');
   if(!ta)return;

@@ -47,7 +47,7 @@ except Exception:
     get_daemon = None
 
 try:
-    from src.voice.manager import VoiceManager
+    from src.voice.lifecycle import VoiceLifecycleManager as VoiceManager
 except ImportError:
     VoiceManager = None
 

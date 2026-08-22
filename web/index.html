@@ -10,12 +10,16 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/tokens.css?v=4">
 <link rel="stylesheet" href="/static/css/layout.css?v=4">
-<link rel="stylesheet" href="/static/css/chat.css?v=7">
-<link rel="stylesheet" href="/static/css/components.css?v=5">
+<link rel="stylesheet" href="/static/css/chat.css?v=8">
+<link rel="stylesheet" href="/static/css/components.css?v=6">
 <link rel="stylesheet" href="/static/css/thinking.css?v=3">
 <link rel="stylesheet" href="/static/css/setup.css?v=9">
 <link rel="stylesheet" href="/static/css/product-docs.css?v=1">
 <link rel="stylesheet" href="/static/css/config-panel.css?v=1">
+<link rel="stylesheet" href="/static/css/codex-subscription.css?v=2">
+<link rel="stylesheet" href="/static/css/missions.css?v=1">
+<link rel="stylesheet" href="/static/css/document-studio.css?v=9">
+<link rel="stylesheet" href="/static/css/overview.css?v=2">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -165,6 +169,15 @@
             <span class="nav-item-icon"><i data-lucide="clipboard-list"></i></span>
             <span class="nav-item-label">Taches</span>
             <span class="badge" id="badge-tasks" style="background:var(--muted)">0</span>
+          </div>
+          <div class="nav-item" data-panel="missions">
+            <span class="nav-item-icon"><i data-lucide="rocket"></i></span>
+            <span class="nav-item-label">Missions</span>
+            <span class="badge" id="badge-missions" style="background:var(--muted)">0</span>
+          </div>
+          <div class="nav-item" data-panel="document-studio">
+            <span class="nav-item-icon"><i data-lucide="library-big"></i></span>
+            <span class="nav-item-label">Documents</span>
           </div>
           <div class="nav-item" data-panel="sessions">
             <span class="nav-item-icon"><i data-lucide="layers"></i></span>
@@ -395,7 +408,7 @@
             </div>
             <div class="compose-box" id="compose-box">
               <div class="compose-drop-zone" id="compose-drop-zone" role="region" aria-label="Zone de depot de fichiers">Deposer fichiers ici</div>
-              <div style="display:flex;flex-direction:column;flex:1;gap:4px">
+              <div class="compose-input-wrap">
                 <div class="compose-attachments" id="compose-attachments" style="display:none"></div>
                 <label for="message-input" class="sr-only">Message</label>
                 <textarea class="compose-textarea" id="message-input" placeholder="Ecris ton message..." rows="1"></textarea>
@@ -406,6 +419,7 @@
                 <button class="btn-icon" id="btn-clear-chat" title="Effacer le chat"><i data-lucide="trash-2"></i></button>
                 <button class="btn-icon" id="btn-attach-file" title="Joindre fichier"><i data-lucide="paperclip"></i></button>
                 <input type="file" id="file-upload-input" multiple style="display:none" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.html,.css,.json,.xml,.csv,.doc,.docx">
+                <button class="btn-icon" id="btn-chat-dictation" title="Dicter un message" aria-label="Dicter un message" aria-pressed="false"><i data-lucide="mic"></i></button>
                 <button class="btn-icon" id="btn-toggle-focus" title="Mode focus"><i data-lucide="maximize"></i></button>
                 <button class="btn-send" id="send-btn" title="Envoyer"><i data-lucide="arrow-up"></i></button>
               </div>
@@ -437,81 +451,99 @@
 
     <!-- ======= OVERVIEW ======= -->
     <div class="panel" id="panel-overview">
-      <div class="grid-4" id="overview-cards">
-        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="tools">
-          <div class="card-title"><i data-lucide="wrench"></i> Outils</div>
-          <div style="font-size:28px;font-weight:700;color:var(--accent)" id="ov-tools">—</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px">handlers V2</div>
+      <section class="overview-shell" aria-labelledby="overview-heading">
+        <header class="overview-header">
+          <div class="overview-heading-group">
+            <div class="overview-title-line">
+              <h1 id="overview-heading">Overview</h1>
+              <span class="overview-live" id="ov-global-state"><span></span> Actualisation...</span>
+            </div>
+            <div class="overview-summary" id="ov-summary" aria-label="Etat principal de Lumena"></div>
+          </div>
+          <div class="overview-actions" aria-label="Actions rapides">
+            <button class="overview-action" data-ov-panel="chat"><i data-lucide="message-square"></i><span>Ouvrir le chat</span></button>
+            <button class="overview-action" data-ov-panel="missions"><i data-lucide="circle-plus"></i><span>Demander une mission</span></button>
+            <button class="overview-action" data-ov-panel="document-studio"><i data-lucide="file-plus-2"></i><span>Créer un document</span></button>
+            <button class="overview-action" data-ov-panel="tasks"><i data-lucide="calendar-plus"></i><span>Planifier</span></button>
+            <button class="overview-icon-action" id="ov-refresh" title="Actualiser l'Overview" aria-label="Actualiser l'Overview"><i data-lucide="refresh-cw"></i><span class="overview-icon-label">Actualiser</span></button>
+            <button class="overview-icon-action" id="ov-customize" title="Personnaliser l'Overview" aria-label="Personnaliser l'Overview" aria-expanded="false"><i data-lucide="sliders-horizontal"></i><span class="overview-icon-label">Personnaliser</span></button>
+          </div>
+          <div class="overview-customizer" id="ov-customizer" hidden>
+            <div class="overview-customizer-head"><strong>Personnaliser</strong><button id="ov-layout-reset" type="button">Réinitialiser</button></div>
+            <div id="ov-widget-toggles"></div>
+            <button class="overview-density" id="ov-density" type="button"><i data-lucide="rows-3"></i><span>Densité : standard</span></button>
+          </div>
+        </header>
+
+        <section class="overview-core" aria-labelledby="ov-core-title">
+          <div class="overview-core-label">
+            <h2 id="ov-core-title">Lumena Core</h2>
+            <p>Système vivant · données réelles</p>
+            <button class="overview-core-pause" id="ov-core-pause" type="button" aria-pressed="false" title="Suspendre l'animation"><i data-lucide="pause"></i><span class="sr-only">Suspendre l'animation</span></button>
+          </div>
+          <div class="overview-core-stage" id="ov-core-stage">
+            <canvas id="ov-core-canvas" aria-hidden="true"></canvas>
+            <div class="overview-core-fallback" id="ov-core-fallback" aria-hidden="true"><span></span></div>
+            <div class="overview-core-nodes" id="ov-core-nodes"></div>
+          </div>
+          <div class="overview-updated" id="ov-updated">Données en attente</div>
+        </section>
+
+        <div class="overview-grid" id="ov-widget-grid">
+          <section class="overview-widget overview-widget--wide" data-ov-widget="work" draggable="true">
+            <header><div><i data-lucide="briefcase-business"></i><h2>Travail en cours</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Travail en cours"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-widget-body" id="ov-work"></div>
+            <button class="overview-widget-link" data-ov-panel="missions">Voir toutes les missions <i data-lucide="arrow-right"></i></button>
+          </section>
+
+          <section class="overview-widget overview-widget--wide" data-ov-widget="attention" draggable="true">
+            <header><div><i data-lucide="triangle-alert"></i><h2>À traiter maintenant</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer À traiter maintenant"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-widget-body" id="ov-attention"></div>
+            <button class="overview-widget-link" data-ov-panel="alerts">Voir toutes les alertes <i data-lucide="arrow-right"></i></button>
+          </section>
+
+          <section class="overview-widget overview-widget--wide" data-ov-widget="activity" draggable="true">
+            <header><div><i data-lucide="radio-tower"></i><h2>Activité prouvée</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Activité prouvée"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-widget-body" id="ov-activity"></div>
+            <button class="overview-widget-link" data-ov-panel="trace">Voir toute l'activité <i data-lucide="arrow-right"></i></button>
+          </section>
+
+          <section class="overview-widget overview-widget--wide" data-ov-widget="systems" draggable="true">
+            <header><div><i data-lucide="network"></i><h2>Systèmes Lumena</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Systèmes Lumena"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-systems" id="ov-systems"></div>
+          </section>
+
+          <section class="overview-widget overview-widget--wide" data-ov-widget="deliverables" draggable="true">
+            <header><div><i data-lucide="package-check"></i><h2>Livrables récents</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Livrables récents"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-widget-body" id="ov-deliverables"></div>
+            <button class="overview-widget-link" data-ov-panel="document-studio">Voir tous les documents <i data-lucide="arrow-right"></i></button>
+          </section>
+
+          <section class="overview-widget overview-widget--wide" data-ov-widget="health" draggable="true">
+            <header><div><i data-lucide="heart-pulse"></i><h2>Santé et fiabilité</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Santé et fiabilité"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-health" id="ov-health"></div>
+            <button class="overview-widget-link" data-ov-panel="providers">Voir les détails système <i data-lucide="arrow-right"></i></button>
+          </section>
+
+          <section class="overview-widget overview-widget--wide" data-ov-widget="operations" draggable="true">
+            <header><div><i data-lucide="list-checks"></i><h2>Opérations et planifications</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Opérations et planifications"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-health" id="ov-operations"></div>
+            <button class="overview-widget-link" data-ov-panel="tasks">Voir les tâches planifiées <i data-lucide="arrow-right"></i></button>
+          </section>
+
+          <section class="overview-widget overview-widget--full" data-ov-widget="capabilities" draggable="true">
+            <header><div><i data-lucide="blocks"></i><h2>Carte des capacités</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Carte des capacités"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-capabilities" id="ov-capabilities"></div>
+          </section>
+
+          <section class="overview-widget overview-widget--full" data-ov-widget="sources" draggable="true">
+            <header><div><i data-lucide="database-zap"></i><h2>Sources et traçabilité</h2></div><button class="overview-drag" title="Déplacer ce widget" aria-label="Déplacer Sources et traçabilité"><i data-lucide="grip-vertical"></i></button></header>
+            <div class="overview-source-summary" id="ov-source-summary"></div>
+            <div class="overview-sources" id="ov-sources"></div>
+            <div class="overview-source-links"><button class="overview-widget-link" data-ov-panel="logs">Logs</button><button class="overview-widget-link" data-ov-panel="trace">Trace</button><button class="overview-widget-link" data-ov-panel="journal">Journal</button><button class="overview-widget-link" data-ov-panel="console">Console</button></div>
+          </section>
         </div>
-        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="memory">
-          <div class="card-title"><i data-lucide="brain"></i> Memoires</div>
-          <div style="font-size:28px;font-weight:700;color:var(--ok)" id="ov-memories">—</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px">dans ChromaDB</div>
-        </div>
-        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="instincts">
-          <div class="card-title"><i data-lucide="zap"></i> Skills</div>
-          <div style="font-size:28px;font-weight:700;color:var(--warn)" id="ov-skills">—</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px">charges</div>
-        </div>
-        <div class="card" style="cursor:pointer" data-action="switchPanel" data-arg="emotions">
-          <div class="card-title"><i data-lucide="heart-pulse"></i> Humeur</div>
-          <div style="font-size:28px;font-weight:700;color:var(--accent)" id="ov-mood">—</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px" id="ov-energy">—</div>
-        </div>
-      </div>
-      <div class="grid-3" style="margin-top:16px">
-        <div class="card">
-          <div class="card-title"><i data-lucide="radio"></i> Connexions</div>
-          <div class="card-content" id="ov-connections">Chargement...</div>
-        </div>
-        <div class="card">
-          <div class="card-title"><i data-lucide="clock"></i> Status Systeme</div>
-          <div class="card-content" id="ov-modules">Chargement...</div>
-        </div>
-        <div class="card">
-          <div class="card-title"><i data-lucide="cpu"></i> Modele actif</div>
-          <div class="card-content" id="ov-model">Chargement...</div>
-        </div>
-      </div>
-      <div class="grid-2" style="margin-top:16px">
-        <div class="card">
-          <div class="card-title"><i data-lucide="gauge"></i> Ressources</div>
-          <div class="card-content" id="ov-resources">Chargement...</div>
-        </div>
-        <div class="card">
-          <div class="card-title"><i data-lucide="clipboard-list"></i> Taches</div>
-          <div class="card-content" id="ov-tasks">Aucune</div>
-        </div>
-      </div>
-      <div class="grid-3" style="margin-top:16px">
-        <div class="card">
-          <div class="card-title"><i data-lucide="trending-up"></i> Pipeline</div>
-          <div class="card-content" id="ov-pipeline">Chargement...</div>
-        </div>
-        <div class="card">
-          <div class="card-title"><i data-lucide="bar-chart-3"></i> SLO</div>
-          <div class="card-content" id="ov-slo">Chargement...</div>
-        </div>
-      </div>
-      <div class="grid-2" style="margin-top:16px">
-        <div class="card">
-          <div class="card-title"><i data-lucide="bot"></i> Daemon & Autonomie</div>
-          <div class="card-content" id="ov-daemon">Chargement...</div>
-        </div>
-        <div class="card">
-          <div class="card-title"><i data-lucide="clock"></i> Taches Planifiees (Scheduler)</div>
-          <div class="card-content" id="ov-scheduler" style="max-height:320px;overflow-y:auto">Chargement...</div>
-        </div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span><i data-lucide="radio"></i> Activite Recente (Trace Live)</span>
-          <span class="badge" id="ov-trace-count" style="background:var(--accent)">0</span>
-        </div>
-        <div class="card-content" id="ov-trace-feed" style="max-height:260px;overflow-y:auto">
-          <div style="color:var(--muted)">En attente d'evenements...</div>
-        </div>
-      </div>
+      </section>
     </div>
 
     <!-- ======= REPO MAP ======= -->
@@ -577,12 +609,23 @@
         <div class="card-content">
           <p>Activez l'ecoute continue pour parler a Lumena.</p>
           <p style="margin-top:8px;font-size:12px;color:var(--muted)">Dites <strong>"Lumena"</strong> pour activer, puis enoncez votre commande.</p>
-          <div style="margin-top:20px;display:flex;align-items:center;gap:16px">
+          <div style="margin-top:20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <button class="btn primary" id="voice-toggle-btn" data-action="toggleVoiceAssistant" style="padding:12px 24px;font-weight:600">Demarrer l'ecoute</button>
+            <button class="btn" data-action="stopVoiceAudio" title="Couper la voix sans arrêter le travail"><i data-lucide="volume-x"></i> Couper</button>
+            <button class="btn" id="voice-mute-btn" data-action="toggleVoiceMute" title="Activer ou lever le mute global"><i data-lucide="mic-off"></i> Mute</button>
+            <button class="btn" data-action="testVoiceOutput" title="Tester la synthèse et la sortie audio"><i data-lucide="audio-lines"></i> Tester</button>
             <div style="display:flex;align-items:center;gap:8px;color:var(--muted)">
               <div class="status-dot" id="voice-dot"></div>
               <span id="voice-status-text">Desactive</span>
             </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:18px;font-size:12px">
+            <div><div class="stat-label">Pipeline</div><div id="voice-pipeline">—</div></div>
+            <div><div class="stat-label">Mode / rôle</div><div id="voice-mode-role">—</div></div>
+            <div><div class="stat-label">Provider</div><div id="voice-provider">—</div></div>
+            <div><div class="stat-label">Premier audio</div><div id="voice-first-audio">—</div></div>
+            <div><div class="stat-label">Tâche active</div><div id="voice-task">—</div></div>
+            <div><div class="stat-label">Confidentialité</div><div id="voice-privacy">—</div></div>
           </div>
         </div>
       </div>
@@ -654,6 +697,34 @@
     </div>
 
     <!-- ======= TASKS ======= -->
+    <div class="panel" id="panel-missions">
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span><i data-lucide="rocket"></i> Missions <span style="font-size:11px;color:var(--muted)">— sous-agents Lumena en arrière-plan</span></span>
+          <button class="btn" style="font-size:11px" onclick="loadMissions()"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraîchir</button>
+        </div>
+        <div class="card-content" id="missions-list"><div style="color:var(--muted)">Chargement…</div></div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-document-studio">
+      <div class="ds-shell">
+        <header class="ds-header">
+          <div><div class="ds-title"><i data-lucide="library-big"></i><span>Document Studio</span></div><p>Modèles, documents générés et acquisition documentaire.</p></div>
+          <div class="ds-header-actions"><button class="ds-icon-btn" id="ds-refresh" title="Actualiser" aria-label="Actualiser"><i data-lucide="refresh-cw"></i></button><button class="btn primary" id="ds-import-open"><i data-lucide="upload"></i> Importer</button><input id="ds-import-input" type="file" hidden accept=".pdf,.docx,.xlsx,.pptx,.csv,.txt,.md,.html,.odt,.ods,.rtf"></div>
+        </header>
+        <div class="ds-tabs" role="tablist" aria-label="Vues Document Studio"><button class="ds-tab active" data-ds-view="models"><i data-lucide="layout-grid"></i> Modèles</button><button class="ds-tab" data-ds-view="custom"><i data-lucide="panels-top-left"></i> Personnalisés</button><button class="ds-tab" data-ds-view="library"><i data-lucide="files"></i> Mes documents</button><button class="ds-tab" data-ds-view="logos"><i data-lucide="badge"></i> Logos</button><button class="ds-tab" data-ds-view="web"><i data-lucide="globe-2"></i> Trouver sur le web</button></div>
+        <section class="ds-view active" data-ds-section="models"><div class="ds-toolbar"><label class="ds-search"><i data-lucide="search"></i><input id="ds-model-search" placeholder="Rechercher un modèle"></label><select id="ds-model-category" aria-label="Filtrer par catégorie"><option value="">Toutes les catégories</option></select><span id="ds-model-count" class="ds-count"></span></div><div id="ds-model-grid" class="ds-model-grid"></div></section>
+        <section class="ds-view" data-ds-section="custom"><div class="ds-section-heading"><div><h2>Modèles personnalisés</h2><p>Vos copies, variantes et modèles importés, séparés des modèles intégrés.</p></div><div class="ds-section-actions"><span id="ds-custom-count" class="ds-count"></span><button class="btn primary" id="ds-template-import-open"><i data-lucide="file-up"></i> Importer un modèle</button><input id="ds-template-import-input" type="file" hidden accept=".pdf,.docx,.xlsx,.pptx,.csv,.txt,.md,.html,.htm,.odt,.ods,.rtf"></div></div><div id="ds-custom-grid" class="ds-model-grid"></div></section>
+        <section class="ds-view" data-ds-section="library"><div class="ds-toolbar"><label class="ds-search"><i data-lucide="search"></i><input id="ds-library-search" placeholder="Rechercher dans le contenu"></label><select id="ds-library-format" aria-label="Filtrer par format"><option value="">Tous les formats</option><option>pdf</option><option>docx</option><option>xlsx</option><option>pptx</option><option>csv</option><option>md</option></select><span id="ds-library-count" class="ds-count"></span></div><div id="ds-library-grid" class="ds-library-grid"></div></section>
+        <section class="ds-view" data-ds-section="logos"><div class="ds-section-heading"><div><h2>Identité documentaire</h2><p>Enregistrez plusieurs logos et choisissez celui appliqué aux nouveaux rendus.</p></div><button class="btn primary" id="ds-logo-upload-open"><i data-lucide="image-up"></i> Ajouter un logo</button><input id="ds-logo-upload" type="file" hidden accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"></div><div class="ds-logo-rule"><i data-lucide="circle-check"></i><span>Un seul logo peut être actif. Les images sont vérifiées puis réencodées en PNG.</span></div><div id="ds-logo-grid" class="ds-logo-grid"></div></section>
+        <section class="ds-view" data-ds-section="web"><form id="ds-web-form" class="ds-web-form"><label class="ds-search"><i data-lucide="search"></i><input id="ds-web-query" required placeholder="Ex. rapport annuel énergie France 2026"></label><input id="ds-web-formats" class="ds-input" value="pdf,docx,xlsx,csv" aria-label="Formats"><button class="btn primary" type="submit"><i data-lucide="search"></i> Rechercher</button></form><div id="ds-web-results" class="ds-web-results"></div></section>
+      </div>
+      <aside id="ds-template-import-wizard" class="ds-import-wizard" aria-hidden="true"><div class="ds-import-head"><div><span class="ds-eyebrow">NOUVEAU MODÈLE</span><h2>Vérifier avant publication</h2></div><button class="ds-icon-btn" id="ds-template-import-close" title="Fermer" aria-label="Fermer"><i data-lucide="x"></i></button></div><div class="ds-import-body"><div class="ds-import-form"><div id="ds-template-import-status" class="ds-import-status"></div><div class="ds-import-grid"><label>Nom<input id="ds-template-import-name" class="ds-input"></label><label>Type documentaire<input id="ds-template-import-kind" class="ds-input"></label><label>Catégorie<input id="ds-template-import-category" class="ds-input"></label><label>Alias, séparés par des virgules<input id="ds-template-import-aliases" class="ds-input"></label></div><section class="ds-editor-section"><div class="ds-editor-section-title"><i data-lucide="braces"></i><span>Champs détectés</span></div><div id="ds-template-import-fields" class="ds-import-fields"></div></section><div id="ds-template-import-warnings" class="ds-import-warnings"></div></div><div class="ds-import-preview"><div class="ds-preview-bar"><span>Aperçu de contrôle</span><span id="ds-template-import-preview-state"></span></div><iframe id="ds-template-import-preview" title="Aperçu du modèle importé"></iframe></div></div><div class="ds-editor-actions"><button class="btn" id="ds-template-import-save"><i data-lucide="save"></i> Enregistrer le brouillon</button><span class="ds-spacer"></span><button class="btn primary" id="ds-template-import-publish"><i data-lucide="badge-check"></i> Publier dans Lumena</button></div></aside>
+      <aside id="ds-editor" class="ds-editor" aria-hidden="true"><div class="ds-editor-head"><div><span class="ds-eyebrow">MODÈLE</span><h2 id="ds-editor-title">Éditeur</h2></div><div class="ds-editor-head-tools"><div class="ds-mode-switch" role="tablist" aria-label="Mode d’édition"><button class="active" data-ds-editor-mode="visual"><i data-lucide="sliders-horizontal"></i> Visuel</button><button data-ds-editor-mode="advanced"><i data-lucide="code-2"></i> Avancé</button></div><button class="ds-icon-btn" id="ds-editor-close" title="Fermer" aria-label="Fermer"><i data-lucide="x"></i></button></div></div><div class="ds-editor-body"><div class="ds-editor-form"><div id="ds-readonly-note" class="ds-editor-note" hidden><i data-lucide="lock-keyhole"></i><span>Ce modèle intégré est protégé. Dupliquez-le pour enregistrer vos personnalisations.</span></div><label>Nom<input id="ds-edit-name" class="ds-input"></label><section id="ds-visual-editor" class="ds-editor-mode-panel"><div class="ds-editor-section"><div class="ds-editor-section-title"><i data-lucide="palette"></i><span>Style du document</span></div><div class="ds-design-grid"><label>Couleur principale<input id="ds-design-accent" type="color"></label><label>Couleur du texte<input id="ds-design-text" type="color"></label><label>Typographie<select id="ds-design-font"><option value="modern">Moderne</option><option value="inter">Interface</option><option value="classic">Classique</option><option value="technical">Technique</option></select></label><label>Densité<select id="ds-design-density"><option value="compact">Compacte</option><option value="standard">Standard</option><option value="airy">Aérée</option></select></label><label>Marges<input id="ds-design-margin" type="range" min="8" max="35" step="1"><output id="ds-design-margin-value"></output></label><label>Position du logo<select id="ds-design-logo-position"><option value="left">Gauche</option><option value="center">Centre</option><option value="right">Droite</option></select></label><label>Largeur du logo<input id="ds-design-logo-width" type="range" min="48" max="220" step="4"><output id="ds-design-logo-width-value"></output></label><label class="ds-check-row"><input id="ds-design-logo-enabled" type="checkbox"><span>Afficher le logo actif</span></label></div><div id="ds-active-logo-note" class="ds-active-logo-note"></div></div><div class="ds-editor-section"><div class="ds-editor-section-title"><i data-lucide="text-cursor-input"></i><span>Contenu d’exemple</span></div><div id="ds-visual-fields" class="ds-visual-fields"></div></div></section><section id="ds-advanced-editor" class="ds-editor-mode-panel" hidden><label>Données d’exemple (JSON)<textarea id="ds-edit-sample" class="ds-code" spellcheck="false"></textarea></label><label>Source HTML / Jinja<textarea id="ds-edit-source" class="ds-code ds-code-source" spellcheck="false"></textarea></label></section><div class="ds-version-row"><select id="ds-edit-version" aria-label="Versions"></select><button class="btn" id="ds-restore-version"><i data-lucide="history"></i> Restaurer</button></div></div><div class="ds-editor-preview"><div class="ds-preview-bar"><span>Aperçu réel</span><span id="ds-preview-state"></span></div><iframe id="ds-preview-frame" title="Aperçu du modèle"></iframe></div></div><div class="ds-editor-actions"><button class="btn" id="ds-clone"><i data-lucide="copy"></i> Dupliquer</button><button class="btn" id="ds-set-default"><i data-lucide="star"></i> Définir par défaut</button><span class="ds-spacer"></span><button class="btn primary" id="ds-save"><i data-lucide="save"></i> Enregistrer</button></div></aside>
+      <div id="ds-toast" class="ds-toast" role="status" aria-live="polite"></div>
+    </div>
+
     <div class="panel" id="panel-tasks">
       <div class="card">
         <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
@@ -1073,6 +1144,18 @@
             </div>
           </div>
           <div id="net-master-msg" style="display:none;font-size:11px;margin-top:8px"></div>
+          <!-- Autonomie (initiative) — par instance -->
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--border);flex-wrap:wrap">
+            <span style="font-size:11px;color:var(--muted)"><i data-lucide="brain" style="width:12px;height:12px;vertical-align:-2px"></i> Autonomie (initiative)</span>
+            <select id="net-autonomy-select" onchange="setAutonomyMode(this.value)" style="font-size:11px;padding:3px 6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text)">
+              <option value="off">Désactivée</option>
+              <option value="shadow">Observation (propose sans agir)</option>
+              <option value="live">Active (agit seule 24/7)</option>
+            </select>
+            <button class="btn" style="font-size:11px" onclick="testSuggestion()"><i data-lucide="flask-conical" style="width:12px;height:12px"></i> Tester</button>
+            <span id="net-autonomy-msg" style="font-size:10px;color:var(--muted)"></span>
+            <span id="net-suggestions-msg" style="font-size:10px;color:var(--muted);flex-basis:100%"></span>
+          </div>
           <!-- Bandeau kill-switch actif -->
           <div id="net-halt-banner" style="display:none;margin-top:10px;padding:8px 10px;border-radius:8px;background:rgba(239,68,68,.12);border:1px solid var(--danger);font-size:12px">
             <span style="color:var(--danger);font-weight:600"><i data-lucide="octagon-x" style="width:13px;height:13px;vertical-align:-2px"></i> Réseau coupé (urgence)</span>
@@ -1137,6 +1220,12 @@
         <div class="card" id="net-quarantine-card" style="margin-bottom:12px;display:none;border-color:var(--danger)">
           <div class="card-title" style="color:var(--danger)"><i data-lucide="shield-alert"></i> Pairs en quarantaine</div>
           <div class="card-content" id="net-quarantine-list"></div>
+        </div>
+
+        <!-- Suggestions de délégation (mode observation/shadow) — masquée quand vide -->
+        <div class="card" id="net-suggestions-card" style="margin-bottom:12px;display:none">
+          <div class="card-title"><i data-lucide="lightbulb"></i> Suggestions de délégation <span style="font-size:10px;color:var(--muted);font-weight:400">— ce que Lumena aurait délégué</span></div>
+          <div class="card-content" id="net-suggestions-list"></div>
         </div>
 
         </div><!-- /net-simple-cards -->
@@ -1588,12 +1677,13 @@
      ============================================================ -->
 <script src="/static/js/state.js?v=4"></script>
 <script src="/static/js/bindings.js?v=1"></script>
+<script src="/static/js/mission_tree.js?v=1"></script>
 <script>
 // Helpers pour les data-action convertis depuis onclick inline
 window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
-<script type="module" src="/static/js/main.js?v=7"></script>
+<script type="module" src="/static/js/main.js?v=29"></script>
 <script type="module">
 import { initSetupWizard } from '/static/js/setup.js?v=20';
 import { initContextMenu } from '/static/js/contextmenu.js?v=1';
@@ -1623,6 +1713,14 @@ document.addEventListener('DOMContentLoaded', () => { initSetupWizard(); initCon
       <button class="mpicker-tab active" data-panel="text" onclick="setModelPanel('text')">Texte</button>
       <button class="mpicker-tab" data-panel="vision" onclick="setModelPanel('vision')">Vision</button>
       <button class="mpicker-tab" data-panel="image" onclick="setModelPanel('image')">Image</button>
+      <div class="mpicker-source-switch" id="model-picker-source" role="group" aria-label="Source des modeles">
+        <button class="mpicker-source-btn active" data-source="api" onclick="setModelSource('api')">
+          <i data-lucide="key-round"></i><span>API</span><small id="model-source-api-count">0</small>
+        </button>
+        <button class="mpicker-source-btn" data-source="codex" onclick="setModelSource('codex')">
+          <i data-lucide="badge-check"></i><span>Codex</span><small id="model-source-codex-count">0</small>
+        </button>
+      </div>
     </div>
     <!-- Provider filter pills -->
     <div class="mpicker-filters" id="model-picker-filters"></div>

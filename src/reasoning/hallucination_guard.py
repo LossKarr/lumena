@@ -60,10 +60,12 @@ _HC_TOOLS_DOC = frozenset({
     "create_pdf", "create_docx", "create_pptx", "create_xlsx", "create_csv",
     "create_invoice_pdf", "create_batch_documents", "edit_docx", "edit_pptx",
     "edit_xlsx", "annotate_pdf", "add_watermark", "assemble_document", "convert_document",
+    "generate_studio_documents",
 })
 _HC_TOOLS_SITE = frozenset({
     "generate_website", "serve_website", "edit_website", "write_website_files",
     "create_project", "delegate_task", "delegate_task_bg",
+    "start_preview_server",  # LOT 2.0 — alias réel de serve_website
 })
 _HC_TOOLS_TASK = frozenset({
     "create_task", "schedule_task", "memory_save", "memory_store", "memory_add", "create_skill",
@@ -112,10 +114,20 @@ _HC_TOOLS_RUNTIME = frozenset({
 _HC_TOOLS_MCP = frozenset({
     "run_mcp_autonomy", "add_mcp", "resume_mcp_task", "request_mcp_ticket",
 })
+# Créer/déléguer une mission = une CRÉATION (« j'ai créé une mission ») — sinon
+# le claim de lancement de mission tombe en faux positif (create_mission est dans
+# ANY_ACTION mais pas dans ANY_CREATE). cancel n'est pas une création.
+_HC_TOOLS_MISSION = frozenset({
+    "create_mission", "delegate_and_wait",
+    # LOT 2.2 — pose le contrat + écrit les stubs (création de fichiers réels)
+    "write_mission_contract",
+    # A2 — publie le livrable (copie déterministe de fichiers réels)
+    "publish_mission_workspace",
+})
 _HC_TOOLS_ANY_CREATE = (
     _HC_TOOLS_FILE | _HC_TOOLS_DOC | _HC_TOOLS_SITE | _HC_TOOLS_TASK
     | _HC_TOOLS_GITHUB | _HC_TOOLS_STRIPE | _HC_TOOLS_IMAGE | _HC_TOOLS_NOTION
-    | _HC_TOOLS_DISCORD | _HC_TOOLS_MCP
+    | _HC_TOOLS_DISCORD | _HC_TOOLS_MCP | _HC_TOOLS_MISSION
 )
 _HC_TOOLS_ANY_SEND = _HC_TOOLS_MAIL | _HC_TOOLS_MESSAGING | _HC_TOOLS_DISCORD | _HC_TOOLS_SOCIAL | _HC_TOOLS_GITHUB
 
@@ -135,7 +147,7 @@ _HC_TOOLS_TYPE = frozenset({
 })
 _HC_TOOLS_OPEN_APP = frozenset({
     "open_app", "open_url", "open_application", "browser_start", "browser_navigate",
-    "run_command",
+    "run_command", "open_file", "open_document_delivery",
     # Spotify : "j'ai lancé Spotify" est prouvé par le lancement réel du média.
     "spotify_play", "spotify_api_play",
 })
@@ -252,6 +264,9 @@ _HC_TOOLS_CU_TASK = frozenset({
 
 # Lecture seule / hors-garde (228 outils) — ne prouvent rien, ne bloquent jamais.
 _HC_TOOLS_READONLY = frozenset({
+    "get_document_record", "inspect_document_source", "list_document_models",
+    "search_document_library", "search_documents_web",
+    "list_missions", "mission_status", "mission_result",  # Lot 3 — lectures de mission
     "analyze_document", "autonomy_activity_summary", "autonomy_next_best_action", "bg_list",
     "bg_status", "browser_check_challenge", "browser_cookies_get", "browser_deep_research",
     "browser_dialog_log", "browser_dom_state", "browser_find", "browser_frame_content",
@@ -293,7 +308,7 @@ _HC_TOOLS_READONLY = frozenset({
     "n8n_get_workflow", "n8n_list_executions", "n8n_list_node_types", "n8n_list_templates",
     "n8n_list_workflows", "n8n_status", "network_file_list", "network_info", "network_list",
     "network_port_scan", "network_scan", "notion_list_databases", "notion_query_database",
-    "notion_read_page", "notion_search", "open_file", "osint_scan", "pip_check", "plan_list",
+    "notion_read_page", "notion_search", "osint_scan", "pip_check", "plan_list",
     "port_scan", "process_list", "process_status", "query_peer_knowledge", "read_document",
     "read_file", "read_files_batch", "read_journal", "read_logs", "read_notebook",
     "read_own_code", "read_skill_reference", "reverse_dns", "sanitize_external_content",
@@ -308,12 +323,20 @@ _HC_TOOLS_READONLY = frozenset({
     "twitter_get_my_stats", "twitter_get_timeline", "twitter_get_user_info", "twitter_search",
     "twitter_status", "ui_list_controls", "view_file_outline", "view_outline", "wait",
     "wayback_check", "web_crawl", "web_crawl_campaign_explain", "web_crawl_campaign_status",
-    "web_fetch", "web_search", "web_search_brave", "whois_lookup", "xor_decode"
+    "web_fetch", "web_search", "web_search_brave", "whois_lookup", "xor_decode",
+    "get_document_history", "preview_document_edit",
 })
 
 # TOUTE action (341 outils natifs + MCP curatés) — preuve d'une action réelle
 # quelconque (sert aux claims VAGUES « c'est fait » et à l'exonération ledger).
 _HC_TOOLS_ANY_ACTION = frozenset({
+    "apply_document_edit", "convert_library_document", "download_document",
+    "export_library_document", "generate_studio_document", "generate_studio_documents", "import_document",
+    "revise_studio_document", "open_file", "open_document_delivery",
+    "create_mission", "cancel_mission",  # Lot 3 — actions de mission (création/annulation)
+    "delegate_and_wait",  # Lot 5.2 — délégation lead→workers (action : crée des sous-missions)
+    "write_mission_contract",  # LOT 2.2 — contrat + stubs (écrit des fichiers réels)
+    "publish_mission_workspace",  # A2 — publication déterministe du livrable (copie fichiers)
     "add_watermark", "annotate_pdf", "apply_patch", "apply_patches", "assemble_document",
     "batch_documents", "bg_cancel", "bg_start", "browser_accept_cookies", "browser_back",
     "browser_batch", "browser_block_resources", "browser_click", "browser_click_at",
@@ -324,7 +347,8 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "browser_handle_dialog", "browser_hover", "browser_keyboard_press", "browser_login",
     "browser_navigate", "browser_network_clear", "browser_new_tab", "browser_open_tab",
     "browser_refresh", "browser_save_login", "browser_save_pdf", "browser_scroll",
-    "browser_select", "browser_set_geolocation", "browser_solve_challenge", "browser_start",
+    "browser_select", "browser_select_index",  # Z19 : choisir agit, ce n'est pas une lecture
+    "browser_set_geolocation", "browser_solve_challenge", "browser_start",
     "browser_stop", "browser_storage_clear", "browser_storage_set", "browser_switch_tab",
     "browser_tab_switch", "browser_trace_start", "browser_trace_stop", "browser_type",
     "browser_type_index", "browser_unblock_resources", "browser_upload_file", "browser_verify",
@@ -385,7 +409,9 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "replace_background", "reverse_shell_listen", "rollback", "run_command",
     "run_peer_task_sync", "run_tests", "save_template", "schedule_task", "scroll",
     "send_critical_sms", "send_whatsapp_audio", "send_whatsapp_document",
-    "send_whatsapp_message", "send_whatsapp_photo", "serve_website", "set_screen",
+    "send_whatsapp_message", "send_whatsapp_photo", "serve_website",
+    "start_preview_server",  # LOT 2.0 — alias réel de serve_website
+    "set_screen",
     "sign_document", "sketch_to_image", "split_pdf", "spotify_api_play", "spotify_next",
     "spotify_pause", "spotify_play", "spotify_prev", "spotify_queue", "spotify_resume",
     "spotify_volume", "ssh_exec", "stop_website_server", "stripe_add_invoice_item",
@@ -459,7 +485,10 @@ _HALLUCINATION_CLAIM_PATTERNS = [
     (r"\bj[''`]ai (appris|découvert|exploré|explore|recherché|recherche|étudié|etudie)\b", frozenset({"web_search", "web_search_brave", "ddg_search", "web_fetch", "memory_search", "browser_navigate", "browser_get_content"})),
     (r"\b(push réussi|push reussi|premier push|repository créé|repo créé|poussé sur github|pushé sur github|commit réussi|commit reussi|fichier poussé)\b", _HC_TOOLS_GITHUB),
     (r"\b(mail|email|courriel).{0,20}(envoyé|envoye|envoi effectué)\b", _HC_TOOLS_MAIL),
-    (r"\b(image|logo|thumbnail|vignette|svg|vidéo|video).{0,30}(généré|genere|créé|crée|produit|rendu)\b", _HC_TOOLS_IMAGE),
+    (r"\b(image|thumbnail|vignette|svg|vidéo|video).{0,30}(généré|genere|créé|crée|produit|rendu)\b", _HC_TOOLS_IMAGE),
+    # Un logo peut être appliqué par Document Studio sans être généré ce tour.
+    # `rendu` était trop large et capturait « logo actif ... rendu vérifié ».
+    (r"\blogo.{0,20}(généré|genere|créé|crée|produit)\b", _HC_TOOLS_IMAGE),
     (r"\b(produit|abonnement|facture|paiement|remboursement).{0,20}(créé[e]?|crée[e]?|envoyé[e]?|annulé[e]?)\b", _HC_TOOLS_STRIPE),
     (r"\b(page|base de données|database).{0,20}(créée|ajoutée|mise à jour)\b", _HC_TOOLS_NOTION),
     # Computer Use / bureau / login (frappe, ouverture d'app, clic, connexion)
@@ -577,6 +606,13 @@ def hallucination_retry_query(
     runtime_proof = _has_runtime_server_claim_proof(combined_text, tools)
     # Rappel d'une mission déléguée à un pair (travail fait en async, pas localement)
     peer_recall = bool(_PEER_MISSION_RECALL_RE.search(combined_text))
+    # RAPPORT d'une mission LOCALE : Lumena lit l'état d'une mission de fond
+    # (mission_status/result/list) et dit « c'est fait/fini » → la preuve est l'état
+    # `done` LU, pas un outil d'action local. On relâche alors UNIQUEMENT les familles
+    # vagues (jumeau local de `peer_recall`). Les claims PRÉCIS restent stricts.
+    mission_report = any(
+        t in {"mission_status", "mission_result", "list_missions"} for t in tools
+    )
     for _pattern, _expected in _HALLUCINATION_CLAIM_PATTERNS:
         m = re.search(_pattern, combined_text, re.IGNORECASE)
         if not m:
@@ -588,6 +624,10 @@ def hallucination_retry_query(
         # Contexte « mission déléguée à un pair » → relâche les familles VAGUES
         # (le livrable a été produit par l'autre Lumena, pas par un outil local).
         if peer_recall and (_expected in _HC_GENERIC_FAMILIES or _expected is _HC_TOOLS_ANY_SEND):
+            continue
+        # Rapport d'une mission locale → un claim VAGUE est prouvé par la lecture
+        # de mission (mission_status/result/list) faite ce tour-ci.
+        if mission_report and _expected in _HC_GENERIC_FAMILIES:
             continue
         if browser_used and any(
             kw in _pattern for kw in (

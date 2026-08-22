@@ -13,6 +13,9 @@ import pytest
 
 from src.reasoning.react import (
     _obs_looks_tabular,
+    _obs_looks_like_test_result,
+    _should_repair_incomplete_final,
+    _synthesize_mission_response_from_evidence,
     _synthesize_response_from_observation,
 )
 
@@ -105,6 +108,114 @@ def test_synthesize_returns_none_for_non_tabular():
 def test_synthesize_returns_none_for_short_obs():
     out = _synthesize_response_from_observation("OK", "x", "y")
     assert out is None
+
+
+@pytest.mark.parametrize("summary", [
+    "============================== 3 passed in 0.08s ==============================",
+    "2 failed, 7 passed in 1.42s",
+    "1 error in 0.20s",
+])
+def test_test_execution_observation_is_usable_fallback(summary: str):
+    observation = f"pytest execution\n{summary}\nexit:0"
+    assert _obs_looks_like_test_result(observation, "run_command") is True
+    out = _synthesize_response_from_observation(
+        observation, "run_command", "lance les tests puis conclus",
+    )
+    assert out is not None
+    assert summary in out
+    assert "run_command" in out
+
+
+def test_test_result_text_without_execution_tool_is_not_proof():
+    observation = "Le modele affirme que 3 passed in 0.08s, sans execution reelle."
+    assert _obs_looks_like_test_result(observation, "read_file") is False
+    assert _synthesize_response_from_observation(
+        observation, "read_file", "verifie les tests",
+    ) is None
+
+
+def test_mission_fallback_combines_all_authoritative_proofs():
+    evidence = [
+        (
+            "publish_mission_workspace",
+            "📦 Livrable publié : 8 fichier(s) copiés vers `workspace/solarsip/` : "
+            "app.py, rapport_solarsip.pdf, tests/test_app.py.\n"
+            "➡️ Prochaine étape : lance pytest.",
+            True,
+        ),
+        (
+            "run_command",
+            "pytest execution\n================ 10 passed in 0.24s ================",
+            True,
+        ),
+        (
+            "generate_studio_document",
+            '{"filename":"rapport_solarsip.pdf","size":104963,"render_verified":true}',
+            True,
+        ),
+        (
+            "browser_verify_local_project",
+            "## Runtime web verify: OK\nProject: C:/workspace/solarsip\n"
+            "URL: http://localhost:8081\n- title: SolarSip",
+            True,
+        ),
+        ("delegate_and_wait", "Délégation : 1/1 terminée(s).", True),
+    ]
+
+    out = _synthesize_mission_response_from_evidence(evidence)
+
+    assert out is not None
+    assert "8 fichier(s)" in out
+    assert "10 passed in 0.24s" in out
+    assert "rapport_solarsip.pdf — rendu vérifié — 104963 octets" in out
+    assert "Runtime web verify: OK" in out
+    assert "Délégation : 1/1" in out
+
+
+def test_mission_fallback_never_claims_failed_browser_proof():
+    out = _synthesize_mission_response_from_evidence([
+        (
+            "publish_mission_workspace",
+            "📦 Livrable publié : app.py.",
+            True,
+        ),
+        (
+            "browser_verify_local_project",
+            "## Runtime web verify: FAILED\nURL: http://localhost:8081",
+            False,
+        ),
+    ])
+
+    assert out is not None
+    assert "Livraison" in out
+    assert "Navigateur" not in out
+    assert "Runtime web verify" not in out
+
+
+def test_mission_fallback_requires_authoritative_success():
+    assert _synthesize_mission_response_from_evidence([
+        ("browser_navigate", "Navigué vers http://localhost:8081", True),
+        ("run_command", "Je vais lancer les tests.", True),
+        ("generate_studio_document", "Erreur de rendu", False),
+    ]) is None
+
+
+def test_exactly_grounded_document_final_skips_generic_length_repair():
+    assert _should_repair_incomplete_final(
+        stagnation_streak=0,
+        plan_business_complete=False,
+        document_free_grounded=True,
+        looks_incomplete=True,
+    ) is False
+
+
+def test_unproved_incomplete_final_keeps_historical_repair():
+    assert _should_repair_incomplete_final(
+        stagnation_streak=0,
+        plan_business_complete=False,
+        document_free_grounded=False,
+        looks_incomplete=True,
+    ) is True
 
 
 # ─── Scénario exact des logs prod ───────────────────────────────────────

@@ -61,6 +61,17 @@ def is_peer_master_enabled() -> bool:
     return os.getenv("LUMENA_PEER_ENABLED", "0").strip().lower() in _TRUTHY
 
 
+def peer_autonomy_mode() -> str:
+    """Mode d'initiative P2P (`LUMENA_PEER_AUTONOMY`, défaut `off`).
+
+    `off` → Lumena ne prend aucune initiative (délègue seulement si on lui demande).
+    `shadow` → elle DÉCIDE et LOGGE ce qu'elle aurait délégué, mais N'AGIT PAS.
+    `live` → (C3-live) elle agit, gardée par le filet. Réglage **par instance**.
+    """
+    v = os.getenv("LUMENA_PEER_AUTONOMY", "off").strip().lower()
+    return v if v in {"off", "shadow", "live"} else "off"
+
+
 def is_peer_halt_enabled() -> bool:
     """Kill-switch « panic » SOFT (`LUMENA_PEER_HALT`, défaut 0). Lu en live.
 
@@ -78,10 +89,6 @@ def is_peer_halt_enabled() -> bool:
 def is_peer_network_autonomy_enabled() -> bool:
     # NOTE : volontairement PAS gardé par le halt — la boucle poll/health doit
     # continuer à récupérer les résultats des missions en cours (drain gracieux).
-    return (
-        is_peer_master_enabled()
-        or os.getenv("LUMENA_PEER_NETWORK_AUTONOMY", "0").strip().lower() in _TRUTHY
-    )
     return (
         is_peer_master_enabled()
         or os.getenv("LUMENA_PEER_NETWORK_AUTONOMY", "0").strip().lower() in _TRUTHY
@@ -411,6 +418,151 @@ async def _auto_pair_fleet_peers() -> int:
     return paired
 
 
+def _fetch_candidate_goals(limit: int = 10) -> List[dict]:
+    """Travail candidat à déléguer = objectifs actifs de Lumena (best-effort)."""
+    try:
+        from src.autonomy.goals import GoalManager
+        gm = GoalManager()
+        out = []
+        for g in (gm.get_active_goals() or [])[:limit]:
+            obj = getattr(g, "description", "") or getattr(g, "title", "")
+            if obj:
+                out.append({"objective": obj})
+        return out
+    except Exception:
+        return []
+
+
+def _log_shadow_proposal(prop: dict) -> None:
+    """Trace une décision shadow (ledger + SSE + journal d'observation), sans jamais agir."""
+    try:
+        from src.runtime.peer_suggestions import record as _record_suggestion
+        _record_suggestion(prop)  # persiste pour l'UI (visible même hors live SSE)
+    except Exception:
+        pass
+    try:
+        from src.autonomy.activity_ledger import append_autonomy_event
+        append_autonomy_event(
+            "peer_delegation_proposed",
+            action_type="peer_delegate",
+            description=prop.get("objective", ""),
+            reason=prop.get("reason", ""),
+            decision="shadow",
+            metadata={"peer_id": prop.get("peer_id", ""), "peer_name": prop.get("peer_name", ""),
+                      "score": prop.get("score", 0)},
+        )
+    except Exception:
+        pass
+    try:
+        from src.runtime.peer_event_bus import publish_peer_event
+        publish_peer_event("suggestion", objective=prop.get("objective", ""),
+                           peer_id=prop.get("peer_id", ""), peer_name=prop.get("peer_name", ""),
+                           reason=prop.get("reason", ""))
+    except Exception:
+        pass
+
+
+def run_peer_cooperation_shadow_tick(candidate_tasks: Optional[List[Any]] = None) -> Dict[str, Any]:
+    """C3 — Tick d'initiative. En `shadow` : propose + logge, **n'exécute pas**.
+
+    `off` → no-op. `live` → l'exécution est ajoutée en C3-live (ici on logge encore).
+    """
+    mode = peer_autonomy_mode()
+    if mode == "off":
+        return {"mode": "off", "proposals": 0}
+    try:
+        from src.runtime.peer_awareness import build_capability_map
+        from src.runtime.peer_cooperation_engine import propose_delegations
+        cmap = build_capability_map()
+        # Court-circuit : aucun pair délégable → rien à proposer. On n'évalue même pas
+        # les candidats (évite de recharger les goals à chaque cycle pour rien).
+        if not cmap.get("delegable_count"):
+            return {"mode": mode, "proposals": 0}
+        if candidate_tasks is None:
+            candidate_tasks = _fetch_candidate_goals()
+        proposals = propose_delegations(candidate_tasks, cmap)
+    except Exception:
+        proposals = []
+    for prop in proposals:
+        _log_shadow_proposal(prop)  # SHADOW : log + SSE uniquement (zéro action)
+    return {"mode": mode, "proposals": len(proposals), "items": proposals}
+
+
+async def _execute_live_delegation(prop: dict) -> bool:
+    """C3-live — exécute UNE délégation via le handler (qui porte tout le filet).
+
+    Trace le verdict (ledger + SSE). Jamais fatal. Retourne True si soumise.
+    """
+    peer_id = prop.get("peer_id", "")
+    objective = prop.get("objective", "")
+    ok = False
+    try:
+        from src.reasoning.handlers.peer_tasks import submit_peer_task_handler
+        # ctx=None : le handler lit le canal d'origine via getattr (défaut « web »).
+        res = await submit_peer_task_handler(None, peer_id, objective)
+        ok = bool(getattr(res, "success", False))
+    except Exception:
+        ok = False
+    try:
+        from src.autonomy.activity_ledger import append_autonomy_event
+        append_autonomy_event(
+            "peer_delegation_executed" if ok else "peer_delegation_failed",
+            action_type="peer_delegate",
+            description=objective,
+            reason=prop.get("reason", ""),
+            decision="executed" if ok else "failed",
+            metadata={"peer_id": peer_id, "peer_name": prop.get("peer_name", ""),
+                      "score": prop.get("score", 0)},
+        )
+    except Exception:
+        pass
+    try:
+        from src.runtime.peer_event_bus import publish_peer_event
+        publish_peer_event("delegation", objective=objective, peer_id=peer_id,
+                           peer_name=prop.get("peer_name", ""), ok=ok, reason=prop.get("reason", ""))
+    except Exception:
+        pass
+    return ok
+
+
+async def run_peer_cooperation_live_tick() -> Dict[str, Any]:
+    """C3-live — Tick d'initiative RÉELLE : délègue seule, sous gate.
+
+    Gardes (gate le FUTUR, jamais le présent) : halt → présence → dedup → budget.
+    L'envoi lui-même réutilise `submit_peer_task_handler` (trust, scope, quarantaine,
+    anti-SSRF, secret-scan). Aucune mission EN COURS n'est jamais touchée.
+    """
+    if peer_autonomy_mode() != "live":
+        return {"mode": peer_autonomy_mode(), "executed": 0}
+    try:
+        from src.runtime.peer_awareness import build_capability_map
+        from src.runtime.peer_cooperation_engine import propose_delegations
+        cmap = build_capability_map()
+        if not cmap.get("delegable_count"):
+            return {"mode": "live", "executed": 0}
+        proposals = propose_delegations(_fetch_candidate_goals(), cmap)
+    except Exception:
+        return {"mode": "live", "executed": 0}
+    if not proposals:
+        return {"mode": "live", "executed": 0}
+    try:
+        from src.runtime.peer_mission_tracker import list_pending
+        in_flight = [m.get("objective", "") for m in list_pending()]
+    except Exception:
+        in_flight = []
+    from src.runtime.peer_live_gate import block_reason, record_delegation
+    executed = 0
+    for prop in proposals:
+        objective = prop.get("objective", "")
+        if block_reason(objective, in_flight_objectives=in_flight):
+            continue  # bloqué (halt/présence/dedup/budget) → on saute, jamais d'interruption
+        if await _execute_live_delegation(prop):
+            record_delegation(objective)
+            in_flight.append(objective)  # anti double-soumission dans le même tick
+            executed += 1
+    return {"mode": "live", "executed": executed, "proposals": len(proposals)}
+
+
 async def run_peer_network_autonomy_once(*, scan: bool = True, health: bool = True) -> Dict[str, Any]:
     """Run one bounded maintenance pass and return a compact summary."""
     timeout = _clamp_float(os.getenv("LUMENA_PEER_AUTONOMY_TIMEOUT", "1.5"), 1.5, 0.2, 5.0)
@@ -433,6 +585,16 @@ async def run_peer_network_autonomy_once(*, scan: bool = True, health: bool = Tr
         try:
             from src.runtime.peer_mission_tracker import poll_outbound_missions
             await poll_outbound_missions(timeout=timeout)
+        except Exception:
+            pass
+        # C3 — tick d'initiative. shadow : décide + logge (n'agit pas) ; live : délègue
+        # seule sous gate (budget/dedup/halt/présence). Jamais fatal.
+        try:
+            _mode = peer_autonomy_mode()
+            if _mode == "shadow":
+                run_peer_cooperation_shadow_tick()
+            elif _mode == "live":
+                await run_peer_cooperation_live_tick()
         except Exception:
             pass
         summary = _build_summary(discovered_count=len(discovered))

@@ -15,6 +15,16 @@ TaskState = Literal["queued", "running", "waiting_io", "checkpointed", "done", "
 _VALID_TASK_STATES = {"queued", "running", "waiting_io", "checkpointed", "done", "failed", "cancelled"}
 
 
+def _result_summary_cap() -> int:
+    """Cap SOURCE UNIQUE de la longueur de result_summary conservée (missions + tâches).
+    1000 tronquait les livrables des workers → le lead de delegate_and_wait devait
+    re-fouiller le disque. Configurable via LUMENA_TASK_RESULT_MAX_CHARS (défaut 8000)."""
+    try:
+        return max(1000, int(os.getenv("LUMENA_TASK_RESULT_MAX_CHARS", "8000") or 8000))
+    except (ValueError, TypeError):
+        return 8000
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -134,7 +144,7 @@ class TaskOrchestrator:
                 else {}
             ),
             result_summary=(
-                str(payload.get("result_summary"))[:1000]
+                str(payload.get("result_summary"))[:_result_summary_cap()]
                 if payload.get("result_summary") is not None
                 else None
             ),
@@ -312,7 +322,28 @@ class TaskOrchestrator:
             if error is not None:
                 record.last_error = str(error)[:800]
             if result_summary is not None:
-                record.result_summary = str(result_summary)[:1000]
+                record.result_summary = str(result_summary)[:_result_summary_cap()]
+            if state in {"done", "failed", "cancelled"} and (
+                record.metadata or {}
+            ).get("kind") == "mission":
+                terminal_defaults = {
+                    "done": (
+                        "completed",
+                        "mission terminee par l'orchestrateur",
+                    ),
+                    "failed": (
+                        "failed",
+                        str(error or record.last_error or "echec de mission")[:800],
+                    ),
+                    "cancelled": (
+                        "cancelled",
+                        "annulation demandee par l'orchestrateur",
+                    ),
+                }
+                code, detail = terminal_defaults[state]
+                record.metadata.setdefault("terminal_reason_code", code)
+                record.metadata.setdefault("terminal_reason_detail", detail)
+                record.metadata.setdefault("terminal_at", _now_iso())
             self._persist_locked()
             return record
 
@@ -336,17 +367,69 @@ class TaskOrchestrator:
     def mark_failed(self, task_id: str, error: str) -> Optional[TaskRecord]:
         return self.update_state(task_id, "failed", error=error)
 
-    def cancel_task(self, task_id: str) -> Dict[str, Any]:
+    def set_task_metadata(self, task_id: str, **kv: Any) -> Optional[TaskRecord]:
+        """Met à jour des entrées de `metadata` (additif, ne touche pas l'état)."""
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if not record:
+                return None
+            record.metadata.update(kv)
+            record.updated_at = _now_iso()
+            self._persist_locked()
+            return record
+
+    def cancel_task(self, task_id: str, *, propagate: bool = True) -> Dict[str, Any]:
+        """Annule une tâche (coopératif : `cancel_requested` + `state=cancelled`).
+
+        Lot 5.3 — propagation : par défaut, annule AUSSI tous les descendants en vol
+        (workers/sous-missions liés par `metadata.parent_id`, transitivement). Sans ça,
+        annuler un lead laissait ses workers tourner orphelins. Additif et borné :
+          - ne touche JAMAIS une tâche terminale (done/failed/cancelled) ;
+          - scopé par `parent_id` → aucune incidence sur les tâches sans enfants (dev) ;
+          - `propagate=False` = échappatoire (annule uniquement la tâche ciblée).
+        """
         with self._lock:
             record = self._tasks.get(task_id)
             if not record:
                 return {"success": False, "message": "task_not_found", "task_id": task_id}
-            record.cancel_requested = True
-            if record.state not in {"done", "failed", "cancelled"}:
-                record.state = "cancelled"
-            record.updated_at = _now_iso()
+            # Cible + descendants transitifs (BFS sur parent_id), dans le lock.
+            targets: List[str] = [task_id]
+            if propagate:
+                frontier = [task_id]
+                seen = {task_id}
+                while frontier:
+                    pid = frontier.pop()
+                    for r in self._tasks.values():
+                        if (r.metadata or {}).get("parent_id") == pid and r.task_id not in seen:
+                            seen.add(r.task_id)
+                            targets.append(r.task_id)
+                            frontier.append(r.task_id)
+            cancelled: List[str] = []
+            for tid in targets:
+                rec = self._tasks.get(tid)
+                if rec is None:
+                    continue
+                rec.cancel_requested = True
+                if rec.state not in {"done", "failed", "cancelled"}:
+                    rec.state = "cancelled"
+                    if (rec.metadata or {}).get("kind") == "mission":
+                        rec.metadata.setdefault(
+                            "terminal_reason_code",
+                            "cancelled" if tid == task_id else "parent_cancelled",
+                        )
+                        rec.metadata.setdefault(
+                            "terminal_reason_detail",
+                            (
+                                "annulation demandee par l'orchestrateur"
+                                if tid == task_id
+                                else f"annulation propagee depuis la mission parente {task_id}"
+                            ),
+                        )
+                        rec.metadata.setdefault("terminal_at", _now_iso())
+                rec.updated_at = _now_iso()
+                cancelled.append(tid)
             self._persist_locked()
-            return {"success": True, "task": record.to_dict()}
+            return {"success": True, "task": record.to_dict(), "cancelled": cancelled}
 
     def resume_task(self, task_id: str) -> Dict[str, Any]:
         with self._lock:
@@ -390,6 +473,23 @@ class TaskOrchestrator:
                 if record:
                     out.append(record.to_dict())
             return out
+
+    def get_children(self, parent_id: str) -> List[Dict[str, Any]]:
+        """Sous-tâches dont `metadata.parent_id == parent_id` (lecture seule, additif).
+
+        Sert à la collaboration (Lot 5) : un lead retrouve ses workers pour les suivre
+        et fusionner leurs résultats. Triées par `created_at` ASC (ordre de création).
+        """
+        if not parent_id:
+            return []
+        with self._lock:
+            out: List[Dict[str, Any]] = [
+                r.to_dict()
+                for r in self._tasks.values()
+                if (r.metadata or {}).get("parent_id") == parent_id
+            ]
+        out.sort(key=lambda d: d.get("created_at") or "")
+        return out
 
     @staticmethod
     def enrich_checkpoint(

@@ -705,6 +705,11 @@ class LumenaDaemon:
         self.last_user_activity = datetime.now()
         self.curiosity.user_interacted()
         self.user_present = True
+        try:  # présence partagée (lue par l'autonomie P2P, autre boucle)
+            from src.autonomy.presence import mark_user_activity
+            mark_user_activity()
+        except Exception:
+            pass
         task = self._active_action_task
         if task and not task.done():
             task.cancel()

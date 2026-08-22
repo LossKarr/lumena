@@ -55,10 +55,20 @@ class ContextService(BaseService):
         query: str,
         max_results: int = 3,
         max_chars: int = 12000,
+        document_route=None,
     ) -> str:
         """Build context for auto-activated skills and store runtime list."""
         self._last_active_skills = []
         if not self.skills_auto_activation:
+            return ""
+        if bool(
+            getattr(document_route, "requires_studio", False)
+            and getattr(document_route, "owns_run", True)
+        ):
+            logger.debug(
+                "Skills génériques ignorés : rail Document Studio actif (kind={})",
+                getattr(document_route, "kind", "") or "unknown",
+            )
             return ""
         try:
             from src.skills import (

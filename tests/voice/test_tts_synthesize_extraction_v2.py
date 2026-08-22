@@ -80,3 +80,25 @@ async def test_synthesize_local_only_forbids_edge(tmp_path, monkeypatch):
     # cloud autorisé (local_only=False) : Edge est bien tenté
     await t._synthesize("Bonjour", local_only=False)
     comm.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_piper_cache_and_generation_are_scoped_to_requested_model(tmp_path):
+    seen = []
+
+    class _Piper:
+        model_name = "fr_FR-siwis-low"
+        def is_available(self, model_name=None):
+            return True
+        async def generate(self, text, path, *, model_name=None):
+            seen.append(model_name)
+            Path(path).write_bytes(b"FAKEWAV")
+            return True
+
+    t = _make_tts(tmp_path, mode="offline", xtts_ok=False)
+    t.piper = _Piper()
+    path = await t._synthesize("Déjà prête", piper_model="fr_FR-siwis-medium")
+    assert path is not None
+    assert "fr_FR-siwis-medium" in Path(path).name
+    assert "utf8_v2" in Path(path).name
+    assert seen == ["fr_FR-siwis-medium"]

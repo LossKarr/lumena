@@ -31,9 +31,23 @@ Pourquoi ? Un install via shell :
 
 ## ⚡ La règle d'or : 3 cas, 3 outils
 
-### CAS 1 — L'utilisateur veut **installer / activer / utiliser** un MCP
+### CAS 0 (PRIORITAIRE) — Un outil MCP correspondant est **DÉJÀ dans ta liste d'outils**
 
-> *« installe Slack »* · *« active Linear »* · *« j'ai besoin de Notion »* · *« utilise un MCP pour X »*
+> *« utilise le MCP météo **actif** »* · *« récupère X via le MCP déjà installé »*
+
+**AVANT toute chose**, regarde tes outils : si un `mcp__<serveur>__<outil>` couvrant le besoin
+**existe déjà** (ex: `mcp__…__weather_forecast`, `mcp__slack__list_channels`), **APPELLE-LE
+DIRECTEMENT** (via `parallel_tools` pour plusieurs appels). 
+**N'utilise NI `request_mcp_capability` NI `run_mcp_autonomy`** — ils servent UNIQUEMENT à
+installer/activer une capacité **ABSENTE** (non installée, non active, ou bloquée). Créer un
+ticket alors que l'outil est déjà actif = **friction inutile** pour l'utilisateur.
+
+> ❌ Utilisateur : « utilise le MCP météo actif » → Lumena crée un ticket MCP. **NON.**
+> ✅ Utilisateur : « utilise le MCP météo actif » → Lumena appelle `mcp__…__weather_forecast` directement.
+
+### CAS 1 — L'utilisateur veut **installer / activer** un MCP **ABSENT** (capacité manquante)
+
+> *« installe Slack »* · *« active Linear »* · *« j'ai besoin de Notion »* · *« utilise un MCP pour X »* **alors qu'aucun `mcp__…` correspondant n'existe encore**
 
 → **`run_mcp_autonomy(intent="…", live=true, confirmation_phrase="I-CONFIRM-MCP-AUTONOMY")`**
 

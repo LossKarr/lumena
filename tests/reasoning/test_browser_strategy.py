@@ -995,7 +995,7 @@ class TestBrowserHandlerSmoke:
         """Pas de régression sur le nombre de handlers déclarés."""
         from src.reasoning.handlers.browser import get_browser_handler_defs
         defs = get_browser_handler_defs()
-        assert len(defs) == 75
+        assert len(defs) == 76  # +1 : browser_select_index (LOT Z19)
 
     def test_detect_impasse_importable(self):
         from src.reasoning.react import _detect_browser_impasse

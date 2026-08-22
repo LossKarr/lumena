@@ -125,10 +125,28 @@ _DEPLOY_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+_DEPLOY_NEGATION_RE = re.compile(
+    r"(?:"
+    r"\b(?:ne|n['’])\s*(?:le|la|les|l['’])?\s*"
+    r"(?:publ\w*|d[eé]ploi\w*|deploy\w*|upload\w*|"
+    r"met\w*\s+en\s+ligne|envoi\w*\s+(?:le\s+)?site)\s+"
+    r"(?:surtout\s+)?(?:pas|jamais|plus)\b"
+    r"|\bsans\s+(?:publ\w*|d[eé]ploi\w*|deploy\w*|upload\w*|"
+    r"mettre\s+en\s+ligne)\b"
+    r"|\b(?:do\s+not|don't)\s+(?:publish|deploy|upload)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _has_db_intent(query: str) -> bool:
     """True si la requête vise la BDD/lecture (pas un déploiement de site)."""
     return bool(_DB_INTENT_RE.search(query))
+
+
+def _deploy_is_negated(query: str) -> bool:
+    """True when a deployment verb is explicitly forbidden by the user."""
+    return bool(_DEPLOY_NEGATION_RE.search(str(query or "")))
 
 
 # Détecte si les mots-clés deploy apparaissent uniquement dans un contexte
@@ -174,6 +192,8 @@ def _match_edit_and_deploy(query: str) -> bool:
     # Intent BDD/lecture → ce n'est pas un déploiement.
     if _has_db_intent(q):
         return False
+    if _deploy_is_negated(query):
+        return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"
         r"corrig\w*|r[eé]par\w*|refond\w*|redesign\w*|update\w*|edit\w*|improv\w*|upgrad\w*)\b",
@@ -214,6 +234,8 @@ def _match_edit_website_only(query: str) -> bool:
         r"ionos|openlumena|h[eé]berg\w*|sftp)\b",
         q,
     ))
+    if has_deploy and _deploy_is_negated(query):
+        has_deploy = False
     has_skill_kw = bool(_SKILL_EXCLUSION_RE.search(q))
     return has_edit and has_site and not has_deploy and not has_skill_kw
 
@@ -231,6 +253,8 @@ def _match_deploy_only(query: str) -> bool:
         return False
     # Intent BDD/lecture → ce n'est pas un déploiement.
     if _has_db_intent(q):
+        return False
+    if _deploy_is_negated(query):
         return False
     has_edit = bool(re.search(
         r"\b(am[eé]lior\w*|modifi\w*|compl[eè]t\w*|met[sz]?\s+[àa]\s+jour|chang\w*|refai[st]\w*|"

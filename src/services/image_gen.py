@@ -10,7 +10,7 @@ Providers supportés :
   - Recraft (recraft-v4, recraft-v4-svg)
   - Replicate (seedream, wan, qwen, hunyuan, etc.)
   - HuggingFace Inference (sdxl, flux-schnell — gratuit, lent)
-  - xAI (grok-imagine-image)
+  - xAI (grok-imagine-image-2.0)
   - MiniMax (image-01)
 """
 from __future__ import annotations
@@ -124,6 +124,7 @@ class ImageGenError(Exception):
 
 _MODEL_PROVIDER: Dict[str, str] = {
     # Google Gemini
+    "gemini-3.1-flash-lite-image": "gemini",
     "gemini-3.1-flash-image": "gemini",
     "gemini-3-pro-image": "gemini",
     "gemini-2.5-flash-image": "gemini",
@@ -166,6 +167,7 @@ _MODEL_PROVIDER: Dict[str, str] = {
     "recraft-v4": "recraft",
     "recraft-v4-svg": "recraft",
     # xAI
+    "grok-imagine-image-2.0":     "xai",
     "grok-imagine-image":         "xai",
     "grok-imagine-image-quality": "xai",
     "grok-imagine-image-pro":     "xai",
@@ -202,6 +204,15 @@ class ModelInfo:
 
 _MODEL_CATALOG: Dict[str, ModelInfo] = {
     # ── Google Gemini (gratuit, multimodal) ──
+    "gemini-3.1-flash-lite-image": ModelInfo(
+        name="Gemini 3.1 Flash-Lite Image", provider="gemini", quality=7, speed=10,
+        cost_per_image=0.0, free=True, max_resolution="1024x1024",
+        styles=["photoréaliste", "illustration", "conceptuel"],
+        strengths="Très rapide, économique, génération et retouche avec jusqu'à 14 références",
+        weaknesses="Résolution 1K uniquement, sans grounding Google Search",
+        capabilities=["text-to-image", "image-edit"],
+        best_for="Retouches interactives et génération à haut volume",
+    ),
     "gemini-3.1-flash-image": ModelInfo(
         name="Gemini 3.1 Flash Image", provider="gemini", quality=7, speed=9,
         cost_per_image=0.0, free=True, max_resolution="2048x2048",
@@ -516,6 +527,15 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
         best_for="Logos SVG, icônes vectorielles, assets scalables",
     ),
     # ── xAI ──
+    "grok-imagine-image-2.0": ModelInfo(
+        name="Grok Imagine Image 2.0", provider="xai", quality=8, speed=8,
+        cost_per_image=0.02, free=False, max_resolution="2048x2048",
+        styles=["photoréaliste", "créatif", "illustration", "artistique"],
+        strengths="Modèle xAI canonique rapide pour génération et retouche par instruction",
+        weaknesses="URLs de résultat temporaires, pas de contrôle seed exposé",
+        capabilities=["text-to-image", "image-edit"],
+        best_for="Création et retouche itérative de visuels xAI",
+    ),
     "grok-imagine-image": ModelInfo(
         name="Grok Imagine", provider="xai", quality=7, speed=7,
         cost_per_image=0.02, free=False, max_resolution="2048x2048",
@@ -533,15 +553,6 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
         weaknesses="Plus lent que la version standard",
         capabilities=["text-to-image"],
         best_for="Images haute qualité, illustrations détaillées",
-    ),
-    "grok-imagine-image-pro": ModelInfo(
-        name="Grok Imagine Pro", provider="xai", quality=9, speed=4,
-        cost_per_image=0.07, free=False, max_resolution="2048x2048",
-        styles=["photoréaliste", "professionnel", "artistique"],
-        strengths="Meilleure qualité xAI, résultats pro",
-        weaknesses="Lent, rate limit faible (30 RPM)",
-        capabilities=["text-to-image"],
-        best_for="Images professionnelles, qualité maximale xAI",
     ),
     # ── Replicate ──
     "seedream-5-lite": ModelInfo(
@@ -638,6 +649,9 @@ _PROVIDER_FALLBACK_ORDER: List[str] = [
     "gemini-3-pro-image",
     "gemini-2.5-flash-image",
     "huggingface-sdxl",
+    # New models are appended after the historical free cascade so selecting
+    # ``auto`` keeps the exact same first choices as before this integration.
+    "gemini-3.1-flash-lite-image",
     # Paid, strictly ascending by current per-image list price.
     "flux-schnell",
     "cogview-4",
@@ -649,6 +663,7 @@ _PROVIDER_FALLBACK_ORDER: List[str] = [
     "sd3.5-flash",
     "minimax-image-01",
     "imagen-4-fast",
+    "grok-imagine-image-2.0",
     "grok-imagine-image",
     "ideogram-v4-turbo",
     "stable-image-core",
@@ -671,7 +686,6 @@ _PROVIDER_FALLBACK_ORDER: List[str] = [
     "flux-1.1-pro-ultra",
     "imagen-4-ultra",
     "sd3.5-large",
-    "grok-imagine-image-pro",
     "gpt-image-1.5",
     "ideogram-v4-quality",
     "ideogram-v3-quality",
@@ -1075,6 +1089,48 @@ class ImageGenService:
             raise ImageGenError(f"Image introuvable: {image_path}")
         image_bytes = p.read_bytes()
 
+        # Une sélection explicite doit être respectée. Le chemin auto conserve
+        # l'ordre historique Stability -> Gemini.
+        if model in {
+            "gemini-3.1-flash-lite-image",
+            "gemini-3.1-flash-image",
+            "gemini-3-pro-image",
+            "gemini-2.5-flash-image",
+        }:
+            if not self._has_api_key("gemini"):
+                raise ImageGenError("GOOGLE_API_KEY requis pour le modèle d'édition demandé")
+            combined = f"Edit this image: {prompt}"
+            t0 = time.monotonic()
+            data, fmt, w, h, cost, seed = await self._generate_gemini(
+                combined, model=model, size="1024x1024",
+                quality="hd", style="", reference_image=image_bytes,
+            )
+            return ImageResult(
+                data=data, format=fmt, width=w, height=h,
+                provider="gemini", model=model, cost_estimate=cost,
+                generation_time_ms=int((time.monotonic() - t0) * 1000),
+                prompt_used=combined, seed=seed,
+            )
+
+        if model == "grok-imagine-image-2.0":
+            if not self._has_api_key("xai"):
+                raise ImageGenError("XAI_API_KEY requis pour le modèle d'édition demandé")
+            suffix = p.suffix.lower()
+            mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else "image/webp" if suffix == ".webp" else "image/png"
+            t0 = time.monotonic()
+            data, fmt, w, h, cost, seed = await self._edit_xai(
+                image_bytes,
+                prompt,
+                model=model,
+                mime_type=mime,
+            )
+            return ImageResult(
+                data=data, format=fmt, width=w, height=h,
+                provider="xai", model=model, cost_estimate=cost,
+                generation_time_ms=int((time.monotonic() - t0) * 1000),
+                prompt_used=prompt, seed=seed,
+            )
+
         # Prefer Stability for edit operations
         if self._has_api_key("stability"):
             return await self._edit_stability(image_bytes, prompt, mode=mode, mask_prompt=mask_prompt)
@@ -1321,6 +1377,7 @@ class ImageGenService:
         key = self._get_api_key("gemini")
         # Map short names to API model IDs
         model_id_map = {
+            "gemini-3.1-flash-lite-image": "gemini-3.1-flash-lite-image",
             "gemini-3.1-flash-image": "gemini-3.1-flash-image",
             "gemini-3-pro-image": "gemini-3-pro-image",
             "gemini-2.5-flash-image": "gemini-2.5-flash-image",
@@ -1705,7 +1762,44 @@ class ImageGenService:
         else:
             raise ImageGenError("xAI: ni b64 ni url")
         w, h = _parse_size(size)
-        return img_bytes, "png", w, h, 0.05, None
+        cost = 0.02 if model == "grok-imagine-image-2.0" else 0.05
+        return img_bytes, "png", w, h, cost, None
+
+    async def _edit_xai(
+        self,
+        image_bytes: bytes,
+        prompt: str,
+        *,
+        model: str,
+        mime_type: str = "image/png",
+    ) -> tuple[bytes, str, int, int, float, Optional[int]]:
+        """xAI Imagine JSON image-edit API."""
+        key = self._get_api_key("xai")
+        data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
+        client = await self._get_client()
+        resp = await client.post(
+            "https://api.x.ai/v1/images/edits",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "prompt": prompt,
+                "image": {"url": data_url, "type": "image_url"},
+            },
+        )
+        resp.raise_for_status()
+        items = resp.json().get("data", [])
+        if not items:
+            raise ImageGenError("xAI n'a pas retourné d'image éditée")
+        item = items[0]
+        if item.get("b64_json"):
+            result = base64.b64decode(item["b64_json"])
+        elif item.get("url"):
+            image_resp = await client.get(item["url"])
+            image_resp.raise_for_status()
+            result = image_resp.content
+        else:
+            raise ImageGenError("xAI edit: ni b64 ni url")
+        return result, "png", 1024, 1024, 0.02, None
 
     async def _generate_minimax(
         self, prompt: str, *, model: str, size: str, quality: str, style: str,
@@ -1903,6 +1997,7 @@ class ImageGenService:
         # Appel Gemini multimodal
         key = self._get_api_key("gemini")
         model_map = {
+            "gemini-3.1-flash-lite-image": "gemini-3.1-flash-lite-image",
             "gemini-3.1-flash-image": "gemini-3.1-flash-image",
             "gemini-3-pro-image": "gemini-3-pro-image",
             "gemini-2.5-flash-image": "gemini-2.5-flash-image",

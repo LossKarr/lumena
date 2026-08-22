@@ -259,6 +259,45 @@ class TestVagueClaimsProvenByAnyAction:
         # « j'ai envoyé le mail » exige toujours un outil MAIL, pas n'importe quelle action
         assert self._q("j'ai envoyé le mail", {"spotify_play"}) is not None
 
+    # ── Rapport d'une mission LOCALE (faux positif corrigé) ──────────────────────
+    def test_rapport_mission_avec_mission_result_passe(self):
+        # Lumena lit mission_result (état done) → « c'est fini » est prouvé par cette lecture
+        assert self._q("Oui c'est fini ! La mission est terminée", {"mission_result"}) is None
+
+    def test_rapport_mission_avec_mission_status_passe(self):
+        assert self._q("c'est fait, la mission a terminé", {"mission_status"}) is None
+
+    def test_cest_fait_lecture_non_mission_reste_bloque(self):
+        # garde-fou : une lecture NON-mission (read_file) ne relâche PAS le claim vague
+        assert self._q("c'est fait", {"read_file"}) is not None
+
+    def test_claim_precis_avec_mission_result_reste_strict(self):
+        # la relaxation ne touche QUE les familles vagues : un claim précis reste strict
+        assert self._q("j'ai envoyé le mail", {"mission_result"}) is not None
+
+    # ── Lancement de mission : « j'ai créé une mission » prouvé par create_mission ──
+    def test_claim_creation_mission_avec_create_mission_passe(self):
+        assert self._q("j'ai créé une mission en arrière-plan", {"create_mission"}) is None
+
+    def test_claim_creation_mission_avec_delegate_passe(self):
+        assert self._q("j'ai créé 3 sous-missions", {"delegate_and_wait"}) is None
+
+    def test_claim_creation_sans_outil_reste_bloque(self):
+        # garde-fou : « j'ai créé » sans aucun outil reste bloqué
+        assert self._q("j'ai créé une mission", set()) is not None
+
+    def test_logo_applique_et_rendu_verifie_ne_simule_pas_une_generation_image(self):
+        assert self._q(
+            "Logo actif appliqué. Le rendu est vérifié.",
+            {"generate_studio_documents"},
+        ) is None
+
+    def test_logo_genere_sans_outil_image_reste_bloque(self):
+        assert self._q(
+            "Logo généré avec succès.",
+            {"generate_studio_documents"},
+        ) is not None
+
 
 class TestAntiDriftClassification:
     """Garde-fou anti-dérive : TOUT outil natif enregistré doit être classé

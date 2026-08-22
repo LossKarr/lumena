@@ -102,6 +102,113 @@ def _is_web_project(description: str) -> bool:
     return any(kw in desc_lower for kw in _WEB_KEYWORDS)
 
 
+def _codex_project_route_enabled() -> bool:
+    """True when CodeAgent must use the connected ChatGPT subscription."""
+    from ...llm.codex_subscription import (
+        CodexSurface,
+        load_codex_subscription_settings,
+    )
+
+    settings = load_codex_subscription_settings()
+    return settings.surface_requested(CodexSurface.CODEAGENT)
+
+
+def _path_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_direct_codeagent_output(
+    ctx: HandlerContext,
+    *,
+    output_dir: str,
+    project_slug: str,
+) -> Path:
+    """Resolve the direct CodeAgent target without depending on process CWD."""
+    from src.tools.file_guardrails import WorkspaceFileGuardrails as _WFG
+
+    slug = (project_slug or "project").strip() or "project"
+    if _WFG._pinned_project:
+        from src.utils.paths import WORKSPACE_DIR as _WS_DIR
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        leaf = (Path(output_dir).name if output_dir else slug) or slug
+        return (_WS_DIR / today / _WFG._pinned_project / leaf).resolve()
+
+    runtime_root = Path(ctx.runtime_root).resolve()
+    raw = str(output_dir or "").strip()
+    if not raw:
+        today = datetime.now().strftime("%Y-%m-%d")
+        base = runtime_root if runtime_root.name == today else runtime_root / today
+        return (base / slug).resolve()
+
+    requested = Path(raw).expanduser()
+    if requested.is_absolute():
+        target = requested.resolve()
+        if not _path_within_root(target, runtime_root):
+            original_query = str(getattr(ctx, "original_user_query", "") or "")
+            raw_target = str(target)
+            explicitly_requested = bool(original_query) and (
+                raw_target in original_query
+                or raw_target.replace("\\", "/") in original_query
+                or raw_target in original_query.replace("/", "\\")
+            )
+            if not explicitly_requested:
+                raise ValueError(
+                    f"output_dir absolu hors du workspace courant: {target}"
+                )
+        if not _path_within_root(target, Path(ctx.lumena_root).resolve()):
+            raise ValueError(f"output_dir hors du workspace Lumena: {target}")
+    else:
+        rel = requested.as_posix().lstrip("/")
+        if rel == "workspace":
+            rel = ""
+        elif rel.startswith("workspace/"):
+            rel = rel[len("workspace/") :]
+        if rel == runtime_root.name or rel.startswith(runtime_root.name + "/"):
+            rel = rel[len(runtime_root.name) :].lstrip("/")
+        target = (runtime_root / rel).resolve() if rel else runtime_root
+        if not _path_within_root(target, runtime_root):
+            raise ValueError(f"output_dir relatif hors du workspace: {raw}")
+
+    target_parts = {part.lower() for part in target.parts}
+    if slug.lower() not in target_parts:
+        subfolder = slug if slug.startswith("projet-") else f"projet-{slug}"
+        target = (target / subfolder).resolve()
+    return target
+
+
+async def _delegate_project_codeagent(
+    ctx: HandlerContext,
+    prompt: str,
+    *,
+    workspace_path: Path,
+    legacy_context: Optional[Dict[str, Any]] = None,
+) -> tuple[bool, str, str]:
+    """Use the selected CodeAgent rail while preserving the API legacy path."""
+    if _codex_project_route_enabled():
+        from .agents import delegate_task_handler
+
+        result = await delegate_task_handler(
+            ctx,
+            description=prompt,
+            agent_type="code",
+            context=legacy_context or {},
+            project_path=str(workspace_path),
+        )
+        return bool(result.success), result.output, result.status_code
+
+    result = await _delegate_to_agent(
+        prompt,
+        agent_type="code",
+        context=legacy_context or {},
+    )
+    return True, result, "success"
+
+
 # ─── Constantes ────────────────────────────────────────────────────────────
 
 _MAX_FILES = 200  # Sécurité technique — Lumena décide du nombre réel
@@ -1102,44 +1209,39 @@ async def create_project_handler(
     """
     handler_name = "create_project"
 
-    # ── Vérifier que le LLM est disponible ──
+    _codex_route = _codex_project_route_enabled()
+
+    # Codex subscription is an execution rail, not ctx.lumena.llm. Requiring the
+    # canonical API model here would incorrectly make Codex depend on DeepSeek.
     lumena = ctx.lumena
-    if not lumena or not hasattr(lumena, "llm"):
+    if (not lumena or not hasattr(lumena, "llm")) and not _codex_route:
         return HandlerResult.fail(
             "❌ LLM non disponible pour create_project", handler_name=handler_name,
         )
-    llm = lumena.llm
+    llm = getattr(lumena, "llm", None)
 
     # ── Mode CodeAgent (défaut) ──
     # Délègue au CodeAgent itératif : écrit un fichier, le relit, valide,
     # écrit le suivant avec le contexte, teste, corrige.
-    if _CODEAGENT_AVAILABLE:
-        logger.info("[create_project] Mode CodeAgent direct (défaut)")
-        _out = output_dir or ""
+    if _CODEAGENT_AVAILABLE or _codex_route:
+        logger.info(
+            "[create_project] Mode CodeAgent route={}",
+            "codex_subscription" if _codex_route else "api_legacy",
+        )
         _slug = re.sub(r"[^\w\-.]", "_", (project_name or "project").lower())
-        # ── Mission de pair : forcer la sortie DANS le workspace (projet épinglé) ──
-        # Sinon un output_dir relatif (« wok-nomade ») résout hors workspace
-        # (lumena_root) → la capture par snapshot ne voit rien → le pair ne reçoit
-        # rien. On rebase tout sous workspace/<date>/<projet-épinglé>/<leaf>.
-        from src.tools.file_guardrails import WorkspaceFileGuardrails as _WFG
-        if _WFG._pinned_project:
-            from src.utils.paths import WORKSPACE_DIR as _WS_DIR
-            _today = datetime.now().strftime("%Y-%m-%d")
-            _leaf = (Path(output_dir).name if output_dir else _slug) or _slug
-            _out = str(_WS_DIR / _today / _WFG._pinned_project / _leaf)
-        elif not _out and ctx.runtime_root:
-            _today = datetime.now().strftime("%Y-%m-%d")
-            _root = ctx.runtime_root
-            # Injecter le sous-dossier date sauf si runtime_root le contient déjà
-            if _root.name != _today:
-                _root = _root / _today
-            _out = str(_root / _slug)
-        elif _out and _slug:
-            # Si output_dir fourni mais le project_name n'est pas dedans, l'ajouter
-            _out_lower = _out.replace("\\", "/").lower()
-            if _slug not in _out_lower:
-                _subfolder = _slug if _slug.startswith("projet-") else f"projet-{_slug}"
-                _out = str(Path(_out) / _subfolder)
+        try:
+            _out_path = _resolve_direct_codeagent_output(
+                ctx,
+                output_dir=output_dir,
+                project_slug=_slug,
+            )
+        except ValueError as exc:
+            return HandlerResult.fail(
+                f"⛔ Chemin de projet refusé: {exc}",
+                handler_name=handler_name,
+                status_code="invalid_workspace",
+            )
+        _out = str(_out_path)
 
         # ── Prompt enrichi : instructions précises selon le type de projet ──
         _desc_lower = description.lower()
@@ -1149,7 +1251,6 @@ async def create_project_handler(
         ))
 
         # Créer le répertoire de sortie AVANT de déléguer au CodeAgent
-        _out_path = Path(_out)
         _out_path.mkdir(parents=True, exist_ok=True)
 
         _ca_prompt = f"Crée un projet complet dans le dossier {_out}.\n"
@@ -1197,15 +1298,24 @@ async def create_project_handler(
 
         try:
             _current_model = str(getattr(llm, "model_name", "") or "")
-            _ca_result = await _delegate_to_agent(
+            _legacy_context = {
+                "workspace_path": _out,
+                "project_dir": _out,
+                **({"_best_model": _current_model} if _current_model else {}),
+            }
+            _ca_success, _ca_result, _ca_status = await _delegate_project_codeagent(
+                ctx,
                 _ca_prompt,
-                agent_type="code",
-                context={
-                    "workspace_path": _out,
-                    "project_dir": _out,
-                    **({"_best_model": _current_model} if _current_model else {}),
-                },
+                workspace_path=_out_path,
+                legacy_context=_legacy_context,
             )
+            if not _ca_success:
+                return HandlerResult.fail(
+                    "⛔ CodeAgent Codex n'a pas terminé le projet. "
+                    f"Aucun fallback DeepSeek n'a été utilisé.\n\n{_ca_result}",
+                    handler_name=handler_name,
+                    status_code=_ca_status or "codeagent_failed",
+                )
             # P1 : vérifier si CodeAgent est bloqué → tenter version simplifiée
             if "itérations sans conclusion" in _ca_result:
                 import re as _re_simp
@@ -1215,30 +1325,53 @@ async def create_project_handler(
                 ).strip()
                 if _simple_desc != description:
                     try:
-                        _min_result = await _delegate_to_agent(
+                        _min_success, _min_result, _min_status = await _delegate_project_codeagent(
+                            ctx,
                             f"VERSION MINIMALE: {_simple_desc[:150]}. "
                             f"1 seul fichier, zéro dépendance externe.",
-                            agent_type="code",
-                            context={"workspace_path": _out, "project_dir": _out},
+                            workspace_path=_out_path,
+                            legacy_context={"workspace_path": _out, "project_dir": _out},
                         )
-                        if "itérations sans conclusion" not in _min_result:
+                        if _min_success and "itérations sans conclusion" not in _min_result:
                             return HandlerResult.ok(
                                 f"✅ Projet créé (version simplifiée) dans `{_out}`\n\n{_min_result[:1500]}",
                                 handler_name=handler_name,
                             )
+                        if _codex_route and not _min_success:
+                            return HandlerResult.fail(
+                                "⛔ CodeAgent Codex n'a pas terminé la version minimale. "
+                                f"Aucun fallback DeepSeek n'a été utilisé.\n\n{_min_result}",
+                                handler_name=handler_name,
+                                status_code=_min_status or "codeagent_failed",
+                            )
                     except Exception:
-                        pass
+                        if _codex_route:
+                            raise
                 _files = [f.name for f in Path(_out).rglob("*") if f.is_file()][:10]
                 return HandlerResult.fail(
                     f"Fichiers partiels créés : {', '.join(_files) or 'aucun'}. "
                     f"Essaie une demande plus courte.",
                     handler_name=handler_name,
                 )
+            try:
+                from src.utils.project_registry import register_project
+
+                register_project(_out_path, description=description, slug=_slug)
+            except Exception as _registry_exc:
+                logger.debug("[create_project] registre non mis à jour: {}", _registry_exc)
             return HandlerResult.ok(
                 f"✅ Projet créé via CodeAgent dans `{_out}`\n\n{_ca_result[:2000]}",
                 handler_name=handler_name,
             )
         except Exception as e:
+            if _codex_route:
+                logger.error("[create_project] rail Codex échoué sans fallback: {}", e)
+                return HandlerResult.fail(
+                    "⛔ CodeAgent Codex a échoué. Aucun fallback DeepSeek "
+                    f"n'a été utilisé: {e}",
+                    handler_name=handler_name,
+                    status_code="codex_failed",
+                )
             logger.warning("[create_project] CodeAgent échoué ({}), fallback pipeline batch", e)
             # Fallback silencieux vers le pipeline batch ci-dessous
 

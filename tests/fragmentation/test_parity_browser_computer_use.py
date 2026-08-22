@@ -48,6 +48,7 @@ EXPECTED_BROWSER_NAMES = [
     "browser_deep_research",
     "browser_hover",
     "browser_select",
+    "browser_select_index",
     "browser_keyboard_press",
     # Phase 2.5 — PDF, Upload, Network interception
     "browser_save_pdf",
@@ -138,7 +139,7 @@ EXPECTED_COMPUTER_USE_NAMES = [
 class TestBrowserParity:
     def test_count(self):
         defs = get_browser_handler_defs()
-        assert len(defs) == 75
+        assert len(defs) == 76  # +1 : browser_select_index (LOT Z19)
 
     def test_names_match(self):
         defs = get_browser_handler_defs()
@@ -202,6 +203,6 @@ class TestCrossModuleParity:
         assert not collision, f"Noms en collision: {collision}"
 
     def test_total_count(self):
-        """browser(66) + computer_use(28) = 94 handlers."""
+        """browser(76) + computer_use(29) = 105 handlers."""
         total = len(get_browser_handler_defs()) + len(get_computer_use_handler_defs())
-        assert total == 104
+        assert total == 105

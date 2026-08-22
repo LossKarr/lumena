@@ -462,6 +462,11 @@ async def _stop_autonomy_daemon_if_started() -> None:
 
 
 def _notify_autonomy_user_interaction(message: str) -> None:
+    try:  # présence partagée, indépendante du daemon (lue par l'autonomie P2P)
+        from src.autonomy.presence import mark_user_activity
+        mark_user_activity()
+    except Exception:
+        pass
     daemon = _get_autonomy_daemon_instance()
     if daemon is None:
         return
@@ -584,6 +589,52 @@ async def lifespan(app: FastAPI):
         except Exception as _init_err:
             initialized = False
             logger.error("[BOOT] initialize_lumena() a échoué: {}", _init_err)
+
+        # Lot 0.a — TaskOrchestrator UNIQUE : le web partage l'instance PERSISTANTE du cœur
+        # (sinon panneau et worker/ReAct verraient des états différents). Helper testable.
+        try:
+            from src.subagents.wiring import unify_task_orchestrator
+            unify_task_orchestrator(deps, deps.lumena)
+        except Exception as _uto_err:
+            logger.debug("[BOOT] unify_task_orchestrator skip: {}", _uto_err)
+
+        # Lot 0.d — Reprise SÛRE : aucune mission interrompue n'est rejouée à l'aveugle.
+        # queued → reste en file ; en vol → needs_review (trace, zéro rejeu auto).
+        try:
+            from src.subagents.resume_policy import reconcile_on_boot
+            _orch = getattr(deps.lumena, "task_orchestrator", None) if deps.lumena else None
+            if _orch is not None:
+                reconcile_on_boot(_orch)
+                # Lot 2.3 — relancer les missions `queued` (jamais les `needs_review`).
+                from src.subagents.manager import get_mission_manager, relaunch_queued
+                _z33_relaucees = relaunch_queued(get_mission_manager(deps.lumena))
+                # LOT Z33 phase 0 — rouvrir la session Codex quand des missions
+                # reprennent, AVANT que le worker ne consomme la file (il démarre
+                # plus bas). Le 21/08 à 02:33:57, la mission relancée cherchait le
+                # superviseur partagé, ne le trouvait pas, et mourait.
+                #
+                # Gardé par `_z33_relaucees` : rien à reprendre → aucun processus
+                # lancé. Sans cette garde, chaque démarrage d'app en mode
+                # abonnement lançait un app-server — y compris les dizaines de
+                # boots de la suite de tests, qui est passée de 9 à 47 minutes.
+                if _z33_relaucees:
+                    try:
+                        from src.llm.codex_app_server import ensure_shared_codex_app_server
+                        await ensure_shared_codex_app_server(app)
+                    except Exception as _cx_boot_err:
+                        logger.debug("[Z33] réouverture session Codex skip: {}", _cx_boot_err)
+        except Exception as _rb_err:
+            logger.debug("[BOOT] reconcile_on_boot/relaunch skip: {}", _rb_err)
+
+        # Lot 4 (correctif) — worker de missions APP-LIFETIME : consomme la file et
+        # exécute les missions indépendamment des requêtes (une mission survit à la
+        # fin du tour de chat). Démarré comme le heartbeat.
+        try:
+            from src.subagents.worker import start_mission_worker
+            if deps.lumena is not None:
+                start_mission_worker(deps.lumena)
+        except Exception as _mw_err:
+            logger.debug("[BOOT] mission worker start skip: {}", _mw_err)
 
         if not initialized and not _setup_complete:
             # P0: Premier lancement sans .env / sans LLM configuré → mode setup-only
@@ -1908,19 +1959,27 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[IDE-Bridge] Non demarre: {e}")
 
-        # Démarrer l'assistant vocal si LUMENA_VOICE_AUTO=1
+        # Démarrer un unique backend vocal. V2 est opt-in et le legacy reste le défaut.
         try:
             if _IS_WORKER:
                 print("[VOICE] Skipped — instance role=worker")
-            elif _env_flag("LUMENA_VOICE_AUTO", False) and deps.VoiceManager:
+            elif (
+                _env_flag("LUMENA_VOICE_AUTO", False)
+                or _env_flag("LUMENA_VOICE_V2_AUTO", False)
+            ) and deps.VoiceManager:
                 _vm = deps.VoiceManager.get_instance()
                 _voice_ok = await _vm.start(deps.lumena)
                 if _voice_ok:
-                    print("[VOICE] Assistant vocal démarré — en écoute continue (wake word: 'Lumena')")
+                    _voice_status = _vm.get_status()
+                    print(
+                        "[VOICE] Assistant vocal démarré "
+                        f"(backend={_voice_status.get('backend', 'legacy')}, "
+                        f"mode={_voice_status.get('mode', 'legacy')})"
+                    )
                 else:
                     print("[VOICE] Impossible de démarrer l'assistant vocal (micro indisponible ?)")
             else:
-                print("[VOICE] Désactivé (LUMENA_VOICE_AUTO=0 ou VoiceManager absent)")
+                print("[VOICE] Désactivé (flags auto OFF ou VoiceManager absent)")
         except Exception as e:
             print(f"[VOICE] Erreur démarrage: {e}")
 
@@ -2027,6 +2086,18 @@ async def lifespan(app: FastAPI):
     finally:
         # === SHUTDOWN ===
         print(" Arret de Lumena...")
+
+        # S1 Codex subscription: stop the optional App Server before releasing
+        # Lumena's other long-lived services. The helper is dormant when no
+        # subscription route has attached a supervisor to app.state.
+        try:
+            from src.llm.codex_app_server import stop_attached_codex_app_server
+
+            if await stop_attached_codex_app_server(app):
+                print("[CODEX] App Server arrete proprement")
+        except Exception as _codex_shutdown_err:
+            logger.debug("[CODEX] App Server shutdown skip: {}", _codex_shutdown_err)
+
         if deps.telegram_task:
             deps.telegram_task.cancel()
             try:

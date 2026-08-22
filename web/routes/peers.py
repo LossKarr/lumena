@@ -1176,6 +1176,63 @@ async def cancel_outbound_mission(task_id: str) -> Dict[str, Any]:
     return {"ok": True, "task_id": task_id, "status": "cancelled", "outbound": outbound}
 
 
+@router.get("/api/peer/capability-map", dependencies=[Depends(deps.verify_admin_token)])
+async def get_peer_capability_map(fresh_sec: int = 300) -> Dict[str, Any]:
+    """C2 — Carte des capacités vivante (qui sait faire quoi, joignable, en forme).
+
+    Substrat de décision pour l'autonomie (C3) + lisible côté UI. Pure lecture.
+    """
+    from src.runtime.peer_awareness import build_capability_map
+    return build_capability_map(fresh_sec=fresh_sec)
+
+
+@router.get("/api/peer/suggestions", dependencies=[Depends(deps.verify_admin_token)])
+async def get_peer_suggestions(limit: int = 20) -> Dict[str, Any]:
+    """C3-shadow — Dernières suggestions de délégation (journal d'observation).
+
+    Permet de VOIR ce que Lumena déciderait même hors flux SSE temps réel. Pure
+    lecture : n'influence aucune décision/exécution.
+    """
+    from src.runtime.peer_suggestions import recent
+    items = recent(limit)
+    return {"success": True, "items": items, "count": len(items)}
+
+
+@router.post("/api/peer/suggestions/test", dependencies=[Depends(deps.verify_admin_token)])
+async def test_peer_suggestion() -> Dict[str, Any]:
+    """C3-shadow — Force un tick d'initiative sur une tâche d'exemple.
+
+    Sert à PROUVER que le moteur propose (même sans objectif actif). Respecte le
+    mode : en `off` rien n'est proposé ; en `shadow`/`live` la proposition est
+    seulement journalisée (zéro exécution ici — l'exécution arrive en C3-live).
+    """
+    from src.runtime.peer_network_autonomy import (
+        peer_autonomy_mode,
+        run_peer_cooperation_shadow_tick,
+    )
+    mode = peer_autonomy_mode()
+    if mode == "off":
+        return {"success": False, "mode": mode,
+                "message": "Autonomie désactivée — passez en Observation pour tester."}
+    sample = [{"objective": "Tâche de test : rédiger un court rapport de synthèse"}]
+    out = run_peer_cooperation_shadow_tick(candidate_tasks=sample)
+    return {"success": True, **out}
+
+
+@router.get("/api/peer/autonomy/live-status", dependencies=[Depends(deps.verify_admin_token)])
+async def peer_autonomy_live_status() -> Dict[str, Any]:
+    """C3-live — État du mode initiative + budget restant (pour le badge UI)."""
+    from src.runtime.peer_network_autonomy import peer_autonomy_mode
+    from src.runtime.peer_live_gate import max_per_hour, remaining_budget, _act_when_present
+    return {
+        "success": True,
+        "mode": peer_autonomy_mode(),
+        "max_per_hour": max_per_hour(),
+        "remaining": remaining_budget(),
+        "when_present": _act_when_present(),
+    }
+
+
 @router.get("/api/peer/quarantine", dependencies=[Depends(deps.verify_admin_token)])
 async def list_peer_quarantine() -> Dict[str, Any]:
     """Liste des pairs en quarantaine automatique (C-1.b), enrichie du nom."""

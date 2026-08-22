@@ -36,6 +36,71 @@ except ImportError:
 # ─── Helpers ───────────────────────────────────────────────────────────────
 
 
+def _is_broad_pytest_at_lumena_root(command: str, cwd, lumena_root) -> bool:
+    """LOT 2.11.B — décision pure : ce `pytest` va-t-il collecter TOUT le dépôt ?
+
+    True (donc à REFUSER) quand la commande est un pytest, que le cwd résolu est
+    la racine Lumena elle-même, ET qu'aucune cible fichier `.py` précise n'est
+    donnée. Un tel run collecte les 16 000+ tests du dépôt → timeout garanti en
+    mission (run des 5 missions : une mission a lancé `pytest` nu à la racine).
+
+    Invariant général (pas cas-par-cas) : on ne bloque QUE la collecte pleine à la
+    racine ; cibler un dossier livrable (`cwd=workspace/<projet>`) ou un fichier
+    de test précis passe toujours.
+    """
+    if not command or cwd is None or lumena_root is None:
+        return False
+    import re as _re
+    try:
+        from ...utils.docker_sandbox import is_python_test_command as _is_pytest_cmd
+    except Exception:
+        return False
+    if not _is_pytest_cmd(command):
+        return False
+    try:
+        cwd_p = Path(str(cwd)).resolve()
+        root_p = Path(str(lumena_root)).resolve()
+    except Exception:
+        return False
+    if cwd_p != root_p:
+        return False
+    # Une cible fichier `.py` explicite (ex. tests/test_app.py ou ::TestX) = OK.
+    return not _re.search(r"\S+\.py(::|\b)", command)
+
+
+def _resolve_cwd(raw: str, lumena_root, mission_dir: Optional[Path] = None) -> Optional[str]:
+    """2.11.b : résout un répertoire de travail demandé (préfixe `cd X &&` ou
+    param cwd=) vers un dossier EXISTANT.
+
+    Ordre : absolu tel quel → mission_dir/raw (B0.2 : en mission, un relatif se
+    résout D'ABORD dans le dossier mission — sinon `cwd='tests'` attrape le
+    tests/ de Lumena) → lumena_root/raw → WORKSPACE_DIR/raw.
+    Retourne None si aucun candidat n'existe — le caller doit alors ÉCHOUER
+    clairement, jamais exécuter au mauvais endroit ni rapporter un faux timeout.
+    """
+    raw = (raw or "").strip().strip("\"'")
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        return str(candidate) if candidate.is_dir() else None
+    bases: List[Path] = []
+    if mission_dir is not None:
+        bases.append(Path(mission_dir))
+    if lumena_root:
+        bases.append(Path(lumena_root))
+    try:
+        from ...utils.paths import WORKSPACE_DIR as _ws_dir
+        bases.append(Path(_ws_dir))
+    except Exception:
+        pass
+    for base in bases:
+        cand = base / raw
+        if cand.is_dir():
+            return str(cand.resolve())
+    return None
+
+
 async def _summarize_large_output(command: str, output: str, limit: int) -> Optional[str]:
     """Résume un output volumineux via LLM au lieu de le tronquer brutalement.
 
@@ -87,6 +152,71 @@ def _should_background_command(command: str) -> bool:
     return any(_re_bg.search(pattern, lowered) for pattern in patterns)
 
 
+def _mission_destructive_target_violation(ctx: HandlerContext, command: str) -> str:
+    """LOT G1 — résout le contexte mission puis délègue au helper pur.
+
+    Retourne le chemin fautif, ou `""` si rien à signaler. **Fail-open strict** :
+    hors mission, sans workspace résolvable, ou sur la moindre erreur, on rend
+    `""` — ce garde ne doit jamais empêcher une commande légitime de tourner.
+
+    Le périmètre autorisé est le DOSSIER DE MISSION (partagé par tous les workers
+    d'une même mission), pas `allowed_files` : un worker a des raisons légitimes
+    de nettoyer un artefact commun (`__pycache__`, un `.bak`), et le périmètre
+    fin des écritures reste couvert par `_assert_mission_file_allowed`.
+    """
+    try:
+        if not getattr(ctx, "is_mission_run", False):
+            return ""
+        from src.utils.command_sanitizer import destructive_command_target_violation
+        from src.utils.paths import ROOT_DIR, WORKSPACE_DIR
+
+        # G1.c — TEST RÉEL du 2026-08-12 : le garde était INERTE sur une mission
+        # simple. `mission_workspace` n'est attribué que par
+        # `write_mission_contract` / `delegate_and_wait` ; une mission qui ne
+        # délègue pas n'en a aucun. Exiger ce dossier laissait donc sans
+        # protection le cas le PLUS COURANT — et la sentinelle a été supprimée.
+        #
+        # Le périmètre est désormais toujours défini :
+        #   • mission avec dossier    -> ce dossier (périmètre étroit) ;
+        #   • mission sans dossier    -> le WORKSPACE global (Lumena y travaille
+        #                                légitimement ; le dépôt reste protégé).
+        allowed_root = None
+        _sub_fn = getattr(ctx, "mission_workspace_subdir", None)
+        sub = _sub_fn() if callable(_sub_fn) else ""
+        guardrails = getattr(ctx, "file_guardrails", None)
+        if sub and guardrails is not None:
+            try:
+                allowed_root = guardrails._workspace_root() / sub
+            except Exception:
+                allowed_root = None
+        if allowed_root is None:
+            try:
+                allowed_root = (
+                    guardrails._workspace_root() if guardrails is not None else WORKSPACE_DIR
+                )
+            except Exception:
+                allowed_root = WORKSPACE_DIR
+
+        # Un périmètre autorisé qui ENGLOBE le dépôt ne garde plus rien.
+        # `FileGuardrails._workspace_root()` peut légitimement retourner la racine
+        # du projet (`return root` quand `_looks_like_project_root()` est faux) :
+        # on retombe alors sur le workspace, seul périmètre de travail légitime.
+        try:
+            _allowed = Path(str(allowed_root)).resolve()
+            _repo = Path(str(ROOT_DIR)).resolve()
+            if _allowed == _repo or _repo.is_relative_to(_allowed):
+                allowed_root = WORKSPACE_DIR
+        except Exception:
+            allowed_root = WORKSPACE_DIR
+
+        return destructive_command_target_violation(
+            command, mission_root=str(allowed_root), repo_root=str(ROOT_DIR),
+        )
+    except Exception as exc:
+        logger.debug("[G1] garde de cible ignoré: {}", exc)
+        return ""
+
+
 async def run_command_handler(
     ctx: HandlerContext, command: str,
     stdin_input: str = "", timeout: int = 0,
@@ -96,6 +226,33 @@ async def run_command_handler(
     """Execute une commande shell de manière asynchrone (non-bloquante)."""
     try:
         ide_runtime = ctx.is_ide_runtime()
+
+        # ── LOT G1 — GARDE DE CIBLE (mission uniquement) ───────────────────────
+        # Le sanitizer juge la DANGEROSITÉ d'une commande, jamais la PROPRIÉTÉ de
+        # sa cible : `del <fichier>` est explicitement autorisé (un worker doit
+        # pouvoir nettoyer SES fichiers). Le 2026-08-12, une mission a exécuté
+        # `del …\lumena\pytest.ini` (exit 0) pour contourner un conflit de config
+        # pytest — supprimant un fichier du dépôt. `Rename-Item` sur la même cible
+        # avait été bloqué (verbe interdit) ; `pyproject.toml` n'a survécu que par
+        # hasard de séquence.
+        # `allowed_files` protège les OUTILS FICHIERS ; cette porte-ci n'avait
+        # aucun garde de périmètre. Additif, mission-only, conservateur.
+        _g1_violation = _mission_destructive_target_violation(ctx, command)
+        if _g1_violation:
+            logger.warning(
+                "[G1] commande destructive hors périmètre refusée : cible={} cmd={}",
+                _g1_violation, str(command)[:160],
+            )
+            return HandlerResult.ok(
+                f"⛔ Commande refusée : elle détruirait `{_g1_violation}`, qui "
+                "appartient au dépôt Lumena et **n'est pas un fichier de ta "
+                "mission**.\n\n"
+                "Tu ne peux supprimer, déplacer ou renommer que les fichiers de "
+                "ton dossier de mission. Si un fichier du dépôt te gêne (config, "
+                "test, source), **ne le neutralise pas** : adapte ton propre code, "
+                "ou signale le blocage dans ton rapport pour que le lead tranche.",
+                handler_name="run_command",
+            )
 
         # Guard BDD IONOS (prioritaire) : interdire mysql/mariadb/php/node visant une base
         # IONOS (*.hosting-data.io, injoignable de l'extérieur). Rediriger vers le bridge
@@ -240,6 +397,27 @@ async def run_command_handler(
         # et AVANT le sandbox Docker (pour passer le bon workdir).
         import re as _re_cd_extract
         _cwd = str(ctx.lumena_root) if ctx.lumena_root else None
+        # B0.2 (run PlantCare) — en mission, le préambule A1 dit « tu es DÉJÀ dans
+        # le dossier de la mission » : vrai pour les outils fichiers (résolution
+        # mission-first) mais run_command démarrait à la racine Lumena → workers
+        # désaxés (~15 itérations à se chercher). Sans cd/cwd explicite, le shell
+        # démarre DANS le dossier mission. Un cd/cwd explicite garde la priorité.
+        _mission_dir_b02: Optional[Path] = None
+        try:
+            _sub_fn_b02 = getattr(ctx, "mission_workspace_subdir", None)
+            _mission_sub_b02 = _sub_fn_b02() if callable(_sub_fn_b02) else ""
+            if _mission_sub_b02:
+                _fg_b02 = getattr(ctx, "file_guardrails", None)
+                if _fg_b02 is not None:
+                    _mroot_b02 = _fg_b02._workspace_root()
+                else:
+                    from ...utils.paths import WORKSPACE_DIR as _mroot_b02
+                _mdir_b02 = _mroot_b02 / _mission_sub_b02
+                if _mdir_b02.is_dir():
+                    _mission_dir_b02 = _mdir_b02.resolve()
+                    _cwd = str(_mission_dir_b02)
+        except Exception:
+            pass
         _cd_prefix_m = _re_cd_extract.match(
             r'^\s*cd\s+(?:/d\s+)?(?:"([^"]+)"|\'([^\']+)\'|([^&;]+?))\s*(?:&&|;)\s*(.+)$',
             command, _re_cd_extract.IGNORECASE | _re_cd_extract.DOTALL,
@@ -255,15 +433,54 @@ async def run_command_handler(
             )
             _rest_cmd = _cd_prefix_m.group(4).strip()
             if _rest_cmd:
-                import os as _os_cd
-                if _os_cd.path.isdir(_extracted_cwd):
-                    _cwd = _extracted_cwd
+                # 2.11.b : plus jamais de strip silencieux — soit le dossier
+                # se résout (absolu, racine Lumena ou workspace), soit échec
+                # clair AVANT exécution (exécuter au mauvais endroit = pire).
+                _resolved_cd = _resolve_cwd(_extracted_cwd, ctx.lumena_root, _mission_dir_b02)
+                if _resolved_cd is None and not cwd:
+                    return HandlerResult.ok(
+                        f"❌ Répertoire de travail introuvable : {_extracted_cwd} "
+                        f"(préfixe `cd`). Commande NON exécutée. "
+                        f"Les chemins mission sont relatifs au workspace "
+                        f"(ex. missions/<task_id>) — vérifie avec list_directory.",
+                        handler_name="run_command",
+                    )
+                if _resolved_cd is not None:
+                    _cwd = _resolved_cd
                 command = _rest_cmd
 
-        # Si le LLM passe cwd= explicitement, ça prime sur tout le reste
-        if cwd:
-            _cwd = cwd
-            logger.info("[run_command] cwd explicite: {}", cwd[:200])
+        # Si le LLM passe cwd= explicitement, ça prime sur tout le reste.
+        # B0.2 : `cwd='.'` = « ici » = le répertoire par défaut du tour (dossier
+        # mission en mission) — pas la racine Lumena.
+        if cwd and str(cwd).strip().strip("\"'") in (".", "./", ".\\"):
+            logger.info("[run_command] cwd '.' → répertoire par défaut: {}", str(_cwd)[:200])
+        elif cwd:
+            _resolved_explicit = _resolve_cwd(cwd, ctx.lumena_root, _mission_dir_b02)
+            if _resolved_explicit is None:
+                return HandlerResult.ok(
+                    f"❌ Répertoire de travail introuvable : {cwd} (param cwd=). "
+                    f"Commande NON exécutée. Les chemins mission sont relatifs "
+                    f"au workspace (ex. missions/<task_id>) — vérifie avec list_directory.",
+                    handler_name="run_command",
+                )
+            _cwd = _resolved_explicit
+            logger.info("[run_command] cwd explicite résolu: {}", _cwd[:200])
+
+        _command_lower = command.lower()
+        _is_static_server = (
+            "http.server" in _command_lower
+            or "npx serve" in _command_lower
+            or "http-server" in _command_lower
+        )
+        _is_app_server = (
+            "flask run" in _command_lower or "flask_run" in _command_lower
+            or "-m flask" in _command_lower or "uvicorn" in _command_lower
+            or "gunicorn" in _command_lower or "waitress" in _command_lower
+            or "manage.py runserver" in _command_lower or "runserver" in _command_lower
+            or "app.py" in _command_lower or "main.py" in _command_lower
+            or "wsgi" in _command_lower or "asgi" in _command_lower
+        )
+        _is_server_command = _is_static_server or _is_app_server
 
         if background or _should_background_command(command):
             from ...tools.process_manager import get_process_manager
@@ -276,6 +493,71 @@ async def run_command_handler(
             )
             if process_id:
                 logger.info("[run_command] background id: {}", process_id)
+            elif _is_server_command:
+                detail = str(bg_output or "").strip()
+                suffix = f"\nSortie du processus :\n{detail}" if detail else ""
+                return HandlerResult.fail(
+                    "❌ Le serveur demandé s'est terminé immédiatement : aucun "
+                    "processus d'arrière-plan n'est actif et aucun port ne peut être "
+                    "considéré servi. Utilise `browser_verify_local_project` sur le "
+                    "dossier du projet : il détecte et démarre la bonne application, "
+                    "puis fournit la preuve navigateur. Ne répète pas cette commande "
+                    f"serveur inchangée.{suffix}",
+                    handler_name="run_command",
+                    status_code="background_server_exited",
+                )
+            elif not str(bg_output or "").strip():
+                bg_output = (
+                    "ℹ️ La commande demandée en arrière-plan s'est terminée "
+                    "immédiatement sans sortie. Aucun processus n'est encore actif."
+                )
+            # P1 + LOT E (run CéramiShop) : un serveur lancé en background est
+            # enregistré comme preview loopback contrôlée → browser_navigate pourra
+            # l'atteindre (SSRF guard). P1 couvrait les serveurs STATIQUES
+            # (http.server/npx serve) ; E ajoute les serveurs APPLICATIFS
+            # (flask/uvicorn/gunicorn/django/python app.py) — le run CéramiShop est
+            # mort ici : `flask run --port 8081` n'était pas reconnu → 127.0.0.1:8081
+            # bloqué → vérif navigateur fabriquée. Loopback only ; register_preview
+            # REFUSE les ports réservés de Lumena (8080/8245/…).
+            try:
+                _cl = _command_lower
+                # Keep these local names as the established registration
+                # boundary: structural regression tests and future server
+                # additions inspect this explicit list.
+                _is_static_srv = (
+                    "http.server" in _cl or "npx serve" in _cl or "http-server" in _cl
+                )
+                _is_app_srv = (
+                    "flask run" in _cl or "flask_run" in _cl or "-m flask" in _cl
+                    or "uvicorn" in _cl or "gunicorn" in _cl or "waitress" in _cl
+                    or "manage.py runserver" in _cl or "runserver" in _cl
+                    or "app.py" in _cl or "main.py" in _cl
+                    or "wsgi" in _cl or "asgi" in _cl
+                )
+                if process_id and (_is_static_srv or _is_app_srv):
+                    import re as _re_prev
+                    _pm = (
+                        _re_prev.search(r'http\.server\s+(\d{4,5})\b', command, _re_prev.IGNORECASE)
+                        or _re_prev.search(r'(?:serve|http-server)\s+(\d{4,5})\b', command, _re_prev.IGNORECASE)
+                        or _re_prev.search(r'(?:--port|-p|--bind[^\d]{1,3})[ =:](\d{4,5})\b', command, _re_prev.IGNORECASE)
+                        or _re_prev.search(r':(\d{4,5})\b', command)  # uvicorn host:port
+                    )
+                    _port_prev = None
+                    if _pm:
+                        _port_prev = int(_pm.group(1))
+                    elif _is_app_srv:
+                        # Serveur applicatif SANS --port explicite → port par défaut du
+                        # framework (Flask 5000, uvicorn/django/gunicorn 8000).
+                        _port_prev = 5000 if ("flask" in _cl) else 8000
+                    if _port_prev is not None:
+                        from ...utils.local_preview import register_preview
+                        register_preview(
+                            _port_prev,
+                            workspace=str(_cwd or ""),
+                            task_id=str(getattr(ctx, "runtime_task_id", "") or ""),
+                        )
+            except Exception:
+                pass
             return HandlerResult.ok(bg_output, handler_name="run_command")
 
         # ── Auto-traduction commandes Linux → Windows ──
@@ -353,7 +635,10 @@ async def run_command_handler(
         # ── Sandbox Docker : exécuter dans un container isolé si disponible ──
         if not ide_runtime:
             try:
-                from ...utils.docker_sandbox import is_docker_available, run_in_sandbox, should_use_sandbox
+                from ...utils.docker_sandbox import (
+                    is_docker_available, run_in_sandbox, should_use_sandbox,
+                    sandbox_error_needs_local_fallback,
+                )
                 if await is_docker_available() and should_use_sandbox(command):
                     import os as _os_sandbox
                     _sandbox_workdir = _cwd if _cwd and _os_sandbox.path.isdir(_cwd) else str(ctx.lumena_root)
@@ -373,8 +658,9 @@ async def run_command_handler(
                         return HandlerResult.ok(
                             f"Timeout commande sandbox (>{timeout_sec}s)", handler_name="run_command",
                         )
-                    # Fallback local si l'outil n'existe pas dans le container
-                    if exit_code != 0 and ("not found" in (stderr or "").lower() or "no such file" in (stderr or "").lower()):
+                    # Fallback local si l'outil n'existe pas dans le container,
+                    # OU si pytest manque au Docker jetable (ciblé, cf. helper).
+                    if exit_code != 0 and sandbox_error_needs_local_fallback(stderr):
                         logger.info("[run_command] sandbox tool missing, fallback local: {}", command[:80])
                     else:
                         if not output and exit_code != 0:
@@ -421,6 +707,45 @@ async def run_command_handler(
                 _escaped = command.replace('"', '\\"')
                 command = f'powershell -NoProfile -NonInteractive -Command "{_escaped}"'
 
+        # ── LOT 2.11.B : garde anti « pytest collecte les 16k tests de Lumena » ──
+        # En mission, une pytest lancée depuis la RACINE Lumena avec une cible LARGE
+        # (nue, `.`, `tests`, `tests/`) remonte le pytest.ini racine et collecte TOUTE
+        # la suite Lumena (16 000+ tests) → timeout, mission cassée (cf. run RomanConv).
+        # On refuse AVANT exécution avec un message guidant. Une cible PRÉCISE (un
+        # fichier .py listé) reste permise — c'est justement le bon réflexe.
+        try:
+            if _is_broad_pytest_at_lumena_root(command, _cwd, ctx.lumena_root):
+                return HandlerResult.ok(
+                    "⛔ pytest large à la RACINE Lumena refusé : ça collecte les "
+                    "16 000+ tests du dépôt (timeout garanti). Cible le DOSSIER du "
+                    "livrable (cwd=workspace/<projet>) ou un fichier de test précis "
+                    "(ex. tests/test_app.py). Commande NON exécutée.",
+                    handler_name="run_command",
+                )
+        except Exception:
+            pass
+
+        # ── Tests pytest : forcer l'interpréteur du serveur Lumena (venv, a pytest) ──
+        # Évite un `python`/`py` du PATH (System32 / WindowsApps) sans pytest ni deps.
+        try:
+            from ...utils.docker_sandbox import is_python_test_command
+            if is_python_test_command(command):
+                # Replacements en lambda (repl non interprété par re.sub → les
+                # backslashes du chemin Windows passent tels quels, pas de \\ doublés).
+                _exe_q = f'"{_sys.executable}"'
+                # `python|py|python3 -m pytest` → `<venv-python> -m pytest`
+                command = _re.sub(
+                    r'(?i)\b(?:python3?|py)(?:\.exe)?\s+-m\s+pytest\b',
+                    lambda _m: f'{_exe_q} -m pytest', command,
+                )
+                # `pytest …` nu (début ou après séparateur) → `<venv-python> -m pytest`
+                command = _re.sub(
+                    r'(?i)(^|&&\s*|;\s*|\|\s*)pytest\b',
+                    lambda m: f'{m.group(1)}{_exe_q} -m pytest', command,
+                )
+        except Exception:
+            pass
+
         logger.info("[cmd_start] {}", command[:200])
         output_limit = ctx.ide_command_output_limit() if ide_runtime else 4000
 
@@ -435,12 +760,15 @@ async def run_command_handler(
         _timeout_for_thread = timeout_sec
 
         def _run_sync():
+            import os as _os
+            _env = _os.environ.copy()
+            _env["PYTHONIOENCODING"] = "utf-8"
+            _env["PYTHONUTF8"] = "1"
+            _env["PYTHONLEGACYWINDOWSSTDIO"] = "0"
+            # 2.11.b : le spawn a son propre try — un cwd invalide ou un
+            # exécutable introuvable n'est PAS un timeout et doit être dit
+            # tel quel (avant : « Timeout commande (>120s) » en 1 ms).
             try:
-                import os as _os
-                _env = _os.environ.copy()
-                _env["PYTHONIOENCODING"] = "utf-8"
-                _env["PYTHONUTF8"] = "1"
-                _env["PYTHONLEGACYWINDOWSSTDIO"] = "0"
                 proc = _subprocess.Popen(
                     _cmd_for_thread,
                     shell=True,
@@ -451,66 +779,113 @@ async def run_command_handler(
                     env=_env,
                     start_new_session=(_sys.platform != "win32"),
                 )
-                try:
-                    # Stream stdout line-by-line via loguru for SSE
-                    if _stdin_for_thread and proc.stdin:
-                        proc.stdin.write(_stdin_for_thread)
-                        proc.stdin.close()
-                    import threading as _th, time as _time
-                    _stdout_lines, _stderr_lines = [], []
-                    _start = _time.monotonic()
+            except Exception as _spawn_err:
+                return ("CMD_ERROR", f"{type(_spawn_err).__name__}: {_spawn_err}")
+            try:
+                # Stream stdout line-by-line via loguru for SSE
+                if _stdin_for_thread and proc.stdin:
+                    proc.stdin.write(_stdin_for_thread)
+                    proc.stdin.close()
+                import threading as _th
+                _stdout_lines, _stderr_lines = [], []
 
-                    def _read_stderr():
-                        for raw in proc.stderr:
-                            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                            _stderr_lines.append(line)
-                            logger.info("[cmd_output_err] {}", line[:500])
-
-                    _t = _th.Thread(target=_read_stderr, daemon=True)
-                    _t.start()
-
-                    for raw in proc.stdout:
-                        if _time.monotonic() - _start > _timeout_for_thread:
-                            raise _subprocess.TimeoutExpired(_cmd_for_thread, _timeout_for_thread)
-                        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                        _stdout_lines.append(line)
-                        logger.info("[cmd_output] {}", line[:500])
-
-                    proc.wait(timeout=max(5, _timeout_for_thread - (_time.monotonic() - _start)))
-                    _t.join(timeout=3)
-                    stdout = "\n".join(_stdout_lines).encode("utf-8")
-                    stderr = "\n".join(_stderr_lines).encode("utf-8")
-                    return _subprocess.CompletedProcess(
-                        proc.args, proc.returncode, stdout, stderr,
-                    )
-                except _subprocess.TimeoutExpired:
-                    # Tuer l'arbre de processus entier (pas juste cmd.exe)
-                    if _sys.platform == "win32":
-                        _subprocess.call(
-                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                            stdout=_subprocess.DEVNULL,
-                            stderr=_subprocess.DEVNULL,
-                        )
-                    else:
-                        import os as _os, signal as _signal
-                        try:
-                            _os.killpg(_os.getpgid(proc.pid), _signal.SIGKILL)
-                        except (ProcessLookupError, OSError):
-                            proc.kill()
+                # M1bis-F1 (run MiniQuiz 2026-07-06) — le timeout était vérifié À
+                # L'ARRIVÉE d'une ligne stdout : un petit-fils orphelin (Flask lancé
+                # via Start-Process) qui garde le pipe ouvert SANS écrire bloquait
+                # `for raw in proc.stdout` pour toujours → jamais de taskkill, jamais
+                # de [cmd_done], worker de mission gelé à jamais. Les DEUX flux sont
+                # lus par des threads daemon ; le timeout est porté par proc.wait().
+                def _read_stream(_stream, _sink, _tag):
                     try:
-                        proc.communicate(timeout=5)
-                    except Exception as e:
-                        logger.debug("[cmd] cleanup communicate: %s", e)
-                    return "TIMEOUT"
-            except Exception:
-                return "TIMEOUT"
+                        for raw in _stream:
+                            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                            _sink.append(line)
+                            logger.info("[" + _tag + "] {}", line[:500])
+                    except Exception:
+                        pass  # pipe fermé par le kill — fin de lecture normale
+
+                _t_err = _th.Thread(
+                    target=_read_stream, args=(proc.stderr, _stderr_lines, "cmd_output_err"),
+                    daemon=True,
+                )
+                _t_out = _th.Thread(
+                    target=_read_stream, args=(proc.stdout, _stdout_lines, "cmd_output"),
+                    daemon=True,
+                )
+                _t_err.start()
+                _t_out.start()
+
+                proc.wait(timeout=_timeout_for_thread)
+                _t_out.join(timeout=3)
+                _t_err.join(timeout=3)
+                # Le process est SORTI mais un enfant détaché tient encore les pipes
+                # (les readers vivent) : on n'attend PAS — retour honnête avec note.
+                if _t_out.is_alive() or _t_err.is_alive():
+                    _stderr_lines.append(
+                        "[NOTE] des processus enfants tournent encore en arrière-plan "
+                        "et tiennent la sortie — pour un serveur, appelle l'outil "
+                        "serve_website(directory='<dossier>', port=8081)."
+                    )
+                stdout = "\n".join(_stdout_lines).encode("utf-8")
+                stderr = "\n".join(_stderr_lines).encode("utf-8")
+                return _subprocess.CompletedProcess(
+                    proc.args, proc.returncode, stdout, stderr,
+                )
+            except _subprocess.TimeoutExpired:
+                # Tuer l'arbre de processus entier (pas juste cmd.exe)
+                if _sys.platform == "win32":
+                    _subprocess.call(
+                        ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                        stdout=_subprocess.DEVNULL,
+                        stderr=_subprocess.DEVNULL,
+                    )
+                else:
+                    import signal as _signal
+                    try:
+                        _os.killpg(_os.getpgid(proc.pid), _signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        proc.kill()
+                try:
+                    proc.communicate(timeout=5)
+                except Exception as e:
+                    logger.debug("[cmd] cleanup communicate: %s", e)
+                # M1bis-F1 : la sortie déjà collectée accompagne le timeout — le
+                # worker VOIT ce qui s'est passé (ex. bannière de démarrage Flask)
+                # au lieu d'un timeout muet.
+                _partial = "\n".join(_stdout_lines + [f"[STDERR] {l}" for l in _stderr_lines])
+                return ("TIMEOUT", _partial)
+            except Exception as _run_err:
+                # Erreur pendant l'exécution (≠ dépassement) : tuer le process
+                # et rapporter honnêtement — plus jamais de faux « Timeout ».
+                try:
+                    proc.kill()
+                    proc.communicate(timeout=5)
+                except Exception:
+                    pass
+                return ("CMD_ERROR", f"{type(_run_err).__name__}: {_run_err}")
 
         _result = await asyncio.to_thread(_run_sync)
 
-        if _result == "TIMEOUT":
+        if _result == "TIMEOUT" or (
+            isinstance(_result, tuple) and _result and _result[0] == "TIMEOUT"
+        ):
             logger.info("[cmd_done] timeout")
+            _partial_out = _result[1] if isinstance(_result, tuple) and len(_result) > 1 else ""
+            _msg = (
+                f"Timeout commande (>{timeout_sec}s) — arbre de processus tué. "
+                "Si tu lançais un SERVEUR : appelle l'outil "
+                "serve_website(directory='<dossier>', port=8081)."
+            )
+            if _partial_out.strip():
+                _msg += "\n[SORTIE PARTIELLE]\n" + _partial_out[-1500:]
+            return HandlerResult.ok(_msg, handler_name="run_command")
+
+        # 2.11.b : échec de lancement/exécution rendu tel quel (≠ timeout).
+        if isinstance(_result, tuple) and _result and _result[0] == "CMD_ERROR":
+            logger.info("[cmd_done] erreur exécution: {}", str(_result[1])[:200])
             return HandlerResult.ok(
-                f"Timeout commande (>{timeout_sec}s)", handler_name="run_command",
+                f"❌ Échec d'exécution (pas un timeout) : {_result[1]} (cwd={_cwd})",
+                handler_name="run_command",
             )
 
         exit_code = _result.returncode
@@ -543,6 +918,11 @@ async def run_command_handler(
                 f"Commande echouee (exit code {exit_code}, pas de sortie)",
                 handler_name="run_command",
             )
+        # A4/A5 (run FitLog) : le code de sortie n'apparaissait NULLE PART dans
+        # l'observation — pytest exit 4 est revenu comme un « ✅ run_command » et
+        # le worker a conclu « les tests passent ». Marqueur d'échec EN TÊTE.
+        if exit_code != 0 and output:
+            output = f"⚠️ ÉCHEC de la commande (exit code {exit_code}) :\n{output}"
         return HandlerResult.ok(
             output if output else "Commande executee (pas de sortie)",
             handler_name="run_command",
@@ -724,13 +1104,50 @@ async def parallel_tools_handler(
                 )
             _discord_channel_seen.add(_cid)
 
-    # Execute en parallèle via la fonction fournie
-    tasks = [execute_fn(tc["name"], tc["args"]) for tc in normalized]
+    # Les recherches réseau ont une borne locale: un provider bloqué ne doit
+    # jamais retenir les autres sous-appels ni la boucle ReAct. Les autres
+    # outils gardent leur durée historique (certains traitements sont longs).
+    try:
+        _search_timeout_s = float(
+            os.getenv("LUMENA_PARALLEL_SEARCH_TIMEOUT_S", "25") or 25
+        )
+    except (TypeError, ValueError):
+        _search_timeout_s = 25.0
+    _search_timeout_s = max(0.05, min(120.0, _search_timeout_s))
+    _bounded_search_tools = {"web_search", "web_search_brave"}
+
+    async def _execute_one(tc: Dict[str, Any]):
+        operation = execute_fn(tc["name"], tc["args"])
+        if tc["name"] not in _bounded_search_tools:
+            return await operation
+        try:
+            return await asyncio.wait_for(operation, timeout=_search_timeout_s)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"timeout recherche après {_search_timeout_s:g}s; "
+                "change de stratégie sans relancer la même requête en boucle"
+            ) from exc
+
+    tasks = [_execute_one(tc) for tc in normalized]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     lines = [f"⚡ parallel_tools: {len(normalized)} appel(s) exécuté(s)"]
     sub_results: List[SubToolResult] = []
     all_success = True
+
+    # Aperçu par sous-résultat : 160 car. coupaient les champs utiles d'un JSON
+    # (ex. `current_weather` d'Open-Meteo arrive après ~450 car. d'en-tête) → le
+    # modèle ne voyait pas les valeurs et REFAISAIT les appels un par un. On élargit
+    # l'aperçu (configurable) avec un budget total borné pour éviter une obs énorme.
+    try:
+        _preview_cap = max(160, int(os.getenv("LUMENA_PARALLEL_TOOL_PREVIEW_CHARS", "800") or 800))
+    except (ValueError, TypeError):
+        _preview_cap = 800
+    try:
+        _total_budget = max(_preview_cap, int(os.getenv("LUMENA_PARALLEL_TOOL_TOTAL_CHARS", "8000") or 8000))
+    except (ValueError, TypeError):
+        _total_budget = 8000
+    _budget_left = _total_budget
 
     for idx, result in enumerate(results, start=1):
         call = normalized[idx - 1]
@@ -738,7 +1155,7 @@ async def parallel_tools_handler(
             sub = SubToolResult(
                 tool_name=call["name"],
                 success=False,
-                content=str(result)[:400],
+                content=str(result)[:_preview_cap],
                 status_code="exception",
                 args=call["args"],
             )
@@ -749,13 +1166,17 @@ async def parallel_tools_handler(
             _obs_content = (getattr(result, "content", str(result)) or "")
             if not _obs_success:
                 all_success = False
+            # Cap effectif = min(plafond par-résultat, budget restant) — plancher 160
+            # pour que chaque résultat reste lisible même budget épuisé.
+            _cap = min(_preview_cap, max(160, _budget_left))
             preview = _obs_content.strip().replace("\n", " ")
-            if len(preview) > 160:
-                preview = preview[:160] + "..."
+            if len(preview) > _cap:
+                preview = preview[:_cap] + "..."
+            _budget_left -= len(preview)
             sub = SubToolResult(
                 tool_name=call["name"],
                 success=_obs_success,
-                content=_obs_content[:400],
+                content=_obs_content[:_preview_cap],
                 status_code="success" if _obs_success else "failed",
                 args=call["args"],
             )

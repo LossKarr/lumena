@@ -527,6 +527,69 @@ async def browser_stop(ctx: HandlerContext, **kwargs) -> HandlerResult:
         return HandlerResult.fail(f"Erreur: {e}")
 
 
+def critical_page_failures(failed_resources: Any) -> list:
+    """H5 — échecs HTTP same-origin qui condamnent réellement la page.
+
+    `failed_resources` (verrou 2.7.2) contient des entrées `"/chemin (404)"`,
+    déjà filtrées same-host et plafonnées à 5 par le navigateur. On en retire le
+    favicon : son absence est cosmétique et ne casse aucune page — c'est la même
+    exclusion que `web_project_runtime_verifier._critical_http_response`.
+
+    Pur, défensif : toute entrée illisible est ignorée plutôt que de faire
+    échouer une navigation.
+    """
+    out = []
+    try:
+        for entry in (failed_resources or []):
+            text = str(entry or "").strip()
+            if not text:
+                continue
+            path = text.split(" (")[0].strip().lower()
+            if path.endswith("/favicon.ico") or path.endswith("favicon.ico"):
+                continue
+            out.append(text)
+    except Exception:
+        return []
+    return out
+
+
+def _record_mission_http_failures(ctx: HandlerContext, failures: list) -> None:
+    """H5 — persiste sur la mission un échec HTTP observé au navigateur.
+
+    Le test réel du 2026-08-13 a montré que la porte web (F2) restait inerte
+    quand le lead vérifie « à la main » : il a utilisé `serve_website` +
+    `browser_navigate`, jamais `browser_verify_local_project`. Or F2 ne lit que
+    `web_runtime_failed`, posé par ce seul vérificateur. La mission a donc été
+    clôturée `completed` avec sa page d'accueil en **404** — alors que
+    `browser_navigate` l'avait vu et affiché.
+
+    Le fait était produit, montré, puis jeté. Ici il devient un fait de clôture,
+    quel que soit l'outil qui l'a observé. Fail-open : un signal manquant ne doit
+    jamais casser une navigation.
+    """
+    if not failures:
+        return
+    try:
+        if not getattr(ctx, "is_mission_run", False):
+            return
+        task_id = getattr(ctx, "runtime_task_id", None)
+        core = getattr(ctx, "lumena", None)
+        orch = getattr(core, "task_orchestrator", None) if core is not None else None
+        if not task_id or orch is None:
+            return
+        meta = (orch.get_task(task_id) or {}).get("metadata") or {}
+        known = list(meta.get("web_http_failures") or [])
+        for f in failures:
+            if f not in known:
+                known.append(f)
+        orch.set_task_metadata(task_id, web_http_failures=known[:10])
+        logger.warning(
+            "[H5] échec HTTP same-origin enregistré sur la mission : {}", failures[:3]
+        )
+    except Exception as exc:
+        logger.debug("[H5] enregistrement d'échec HTTP ignoré: {}", exc)
+
+
 async def browser_navigate(ctx: HandlerContext, *, url: str) -> HandlerResult:
     """Navigue vers une URL."""
     try:
@@ -539,7 +602,23 @@ async def browser_navigate(ctx: HandlerContext, *, url: str) -> HandlerResult:
                 await browser._page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass  # timeout acceptable, la page est déjà navigable
-            base = HandlerResult.ok(f"✅ Navigué vers: {result['title']} ({result['url']})")
+            _nav_msg = f"✅ Navigué vers: {result['title']} ({result['url']})"
+            # 2.7.2 (run MiniPanier) — ressources ≥400 de la page : le lead VOIT
+            # qu'un CSS/JS ne charge pas (page cassée à l'écran) au lieu de la
+            # croire belle. Même-host only, déjà plafonné côté navigateur.
+            _failed = result.get("failed_resources") or []
+            # H5 — le fait ne se contente plus d'être affiché : il est persisté
+            # sur la mission pour peser à la clôture (favicon exclu).
+            _record_mission_http_failures(ctx, critical_page_failures(_failed))
+            if _failed:
+                _nav_msg += (
+                    "\n\n⚠️ RESSOURCES EN ÉCHEC sur cette page : "
+                    + ", ".join(_failed)
+                    + "\n→ La page se charge SANS ces fichiers (style/JS manquant "
+                    "= UI cassée ou non-interactive). Corrige les chemins ou la "
+                    "config du serveur AVANT de conclure « la page marche »."
+                )
+            base = HandlerResult.ok(_nav_msg)
             return await _auto_visual_enrich(ctx, base, action_label="navigate")
         return HandlerResult.fail(f"Erreur: {result['error']}")
     except Exception as e:
@@ -1967,6 +2046,154 @@ async def browser_select(ctx: HandlerContext, *, selector: str, value: str = "",
         return HandlerResult.fail(f"Erreur: {e}")
 
 
+async def browser_select_index(ctx: HandlerContext, *, index: int, label: str = "",
+                               value: str = "", option_index: int = -1) -> HandlerResult:
+    """Choisit une option dans le <select> DOM indexe par son numero [N].
+
+    ── LOT Z19 — l'index qu'on affiche doit pouvoir servir partout ────────────
+
+    Run « Pelage » (2026-08-17). `browser_dom_state` venait d'afficher :
+
+        [9]  combobox "-- Choisir --Marie Curie"
+        [11] combobox "Bain (25€) Tonte (40€) Soin complet (60€)"
+
+    La mission a fait le geste naturel — `browser_select(selector='[9]',
+    label='Marie Curie', by='index')` — et Playwright a leve :
+
+        '[9]' is not a valid selector
+
+    `browser_click_index` et `browser_type_index` existaient ; le TROISIEME
+    outil de la famille, non. La mission a donc pilote les trois <select> en
+    JavaScript (`browser_evaluate`) : 10 appels, budget navigateur a 36/32.
+
+    Ce que ca coute vraiment : Z16 exige une interaction METIER reelle, et un
+    <select> est dans presque tous les formulaires metier (client, forfait,
+    etat). Sans cet outil, Z16 pousse la mission a ecrire son propre JS pour
+    simuler l'interaction — exactement le trou que Z16 devait fermer.
+
+    L'index etait calcule, il etait affiche au modele, et il etait jete au seul
+    outil qui en avait besoin.
+    """
+    try:
+        if int(index) < 1:
+            return HandlerResult.fail(
+                f"Index DOM invalide: [{index}] — les elements browser sont indexes a partir de 1"
+            )
+
+        if not str(label).strip() and not str(value).strip() and int(option_index) < 0:
+            return HandlerResult.fail(
+                f"Rien a selectionner dans [{index}] — fournis `label` (texte visible de "
+                f"l'option), `value` (attribut value) ou `option_index` (0-based)."
+            )
+
+        from ...tools.playwright_browser import get_playwright_browser
+        from ...computer_use.dom_indexer import get_dom_indexer
+
+        browser = get_playwright_browser()
+        if not browser.is_running or not browser._page:
+            return HandlerResult.fail("Navigateur non demarre ou aucune page active")
+
+        indexer = get_dom_indexer()
+        snap, target = await _get_dom_snapshot_and_target(
+            browser, indexer, index, ensure_visible=True
+        )
+
+        if target is None:
+            return HandlerResult.fail(
+                f"Element [{index}] introuvable. {len(snap.elements)} elements disponibles (1-{len(snap.elements)})"
+            )
+
+        stale_reason = _validate_index_against_last_dom_snapshot(browser, snap, target, index)
+        if stale_reason:
+            return HandlerResult.fail(stale_reason)
+
+        # Un <select> est indexe en role `combobox` par les deux chemins du
+        # DOM indexer. Tout autre role est une erreur d'aiguillage : on nomme
+        # le role reel ET l'outil qui convient, sinon le modele reessaie a
+        # l'aveugle (leçon des messages de `browser_type_index`).
+        if target.role != "combobox":
+            return HandlerResult.fail(
+                f"Element [{index}] ({target.role} \"{target.name}\") n'est pas une liste "
+                f"deroulante. Pour ce role, utilise "
+                f"{'browser_type_index' if target.role in {'textbox', 'searchbox', 'spinbutton'} else 'browser_click_index'}."
+            )
+
+        center = target.center
+        if center is None:
+            return HandlerResult.fail(
+                f"Element [{index}] ({target.role} \"{target.name}\") n'a pas de position connue"
+            )
+
+        page = browser._page
+        cx, cy = center
+        chosen = await page.evaluate(
+            """
+            ({x, y, label, value, optionIndex}) => {
+                const at = document.elementFromPoint(x, y);
+                const sel = at && (at.closest ? at.closest('select') : null);
+                if (!sel) return {ok: false, error: 'aucun <select> a cette position'};
+                const opts = Array.from(sel.options || []);
+                if (!opts.length) return {ok: false, error: 'ce <select> n a aucune option'};
+
+                const norm = (s) => String(s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                let found = -1;
+                if (label) {
+                    const want = norm(label);
+                    found = opts.findIndex(o => norm(o.textContent) === want);
+                    if (found < 0) found = opts.findIndex(o => norm(o.textContent).includes(want));
+                } else if (value) {
+                    const want = norm(value);
+                    found = opts.findIndex(o => norm(o.value) === want);
+                } else if (optionIndex >= 0 && optionIndex < opts.length) {
+                    found = optionIndex;
+                }
+                if (found < 0) {
+                    return {
+                        ok: false,
+                        error: 'option introuvable',
+                        available: opts.map(o => String(o.textContent || '').trim()),
+                    };
+                }
+                sel.selectedIndex = found;
+                // input PUIS change : certaines pages n'ecoutent que l'un des deux.
+                sel.dispatchEvent(new Event('input', {bubbles: true}));
+                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                return {
+                    ok: true,
+                    text: String(opts[found].textContent || '').trim(),
+                    value: String(opts[found].value || ''),
+                };
+            }
+            """,
+            {"x": cx, "y": cy, "label": str(label or ""),
+             "value": str(value or ""), "optionIndex": int(option_index)},
+        )
+
+        if not (chosen or {}).get("ok"):
+            dispo = (chosen or {}).get("available") or []
+            detail = ""
+            if dispo:
+                apercu = ", ".join(f'"{o}"' for o in dispo[:8])
+                if len(dispo) > 8:
+                    apercu += f", … (+{len(dispo) - 8})"
+                detail = f" Options reellement presentes : [{apercu}]."
+            return HandlerResult.fail(
+                f"Echec de selection dans [{index}] \"{target.name}\" : "
+                f"{(chosen or {}).get('error', 'inconnu')}.{detail}"
+            )
+
+        base = f"✅ Option \"{chosen.get('text')}\" selectionnee dans [{index}]"
+        try:
+            summary = _format_form_state_summary(await _read_browser_form_state(page))
+            if summary:
+                base = f"{base}\n\n{summary}"
+        except Exception:
+            pass
+        return HandlerResult.ok(base)
+    except Exception as e:
+        return HandlerResult.fail(f"Erreur: {e}")
+
+
 async def browser_keyboard_press(ctx: HandlerContext, *, key: str) -> HandlerResult:
     """Presse une touche clavier (Enter, Tab, Escape, ArrowDown, Control+a, etc.)."""
     try:
@@ -3152,6 +3379,25 @@ def get_browser_handler_defs() -> List[HandlerDef]:
                 "required": ["selector"],
             },
             handler=browser_select,
+            category="browser",
+            source_module="handlers.browser",
+        ),
+        HandlerDef(
+            name="browser_select_index",
+            description=(
+                "Choisit une option dans la liste deroulante DOM indexee [N] (vue par "
+                "browser_dom_state) — le pendant de browser_click_index pour les <select>"
+            ),
+            parameters={
+                "properties": {
+                    "index": {"type": "integer", "description": "Index DOM [N] du <select>"},
+                    "label": {"type": "string", "description": "Texte visible de l'option"},
+                    "value": {"type": "string", "description": "Attribut value de l'option"},
+                    "option_index": {"type": "integer", "description": "Rang 0-based de l'option"},
+                },
+                "required": ["index"],
+            },
+            handler=browser_select_index,
             category="browser",
             source_module="handlers.browser",
         ),

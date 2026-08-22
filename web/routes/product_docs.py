@@ -839,6 +839,102 @@ Lumena reprend la tâche avec le nouvel outil
 """,
     },
     {
+        "id": "p2p",
+        "icon": "git-fork",
+        "title": "Autonomie Multi-Lumena",
+        "content": """
+<p class="doc-lead">Au-dessus du jumelage sécurisé (voir <strong>Réseau Multi-Lumena</strong>), une Lumena peut
+<strong>décider seule</strong> de confier une mission à une autre instance de la flotte, sous filet de
+sécurité. C'est un <strong>essaim décentralisé</strong> : pas d'orchestration cloud, chaque instance
+t'appartient.</p>
+
+<div class="doc-callout doc-callout-warn" style="border-left:4px solid #f59e0b">
+  <strong>Principe Lumena 24/7 :</strong> toute l'autonomie <strong>gate le FUTUR, jamais le PRÉSENT</strong>.
+  Couper le réseau ou mettre un pair en quarantaine empêche les <em>nouvelles</em> délégations —
+  mais une mission <strong>en cours se termine toujours</strong>.
+</div>
+
+<p class="doc-muted">Prérequis : les pairs doivent être jumelés et au niveau <code>mission</code>
+(scope <code>task.delegate</code>) — détails dans la section <strong>Réseau Multi-Lumena</strong>.</p>
+
+<h3>Trois modes d'initiative</h3>
+<p>Réglée par instance via <code>LUMENA_PEER_AUTONOMY</code> : <code>off</code> (ne délègue que sur demande) ·
+<code>shadow</code> (observation : <strong>décide et montre</strong> ce qu'elle déléguerait, <strong>sans agir</strong>) ·
+<code>live</code> (<strong>agit seule</strong>, sous filet).</p>
+
+<div class="doc-caps-grid">
+  <div class="doc-cap-card">
+    <h4>Carte des capacités (C2)</h4>
+    <ul>
+      <li>Par pair : capacités, scopes, niveau, joignabilité (fraîcheur), quarantaine</li>
+      <li>Booléen <code>delegable</code> = appelable ∧ joignable ∧ non-quarantaine ∧ scopes</li>
+      <li>Substrat de décision de l'autonomie · <code>GET /api/peer/capability-map</code></li>
+    </ul>
+  </div>
+  <div class="doc-cap-card">
+    <h4>Initiative — shadow (C3)</h4>
+    <ul>
+      <li>Propose des délégations sur les objectifs actifs, <strong>n'agit jamais</strong></li>
+      <li>Suggestions <strong>persistées</strong> + visibles dans le panneau (bouton « Tester »)</li>
+      <li>Permet d'<strong>observer</strong> les décisions avant d'activer le live</li>
+    </ul>
+  </div>
+  <div class="doc-cap-card">
+    <h4>Initiative — live (C3)</h4>
+    <ul>
+      <li>Délègue <strong>seule</strong>, l'envoi réutilise tout le filet de sécurité</li>
+      <li>Freins anti-emballement : <strong>halt → présence → dedup → budget</strong></li>
+      <li>Par défaut n'agit que si l'utilisateur est <strong>absent</strong> ; <code>WHEN_PRESENT=1</code> → 24/7</li>
+    </ul>
+  </div>
+  <div class="doc-cap-card">
+    <h4>Filet de sécurité (C4)</h4>
+    <ul>
+      <li><strong>Kill-switch</strong> <code>LUMENA_PEER_HALT</code> : coupe tout nouveau, draine l'en-cours</li>
+      <li><strong>Quarantaine auto</strong> : un pair qui enchaîne les échecs est isolé des nouvelles délégations</li>
+      <li>Bus d'événements SSE temps réel (missions, suggestions, quarantaine)</li>
+    </ul>
+  </div>
+</div>
+
+<h3>Exécution d'une mission déléguée</h3>
+<p>Le pair qui reçoit une mission l'exécute avec son <strong>cerveau Lumena complet</strong> en arrière-plan
+(<code>think_and_act_silent</code>, <code>allow_when_busy</code> → il reste joignable pendant) au sein d'une
+<strong>file d'attente bornée</strong> (sémaphore, <code>LUMENA_PEER_MISSION_CONCURRENCY</code>) pour ne pas saturer le LLM.
+Les <strong>livrables</strong> (fichiers produits) reviennent à l'émetteur via un canal d'artefacts signé,
+déposés dans <code>workspace/inbound/&lt;pair&gt;/&lt;mission&gt;/</code>.</p>
+
+<h3>Clés de configuration (groupe « Instance », effet immédiat)</h3>
+<table class="doc-table">
+<thead><tr><th>Clé</th><th>Défaut</th><th>Rôle</th></tr></thead>
+<tbody>
+<tr><td><code>LUMENA_PEER_ENABLED</code></td><td>0</td><td>Réseau maître (découverte + collaboration)</td></tr>
+<tr><td><code>LUMENA_PEER_AUTONOMY</code></td><td>off</td><td>Initiative : off / shadow / live</td></tr>
+<tr><td><code>LUMENA_PEER_AUTONOMY_MAX_PER_HOUR</code></td><td>3</td><td>Plafond de délégations autonomes par heure</td></tr>
+<tr><td><code>LUMENA_PEER_AUTONOMY_WHEN_PRESENT</code></td><td>0</td><td>live : agir même si l'utilisateur est présent (24/7)</td></tr>
+<tr><td><code>LUMENA_PEER_HALT</code></td><td>0</td><td>Kill-switch (veto nouveau, draine l'en-cours)</td></tr>
+<tr><td><code>LUMENA_PEER_QUARANTINE_THRESHOLD</code></td><td>5</td><td>Échecs consécutifs avant quarantaine auto</td></tr>
+<tr><td><code>LUMENA_PEER_MISSION_CONCURRENCY</code></td><td>1</td><td>Missions exécutées en parallèle</td></tr>
+</tbody>
+</table>
+
+<h3>Panneau « Instances & Réseau »</h3>
+<ul>
+  <li><strong>Carte maître</strong> : activer le réseau + bouton « Couper » (kill-switch).</li>
+  <li><strong>Autonomie</strong> : sélecteur off/shadow/live + bouton « Tester » + badge de budget en mode live.</li>
+  <li><strong>Équipe Lumena</strong> : pairs connus (statut, scopes, niveau, actions).</li>
+  <li><strong>Quarantaine</strong> et <strong>Suggestions de délégation</strong> : cartes dédiées.</li>
+  <li>Vue avancée : jumelage par code, niveau par pair, observabilité, diagnostic réseau.</li>
+</ul>
+
+<div class="doc-callout">
+  <strong>Invariant :</strong> tout dialogue passe par <strong>l'utilisateur ↔ Lumena (chat)</strong>.
+  Le panneau réseau sert au <strong>pilotage et à l'observation</strong> — il n'y a jamais de conversation directe
+  entre pairs dans l'UI.
+</div>
+""",
+    },
+    {
         "id": "tools",
         "icon": "wrench",
         "title": "Catalogue d'outils",

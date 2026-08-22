@@ -8,6 +8,10 @@ export function setupNavigation(){
 }
 
 export function switchPanel(panelName){
+  // Lot 4.3 — ferme le flux SSE des missions quand on quitte le panneau (1 seule conn max).
+  if(panelName!=='missions'&&window.closeMissionStream){try{window.closeMissionStream()}catch(_){}}
+  // Overview owns a cancellable batch and a WebGL loop; suspend both off-panel.
+  if(panelName!=='overview'&&window.stopOverview){try{window.stopOverview()}catch(_){}}
   document.querySelectorAll('.nav-item').forEach(i=>i.classList.toggle('active',i.dataset.panel===panelName));
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id===`panel-${panelName}`));
   document.getElementById('topbar-title').textContent=panelName.charAt(0).toUpperCase()+panelName.slice(1).replace(/-/g,' ');
@@ -50,6 +54,8 @@ export function loadPanelData(p){
     case'tools':loadTools();break;case'emotions':loadEmotions();break;
     case'hooks':loadHooks();break;case'voice':loadVoiceStatus();break;
     case'trace':loadTraceRecent();break;case'tasks':loadActiveTasks();break;
+    case'missions':loadMissions();break;
+    case'document-studio':loadDocumentStudio();break;
     case'sessions':loadSessions();break;
     case'overview':loadOverview();break;
     case'infra-telegram':loadTelegramDetails();break;
@@ -95,6 +101,7 @@ const cmdItems=[
   {icon:'monitor',label:'Console',action:()=>switchPanel('console')},
   {icon:'clipboard-list',label:'Taches',action:()=>switchPanel('tasks')},
   {icon:'layers',label:'Sessions',action:()=>switchPanel('sessions')},
+  {icon:'library-big',label:'Documents',action:()=>switchPanel('document-studio')},
   {icon:'send',label:'Telegram',action:()=>switchPanel('infra-telegram')},
   {icon:'message-circle',label:'WhatsApp',action:()=>switchPanel('infra-whatsapp')},
   {icon:'bot',label:'Autonomie',action:()=>switchPanel('infra-autonomy')},

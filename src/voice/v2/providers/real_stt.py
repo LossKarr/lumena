@@ -12,6 +12,7 @@ l'énoncé capturé). Les partiels Whisper en flux continu = étape ultérieure.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import time
@@ -29,6 +30,7 @@ class RealSTTAdapter(STTProvider):
         # `stt` injectable (LumenaSTT réel OU fake en test). None => résolution paresseuse.
         self._stt = stt
         self.language = language
+        self._transcribe_lock = asyncio.Lock()
 
     def _get_stt(self) -> Any:
         if self._stt is None:
@@ -46,16 +48,43 @@ class RealSTTAdapter(STTProvider):
             return False
 
     async def transcribe(self, audio: Any, *, language: str = "fr", fast: bool = True) -> str:
-        try:
-            stt = self._get_stt()
-        except Exception:
+        async with self._transcribe_lock:
+            try:
+                stt = self._get_stt()
+            except Exception:
+                return ""
+            # bytes PCM16 → mémoire ; chemin/str → fichier (réutilise la cascade existante).
+            if isinstance(audio, (bytes, bytearray)):
+                return await stt.transcribe_memory(bytes(audio), fast=fast)
+            if isinstance(audio, (str, Path)):
+                return await stt.transcribe_file(str(audio))
             return ""
-        # bytes PCM16 → mémoire ; chemin/str → fichier (réutilise la cascade existante).
-        if isinstance(audio, (bytes, bytearray)):
-            return await stt.transcribe_memory(bytes(audio), fast=fast)
-        if isinstance(audio, (str, Path)):
-            return await stt.transcribe_file(str(audio))
-        return ""
+
+    async def transcribe_detailed(
+        self, audio: Any, *, language: str = "fr", strict: bool = False
+    ) -> dict:
+        """Résultat structuré opt-in pour la dictée du compositeur."""
+        async with self._transcribe_lock:
+            try:
+                stt = self._get_stt()
+            except Exception as exc:
+                if strict:
+                    raise RuntimeError(f"STT indisponible: {exc}") from exc
+                return {"text": "", "segments": [], "status": "stt_unavailable"}
+
+            if isinstance(audio, (str, Path)):
+                detailed = getattr(stt, "transcribe_file_detailed", None)
+                if callable(detailed):
+                    return await detailed(str(audio), strict=strict)
+                text = await stt.transcribe_file(str(audio))
+            elif isinstance(audio, (bytes, bytearray)):
+                text = await stt.transcribe_memory(bytes(audio), fast=False)
+            else:
+                text = ""
+            return {
+                "text": str(text or "").strip(), "segments": [],
+                "status": "ok" if text else "no_speech",
+            }
 
     async def stream(self, audio: Any, *, language: str = "fr") -> AsyncIterator[STTResult]:
         # Minimal réel : on transcrit l'énoncé capturé et on émet UN final.

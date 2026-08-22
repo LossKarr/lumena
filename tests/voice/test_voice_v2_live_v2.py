@@ -17,7 +17,7 @@ from src.voice.v2 import (
 )
 from src.voice.v2.live import (
     _extract_text, _is_stop_request, _is_cancel_request, _current_time_context,
-    _clean_for_speech, _compact_for_voice, _route_voice,
+    _clean_for_speech, _compact_for_voice, resolve_voice_agent_max_iterations,
 )
 
 
@@ -149,7 +149,7 @@ class _FakeLLM:
 
 
 @pytest.mark.asyncio
-async def test_live_uses_direct_llm_by_default():
+async def test_live_uses_official_core_chat_by_default():
     core = _FakeCore()
     played = []
     player = LocalAudioPlayer(ledger=ConversationAudioLedger(),
@@ -158,20 +158,15 @@ async def test_live_uses_direct_llm_by_default():
     live = VoiceV2Live(core, vad=_ScriptedVAD(), stt=_FakeSTT(), tts=FakeTTSProvider(),
                        player=player, log=logs.append)
     await live.run()
-    # Par défaut, le live voix utilise le LLM direct court, pas AgentService/core.chat.
-    assert core.calls == []
-    assert len(core.llm.calls) == 1
-    messages, kwargs = core.llm.calls[0]
-    assert messages[-1] == {"role": "user", "content": "ouvre le fichier"}
-    assert "Date et heure actuelles:" in messages[0]["content"]
-    assert kwargs["max_tokens"] == 220 and kwargs["no_upgrade"] is True
+    assert core.calls == [("ouvre le fichier", "voice")]
+    assert core.llm.calls == []
     assert live.turns == 1
     # La réponse a été synthétisée puis jouée (segments du FakeTTS).
-    assert played and any("réponse courte" in p for p in played)
+    assert played and any("voici ta réponse" in p for p in played)
 
 
 @pytest.mark.asyncio
-async def test_live_core_chat_mode_masks_tools():
+async def test_live_core_chat_never_mutates_global_tools():
     core = _FakeCore()
     player = LocalAudioPlayer(ledger=ConversationAudioLedger(),
                               play_fn=lambda x: _noop(), stop_fn=lambda: None)
@@ -179,8 +174,22 @@ async def test_live_core_chat_mode_masks_tools():
                        player=player, llm_mode="core_chat")
     await live.run()
     assert core.calls == [("ouvre le fichier", "voice")]
-    assert core.tool_system_seen == [None]          # outils masqués pendant l'appel voix
-    assert core.tool_system is not None             # puis restaurés
+    assert core.tool_system_seen == [core.tool_system]
+    assert core.tool_system is not None
+
+
+@pytest.mark.asyncio
+async def test_direct_llm_requires_explicit_benchmark_mode():
+    core = _FakeCore()
+    played = []
+    player = LocalAudioPlayer(ledger=ConversationAudioLedger(),
+                              play_fn=lambda x: _async_append(played, x), stop_fn=lambda: None)
+    live = VoiceV2Live(core, vad=_ScriptedVAD(), stt=_FakeSTT(), tts=FakeTTSProvider(),
+                       player=player, llm_mode="direct")
+    await live.run()
+    assert core.calls == []
+    assert len(core.llm.calls) == 1
+    assert played
 
 
 @pytest.mark.asyncio
@@ -300,41 +309,21 @@ def test_cancel_request_detection():
     assert not _is_cancel_request("tais-toi")     # ça, c'est un stop voix
 
 
-# ── Routeur rapide : classification (pur, sans hardware) ───────────────────────
-def test_route_voice_classifies_launch_direct_agent():
-    assert _route_voice("ouvre Google") == ("launch", "google")
-    assert _route_voice("lance Spotify") == ("launch", "spotify")
-    assert _route_voice("ouvre xbox") == ("launch", "xbox")
-    # questions / conversation simples → direct (pas d'agent)
-    assert _route_voice("quelle heure est-il ?") == ("direct", None)
-    assert _route_voice("qui es-tu") == ("direct", None)
-    assert _route_voice("comment tu vas") == ("direct", None)
-    # demandes complexes → agent
-    assert _route_voice("cherche la météo à Paris")[0] == "agent"
-    assert _route_voice("génère un site complet")[0] == "agent"
-    assert _route_voice("ouvre le fichier config.py")[0] == "agent"   # fichier → agent
-    assert _route_voice("ouvre google et cherche la météo")[0] == "agent"  # complexité prime
-
-
 @pytest.mark.asyncio
-async def test_agent_simple_command_launches_without_react():
-    launched = []
+async def test_agent_simple_command_uses_react_and_tool_registry_path():
     core = _FakeAgentCore()
-    live, spoken, events = _build_agent_live(core, launch_fn=lambda t: launched.append(t))
+    live, spoken, events = _build_agent_live(core)
     run_task = asyncio.create_task(live.tm.run())
     await live._handle_agent_turn("ouvre google")
     await asyncio.wait_for(live._task, timeout=2.0)
     await live.tm.shutdown(); await asyncio.wait_for(run_task, timeout=2.0)
     await live.runtime.aclose()
-    assert core.think_calls == []                       # PAS de ReAct
-    assert core.chat_calls == []                        # flux texte intact
-    assert launched == ["https://www.google.com"]       # lancement direct
-    assert any("Je lance Google" in s for s in spoken)  # « je lance », jamais « c'est ouvert »
-    assert not any("ouvert" in s.lower() for s in spoken)
+    assert core.think_calls == [("ouvre google", "voice", 6)]
+    assert core.chat_calls == []
 
 
 @pytest.mark.asyncio
-async def test_agent_simple_question_uses_direct_not_react():
+async def test_agent_simple_question_stays_in_explicit_agent_mode():
     core = _FakeAgentCore()
     live, spoken, events = _build_agent_live(core)
     run_task = asyncio.create_task(live.tm.run())
@@ -342,10 +331,9 @@ async def test_agent_simple_question_uses_direct_not_react():
     await asyncio.wait_for(live._task, timeout=2.0)
     await live.tm.shutdown(); await asyncio.wait_for(run_task, timeout=2.0)
     await live.runtime.aclose()
-    assert core.think_calls == []                       # PAS de ReAct
-    assert core.chat_calls == []                        # flux texte intact
-    assert len(core.llm.calls) == 1                     # LLM direct court utilisé
-    assert any("réponse courte" in s for s in spoken)
+    assert core.think_calls == [("quelle heure est-il ?", "voice", 6)]
+    assert core.chat_calls == []
+    assert core.llm.calls == []
 
 
 @pytest.mark.asyncio
@@ -379,6 +367,96 @@ async def test_agent_runs_think_and_act_and_speaks_milestones():
 
 
 @pytest.mark.asyncio
+async def test_agent_speech_starts_when_canonical_final_is_ready():
+    release = asyncio.Event()
+    final_seen = asyncio.Event()
+
+    class _EarlyFinalCore(_FakeAgentCore):
+        async def think_and_act(self, query, source_channel="web", sender=None,
+                                step_callback=None, max_iterations=None,
+                                final_ready_callback=None):
+            self.think_calls.append((query, source_channel, max_iterations))
+            result = "Le resultat canonique est pret."
+            if final_ready_callback:
+                pending = final_ready_callback(result)
+                if asyncio.iscoroutine(pending):
+                    asyncio.create_task(pending)
+            final_seen.set()
+            await release.wait()  # simule hooks memoire/learning encore actifs
+            return result
+
+    core = _EarlyFinalCore()
+    live, spoken, events = _build_agent_live(core)
+    run_task = asyncio.create_task(live.tm.run())
+    await live._handle_agent_turn("fais le travail")
+    await asyncio.wait_for(final_seen.wait(), timeout=1.0)
+    for _ in range(30):
+        if "Le resultat canonique est pret." in spoken:
+            break
+        await asyncio.sleep(0.01)
+    assert "Le resultat canonique est pret." in spoken
+    assert live._task is not None and not live._task.done()
+    release.set()
+    await asyncio.wait_for(live._task, timeout=1.0)
+    assert spoken.count("Le resultat canonique est pret.") == 1
+    await live.tm.shutdown(); await asyncio.wait_for(run_task, timeout=1.0)
+    await live.runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_normal_conversation_stays_available_during_agent_work():
+    release = asyncio.Event()
+    core = _FakeAgentCore(hang=release)
+    live, spoken, events = _build_agent_live(core)
+    run_task = asyncio.create_task(live.tm.run())
+    await live._handle_agent_turn("analyse le projet")
+    await asyncio.sleep(0)
+    assert live._task is not None and not live._task.done()
+    await live._handle_agent_turn("comment vas-tu pendant ce travail ?")
+    for _ in range(50):
+        if core.chat_calls:
+            break
+        await asyncio.sleep(0.01)
+    assert core.chat_calls == [("comment vas-tu pendant ce travail ?", "voice")]
+    assert live._task is not None and not live._task.done()
+    release.set()
+    await asyncio.wait_for(live._task, timeout=1.0)
+    await live.tm.shutdown(); await asyncio.wait_for(run_task, timeout=1.0)
+    await live.runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_repeated_status_questions_do_not_launch_agents():
+    from src.runtime.task_orchestrator import TaskOrchestrator
+
+    release = asyncio.Event()
+    orch = TaskOrchestrator(persistence_path=None)
+    core = _FakeAgentCore(hang=release, task_orchestrator=orch)
+    live, spoken, events = _build_agent_live(core)
+    run_task = asyncio.create_task(live.tm.run())
+    await live._handle_agent_turn("analyse le projet")
+    await asyncio.sleep(0)
+    for _ in range(10):
+        await live._handle_agent_turn("tu en es où ?")
+    assert len(core.think_calls) == 1
+    assert core.chat_calls == []
+    assert any("travail est" in s.lower() for s in spoken)
+    release.set()
+    await asyncio.wait_for(live._task, timeout=1.0)
+    await live.tm.shutdown(); await asyncio.wait_for(run_task, timeout=1.0)
+    await live.runtime.aclose()
+
+
+def test_agent_periodic_heartbeat_is_disabled_by_default():
+    live = VoiceV2Live(
+        _FakeAgentCore(), vad=_ScriptedVAD(), stt=_FakeSTT(), tts=FakeTTSProvider(),
+        player=LocalAudioPlayer(play_fn=lambda x: _noop(), stop_fn=lambda: None),
+        llm_mode="agent",
+    )
+    assert live.heartbeat_s == 0.0
+
+
+@pytest.mark.asyncio
 async def test_agent_max_iterations_is_configurable_for_voice_only():
     core = _FakeAgentCore(result="ok")
     live, spoken, events = _build_agent_live(core, agent_max_iterations=3)
@@ -389,6 +467,17 @@ async def test_agent_max_iterations_is_configurable_for_voice_only():
     await asyncio.wait_for(run_task, timeout=2.0)
     await live.runtime.aclose()
     assert core.think_calls == [("analyse le projet", "voice", 3)]   # plafond voix transmis
+
+
+def test_production_voice_agent_budget_matches_standard_react_and_is_bounded(monkeypatch):
+    monkeypatch.delenv("LUMENA_VOICE_AGENT_MAX_ITERATIONS", raising=False)
+    assert resolve_voice_agent_max_iterations() == 35
+    monkeypatch.setenv("LUMENA_VOICE_AGENT_MAX_ITERATIONS", "72")
+    assert resolve_voice_agent_max_iterations() == 72
+    monkeypatch.setenv("LUMENA_VOICE_AGENT_MAX_ITERATIONS", "999")
+    assert resolve_voice_agent_max_iterations() == 100
+    monkeypatch.setenv("LUMENA_VOICE_AGENT_MAX_ITERATIONS", "invalid")
+    assert resolve_voice_agent_max_iterations() == 35
 
 
 @pytest.mark.asyncio

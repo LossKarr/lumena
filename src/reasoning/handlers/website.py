@@ -124,12 +124,19 @@ async def write_website_files_handler(
 async def serve_website_handler(
     ctx: HandlerContext,
     project_name: str = "",
-    port: int = 8080,
+    # LOT 2.0 (run MotDuJour 2026-07-06) : défaut 8080 = port RÉSERVÉ Lumena
+    # (E.0/E.1b) → un appel sans port explicite était refusé d'office. 8081 =
+    # premier port de la plage preview autorisée.
+    port: int = 8081,
     directory: str = "",
 ) -> HandlerResult:
     if not WEBSITE_BUILDER_AVAILABLE:
         return HandlerResult.fail("❌ Module website_builder non disponible", handler_name="serve_website")
     try:
+        # NB : l'enregistrement de la preview (SSRF) vit au boundary authoritatif
+        # du serveur — website_builder.start_preview_server / stop_preview_server
+        # (port RÉELLEMENT lié) — pas ici, pour couvrir tous les appelants et éviter
+        # un registry stale. Cf. P1.
         result = await _serve_website(
             project_name=project_name,
             port=port,
@@ -138,6 +145,24 @@ async def serve_website_handler(
         return HandlerResult.ok(result, handler_name="serve_website")
     except Exception as e:
         return HandlerResult.fail(f"❌ Erreur serve_website: {e}", handler_name="serve_website")
+
+
+async def start_preview_server_handler(
+    ctx: HandlerContext,
+    directory: str = "",
+    port: int = 8081,
+    project_name: str = "",
+) -> HandlerResult:
+    """LOT 2.0 (run MotDuJour 2026-07-06) — ALIAS RÉEL de serve_website.
+
+    Toute la guidance (sanitizer, steers, BROWSER GATE) nommait
+    `start_preview_server`… qui n'était qu'une fonction interne de
+    website_builder — PAS un outil. Le lead a cherché l'outil fantôme, dit
+    2× « pas dans ma liste », écrit un run.py de contournement puis fabriqué
+    le récapitulatif. Quel que soit le nom que le modèle cherche, il existe."""
+    return await serve_website_handler(
+        ctx, project_name=project_name, port=port, directory=directory,
+    )
 
 
 async def stop_website_server_handler(ctx: HandlerContext) -> HandlerResult:
@@ -592,6 +617,17 @@ async def check_web_project_handler(
     return HandlerResult.ok("\n".join(lines), handler_name="check_web_project")
 
 
+def _prefer_web_project_root(candidate: Path) -> Path:
+    """Promote templates/ or another child back to its Flask project root."""
+    resolved = Path(candidate).resolve()
+    for base in (resolved, *list(resolved.parents)[:3]):
+        if not (base / "app.py").is_file():
+            continue
+        if (base / "templates" / "index.html").is_file() or (base / "index.html").is_file():
+            return base
+    return resolved
+
+
 def _resolve_web_project_dir(ctx: HandlerContext, project_dir: str = "", project_path: str = "") -> Path:
     """Resolve a web project directory from an absolute path or workspace-relative name."""
     from ...utils.paths import WORKSPACE_DIR
@@ -600,14 +636,21 @@ def _resolve_web_project_dir(ctx: HandlerContext, project_dir: str = "", project
     if raw:
         candidate = Path(raw)
         if candidate.is_absolute():
-            return candidate
+            return _prefer_web_project_root(candidate)
         base = Path(ctx.lumena_root) / raw
         if base.exists():
-            return base
+            return _prefer_web_project_root(base)
         ws_candidate = WORKSPACE_DIR / raw
         if ws_candidate.exists():
-            return ws_candidate
+            return _prefer_web_project_root(ws_candidate)
         return base
+
+    mission_subdir_fn = getattr(ctx, "mission_workspace_subdir", None)
+    mission_subdir = str(mission_subdir_fn() or "") if callable(mission_subdir_fn) else ""
+    if mission_subdir:
+        mission_candidate = (WORKSPACE_DIR / mission_subdir).resolve()
+        if mission_candidate.is_dir():
+            return _prefer_web_project_root(mission_candidate)
 
     ws = WORKSPACE_DIR
     candidates = sorted(
@@ -616,7 +659,7 @@ def _resolve_web_project_dir(ctx: HandlerContext, project_dir: str = "", project
         reverse=True,
     )
     if candidates:
-        return candidates[0].parent
+        return _prefer_web_project_root(candidates[0].parent)
     return ws
 
 
@@ -712,16 +755,42 @@ def get_website_handler_defs() -> List[HandlerDef]:
         ),
         HandlerDef(
             name="serve_website",
-            description="Lance un serveur HTTP local pour prévisualiser un site web généré. Ouvre le site dans le navigateur.",
+            description=(
+                "Lance un serveur local pour prévisualiser un site/app web et "
+                "ENREGISTRE le port au registre de preview (browser_navigate autorisé "
+                "ensuite). 2.5 : si le dossier contient app.py avec create_app/Flask, "
+                "lance l'APP FLASK (les routes /api/* tournent) ; sinon sert en statique. "
+                "Ex: serve_website(directory='workspace/monapp', port=8081). "
+                "Ports autorisés: 8081-8099."
+            ),
             parameters={
                 "properties": {
                     "project_name": {"type": "string", "description": "Nom du projet à servir", "default": ""},
-                    "port": {"type": "integer", "description": "Port HTTP (défaut: 8080)", "default": 8080},
+                    "port": {"type": "integer", "description": "Port HTTP 8081-8099 (défaut: 8081)", "default": 8081},
                     "directory": {"type": "string", "description": "Dossier à servir (alternatif)", "default": ""},
                 },
                 "required": [],
             },
             handler=serve_website_handler,
+            category="website",
+            source_module="handlers.website",
+        ),
+        HandlerDef(
+            name="start_preview_server",
+            description=(
+                "Alias de serve_website : sert un dossier web local sur un port de "
+                "preview enregistré (SSRF ok pour browser_navigate). "
+                "Ex: start_preview_server(directory='workspace/monapp', port=8081)."
+            ),
+            parameters={
+                "properties": {
+                    "directory": {"type": "string", "description": "Dossier à servir", "default": ""},
+                    "port": {"type": "integer", "description": "Port HTTP 8081-8099 (défaut: 8081)", "default": 8081},
+                    "project_name": {"type": "string", "description": "Nom du projet (alternatif)", "default": ""},
+                },
+                "required": [],
+            },
+            handler=start_preview_server_handler,
             category="website",
             source_module="handlers.website",
         ),
@@ -803,6 +872,9 @@ def get_website_handler_defs() -> List[HandlerDef]:
         HandlerDef(
             name="browser_verify_local_project",
             description=(
+                "Pour Flask, passe la RACINE contenant app.py, jamais templates/. En mission, "
+                "le dossier courant est utilise si aucun chemin n'est fourni. Ne passe pas de "
+                "parametres hors schema. "
                 "Vérifie automatiquement un projet web local dans Playwright après génération/modification : "
                 "serveur local, navigation localhost, erreurs console/page, DOM visible, screenshots, scroll, "
                 "interactions basiques et canvas si attendu. À utiliser avant de dire qu'un site/app/jeu web est terminé."

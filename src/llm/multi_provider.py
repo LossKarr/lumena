@@ -10,6 +10,7 @@ import json
 import re
 import threading
 import httpx
+from contextvars import ContextVar
 from typing import List, Dict, Any, Optional, AsyncIterator
 from loguru import logger
 
@@ -48,6 +49,108 @@ try:
     TELEMETRY_AVAILABLE = True
 except Exception:
     TELEMETRY_AVAILABLE = False  # telemetry non disponible
+
+
+_ANTHROPIC_NO_SAMPLING_MODEL_PARTS = (
+    "opus-4-7",
+    "opus-4-8",
+    "claude-opus-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-sonnet-5",
+)
+
+
+def _anthropic_model_disallows_sampling(model: str) -> bool:
+    """True pour les modèles Anthropic adaptive-thinking refusant sampling non défaut."""
+    model_id = (model or "").strip().lower()
+    return any(part in model_id for part in _ANTHROPIC_NO_SAMPLING_MODEL_PARTS)
+
+
+def _strip_anthropic_sampling_params(payload: Dict[str, Any]) -> None:
+    """Retire les paramètres sampling interdits par certains modèles Anthropic."""
+    for key in ("temperature", "top_p", "top_k"):
+        payload.pop(key, None)
+
+
+def _is_kimi_k3(model: str) -> bool:
+    """Return True only for the official Moonshot Kimi K3 model."""
+    return (model or "").strip().lower() == "kimi-k3"
+
+
+def _moonshot_base_url() -> str:
+    """Single source of truth for Moonshot's configurable API endpoint."""
+    return os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1").rstrip("/")
+
+
+def _build_moonshot_payload(
+    model: str,
+    messages: List[Dict[str, Any]],
+    *,
+    max_tokens: int,
+    temperature: Optional[float] = None,
+    stop: Optional[List[str]] = None,
+    stream: bool = False,
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Build a Moonshot payload while respecting K-series fixed parameters."""
+    target_model = (model or "").strip()
+    payload: Dict[str, Any] = {
+        "model": target_model,
+        "messages": messages,
+        ("max_completion_tokens" if _is_kimi_k3(target_model) else "max_tokens"): max_tokens,
+    }
+    if stream:
+        payload["stream"] = True
+    if stop:
+        payload["stop"] = stop
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    # Kimi K2/K3 sampling values are fixed by Moonshot.
+    if temperature is not None and not target_model.lower().startswith(("kimi-k2", "kimi-k3")):
+        payload["temperature"] = temperature
+    return payload
+
+
+_GOOGLE_FIXED_SAMPLING_MODELS = frozenset({
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+})
+
+
+def _build_google_generation_config(
+    model: str,
+    *,
+    temperature: float,
+    max_tokens: int,
+    stop: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build Gemini generationConfig without rejected sampling parameters.
+
+    Gemini 3.6 Flash and 3.5 Flash-Lite reject the legacy sampling knobs.
+    Older models keep the exact historical payload.
+    """
+    config: Dict[str, Any] = {"maxOutputTokens": max_tokens}
+    if (model or "").strip() not in _GOOGLE_FIXED_SAMPLING_MODELS:
+        config["temperature"] = temperature
+    if stop:
+        config["stopSequences"] = stop
+    return config
+
+
+def _xai_supports_stop(model: str) -> bool:
+    """Return False for Grok reasoning families that reject ``stop``.
+
+    Keep Lumena's historical Grok 4 behavior intact and include Grok Build,
+    whose reasoning endpoint has the same unsupported-parameter constraint.
+    """
+    model_id = (model or "").strip().lower()
+    return not (
+        model_id.startswith("grok-4")
+        or model_id == "grok-build-0.1"
+        or "reasoning" in model_id
+    )
 
 
 # ── Résolution du contenu assistant (lecture de reasoning_content) ─────────────
@@ -215,6 +318,10 @@ class MultiProviderLLM:
         self.fallback_order = os.getenv("LUMENA_FALLBACK_ORDER", _default_fallback).split(",")
         self.max_continuation_steps = int(os.getenv("LUMENA_MAX_CONTINUATION_STEPS", "3"))
         self._last_response_meta: Dict[str, Any] = self._default_response_meta()
+        # Private Kimi K3 continuity state, deliberately excluded from UI metadata.
+        self._preserved_assistant_message_var: ContextVar[Optional[Dict[str, Any]]] = (
+            ContextVar(f"kimi_k3_assistant_{id(self)}", default=None)
+        )
         
         # Client HTTP persistant avec connection pooling
         self._http = httpx.AsyncClient(
@@ -551,6 +658,39 @@ class MultiProviderLLM:
         """Expose unified metadata for API/UI."""
         with self._meta_lock:
             return dict(self._last_response_meta)
+
+    def set_external_response_meta(self, **kwargs: Any) -> None:
+        """Publish metadata from an explicitly selected non-HTTP execution rail.
+
+        Only keys already present in Lumena's public response contract are kept.
+        This lets the Codex App Server adapter label a response without turning it
+        into an HTTP provider or exposing arbitrary App Server payload fields.
+        """
+
+        allowed = self._default_response_meta()
+        self._set_last_response_meta(
+            **{key: value for key, value in kwargs.items() if key in allowed}
+        )
+
+    def _clear_preserved_assistant_message(self) -> None:
+        self._preserved_assistant_message_var.set(None)
+
+    def _preserve_assistant_message(self, model: str, message: Any) -> None:
+        """Keep K3's complete assistant message privately for the next turn."""
+        if not _is_kimi_k3(model) or not isinstance(message, dict):
+            return
+        preserved = {
+            key: value
+            for key, value in message.items()
+            if key in {"role", "content", "reasoning_content", "tool_calls"}
+        }
+        preserved["role"] = "assistant"
+        self._preserved_assistant_message_var.set(preserved)
+
+    def get_preserved_assistant_message(self) -> Optional[Dict[str, Any]]:
+        """Return private K3 continuity data without exposing it in API metadata."""
+        preserved = self._preserved_assistant_message_var.get()
+        return dict(preserved) if preserved is not None else None
 
     def _is_length_finish_reason(self, finish_reason: Optional[str]) -> bool:
         if not finish_reason:
@@ -899,7 +1039,7 @@ class MultiProviderLLM:
             )
         if provider_value == ProviderType.XAI.value:
             # Les modèles grok reasoning rejettent le paramètre stop → on ne le passe pas
-            xai_stop = None if any(x in str(target_model) for x in ("reasoning", "grok-4")) else stop
+            xai_stop = stop if _xai_supports_stop(str(target_model)) else None
             return await self._chat_xai_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=xai_stop)
         if provider_value == ProviderType.NVIDIA.value:
             return await self._chat_nvidia_result(messages, temperature=temperature, max_tokens=min(max_tokens, model_cap), model=model, stop=stop)
@@ -932,6 +1072,26 @@ class MultiProviderLLM:
         # Phase 3.1: Détection de répétition
         previous_segments: List[str] = []
         text_may_be_incomplete = False
+
+        # Kimi K3 exige que chaque message assistant soit rejoue avec son
+        # reasoning_content complet. La continuation generique ajoute un tour
+        # utilisateur synthetique que l'historique public ne peut pas rejouer
+        # fidelement au tour suivant. On conserve donc le message fournisseur
+        # original intact et on signale la troncature au lieu de fabriquer une
+        # continuite invalide.
+        target_model = model or self.model
+        if _is_kimi_k3(target_model) and self._is_length_finish_reason(finish_reason):
+            result = dict(initial_result)
+            result["text"] = text
+            result["finish_reason"] = finish_reason
+            result["continuation_used"] = False
+            result["continuation_steps"] = 0
+            result["continuation_warning"] = (
+                "Kimi K3 a atteint sa limite de sortie; continuation automatique "
+                "desactivee pour preserver son contexte de raisonnement."
+            )
+            result["text_may_be_incomplete"] = True
+            return result
 
         while continuation_steps < self.max_continuation_steps and self._is_length_finish_reason(finish_reason):
             continuation_steps += 1
@@ -1090,6 +1250,7 @@ class MultiProviderLLM:
         provider = self.provider
         requested_provider = provider.value
         requested_model = self.model
+        self._clear_preserved_assistant_message()
         self._set_last_response_meta(
             provider_requested=requested_provider,
             provider_used=requested_provider,
@@ -1654,15 +1815,8 @@ class MultiProviderLLM:
             "messages": chat_messages,
             "temperature": temperature
         }
-        # Opus 4.7+ / Fable / Mythos (adaptive thinking models) refusent le paramètre temperature.
-        _model_id = payload["model"] or ""
-        if (
-            "opus-4-7" in _model_id
-            or "opus-4-8" in _model_id
-            or "claude-fable-5" in _model_id
-            or "claude-mythos-5" in _model_id
-        ):
-            payload.pop("temperature", None)
+        if _anthropic_model_disallows_sampling(payload["model"]):
+            _strip_anthropic_sampling_params(payload)
         if stop:
             payload["stop_sequences"] = stop
         if system:
@@ -1732,12 +1886,12 @@ class MultiProviderLLM:
             elif msg["role"] == "assistant":
                 contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
         
-        _gen_config: Dict[str, Any] = {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens
-            }
-        if stop:
-            _gen_config["stopSequences"] = stop
+        _gen_config = _build_google_generation_config(
+            effective_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+        )
         payload = {
             "contents": contents,
             "generationConfig": _gen_config
@@ -1829,34 +1983,33 @@ class MultiProviderLLM:
         
         # Moonshot utilise un format compatible OpenAI
         # URL officielle: https://api.moonshot.ai/v1
-        url = "https://api.moonshot.ai/v1/chat/completions"
+        url = f"{_moonshot_base_url()}/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
-        payload = {
-            "model": target_model,
-            "messages": messages,
-            "max_tokens": max_tokens
-        }
-        if stop:
-            payload["stop"] = stop
+        payload = _build_moonshot_payload(
+            target_model,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=stop,
+        )
         
         # Pour les modèles kimi-k2, temperature ne peut pas être modifiée
         # On ne l'envoie que pour les anciens modèles moonshot-v1
-        if not target_model.startswith("kimi-k2"):
-            payload["temperature"] = temperature
-        
         try:
             response = await self._http.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
             choice = data["choices"][0]
+            message = choice.get("message", {}) or {}
+            self._preserve_assistant_message(target_model, message)
             _usage = data.get("usage") or {}
             return {
                 "text": _resolve_assistant_text(
-                    choice.get("message", {}) or {},
+                    message,
                     provider=ProviderType.MOONSHOT.value, model=payload["model"],
                 ),
                 "finish_reason": choice.get("finish_reason"),
@@ -2519,7 +2672,7 @@ class MultiProviderLLM:
             elif vision_provider in (ProviderType.MOONSHOT, ProviderType.NVIDIA):
                 if vision_provider == ProviderType.MOONSHOT:
                     api_key = get_api_key(ProviderType.MOONSHOT)
-                    url = "https://api.moonshot.ai/v1/chat/completions"
+                    url = f"{_moonshot_base_url()}/chat/completions"
                     default_model = "kimi-k2.7-code"
                 else:
                     api_key = get_api_key(ProviderType.NVIDIA)
@@ -2534,19 +2687,27 @@ class MultiProviderLLM:
                         model_id = cfg.model_id
                 except Exception:
                     pass
-                payload = {
-                    "model": model_id,
-                    "max_tokens": 1024,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                                {"type": "text", "text": user_prompt},
-                            ],
-                        }
-                    ],
-                }
+                vision_messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                            {"type": "text", "text": user_prompt},
+                        ],
+                    }
+                ]
+                if vision_provider == ProviderType.MOONSHOT:
+                    payload = _build_moonshot_payload(
+                        model_id,
+                        vision_messages,
+                        max_tokens=1024,
+                    )
+                else:
+                    payload = {
+                        "model": model_id,
+                        "max_tokens": 1024,
+                        "messages": vision_messages,
+                    }
                 resp = await self._http.post(
                     url,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -2808,6 +2969,7 @@ class MultiProviderLLM:
         """
         provider = self.provider
         model = self.model
+        self._clear_preserved_assistant_message()
 
         try:
             if provider == ProviderType.OLLAMA:
@@ -2841,16 +3003,19 @@ class MultiProviderLLM:
                     yield chunk
             elif provider == ProviderType.MOONSHOT:
                 api_key = get_api_key(ProviderType.MOONSHOT)
-                base_url = os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
                 async for chunk in self._stream_openai_compat(
                     messages, temperature, min(max_tokens, 262144),
-                    url=f"{base_url}/chat/completions",
+                    url=f"{_moonshot_base_url()}/chat/completions",
                     api_key=api_key,
                     model=model,
                 ):
                     yield chunk
             elif provider == ProviderType.ANTHROPIC:
-                async for chunk in self._stream_anthropic(messages, temperature, min(max_tokens, 65536)):
+                anthropic_cfg = get_model_config(self.model_name)
+                anthropic_cap = anthropic_cfg.max_output_tokens if anthropic_cfg else 65536
+                async for chunk in self._stream_anthropic(
+                    messages, temperature, min(max_tokens, anthropic_cap)
+                ):
                     yield chunk
             elif provider == ProviderType.GOOGLE:
                 async for chunk in self._stream_google(messages, temperature, min(max_tokens, 65535)):
@@ -2927,13 +3092,24 @@ class MultiProviderLLM:
             )
         else:
             # Providers compatibles OpenAI (DeepSeek, xAI, Moonshot...)
-            payload: Dict[str, Any] = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                max_tokens_key: max_tokens,
-                "stream": True,
-            }
+            if _is_kimi_k3(model):
+                payload = _build_moonshot_payload(
+                    model,
+                    messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=True,
+                )
+            else:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    max_tokens_key: max_tokens,
+                    "stream": True,
+                }
+        content_parts: List[str] = []
+        reasoning_parts: List[str] = []
         async with self._http.stream("POST", url, headers=headers, json=payload) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -2947,10 +3123,24 @@ class MultiProviderLLM:
                     data = json.loads(data_str)
                     delta = data.get("choices", [{}])[0].get("delta", {})
                     content = delta.get("content", "")
+                    reasoning = delta.get("reasoning_content", "")
+                    if _is_kimi_k3(model) and isinstance(reasoning, str) and reasoning:
+                        reasoning_parts.append(reasoning)
                     if content:
+                        if _is_kimi_k3(model):
+                            content_parts.append(content)
                         yield content
                 except (json.JSONDecodeError, IndexError):
                     continue
+        if _is_kimi_k3(model):
+            self._preserve_assistant_message(
+                model,
+                {
+                    "role": "assistant",
+                    "content": "".join(content_parts),
+                    "reasoning_content": "".join(reasoning_parts),
+                },
+            )
 
     async def _stream_anthropic(
         self,
@@ -2983,9 +3173,8 @@ class MultiProviderLLM:
             "temperature": temperature,
             "stream": True,
         }
-        # Opus 4.7+ (adaptive thinking models) refuse le paramètre temperature
-        if "opus-4-7" in (self.model or "") or "opus-4-8" in (self.model or ""):
-            payload.pop("temperature", None)
+        if _anthropic_model_disallows_sampling(self.model):
+            _strip_anthropic_sampling_params(payload)
         if system:
             payload["system"] = system
 
@@ -3038,7 +3227,11 @@ class MultiProviderLLM:
         )
         payload = {
             "contents": contents,
-            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+            "generationConfig": _build_google_generation_config(
+                self.model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ),
         }
         if system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -3090,6 +3283,7 @@ class MultiProviderLLM:
         """
         requested_provider = self.provider.value
         requested_model = self.model
+        self._clear_preserved_assistant_message()
         self._set_last_response_meta(
             provider_requested=requested_provider,
             provider_used=requested_provider,
@@ -3179,10 +3373,11 @@ class MultiProviderLLM:
             
             payload = {
                 "contents": contents,
-                "generationConfig": {
-                    "temperature": temperature,
-                    "maxOutputTokens": max_tokens
-                }
+                "generationConfig": _build_google_generation_config(
+                    self.model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                ),
             }
             
             if system_instruction:
@@ -3340,9 +3535,8 @@ class MultiProviderLLM:
                 "temperature": temperature,
                 "messages": claude_messages
             }
-            # Opus 4.7+ (adaptive thinking models) refuse le paramètre temperature
-            if "opus-4-7" in (self.model or "") or "opus-4-8" in (self.model or ""):
-                payload.pop("temperature", None)
+            if _anthropic_model_disallows_sampling(self.model):
+                _strip_anthropic_sampling_params(payload)
             
             if system_content:
                 payload["system"] = system_content
@@ -3357,6 +3551,8 @@ class MultiProviderLLM:
 
                 stop_reason = data.get("stop_reason", "")
                 last_stop_reason = stop_reason
+                if stop_reason == "refusal":
+                    raise ValueError(f"anthropic_refusal:{payload['model']}")
                 content_blocks = data.get("content", [])
 
                 text_response = ""
@@ -3512,7 +3708,7 @@ class MultiProviderLLM:
         if not api_key:
             raise ValueError("MOONSHOT_API_KEY non configurée")
         
-        url = "https://api.moonshot.ai/v1/chat/completions"
+        url = f"{_moonshot_base_url()}/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -3537,23 +3733,16 @@ class MultiProviderLLM:
         while iteration < max_iterations:
             iteration += 1
             
-            payload = {
-                "model": self.model,
-                "messages": augmented_messages,
-                "max_tokens": max_tokens
-            }
+            payload = _build_moonshot_payload(
+                self.model,
+                augmented_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools_def or None,
+            )
             
             # Pour les modèles kimi-k2, temperature ne peut pas être modifiée
             # On ne l'envoie que pour les anciens modèles moonshot-v1
-            if not self.model.startswith("kimi-k2"):
-                payload["temperature"] = temperature
-            
-            # Ajouter les tools si disponibles
-            # NOTE: kimi-k2 supporte les tools mais avec certaines restrictions
-            if tools_def:
-                payload["tools"] = tools_def
-                payload["tool_choice"] = "auto"
-            
             try:
                 response = await self._http.post(url, headers=headers, json=payload)
                 response.raise_for_status()
@@ -3569,6 +3758,7 @@ class MultiProviderLLM:
                     # dans reasoning_content (content vide) → resolver (content prioritaire,
                     # sinon extraction THOUGHT/ACTION/JSON, sinon ""). Jamais de prose brute.
                     self._update_last_response_meta(finish_reason=finish_reason)
+                    self._preserve_assistant_message(self.model, message)
                     return _resolve_assistant_text(
                         message, provider=ProviderType.MOONSHOT.value, model=self.model,
                     )

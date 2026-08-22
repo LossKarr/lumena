@@ -55,6 +55,50 @@ def _desktop_splash_enabled() -> bool:
     return _env_flag("LUMENA_DESKTOP_SPLASH", True)
 
 
+def _desktop_icon_path() -> str | None:
+    """Return the packaged desktop icon without making startup depend on it."""
+    icon_path = _ROOT / "web" / "static" / "branding" / "lumena.ico"
+    return str(icon_path) if icon_path.is_file() else None
+
+
+def _configure_windows_app_identity() -> bool:
+    """Give the desktop process its own Windows taskbar identity."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        result = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "LossKarr.Lumena"
+        )
+        return result == 0
+    except Exception:
+        return False
+
+
+def _apply_windows_desktop_icon(window) -> bool:
+    """Apply the packaged icon to the native WinForms titlebar and taskbar."""
+    if sys.platform != "win32":
+        return False
+    icon_path = _desktop_icon_path()
+    native = getattr(window, "native", None)
+    if not icon_path or native is None:
+        return False
+    try:
+        import clr
+
+        clr.AddReference("System.Drawing")
+        from System.Drawing import Icon
+
+        icon = Icon(icon_path)
+        native.Icon = icon
+        # Keep the managed resource alive for the whole native window lifetime.
+        window._lumena_desktop_icon = icon
+        return True
+    except Exception:
+        return False
+
+
 class _DesktopSplash:
     """Small Tk splash displayed while the local server is booting."""
 
@@ -410,6 +454,8 @@ def main() -> None:
                 pass
             return
 
+    _configure_windows_app_identity()
+
     window = webview.create_window(
         title="Lumena",
         url=url,
@@ -425,14 +471,19 @@ def main() -> None:
     def _on_closed():
         os._exit(0)
 
+    def _on_loaded(*_args):
+        _apply_desktop_zoom(window)
+        _apply_windows_desktop_icon(window)
+
     window.events.closed += _on_closed
-    window.events.loaded += lambda *args: _apply_desktop_zoom(window)
+    window.events.loaded += _on_loaded
 
     # webview.start() blocks until the window is closed
     webview.start(
         gui=gui_backend,
         private_mode=False,  # persist cookies / local storage
         debug=os.getenv("LUMENA_DEBUG", "") == "1",
+        icon=_desktop_icon_path(),
     )
 
 

@@ -52,6 +52,7 @@ _SEQ_FALLBACK_BLOCKLIST: frozenset[str] = frozenset({
     "get_weather", "get_time", "provider_info",
     "list_image_models", "ionos_list_sites", "ionos_list_files",
     "discord_list_guilds",
+    "list_document_models",
 })
 
 # ── Guard 5 — outils d'exploration ────────────────────────────────────────────
@@ -62,6 +63,7 @@ _EXPLORATION_TOOLS_STRICT: frozenset[str] = frozenset({
     "list_directory", "find_files", "list_files", "list_dir",
     "grep_search", "search_in_code", "search_files", "search_code",
     "read_file", "view_file_outline", "parallel_tools",
+    "list_document_models",
 })
 
 # ── Verbes d'action métier ─────────────────────────────────────────────────────
@@ -209,6 +211,9 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "git":           frozenset({ProofCapability.GENERIC_MUTATION}),
     "github":        frozenset({ProofCapability.DEPLOY_MUTATION}),
     "autonomy":      frozenset({ProofCapability.GENERIC_READONLY}),
+    # missions : create/cancel sont des mutations (création/annulation d'un TaskRecord) → comptent
+    # au ledger (preuve avant FINAL). Les lectures (list/status/result) sont overridées ci-dessous.
+    "missions":      frozenset({ProofCapability.GENERIC_MUTATION}),
     "security":      frozenset({ProofCapability.GENERIC_READONLY}),
     "network":       frozenset({ProofCapability.HTTP_PROBE}),
     "platform":      frozenset({ProofCapability.GENERIC_MUTATION}),
@@ -238,6 +243,10 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
 # leur catégorie. Cette liste doit rester COURTE (< 40 entrées).
 # La règle générale est portée par _CATEGORY_CAPABILITIES.
 _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
+    # missions category — lectures (create/cancel restent MUTATION via la catégorie)
+    "list_missions":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "mission_status":        frozenset({ProofCapability.GENERIC_READONLY}),
+    "mission_result":        frozenset({ProofCapability.GENERIC_READONLY}),
     # files category — lecture vs écriture
     "read_file":             frozenset({ProofCapability.FILE_READ}),
     "list_files":            frozenset({ProofCapability.GENERIC_READONLY}),
@@ -262,6 +271,10 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "browser_get_content":   frozenset({ProofCapability.BROWSER_PROBE, ProofCapability.HTTP_PROBE}),
     "browser_click_index":   frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "browser_type_index":    frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
+    # LOT Z19 — choisir dans un <select> est une interaction metier au meme
+    # titre que saisir ou cliquer. Sans cette ligne, une mission qui remplit un
+    # formulaire a listes deroulantes ne prouverait rien au sens de Z16.
+    "browser_select_index":  frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "browser_click":         frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "browser_click_smart":   frozenset({ProofCapability.GENERIC_MUTATION, ProofCapability.BROWSER_PROBE}),
     "browser_verify_local_project": frozenset({ProofCapability.BROWSER_PROBE, ProofCapability.HTTP_PROBE}),
@@ -692,6 +705,49 @@ def is_verify_task(desc: str) -> bool:
     return False
 
 
+# #3 (2026-06-30) — outils de LECTURE pure pouvant constituer une preuve de
+# VÉRIFICATION, mais UNIQUEMENT s'ils relisent un artefact réellement écrit avant.
+_FILE_READER_VERIFY_TOOLS = frozenset({"read_file", "read_document"})
+
+# C0.3a (run FrigoZen) — une tâche de vérification qui exige une EXÉCUTION
+# (pytest, servir l'app, navigateur) ne peut JAMAIS être satisfaite par une
+# relecture : le lead FrigoZen a vu « Vérifier l'intégration, exécuter les
+# tests, servir l'app, tester navigateur » cochée par un simple read_file →
+# FINALIZE prématuré (ni pytest, ni serveur, ni navigateur, ni publication).
+_EXECUTION_PROOF_RE = re.compile(
+    r"pytest|ex[ée]cut|\bservi|serveur|navigateur|browser|\btests?\b|run tests",
+    re.IGNORECASE,
+)
+
+
+def verify_satisfied_by_artifact_read(
+    tool_name: str, task_desc: str, *, artifact_reread: bool
+) -> bool:
+    """True si une tâche de VÉRIFICATION est légitimement satisfaite par une LECTURE.
+
+    Condition stricte : la lecture (`read_file`/`read_document`) doit relire un
+    artefact RÉELLEMENT écrit avant (`artifact_reread`, prouvé via l'execution_ledger
+    côté appelant — lien read→write). Sinon False : le garde-fou « lecture seule ≠
+    preuve » (plan_evidence: FILE_READ → aucun marqueur) reste actif pour toute autre
+    lecture. Ferme le SKIP éternel de « Vérifier le fichier final » après write_file +
+    read_file, sans ouvrir la porte à un crédit de lecture arbitraire.
+
+    C0.3a : si la description exige une preuve d'EXÉCUTION (pytest/servir/
+    navigateur…), la relecture ne suffit jamais — seule l'exécution réelle
+    (has_sufficient_proof côté appelant) peut créditer la tâche.
+    """
+    if not artifact_reread:
+        return False
+    if tool_name not in _FILE_READER_VERIFY_TOOLS:
+        return False
+    desc_lower = (task_desc or "").lower()
+    if _EXECUTION_PROOF_RE.search(desc_lower):
+        return False
+    # is_verify_task attend une description en minuscules (les call sites react
+    # passent déjà desc_lower) → on normalise ici pour être robuste au caller.
+    return is_verify_task(desc_lower)
+
+
 def has_verify_proof(tool_name: str, observation: str) -> bool:
     """API Phase 1 — backward compatible. Délègue à has_sufficient_proof.
 
@@ -747,6 +803,65 @@ def reconcile_delegate_report(
     if marked:
         logger.info(
             "[PLAN] Réconciliation delegate_task: {} tâche(s) marquée(s) completed (iter {})",
+            marked, iteration,
+        )
+
+    return marked
+
+
+# Tâches de RÉCUPÉRATION / FUSION de résultats : réalisées par delegate_and_wait +
+# l'écriture du livrable cible (pas une action distincte qui resterait à prouver).
+_RESULT_AGGREGATION_KW: FrozenSet[str] = frozenset({
+    "récupér", "recuper", "fusionn", "consolid", "rassembl", "regroup",
+    "agrég", "agreg", "compil", "assembl",
+})
+# Side-effects EXTERNES : jamais crédités « gratis » par la livraison d'un fichier.
+_EXTERNAL_SIDE_EFFECT_KW: FrozenSet[str] = frozenset({
+    "mail", "email", "e-mail", "envoy", "expédi", "expedi", "déploi", "deploi",
+    "publi", "push", "slack", "discord", "telegram", "tweet", "poster",
+})
+
+
+def reconcile_plan_on_artifact_delivery(
+    task_plan: List[TaskItem], *, has_delegation_success: bool, iteration: int,
+) -> int:
+    """MUTE `task_plan` : réconcilie le plan quand le livrable CIBLE de la mission
+    vient d'être confirmé sur disque (deadline_artifact_written posé sur le fichier
+    cible extrait de l'objectif). Doctrine « artefact sur disque ⇒ mission réussie » :
+    les tâches de DÉLÉGATION (si une délégation a réussi) et de RÉCUPÉRATION/FUSION
+    des résultats sont satisfaites — le livrable tangible le prouve.
+
+    NE crédite JAMAIS : les tâches de VÉRIFICATION (réservées à la vraie relecture
+    read_file — cf. verify_satisfied_by_artifact_read, #3) ni les side-effects
+    EXTERNES non prouvés (mail, push, déploiement, slack…). Retourne le nb marqué.
+    (Mutatif, à l'image de reconcile_delegate_report.)"""
+    if not task_plan:
+        return 0
+    # Import paresseux : plan_progress reste stdlib-only (pas de cycle au load).
+    from .plan_progress import delegation_task_fulfilled
+
+    marked = 0
+    for task in task_plan:
+        if task.completed:
+            continue
+        desc_lower = (task.description or "").lower()
+        if is_verify_task(desc_lower):
+            continue  # crédit réservé à la relecture réelle (#3)
+        if any(kw in desc_lower for kw in _EXTERNAL_SIDE_EFFECT_KW):
+            continue  # side-effect externe → jamais bradé par une livraison fichier
+        _is_deleg = has_delegation_success and delegation_task_fulfilled(task.description)
+        _is_aggreg = any(kw in desc_lower for kw in _RESULT_AGGREGATION_KW)
+        if _is_deleg or _is_aggreg:
+            task.completed = True
+            task.completed_at_iteration = iteration
+            task.completed_by_tool = "deadline_artifact_delivery"
+            task.completion_status = TaskCompletionStatus.PARTIALLY_VERIFIED
+            task.completion_evidence = "livrable cible confirmé sur disque"
+            marked += 1
+
+    if marked:
+        logger.info(
+            "[PLAN] Réconciliation livraison artefact: {} tâche(s) marquée(s) completed (iter {})",
             marked, iteration,
         )
 

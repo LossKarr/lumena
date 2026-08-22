@@ -185,9 +185,22 @@ class ConversationContext:
         
         return msg
     
-    def get_history_for_llm(self) -> List[Dict[str, str]]:
+    def get_history_for_llm(self, model_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retourne l'historique formaté pour le LLM."""
-        return [{"role": m.role, "content": m.content} for m in self.messages]
+        use_k3_state = (model_name or "").strip().lower() == "kimi-k3"
+        history: List[Dict[str, Any]] = []
+        for message in self.messages:
+            preserved = message.metadata.get("_provider_assistant_message")
+            if (
+                use_k3_state
+                and message.role == "assistant"
+                and isinstance(preserved, dict)
+                and preserved.get("role") == "assistant"
+            ):
+                history.append(dict(preserved))
+            else:
+                history.append({"role": message.role, "content": message.content})
+        return history
     
     def get_recent(self, n: int = 5) -> List[Dict[str, str]]:
         """Retourne les n derniers messages."""
@@ -668,9 +681,15 @@ class LumenaCore:
         query: str,
         max_results: int = 3,
         max_chars: int = 12000,
+        document_route=None,
     ) -> str:
         self._context_svc.skills_auto_activation = self.skills_auto_activation
-        result = self._context_svc._build_active_skills_context_for_query(query, max_results, max_chars)
+        result = self._context_svc._build_active_skills_context_for_query(
+            query,
+            max_results,
+            max_chars,
+            document_route=document_route,
+        )
         self._last_active_skills = self._context_svc._last_active_skills
         return result
 
@@ -779,9 +798,19 @@ class LumenaCore:
         sender: Optional[Dict[str, Any]] = None,
         step_callback=None,
         max_iterations: Optional[int] = None,
+        final_ready_callback=None,
+        task_orchestrator=None,
+        task_id: Optional[str] = None,
     ) -> str:
         """Utilise la boucle ReAct pour reflechir et agir."""
-        return await self._agent_svc.think_and_act(query, source_channel, sender, step_callback=step_callback, max_iterations=max_iterations)
+        return await self._agent_svc.think_and_act(
+            query, source_channel, sender,
+            step_callback=step_callback,
+            max_iterations=max_iterations,
+            final_ready_callback=final_ready_callback,
+            task_orchestrator=task_orchestrator,
+            task_id=task_id,
+        )
 
     async def think_and_act_silent(
         self,
@@ -792,12 +821,26 @@ class LumenaCore:
         artifacts_out: Optional[list] = None,
         allowed_tools_hard: bool = False,
         refusals_out: Optional[list] = None,
+        tool_registry: Optional[Any] = None,
+        task_orchestrator: Optional[Any] = None,
+        task_id: Optional[str] = None,
+        proof_out: Optional[dict] = None,
     ) -> str:
-        """Boucle ReAct silencieuse pour les taches autonomes internes."""
+        """Boucle ReAct silencieuse pour les taches autonomes internes.
+
+        `tool_registry`/`task_orchestrator`/`task_id` (Lot 1, optionnels) : registre isolé +
+        cycle de vie d'une mission. Non fournis = comportement actuel (registre partagé).
+
+        `proof_out` (F1.a) : preuves du run remontées au runner de mission. Ce wrapper
+        DOIT relayer tout paramètre du service — le runner appelle `core.think_and_act_silent`,
+        pas le service directement (un ajout côté service seul fait échouer la mission
+        entière en `TypeError`, invisible aux tests qui utilisent un core factice).
+        """
         return await self._agent_svc.think_and_act_silent(
             task, timeout, allowed_tools, allow_when_busy=allow_when_busy,
             artifacts_out=artifacts_out, allowed_tools_hard=allowed_tools_hard,
-            refusals_out=refusals_out,
+            refusals_out=refusals_out, tool_registry=tool_registry,
+            task_orchestrator=task_orchestrator, task_id=task_id, proof_out=proof_out,
         )
 
     # =====================

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -20,17 +21,59 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 from .context import HandlerContext
-from .contracts import HandlerResult
+from .contracts import HandlerResult, SubToolResult
 from .registry_v2 import HandlerDef
 
 
 # ─── Handlers ──────────────────────────────────────────────────────────────
 
+def normalize_pdf_content(content: Any) -> str:
+    """Accept text or a small structured block format without changing text input."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        if "content" in content:
+            return normalize_pdf_content(content["content"])
+        if "blocks" in content:
+            return normalize_pdf_content(content["blocks"])
+        content = [content]
+    if not isinstance(content, list):
+        raise ValueError("content doit etre du texte ou une liste de blocs documentaires")
+
+    lines: List[str] = []
+    for index, block in enumerate(content, start=1):
+        if isinstance(block, str):
+            lines.append(block)
+            continue
+        if not isinstance(block, dict):
+            raise ValueError(f"bloc content #{index} invalide: texte ou objet attendu")
+        block_type = str(block.get("type") or "paragraph").strip().lower()
+        text = str(block.get("text") or block.get("content") or "").strip()
+        if block_type in {"heading", "title"}:
+            level = max(1, min(6, int(block.get("level") or 1)))
+            lines.append(f"{'#' * level} {text}".rstrip())
+        elif block_type in {"paragraph", "text"}:
+            lines.append(text)
+        elif block_type in {"bullet", "list_item", "item"}:
+            lines.append(f"- {text}".rstrip())
+        elif block_type == "list":
+            items = block.get("items")
+            if not isinstance(items, list):
+                raise ValueError(f"bloc content #{index}: items doit etre une liste")
+            lines.extend(f"- {str(item)}" for item in items)
+        else:
+            raise ValueError(
+                f"bloc content #{index}: type '{block_type}' non supporte "
+                "(heading, paragraph, text, bullet ou list)"
+            )
+    return "\n\n".join(line for line in lines if line)
+
+
 async def create_pdf_handler(
     ctx: HandlerContext,
     filename: str,
     title: str,
-    content: str,
+    content: Any,
     font_size: int = 11,
     images: str = "",
     header_footer: str = "",
@@ -45,7 +88,10 @@ async def create_pdf_handler(
     """Génère un fichier PDF depuis du contenu texte/markdown."""
     try:
         hub = ctx.get_document_hub()
-        kw: Dict[str, Any] = dict(filename=filename, title=title, content=content, font_size=int(font_size))
+        normalized_content = normalize_pdf_content(content)
+        kw: Dict[str, Any] = dict(
+            filename=filename, title=title, content=normalized_content, font_size=int(font_size),
+        )
         if images:
             kw["images"] = json.loads(images) if isinstance(images, str) else images
         if header_footer:
@@ -1232,7 +1278,1168 @@ async def assemble_document_handler(
 
 # ─── HandlerDefs ───────────────────────────────────────────────────────────
 
+def _targeted_studio_sample(
+    studio, kind: str, *, output_format: str = "pdf", template_id: str = "",
+) -> dict:
+    """Return the sample of the exact template selected for generation."""
+    if studio is None or not kind:
+        return {}
+    try:
+        resolver = getattr(studio, "resolve_template", None)
+        if callable(resolver):
+            record = resolver(
+                template_id=template_id, kind=kind, output_format=output_format,
+            )
+        elif template_id:
+            record = studio.catalog.get(template_id)
+        else:
+            record = studio.catalog.get_default(kind, output_format)
+    except (AttributeError, KeyError, ValueError):
+        return {}
+    if record is None:
+        return {}
+    if not getattr(record, "valid", True):
+        return {}
+    return studio.catalog.read_sample_data(record)
+
+
+_MODEL_COUNT_WORDS = {
+    "un": 1, "une": 1, "deux": 2, "trois": 3, "quatre": 4, "cinq": 5,
+    "six": 6, "sept": 7, "huit": 8, "neuf": 9, "dix": 10,
+}
+
+
+def _model_listing_filters(
+    ctx: HandlerContext | None, origin: str = "", limit: int = 0, sort: str = "",
+) -> tuple[str, int, str]:
+    """Resolve explicit model filters, with a narrow natural-language fallback."""
+    normalized_origin = str(origin or "").strip().lower()
+    normalized_sort = str(sort or "").strip().lower()
+    try:
+        normalized_limit = max(0, min(int(limit or 0), 100))
+    except (TypeError, ValueError):
+        normalized_limit = 0
+
+    query = str(getattr(ctx, "original_user_query", "") or "").lower()
+    if normalized_origin not in {"", "builtin", "custom"}:
+        normalized_origin = ""
+    if normalized_sort not in {"", "recent", "name"}:
+        normalized_sort = ""
+
+    from src.documents.document_intent import document_model_selection
+
+    selection = document_model_selection(query)
+    if not normalized_origin and selection.active:
+        normalized_origin = selection.origin
+    if not normalized_limit and selection.active:
+        normalized_limit = selection.limit
+    if not normalized_sort and selection.active:
+        normalized_sort = selection.sort
+
+    if not normalized_origin and any(
+        token in query
+        for token in ("personnalise", "personnalisé", "mes modeles", "mes modèles")
+    ):
+        normalized_origin = "custom"
+    if not normalized_sort and normalized_origin == "custom" and any(
+        token in query
+        for token in ("dernier", "derniere", "dernière", "recent", "récent")
+    ):
+        normalized_sort = "recent"
+    if not normalized_limit and normalized_origin == "custom":
+        match = re.search(
+            r"\b(\d{1,2}|" + "|".join(_MODEL_COUNT_WORDS)
+            + r")\s+(?:derniers?\s+|dernieres?\s+|dernières?\s+)?mod[èe]les?\b",
+            query,
+        )
+        if match:
+            token = match.group(1)
+            normalized_limit = int(token) if token.isdigit() else _MODEL_COUNT_WORDS[token]
+
+    return normalized_origin, normalized_limit, normalized_sort
+
+
+async def list_document_models_handler(
+    ctx: HandlerContext, kind: str = "", origin: str = "", limit: int = 0,
+    sort: str = "",
+) -> HandlerResult:
+    try:
+        from src.documents.document_intent import normalize_document_kind
+        from src.documents.studio import get_document_studio
+        studio = get_document_studio()
+        raw_kind = str(kind or "").strip()
+        kind_tokens = [
+            token.strip()
+            for token in re.split(r"[,;|]", raw_kind)
+            if token.strip()
+        ]
+        wanted_kinds = tuple(dict.fromkeys(
+            normalized
+            for token in kind_tokens
+            if (normalized := normalize_document_kind(token))
+        ))
+        wanted = wanted_kinds[0] if len(wanted_kinds) == 1 else ""
+        wanted_origin, wanted_limit, wanted_sort = _model_listing_filters(
+            ctx, origin=origin, limit=limit, sort=sort,
+        )
+        all_records = [
+            record for record in studio.catalog.list_templates()
+            if record.valid
+            and (not wanted_origin or record.manifest.origin == wanted_origin)
+        ]
+        available_kinds = {
+            record.manifest.kind for record in all_records
+        }
+        missing_kinds = tuple(
+            item for item in wanted_kinds if item not in available_kinds
+        )
+        if missing_kinds:
+            available = sorted({
+                record.manifest.kind
+                for record in studio.catalog.list_templates()
+                if record.valid
+            })
+            available_text = ", ".join(available) or "aucun type disponible"
+            return HandlerResult.fail(
+                "Document Studio: aucun modele pour "
+                + ", ".join(f"kind='{item}'" for item in missing_kinds)
+                + f". Types canoniques disponibles: {available_text}. "
+                "Corrige la liste puis relance une seule fois.",
+                handler_name="list_document_models",
+            )
+
+        if len(wanted_kinds) > 1:
+            records = []
+            for requested_kind in wanted_kinds:
+                candidates = [
+                    record for record in all_records
+                    if record.manifest.kind == requested_kind
+                ]
+                default = studio.catalog.get_default(requested_kind, "pdf")
+                selected = (
+                    default
+                    if default in candidates
+                    else candidates[0]
+                )
+                records.append(selected)
+        else:
+            records = [
+                record for record in all_records
+                if not wanted or record.manifest.kind == wanted
+            ]
+        if wanted_sort == "recent":
+            records.sort(
+                key=lambda record: (
+                    (record.directory / "manifest.json").stat().st_mtime
+                    if (record.directory / "manifest.json").is_file() else 0.0
+                ),
+                reverse=True,
+            )
+        elif wanted_sort == "name":
+            records.sort(key=lambda record: record.manifest.name.casefold())
+        if wanted_limit:
+            records = records[:wanted_limit]
+        if wanted_kinds and not records:
+            available = sorted({
+                record.manifest.kind
+                for record in studio.catalog.list_templates()
+                if record.valid
+            })
+            available_text = ", ".join(available) or "aucun type disponible"
+            return HandlerResult.fail(
+                f"Document Studio: aucun modele pour kind='{kind}'. "
+                f"Types canoniques disponibles: {available_text}. "
+                "Utilise le type canonique le plus proche puis relance une seule fois.",
+                handler_name="list_document_models",
+            )
+
+        rows = []
+        for record in records:
+            row = {
+                "id": record.manifest.id,
+                "name": record.manifest.name,
+                "kind": record.manifest.kind,
+                "format": record.manifest.format,
+                "origin": record.manifest.origin,
+                "is_default": bool(
+                    (default := studio.catalog.get_default(record.manifest.kind, record.manifest.format))
+                    and default.manifest.id == record.manifest.id
+                ),
+            }
+            if wanted_kinds:
+                row["version"] = record.manifest.version
+                row["description"] = record.manifest.description
+                row["sample_data"] = studio.catalog.read_sample_data(record)
+            rows.append(row)
+        payload = {"models": rows}
+        if not wanted_kinds:
+            payload["hint"] = (
+                "Catalogue compact. Rappelle list_document_models avec kind=<type> "
+                "pour obtenir uniquement les donnees d'exemple du document a generer."
+            )
+        return HandlerResult.ok(json.dumps(payload, ensure_ascii=False), handler_name="list_document_models")
+    except Exception as exc:
+        return HandlerResult.fail(f"Document Studio: {exc}", handler_name="list_document_models")
+
+
+async def generate_studio_document_handler(
+    ctx: HandlerContext, kind: str, data: str, output_format: str = "pdf",
+    template_id: str = "", filename: str = "",
+) -> HandlerResult:
+    studio = None
+    try:
+        from src.documents.document_intent import normalize_document_kind
+        from src.documents.studio import get_document_studio
+        studio = get_document_studio()
+        canonical_kind = normalize_document_kind(kind)
+        raw_data = studio.parse_json_object(data, field="data")
+        resolver = getattr(studio, "resolve_template", None)
+        record = (
+            resolver(
+                template_id=template_id,
+                kind=canonical_kind,
+                output_format=output_format,
+            )
+            if callable(resolver)
+            else None
+        )
+        sample = _targeted_studio_sample(
+            studio, canonical_kind, output_format=output_format,
+            template_id=template_id,
+        )
+        if record is not None:
+            _validate_builtin_studio_data(studio, record, sample, raw_data)
+        result = await studio.generate(
+            template_id=template_id, kind=canonical_kind, output_format=output_format,
+            data=_merge_studio_data(sample, raw_data), filename=filename,
+        )
+        from src.documents.delivery_manifest import compact_generation_payload
+
+        payload = compact_generation_payload(result, kind=canonical_kind)
+        _add_mission_publish_hint(payload, ctx)
+        return HandlerResult.ok(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            handler_name="generate_studio_document",
+        )
+    except KeyError:
+        available = sorted({
+            record.manifest.kind
+            for record in studio.catalog.list_templates()
+            if record.valid
+        }) if studio is not None else []
+        requested = str(template_id or kind or "").strip() or "(vide)"
+        available_text = ", ".join(available) or "appelle list_document_models"
+        return HandlerResult.fail(
+            "Document Studio: type ou modèle inconnu "
+            f"'{requested}'. Types disponibles: {available_text}. "
+            "Appelle list_document_models avec le type français avant de réessayer.",
+            handler_name="generate_studio_document",
+        )
+    except Exception as exc:
+        canonical_kind = normalize_document_kind(kind)
+        sample = _targeted_studio_sample(
+            studio, canonical_kind, output_format=output_format,
+            template_id=template_id,
+        )
+        guidance = ""
+        if sample:
+            guidance = (
+                f" Reessaie uniquement kind='{canonical_kind}' en adaptant cet exemple cible: "
+                + json.dumps(sample, ensure_ascii=False)
+            )
+        return HandlerResult.fail(
+            f"Document Studio: {exc}.{guidance}",
+            handler_name="generate_studio_document",
+        )
+
+
+def _merge_studio_data(base: Any, patch: Any) -> Any:
+    """Recursively merge user overrides over catalog sample data."""
+    if isinstance(base, dict) and isinstance(patch, dict):
+        merged = dict(base)
+        for key, value in patch.items():
+            merged[key] = _merge_studio_data(merged.get(key), value)
+        return merged
+    if isinstance(base, list) and isinstance(patch, list) and patch:
+        # Structured rows are commonly supplied as partial objects by the LLM.
+        # Keep template-required fields, while scalar lists and explicit empty
+        # lists retain their historical replacement semantics.
+        merged_items: list[Any] = []
+        # Lists of business rows are homogeneous even when the catalog sample
+        # shows several examples. Reuse the last row schema for user rows that
+        # extend beyond those examples, just as a single sample row already
+        # acts as a prototype.
+        prototype = next(
+            (item for item in reversed(base) if isinstance(item, dict)),
+            None,
+        )
+        for index, value in enumerate(patch):
+            if not isinstance(value, dict):
+                merged_items.append(value)
+                continue
+            positional = base[index] if index < len(base) and isinstance(base[index], dict) else None
+            seed = positional if positional is not None else prototype
+            merged_items.append(_merge_studio_data(seed, value) if seed is not None else value)
+        return merged_items
+    return patch
+
+
+def _validate_builtin_studio_data(
+    studio: Any, record: Any, sample: dict[str, Any], raw_data: dict[str, Any],
+) -> None:
+    """Reject root fields that an integrated template cannot render."""
+    manifest = getattr(record, "manifest", None)
+    if str(getattr(manifest, "origin", "") or "") != "builtin" or not sample:
+        return
+    allowed = {str(key) for key in sample}
+    if str(getattr(manifest, "renderer", "") or "") == "html-jinja":
+        try:
+            from jinja2 import Environment, meta
+
+            environment = Environment()
+            parsed = environment.parse(studio.catalog.read_source(record))
+            allowed.update(
+                str(key)
+                for key in meta.find_undeclared_variables(parsed)
+                if key not in environment.globals
+            )
+        except Exception:
+            # The catalog sample remains the fail-safe schema if source
+            # inspection is unavailable.
+            pass
+    unknown = tuple(sorted(str(key) for key in raw_data if key not in allowed))
+    if not unknown:
+        _validate_studio_container_shapes(sample, raw_data)
+        return
+    allowed_text = ", ".join(sorted(allowed))
+    raise ValueError(
+        "champ(s) ignore(s) par ce modele integre: "
+        + ", ".join(unknown)
+        + ". Utilise uniquement les champs rendus: "
+        + allowed_text
+    )
+
+
+def _validate_studio_container_shapes(
+    expected: Any, provided: Any, *, path: str = "",
+) -> None:
+    """Validate only JSON container shapes, leaving scalar coercion unchanged."""
+    label = path or "data"
+    if isinstance(expected, dict):
+        if not isinstance(provided, dict):
+            example = json.dumps(
+                expected, ensure_ascii=False, separators=(",", ":"),
+            )
+            raise ValueError(f"{label} doit etre un objet JSON. Exemple: {example}")
+        for key, value in provided.items():
+            if key in expected:
+                child = f"{path}.{key}" if path else str(key)
+                _validate_studio_container_shapes(
+                    expected[key], value, path=child,
+                )
+        return
+    if isinstance(expected, list):
+        if not isinstance(provided, list):
+            example = json.dumps(
+                expected, ensure_ascii=False, separators=(",", ":"),
+            )
+            raise ValueError(f"{label} doit etre une liste JSON. Exemple: {example}")
+        prototype = next(
+            (item for item in reversed(expected) if isinstance(item, (dict, list))),
+            None,
+        )
+        if prototype is not None:
+            for index, value in enumerate(provided):
+                _validate_studio_container_shapes(
+                    prototype, value, path=f"{label}[{index}]",
+                )
+
+
+def _studio_batch_retry_guidance(item: dict[str, Any]) -> str:
+    """Build bounded, exact retry guidance for one failed prepared request."""
+    sample = item.get("sample")
+    if not isinstance(sample, dict) or not sample:
+        return ""
+    sample_json = json.dumps(sample, ensure_ascii=False, separators=(",", ":"))
+    if len(sample_json) > 2400:
+        sample_json = sample_json[:2400] + "..."
+    return (
+        f" Reessaie uniquement kind='{item.get('kind', '')}' avec ce data cible "
+        f"(adapte les valeurs sans supprimer les cles imbriquees): {sample_json}"
+    )
+
+
+def _compact_studio_retry_data(value: Any) -> Any:
+    """Keep the exact catalog shape while bounding repeated sample rows."""
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_studio_retry_data(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        if not value:
+            return []
+        return [_compact_studio_retry_data(value[0])]
+    return value
+
+
+def _prepare_studio_batch(studio: Any, items: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Resolve and validate the complete batch before the first filesystem mutation."""
+    from src.documents.document_intent import normalize_document_kind
+
+    prepared: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    targets: set[str] = set()
+    for index, item in enumerate(items, start=1):
+        requested_kind = ""
+        template_id = ""
+        manifest_id = ""
+        actual_kind = ""
+        sample: dict[str, Any] = {}
+        try:
+            if not isinstance(item, dict):
+                raise ValueError("objet attendu")
+            requested_kind = normalize_document_kind(str(item.get("kind") or ""))
+            template_id = str(item.get("template_id") or "").strip()
+            if not requested_kind and not template_id:
+                raise ValueError("kind ou template_id requis")
+
+            raw_format = str(item.get("output_format") or "").strip().lower().lstrip(".")
+            record = studio.resolve_template(
+                template_id=template_id,
+                kind=requested_kind,
+                output_format=raw_format or "pdf",
+            )
+            manifest = record.manifest
+            manifest_id = str(getattr(manifest, "id", "") or template_id or requested_kind)
+            manifest_format = str(getattr(manifest, "format", "") or raw_format or "pdf")
+            renderer = str(getattr(manifest, "renderer", "") or "html-jinja")
+            actual_kind = normalize_document_kind(
+                str(getattr(manifest, "kind", "") or requested_kind)
+            )
+            if requested_kind and actual_kind != requested_kind and getattr(manifest, "id", ""):
+                raise ValueError(
+                    f"template_id '{template_id}' appartient au type '{actual_kind}', "
+                    f"pas a '{requested_kind}'"
+                )
+            output_format = raw_format or manifest_format.lower().lstrip(".")
+            if renderer != "html-jinja" and output_format != manifest_format:
+                raise ValueError(
+                    f"le modele natif {manifest_id} produit uniquement {manifest_format}"
+                )
+
+            raw_data = item.get("data", {})
+            if isinstance(raw_data, str):
+                raw_data = studio.parse_json_object(
+                    raw_data,
+                    field=f"requests[{index}].data",
+                )
+            if not isinstance(raw_data, dict):
+                raise ValueError(f"requests[{index}].data doit etre un objet JSON")
+            sample = studio.catalog.read_sample_data(record)
+            _validate_builtin_studio_data(studio, record, sample, raw_data)
+            data = _merge_studio_data(sample, raw_data)
+
+            filename = str(item.get("filename") or "").strip()
+            stem_source = filename or manifest_id
+            safe_stem = (
+                studio._safe_stem(stem_source)
+                if hasattr(studio, "_safe_stem")
+                else Path(stem_source).stem
+            )
+            target_key = f"{safe_stem}.{output_format}".casefold()
+            if target_key in targets:
+                raise ValueError(f"nom de sortie duplique: {target_key}")
+            targets.add(target_key)
+            prepared.append({
+                "kind": actual_kind,
+                "template_id": manifest_id,
+                "output_format": output_format,
+                "filename": filename or safe_stem,
+                "data": data,
+                "sample": sample,
+            })
+        except Exception as exc:
+            error = {
+                "index": index,
+                "kind": actual_kind or requested_kind,
+                "template_id": manifest_id or template_id,
+                "error": str(exc),
+            }
+            if sample:
+                error["retry_request"] = {
+                    "kind": actual_kind or requested_kind,
+                    "template_id": manifest_id or template_id,
+                    "data": _compact_studio_retry_data(sample),
+                }
+            errors.append(error)
+    return prepared, errors
+
+
+async def generate_studio_documents_handler(
+    ctx: HandlerContext,
+    requests: Any,
+) -> HandlerResult:
+    """Generate a bounded ordered Studio batch without concurrent catalog writes."""
+    from src.documents.delivery_manifest import compact_generation_payload
+    from src.documents.document_settings import get_document_settings
+    from src.documents.document_intent import normalize_document_kind
+    from src.documents.studio import get_document_studio
+
+    try:
+        items = json.loads(requests) if isinstance(requests, str) else requests
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return HandlerResult.fail(
+            f"Document Studio batch: requests doit etre une liste JSON valide ({exc})",
+            handler_name="generate_studio_documents",
+        )
+    if not isinstance(items, list) or not items:
+        return HandlerResult.fail(
+            "Document Studio batch: requests doit etre une liste non vide",
+            handler_name="generate_studio_documents",
+        )
+    batch_size = get_document_settings().batch_size
+    if len(items) > batch_size:
+        return HandlerResult.fail(
+            f"Document Studio batch: {batch_size} documents maximum par appel",
+            handler_name="generate_studio_documents",
+        )
+
+    try:
+        studio = get_document_studio()
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Document Studio batch: service indisponible ({exc})",
+            handler_name="generate_studio_documents",
+        )
+    prepared, preflight_errors = _prepare_studio_batch(studio, items)
+    if preflight_errors:
+        payload = {
+            "phase": "preflight",
+            "requested": len(items),
+            "generated": 0,
+            "failed": len(preflight_errors),
+            "errors": preflight_errors,
+        }
+        return HandlerResult(
+            success=False,
+            output=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            error="Document Studio batch: preflight refuse, aucun document genere",
+            handler_name="generate_studio_documents",
+            status_code="invalid_request",
+            sub_results=(),
+        )
+
+    sub_results: list[SubToolResult] = []
+    compact_rows: list[dict[str, Any]] = []
+    generated = 0
+    for index, item in enumerate(prepared, start=1):
+        kind = item["kind"]
+        output_format = item["output_format"]
+        template_id = item["template_id"]
+        filename = item["filename"]
+        args = {
+            "kind": kind,
+            "template_id": template_id,
+            "filename": filename,
+            "output_format": output_format,
+        }
+        try:
+            result = await studio.generate(
+                template_id=template_id,
+                kind=kind,
+                output_format=output_format,
+                data=item["data"],
+                filename=filename,
+            )
+            payload = compact_generation_payload(result, kind=kind)
+            content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            compact_rows.append(payload)
+            generated += 1
+            sub_results.append(SubToolResult(
+                tool_name="generate_studio_document", success=True,
+                content=content, status_code="success", args=args,
+            ))
+        except Exception as exc:
+            guidance = _studio_batch_retry_guidance(item)
+            sub_results.append(SubToolResult(
+                tool_name="generate_studio_document", success=False,
+                content=f"Document Studio [{kind or index}]: {exc}.{guidance}",
+                status_code="failed", args=args,
+            ))
+
+    failed = len(items) - generated
+    receipt_id = ""
+    if compact_rows:
+        try:
+            from src.documents.delivery_manifest import parse_generation_proof
+            from src.documents.delivery_receipt import save_delivery_receipt
+
+            proofs = [
+                proof
+                for row in compact_rows
+                if (proof := parse_generation_proof(
+                    json.dumps(row, ensure_ascii=False, separators=(",", ":")),
+                    fallback_kind=str(row.get("kind") or ""),
+                )) is not None
+            ]
+            if len(proofs) != len(compact_rows):
+                raise ValueError("preuve de generation incomplete")
+            receipt = save_delivery_receipt(
+                studio.root / "delivery_receipts",
+                proofs,
+                requested_count=len(items),
+            )
+            receipt_id = str(receipt.get("id") or "")
+        except Exception as exc:
+            logger.warning("[DOCUMENT BATCH RECEIPT] persistence impossible: {}", exc)
+    summary = {
+        "requested": len(items),
+        "generated": generated,
+        "failed": failed,
+        "receipt_id": receipt_id,
+        "documents": compact_rows,
+        "errors": [
+            {
+                "index": index,
+                "template_id": str((sub.args or {}).get("template_id") or ""),
+                "kind": str((sub.args or {}).get("kind") or ""),
+                "error": sub.content,
+            }
+            for index, sub in enumerate(sub_results, start=1)
+            if not sub.success
+        ],
+    }
+    if generated:
+        _add_mission_publish_hint(summary, ctx)
+    return HandlerResult(
+        success=generated > 0,
+        output=json.dumps(summary, ensure_ascii=False, separators=(",", ":")),
+        error=None if generated > 0 else "Aucun document Studio genere",
+        handler_name="generate_studio_documents",
+        status_code="success" if failed == 0 else ("partial" if generated else "error"),
+        sub_results=tuple(sub_results),
+    )
+
+
+_MISSION_STUDIO_PUBLISH_HINT = (
+    "MISSION: ces documents sont deja enregistres comme artefacts de la mission. "
+    "Appelle directement publish_mission_workspace: il les inclura automatiquement "
+    "dans le livrable publie. Ne les copie, ne les deplace et ne les reecris pas "
+    "avec run_command, copy, Copy-Item, move ou un outil fichier."
+)
+
+
+def _add_mission_publish_hint(payload: dict[str, Any], ctx: Any) -> dict[str, Any]:
+    """Expose the existing Studio-to-publisher handoff only inside missions."""
+    if (
+        ctx is not None
+        and bool(getattr(ctx, "is_mission_run", False))
+        and bool(str(getattr(ctx, "runtime_task_id", "") or "").strip())
+    ):
+        payload["mission_publish_hint"] = _MISSION_STUDIO_PUBLISH_HINT
+    return payload
+
+
+def _file_sha256(path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+async def open_document_delivery_handler(
+    ctx: HandlerContext, receipt_id: str,
+) -> HandlerResult:
+    """Open exact files recorded by a verified receipt or receipt bundle."""
+    from pathlib import Path
+
+    from src.documents.document_delivery_bundle import load_delivery_reference
+    from src.documents.studio import get_document_studio
+    from src.reasoning.handlers.files import open_file_handler
+
+    try:
+        studio = get_document_studio()
+        receipt = load_delivery_reference(studio.root, receipt_id)
+        output_root = studio.output_root.resolve()
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Lot documentaire introuvable ou invalide: {exc}",
+            handler_name="open_document_delivery",
+        )
+
+    opened: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    sub_results: list[SubToolResult] = []
+    for row in receipt["documents"]:
+        filename = str(row.get("filename") or "")
+        raw_path = str(row.get("path") or "")
+        try:
+            resolved = Path(raw_path).resolve(strict=True)
+            if not resolved.is_relative_to(output_root):
+                raise ValueError("chemin hors du dossier Document Studio")
+            expected_hash = str(row.get("sha256") or "")
+            if expected_hash and _file_sha256(resolved) != expected_hash:
+                raise ValueError("le fichier a change depuis sa livraison")
+            result = await open_file_handler(ctx, path=str(resolved))
+            if not result.success:
+                raise ValueError(result.error or result.output)
+            try:
+                page_count = max(0, int(row.get("page_count") or 0))
+            except (TypeError, ValueError):
+                page_count = 0
+            item = {
+                "filename": filename or resolved.name,
+                "path": str(resolved),
+                "page_count": page_count,
+                "document_id": str(row.get("document_id") or ""),
+                "kind": str(row.get("kind") or ""),
+                "template_id": str(row.get("template_id") or ""),
+            }
+            opened.append(item)
+            sub_results.append(SubToolResult(
+                tool_name="open_file", success=True, content=result.output,
+                status_code="success", args={"path": str(resolved)},
+            ))
+        except Exception as exc:
+            item = {"filename": filename or Path(raw_path).name, "path": raw_path, "error": str(exc)}
+            failed.append(item)
+            sub_results.append(SubToolResult(
+                tool_name="open_file", success=False, content=str(exc),
+                status_code="failed", args={"path": raw_path},
+            ))
+
+    payload = {
+        "receipt_id": receipt["id"],
+        "delivery_id": receipt["id"],
+        "requested": len(receipt["documents"]),
+        "opened": len(opened),
+        "failed": len(failed),
+        "files": opened,
+        "failures": failed,
+    }
+    return HandlerResult(
+        success=bool(opened),
+        output=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        error=None if opened else "Aucun document du lot n'a pu etre ouvert",
+        handler_name="open_document_delivery",
+        status_code="success" if not failed else ("partial" if opened else "error"),
+        sub_results=tuple(sub_results),
+    )
+
+
+async def import_document_handler(ctx: HandlerContext, path: str) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+        resolved = ctx.resolve_path(path)
+        record, duplicate = get_document_studio().importer.import_file(
+            resolved, source_kind="agent_import", source_uri=str(resolved)
+        )
+        payload = {"record": record.to_dict(include_content=False), "duplicate": duplicate}
+        return HandlerResult.ok(json.dumps(payload, ensure_ascii=False), handler_name="import_document")
+    except Exception as exc:
+        return HandlerResult.fail(f"Import document: {exc}", handler_name="import_document")
+
+
+async def search_document_library_handler(
+    ctx: HandlerContext, query: str, formats: Any = "", source: str = "",
+    date_from: str = "", date_to: str = "", template_id: str = "",
+    mission_id: str = "", limit: int = 20,
+) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+        if isinstance(formats, (list, tuple, set)):
+            normalized_formats = [
+                str(item).strip().lower().lstrip(".")
+                for item in formats
+                if str(item).strip() and str(item).strip().lower() != "none"
+            ]
+        else:
+            raw_formats = "" if formats is None or str(formats).strip().lower() == "none" else str(formats)
+            normalized_formats = [
+                item.strip().lower().lstrip(".")
+                for item in raw_formats.split(",")
+                if item.strip()
+            ]
+        records = get_document_studio().library.search(
+            query,
+            formats=normalized_formats,
+            source=source, date_from=date_from, date_to=date_to,
+            template_id=template_id, mission_id=mission_id, limit=limit,
+        )
+        payload = [record.to_dict(include_content=False) for record in records]
+        return HandlerResult.ok(json.dumps({"documents": payload}, ensure_ascii=False), handler_name="search_document_library")
+    except Exception as exc:
+        return HandlerResult.fail(f"Recherche documentaire: {exc}", handler_name="search_document_library")
+
+
+def _resolve_document_reference(
+    studio: Any,
+    reference: str,
+    *,
+    allow_search: bool = True,
+):
+    record = studio.library.resolve_reference(reference, allow_search=allow_search)
+    if record is None:
+        qualifier = " exact" if not allow_search else ""
+        raise KeyError(
+            f"document{qualifier} introuvable: {reference}. "
+            "Recherche-le d'abord puis demande confirmation si la reference differe."
+        )
+    return record
+
+
+async def get_document_record_handler(ctx: HandlerContext, document_id: str) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+        record = get_document_studio().library.resolve_reference(document_id)
+        if record is None:
+            return HandlerResult.fail("Document introuvable", handler_name="get_document_record")
+        return HandlerResult.ok(json.dumps(record.to_dict(), ensure_ascii=False), handler_name="get_document_record")
+    except Exception as exc:
+        return HandlerResult.fail(f"Document Studio: {exc}", handler_name="get_document_record")
+
+
+def _parse_document_operations(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        parsed = value
+    else:
+        try:
+            parsed = json.loads(str(value or "[]"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("operations doit être une liste JSON valide") from exc
+    if not isinstance(parsed, list) or not all(isinstance(item, dict) for item in parsed):
+        raise ValueError("operations doit être une liste JSON d'objets")
+    return [dict(item) for item in parsed]
+
+
+async def preview_document_edit_handler(
+    ctx: HandlerContext, document_id: str, operations: str
+) -> HandlerResult:
+    """Validate a transactional Office edit without mutating the source."""
+    try:
+        from src.documents.studio import get_document_studio
+
+        studio = get_document_studio()
+        record = _resolve_document_reference(studio, document_id, allow_search=False)
+        preview = await asyncio.to_thread(
+            studio.edits.preview,
+            record.id,
+            _parse_document_operations(operations),
+        )
+        return HandlerResult.ok(
+            json.dumps(preview.to_dict(), ensure_ascii=False),
+            handler_name="preview_document_edit",
+        )
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Prévisualisation édition documentaire: {exc}",
+            handler_name="preview_document_edit",
+        )
+
+
+async def apply_document_edit_handler(
+    ctx: HandlerContext, document_id: str, operations: str
+) -> HandlerResult:
+    """Create a child version of an indexed DOCX/XLSX/PPTX document."""
+    try:
+        from src.documents.studio import get_document_studio
+
+        studio = get_document_studio()
+        record = _resolve_document_reference(studio, document_id, allow_search=False)
+        result = await asyncio.to_thread(
+            studio.edits.apply,
+            record.id,
+            _parse_document_operations(operations),
+        )
+        return HandlerResult.ok(
+            json.dumps(result, ensure_ascii=False), handler_name="apply_document_edit"
+        )
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Édition documentaire: {exc}", handler_name="apply_document_edit"
+        )
+
+
+async def revise_studio_document_handler(
+    ctx: HandlerContext,
+    document_id: str,
+    data: str,
+    replace_data: bool = False,
+    output_format: str = "",
+    filename: str = "",
+) -> HandlerResult:
+    """Regenerate a Studio PDF/HTML from its exact recorded recipe."""
+    try:
+        from src.documents.studio import get_document_studio
+
+        studio = get_document_studio()
+        record = _resolve_document_reference(studio, document_id, allow_search=False)
+        patch = studio.parse_json_object(data, field="data")
+        from src.documents.generation_recipe import StudioGenerationRecipe
+
+        recipe = StudioGenerationRecipe.from_metadata(record.metadata)
+        editable = tuple(sorted(str(key) for key in recipe.data))
+        unknown = tuple(sorted(str(key) for key in patch if key not in recipe.data))
+        if unknown and not bool(replace_data):
+            return HandlerResult.fail(
+                "Revision refusee: champ(s) non editable(s) pour ce modele: "
+                + ", ".join(unknown)
+                + ". Champs editables: "
+                + (", ".join(editable) if editable else "aucun"),
+                handler_name="revise_studio_document",
+            )
+        if bool(replace_data) and set(patch) != set(recipe.data):
+            missing = tuple(sorted(str(key) for key in recipe.data if key not in patch))
+            extra = tuple(sorted(str(key) for key in patch if key not in recipe.data))
+            details = []
+            if missing:
+                details.append("champs manquants: " + ", ".join(missing))
+            if extra:
+                details.append("champs inconnus: " + ", ".join(extra))
+            return HandlerResult.fail(
+                "Revision refusee: replace_data=true exige la recette complete ("
+                + "; ".join(details)
+                + "). Pour modifier seulement quelques champs, utilise replace_data=false.",
+                handler_name="revise_studio_document",
+            )
+        result = await studio.revise(
+            record.id,
+            data=patch,
+            replace_data=bool(replace_data),
+            output_format=output_format,
+            filename=filename,
+        )
+        from src.documents.generation_recipe import changed_document_data
+
+        revised_data = dict((result.get("recipe") or {}).get("data") or {})
+        result["changed_fields"] = changed_document_data(recipe.data, revised_data)
+        return HandlerResult.ok(
+            json.dumps(result, ensure_ascii=False), handler_name="revise_studio_document"
+        )
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Révision Document Studio: {exc}", handler_name="revise_studio_document"
+        )
+
+
+async def get_document_history_handler(
+    ctx: HandlerContext, document_id: str
+) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+
+        studio = get_document_studio()
+        record = studio.library.resolve_reference(document_id)
+        if record is None:
+            return HandlerResult.fail("Document introuvable", handler_name="get_document_history")
+        payload = {
+            "document": record.to_dict(include_content=False),
+            "transformations": studio.library.list_transformations(record.id),
+        }
+        return HandlerResult.ok(
+            json.dumps(payload, ensure_ascii=False), handler_name="get_document_history"
+        )
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Historique documentaire: {exc}", handler_name="get_document_history"
+        )
+
+
+async def convert_library_document_handler(
+    ctx: HandlerContext, document_id: str, output_format: str
+) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+
+        studio = get_document_studio()
+        record = _resolve_document_reference(studio, document_id)
+        try:
+            result = await asyncio.to_thread(
+                studio.conversions.convert, record.id, output_format
+            )
+        except ValueError:
+            target_format = str(output_format or "").lower().lstrip(".")
+            if not (
+                record.format == "pdf"
+                and target_format == "html"
+                and record.source_kind == "generated"
+            ):
+                raise
+            # Studio-generated PDFs retain their exact generation recipe. Use
+            # that authoritative source to render the HTML child instead of
+            # pretending that a lossy PDF parser can reconstruct the layout.
+            result = await studio.revise(
+                record.id,
+                data={},
+                output_format="html",
+                filename=f"{Path(record.filename).stem}.html",
+            )
+            result["conversion_mode"] = "studio_recipe"
+        return HandlerResult.ok(
+            json.dumps(result, ensure_ascii=False), handler_name="convert_library_document"
+        )
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Conversion documentaire: {exc}", handler_name="convert_library_document"
+        )
+
+
+async def export_library_document_handler(
+    ctx: HandlerContext, document_id: str, filename: str = ""
+) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+
+        studio = get_document_studio()
+        record = _resolve_document_reference(studio, document_id)
+        result = await asyncio.to_thread(
+            studio.delivery.export_local, record.id, filename
+        )
+        if ctx is not None and bool(getattr(ctx, "is_mission_run", False)):
+            result["mission_next_step"] = (
+                "L'export local est une preuve Document Studio dans le dossier géré "
+                "des exports ; le paramètre filename n'est pas un chemin de publication. "
+                "Ne répète pas export_library_document pour tenter de le déplacer. "
+                "Le lead doit appeler publish_mission_workspace une seule fois : il "
+                "copiera le dossier de mission et les artefacts documentaires persistés."
+            )
+        return HandlerResult.ok(
+            json.dumps(result, ensure_ascii=False), handler_name="export_library_document"
+        )
+    except Exception as exc:
+        return HandlerResult.fail(
+            f"Export documentaire: {exc}", handler_name="export_library_document"
+        )
+
+
+async def search_documents_web_handler(
+    ctx: HandlerContext, query: str, formats: str = "pdf,docx,xlsx,pptx,csv", count: int = 12
+) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+        result = await get_document_studio().web_search.search(
+            query, formats=[item.strip() for item in formats.split(",") if item.strip()], count=count
+        )
+        return HandlerResult.ok(json.dumps(result, ensure_ascii=False), handler_name="search_documents_web")
+    except Exception as exc:
+        return HandlerResult.fail(f"Recherche web documentaire: {exc}", handler_name="search_documents_web")
+
+
+async def inspect_document_source_handler(ctx: HandlerContext, url: str) -> HandlerResult:
+    try:
+        from dataclasses import asdict
+        from src.documents.studio import get_document_studio
+        info = await get_document_studio().downloader.inspect(url)
+        return HandlerResult.ok(json.dumps(asdict(info), ensure_ascii=False), handler_name="inspect_document_source")
+    except Exception as exc:
+        return HandlerResult.fail(f"Inspection document distant: {exc}", handler_name="inspect_document_source")
+
+
+async def download_document_handler(ctx: HandlerContext, url: str) -> HandlerResult:
+    try:
+        from src.documents.studio import get_document_studio
+        record, duplicate = await get_document_studio().downloader.download(url)
+        payload = {"record": record.to_dict(include_content=False), "duplicate": duplicate}
+        return HandlerResult.ok(json.dumps(payload, ensure_ascii=False), handler_name="download_document")
+    except Exception as exc:
+        return HandlerResult.fail(f"Telechargement document: {exc}", handler_name="download_document")
+
+
 def get_documents_handler_defs() -> List[HandlerDef]:
+    """Return additive Document Studio tools followed by the historical tools unchanged."""
+    return _get_document_studio_handler_defs() + _get_legacy_documents_handler_defs()
+
+
+def _get_document_studio_handler_defs() -> List[HandlerDef]:
+    return [
+        HandlerDef(
+            name="list_document_models",
+            description=(
+                "Liste les modeles Document Studio. Sans kind, retourne un catalogue compact; avec kind, "
+                "retourne les donnees d'exemple ciblees pretes a adapter. Plusieurs kinds canoniques "
+                "peuvent etre fournis dans une seule chaine separee par des virgules; leur ordre est conserve. "
+                "Appelle-le avec le kind exact "
+                "avant generate_studio_document pour facture, devis, bon de commande, contrat, "
+                "NDA, attestation, bulletin de paie, fiche de poste et autres modèles structurés."
+            ),
+            parameters={"properties": {
+                "origin": {"type": "string", "default": "", "description": "Filtre d'origine: builtin ou custom."},
+                "limit": {"type": "integer", "default": 0, "description": "Nombre maximal de modeles a retourner; 0 ne limite pas."},
+                "sort": {"type": "string", "default": "", "description": "Tri optionnel: recent ou name."},
+                "kind": {"type": "string", "default": "", "description": "Un ou plusieurs types documentaires canoniques, par exemple bon_commande ou devis,facture,proces_verbal."},
+            }, "required": []},
+            handler=list_document_models_handler, category="documents", source_module="handlers.documents",
+        ),
+        HandlerDef(
+            name="generate_studio_document", description="Genere un PDF ou HTML avec un modele Document Studio explicite ou le modele par defaut du type demande.",
+            parameters={"properties": {
+                "kind": {"type": "string", "description": "Type documentaire canonique en français: attestation, bon_commande, bulletin_paie, contrat_prestation, devis, facture, fiche_poste, lettre_officielle, nda, note_interne, proces_verbal, rapport_activite ou relance_impaye. Les alias anglais usuels comme quote et invoice sont acceptés."},
+                "data": {"type": "string", "description": "Objet JSON des donnees du document."},
+                "output_format": {"type": "string", "default": "pdf", "description": "pdf ou html."},
+                "template_id": {"type": "string", "default": "", "description": "Modele explicite; vide utilise le defaut configure."},
+                "filename": {"type": "string", "default": "", "description": "Nom de sortie sans extension."},
+            }, "required": ["kind", "data"]}, handler=generate_studio_document_handler, category="documents", source_module="handlers.documents",
+        ),
+        HandlerDef(
+            name="generate_studio_documents",
+            description=(
+                "Genere de 1 a 30 documents Document Studio en une seule action, dans l'ordre et "
+                "sequentiellement. Chaque element accepte kind, data partiel, filename, output_format "
+                "et template_id. Les donnees partielles sont fusionnees avec l'exemple du modele. "
+                "Le preflight valide tout le lot avant le premier rendu: si une requete est invalide, "
+                "aucun document n'est genere. Corrige les erreurs indiquees puis renvoie le lot complet. "
+                "Apres un preflight valide, chaque rendu retourne sa propre preuve et son propre statut."
+            ),
+            parameters={"properties": {
+                "requests": {
+                    "type": "string",
+                    "description": (
+                        "Liste JSON de 1 a 30 objets, par exemple "
+                        "[{\"kind\":\"devis\",\"data\":{\"numero\":\"DEV-42\"},\"filename\":\"devis-atlas\"}]."
+                    ),
+                },
+            }, "required": ["requests"]},
+            handler=generate_studio_documents_handler,
+            category="documents",
+            source_module="handlers.documents",
+        ),
+        HandlerDef(
+            name="open_document_delivery",
+            description=(
+                "Rouvre exactement tous les fichiers d'un lot Document Studio deja livre, "
+                "a partir de l'identifiant doclot_ ou docbundle_ affiche dans la reponse. "
+                "Utilise cet outil pour « ouvre-les » au lieu de rechercher ou lister un dossier."
+            ),
+            parameters={"properties": {
+                "receipt_id": {
+                    "type": "string",
+                    "description": "Identifiant exact: doclot_<empreinte> ou docbundle_<empreinte>.",
+                },
+            }, "required": ["receipt_id"]},
+            handler=open_document_delivery_handler,
+            category="files",
+            source_module="handlers.documents",
+        ),
+        HandlerDef(name="import_document", description="Importe et indexe un document local dans la bibliotheque Document Studio.", parameters={"properties": {"path": {"type": "string", "description": "Chemin du document."}}, "required": ["path"]}, handler=import_document_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="search_document_library", description="Recherche plein texte dans les documents indexes localement, avec filtres de provenance et de date.", parameters={"properties": {"query": {"type": "string", "description": "Texte a rechercher dans le titre et le contenu extrait."}, "formats": {"type": "string", "default": "", "description": "Extensions separees par des virgules, par exemple pdf,docx."}, "source": {"type": "string", "default": "", "description": "Type de provenance, par exemple upload, mail ou web_download."}, "date_from": {"type": "string", "default": "", "description": "Date minimale ISO incluse."}, "date_to": {"type": "string", "default": "", "description": "Date maximale ISO incluse."}, "template_id": {"type": "string", "default": "", "description": "Identifiant du modele ayant genere le document."}, "mission_id": {"type": "string", "default": "", "description": "Identifiant de mission associe au document."}, "limit": {"type": "integer", "default": 20, "description": "Nombre maximal de resultats, borne par le service."}}, "required": ["query"]}, handler=search_document_library_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="get_document_record", description="Retourne le contenu et la provenance d'un document indexe.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant stable du document dans la bibliotheque."}}, "required": ["document_id"]}, handler=get_document_record_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="get_document_history", description="Retourne les transformations prouvées d'un document indexé.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant stable du document."}}, "required": ["document_id"]}, handler=get_document_history_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="preview_document_edit", description="Valide sans mutation une liste d'opérations transactionnelles sur un DOCX, XLSX ou PPTX indexé.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant stable du document."}, "operations": {"type": "string", "description": "Liste JSON d'opérations adaptées au format. Appelle d'abord get_document_record."}}, "required": ["document_id", "operations"]}, handler=preview_document_edit_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="apply_document_edit", description="Applique des opérations validées à un DOCX, XLSX ou PPTX indexé et crée une nouvelle version sans écraser l'original.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant stable du document original."}, "operations": {"type": "string", "description": "Liste JSON d'opérations transactionnelles."}}, "required": ["document_id", "operations"]}, handler=apply_document_edit_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="revise_studio_document", description="Modifie un PDF ou HTML généré par Document Studio en réutilisant exactement sa recette, son modèle versionné et ses données, puis crée une nouvelle version.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant du document Studio généré."}, "data": {"type": "string", "description": "Objet JSON contenant seulement les champs à modifier, ou toutes les données si replace_data=true."}, "replace_data": {"type": "boolean", "default": False, "description": "Remplace toutes les données au lieu de fusionner le patch."}, "output_format": {"type": "string", "default": "", "description": "Vide conserve le format original; sinon pdf ou html."}, "filename": {"type": "string", "default": "", "description": "Nom optionnel sans extension pour la nouvelle version."}}, "required": ["document_id", "data"]}, handler=revise_studio_document_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="convert_library_document", description="Convertit un document indexé selon la matrice de conversion certifiée et conserve la provenance.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant stable du document."}, "output_format": {"type": "string", "description": "Format de sortie supporté."}}, "required": ["document_id", "output_format"]}, handler=convert_library_document_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="export_library_document", description="Exporte une copie locale non écrasante d'un document indexé et retourne une preuve de chemin.", parameters={"properties": {"document_id": {"type": "string", "description": "Identifiant stable du document."}, "filename": {"type": "string", "default": "", "description": "Nom de copie optionnel."}}, "required": ["document_id"]}, handler=export_library_document_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="search_documents_web", description="Recherche sur Internet des PDF, documents Office, CSV et formats ouverts, sans telecharger.", parameters={"properties": {"query": {"type": "string", "description": "Sujet ou document a rechercher sur Internet."}, "formats": {"type": "string", "default": "pdf,docx,xlsx,pptx,csv", "description": "Formats recherches, separes par des virgules."}, "count": {"type": "integer", "default": 12, "description": "Nombre maximal de candidats a retourner."}}, "required": ["query"]}, handler=search_documents_web_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="inspect_document_source", description="Inspecte les en-tetes d'une URL documentaire sans l'importer. Une URL publique ne prouve jamais les droits de reutilisation: le statut reste unknown sans licence explicite.", parameters={"properties": {"url": {"type": "string", "description": "URL HTTP(S) publique du document a inspecter."}}, "required": ["url"]}, handler=inspect_document_source_handler, category="documents", source_module="handlers.documents"),
+        HandlerDef(name="download_document", description="Telecharge par URL avec garde SSRF, limite, reprise, controle du type et indexation. Le telechargement ne certifie pas les droits de reutilisation; ceux-ci restent unknown sans preuve de licence.", parameters={"properties": {"url": {"type": "string", "description": "URL HTTP(S) publique du document a telecharger."}}, "required": ["url"]}, handler=download_document_handler, category="documents", source_module="handlers.documents"),
+    ]
+
+
+def _get_legacy_documents_handler_defs() -> List[HandlerDef]:
     """Retourne les définitions des handlers documents."""
     return [
         HandlerDef(

@@ -4,6 +4,8 @@ test_handlers_system.py - Tests fonctionnels des handlers système fragmentés.
 Teste chaque handler de system.py avec un HandlerContext de test.
 """
 
+import asyncio
+
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -248,6 +250,34 @@ class TestParallelTools:
         assert r.success
         assert "1 appel(s)" in r.output
         assert "get_time" in r.output
+
+    @pytest.mark.asyncio
+    async def test_frozen_search_does_not_hold_other_results(self, ctx, monkeypatch):
+        monkeypatch.setenv("LUMENA_PARALLEL_SEARCH_TIMEOUT_S", "0.05")
+
+        async def fake_exec(name, args):
+            if name == "web_search_brave":
+                await asyncio.sleep(5)
+            obs = MagicMock()
+            obs.success = True
+            obs.content = "heure disponible"
+            return obs
+
+        r = await asyncio.wait_for(
+            parallel_tools_handler(
+                ctx,
+                tool_calls=[
+                    {"name": "web_search_brave", "args": {"query": "bloque"}},
+                    {"name": "get_time", "args": {}},
+                ],
+                execute_fn=fake_exec,
+            ),
+            timeout=1.0,
+        )
+
+        assert r.success
+        assert "timeout recherche" in r.output
+        assert "heure disponible" in r.output
 
 
 # ─── screenshot_tool ──────────────────────────────────────────────────────

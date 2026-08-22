@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import wave
+from typing import Callable
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,7 +65,8 @@ class MicConversationSource:
     def __init__(self, vad: Any, stt: Any, tm: Any, *, language: str = "fr",
                  min_utterance_ms: int = 300, emit_partials: bool = False,
                  partial_fast: bool = True, final_fast: bool = False,
-                 save_utterances_dir: Optional[str | Path] = None):
+                 save_utterances_dir: Optional[str | Path] = None,
+                 suppress_input_fn: Optional[Callable[[], bool]] = None):
         self.vad = vad
         self.stt = stt
         self.tm = tm
@@ -85,6 +87,14 @@ class MicConversationSource:
         self._running = False
         self.save_utterances_dir = Path(save_utterances_dir) if save_utterances_dir else None
         self.saved_utterances: List[Path] = []
+        self._suppress_input_fn = suppress_input_fn or (lambda: False)
+        self._utterance_suppressed = False
+
+    def _input_suppressed(self) -> bool:
+        try:
+            return bool(self._suppress_input_fn())
+        except Exception:
+            return False
 
     def _utterance_ms(self, n_bytes: int) -> float:
         rate = getattr(self.vad, "SAMPLE_RATE", 16000)
@@ -115,6 +125,12 @@ class MicConversationSource:
         async for ev in self.vad.stream(audio):
             if not self._running and ev.kind != "speech_ended":
                 break
+            if ev.kind == "speech_started" or self._input_suppressed():
+                self._utterance_suppressed = self._input_suppressed()
+            if self._utterance_suppressed:
+                if ev.kind == "speech_ended":
+                    self._utterance_suppressed = False
+                continue
             if ev.kind == "speech_partial":
                 # Partiel : transcription best-effort du snapshot en cours → stt.partial.
                 if self.emit_partials:

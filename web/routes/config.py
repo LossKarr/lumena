@@ -23,6 +23,28 @@ _ENV_BACKUP_DIR = DATA_DIR / "env_backups"
 router = APIRouter()
 
 _CONFIG_SCHEMA: list[dict] = [
+    {"key": "LUMENA_OPENAI_ACCESS_MODE", "label": "Mode d'acces OpenAI",
+     "group": "Acces OpenAI", "type": "select",
+     "options": ["api", "chatgpt_codex"], "default": "api",
+     "hint": "api conserve le fonctionnement historique. chatgpt_codex utilise uniquement le quota Codex de l'abonnement apres connexion et certification."},
+    {"key": "LUMENA_CODEX_CLI_PATH", "label": "Chemin Codex CLI",
+     "group": "Acces OpenAI", "type": "text", "default": "",
+     "hint": "Chemin explicite facultatif vers un Codex CLI executable avec app-server. Aucun binaire n'est installe silencieusement."},
+    {"key": "LUMENA_CODEX_DEFAULT_MODEL", "label": "Modele Codex prefere",
+     "group": "Acces OpenAI", "type": "text", "default": "",
+     "hint": "Selectionne dans la liste dynamique du compte connecte. Vide = modele recommande par Codex."},
+    {"key": "LUMENA_CODEX_SURFACES", "label": "Surfaces Codex autorisees",
+     "group": "Acces OpenAI", "type": "select", "options": [
+         "codeagent", "codeagent,chat", "codeagent,agent", "codeagent,missions",
+         "codeagent,chat,agent", "codeagent,chat,missions",
+         "codeagent,agent,missions", "codeagent,chat,agent,missions",
+     ],
+     "default": "codeagent",
+     "hint": "CodeAgent reste actif. Chat, Agent et Missions via abonnement Codex s'activent separement; aucune surface ne bascule vers l'API implicitement."},
+    {"key": "LUMENA_CODEX_API_FALLBACK", "label": "Fallback API payant",
+     "group": "Acces OpenAI", "type": "select", "options": ["never", "ask"],
+     "default": "never",
+     "hint": "never interdit tout basculement API payant implicite. ask exigera un consentement explicite dans un lot ulterieur."},
     {"key": "LUMENA_OPENAI_REASONING_EFFORT", "label": "OpenAI reasoning effort", "group": "LLM", "type": "select",
      "options": ["", "none", "low", "medium", "high", "xhigh"],
      "default": "",
@@ -53,8 +75,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Nombre de relances complètes du CodeAgent si la boucle interne échoue (budget total ≈ max_iter × max_outer_retries)."},
     {"key": "LUMENA_CODE_AGENT_CONTEXT_WINDOW", "label": "CodeAgent fenêtre contexte (tokens)", "group": "LLM", "type": "number", "default": "65536", "min": 8192, "max": 1048576,
      "hint": "Taille max de la fenêtre de contexte maintenue par le CodeAgent. 65536 = 64k (défaut). Augmenter pour Opus/Gemini 200k+. Diminuer pour économiser les tokens."},
-    {"key": "LUMENA_SUBAGENT_TIMEOUT", "label": "SubAgent timeout global (sec)", "group": "LLM", "type": "number", "default": "0", "min": 0, "max": 86400,
-     "hint": "Timeout global d'exécution d'un SubAgent (CodeAgent, ResearchAgent…). 0 = pas de limite. Sinon en secondes."},
+    {"key": "LUMENA_SUBAGENT_TIMEOUT", "label": "Agents de dev — timeout global (sec)", "group": "LLM", "type": "number", "default": "0", "min": 0, "max": 86400,
+     "hint": "Timeout global d'exécution d'un agent de DEV (CodeAgent, ResearchAgent…). 0 = pas de limite. Sinon en secondes. (À ne pas confondre avec la section « Missions ».)"},
     {"key": "LUMENA_SSE_TIMEOUT_SECONDS", "label": "SSE streaming timeout (sec)", "group": "LLM", "type": "number", "default": "300", "min": 30, "max": 3600,
      "hint": "Timeout d'un appel LLM en streaming SSE côté SubAgent. 300 = 5 min (défaut). Augmenter pour Reasoner CoT très long."},
     {"key": "LUMENA_PLAN_MAX_PARALLEL", "label": "PlannerAgent max parallélisme", "group": "LLM", "type": "number", "default": "3", "min": 1, "max": 20,
@@ -102,41 +124,59 @@ _CONFIG_SCHEMA: list[dict] = [
      "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
      "default": "auto",
      "hint": "Modèle utilisé par les SubAgents sans type dédié (ForkingAgent, etc.). auto = routage automatique."},
+    # ── Missions (sous-agents « Lumena complète » en arrière-plan) ──────────────────────
+    # ⚠️ DIFFÉRENT des SubAgents dev ci-dessus : ici une mission = une Lumena entière qui
+    # exécute un travail en fond (create_mission / delegate_and_wait), pas le CodeAgent.
+    {"key": "LUMENA_MISSION_CONCURRENCY", "label": "Missions — leads en parallèle", "group": "Missions",
+     "type": "number", "default": "1", "min": 1, "max": 64,
+     "hint": "Nombre de missions de premier niveau (lancées depuis le chat) exécutées en même temps. 1 = séquentiel (défaut, sûr). Augmenter pour traiter plusieurs missions de front."},
+    {"key": "LUMENA_MISSION_WORKER_CONCURRENCY", "label": "Missions — workers en parallèle", "group": "Missions",
+     "type": "number", "default": "2", "min": 1, "max": 64,
+     "hint": "Nombre de sous-missions (workers d'un lead via delegate_and_wait) exécutées en même temps. Pool séparé des leads → un lead n'épuise jamais ses workers (anti-deadlock). Défaut 2."},
+    {"key": "LUMENA_MISSION_MAX_DEPTH", "label": "Missions — profondeur max (collaboration)", "group": "Missions",
+     "type": "number", "default": "1", "min": 1, "max": 8,
+     "hint": "Profondeur d'imbrication autorisée. 1 = collaboration DÉSACTIVÉE (une mission ne peut pas en créer d'autres, défaut sûr). 2 = un lead peut déléguer à des workers (delegate_and_wait). 3+ = workers qui délèguent à leur tour."},
+    {"key": "LUMENA_TASK_RESULT_MAX_CHARS", "label": "Missions — taille max résultat conservé (car.)", "group": "Missions",
+     "type": "number", "default": "8000", "min": 1000, "max": 32000, "restart": True,
+     "hint": "Longueur max du résultat d'une tâche/mission conservée (result_summary). 1000 tronquait les livrables des workers → le lead de delegate_and_wait devait re-fouiller le disque pour fusionner. 8000 = un guide/rapport complet tient. Plus haut = fusion plus riche mais persistance plus lourde."},
+    {"key": "LUMENA_MISSION_FUSION_EXCERPT_CHARS", "label": "Missions — aperçu par worker dans la fusion (car.)", "group": "Missions",
+     "type": "number", "default": "1500", "min": 200, "max": 16000,
+     "hint": "Longueur de l'aperçu de CHAQUE worker injecté dans l'observation que reçoit le lead pour fusionner. 1500 = le lead fusionne directement sans aller chercher de fichiers. Le contenu entier reste accessible via mission_result(id). (Pas de redémarrage requis.)"},
     # ── Cerveaux Spécialisés ───────────────────────────────────────────────────────────
     {"key": "LUMENA_BRAIN_VISION", "label": "Cerveau Vision (analyse images)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o", "gpt-4o-mini",
+     "options": ["auto", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o", "gpt-4o-mini",
                  "o3", "o4-mini",
-                 "claude-fable-5", "claude-mythos-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-haiku-4.5",
-                 "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
-                 "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning", "grok-4-1-fast-reasoning",
-                 "kimi-k2.7-code", "kimi-k2.6", "nvidia-step-3.7-flash", "nvidia-kimi-k2.6",
+                 "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4.8", "claude-sonnet-5", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-haiku-4.5",
+                 "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
+                 "grok-4.6", "grok-4.5", "grok-build-0.1", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning",
+                 "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "nvidia-step-3.7-flash", "nvidia-kimi-k2.6",
                  "nvidia-minimax-m3", "nvidia-gemma-4-31b-it",
                  "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.6v", "glm-4.5v", "glm-ocr", "glm-5v-turbo"],
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le disponible avec support vision (OpenAI/Anthropic/Google/Grok/Z.AI)"},
     {"key": "LUMENA_BRAIN_CODE", "label": "Cerveau Code (analyse et g\u00e9n\u00e9ration)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini",
+     "options": ["auto", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini",
                  "o3", "o4-mini",
-                 "claude-fable-5", "claude-mythos-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "grok-4.3",
-                 "deepseek-v3", "deepseek-reasoner", "gemini-3.1-pro", "gemini-2.5-pro",
-                 "kimi-k2.7-code", "kimi-k2.6",
+                 "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4.8", "claude-sonnet-5", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "grok-4.3",
+                 "deepseek-v3", "deepseek-reasoner", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "gemini-2.5-pro",
+                 "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
                  "nvidia-deepseek-v4-pro", "nvidia-deepseek-v4-flash", "nvidia-gpt-oss-120b", "nvidia-step-3.7-flash",
                  "nvidia-kimi-k2.6", "nvidia-glm-5.1", "nvidia-nemotron-3-ultra-550b-a55b",
                  "nvidia-minimax-m3", "nvidia-minimax-m2.7", "nvidia-gemma-4-31b-it",
                  "minimax-m3", "minimax-m2.5", "minimax-m2.7",
-                 "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
+                 "grok-4.6", "grok-4.5", "grok-build-0.1", "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
                  "glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.7-flashx", "glm-4.7-flash",
                  "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4-32b-0414-128k"],
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le code disponible (score HumanEval/SWE-bench)"},
     {"key": "LUMENA_BRAIN_WEB", "label": "Cerveau Web (recherche et analyse web)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto", "gpt-5.5", "gpt-5.4", "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
-                 "claude-fable-5", "claude-opus-4.8", "claude-sonnet-4.6", "claude-opus-4.7", "claude-opus-4.6", "gpt-4o-mini",
-                 "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
-                 "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3", "minimax-m3", "minimax-m2.5",
+     "options": ["auto", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
+                 "claude-fable-5", "claude-opus-5", "claude-opus-4.8", "claude-sonnet-5", "claude-sonnet-4.6", "claude-opus-4.7", "claude-opus-4.6", "gpt-4o-mini",
+                 "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
+                 "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3", "minimax-m3", "minimax-m2.5",
                  "nvidia-deepseek-v4-pro", "nvidia-gpt-oss-120b", "nvidia-step-3.7-flash", "nvidia-glm-5.1",
                  "nvidia-minimax-m3", "nvidia-gemma-4-31b-it",
                  "nvidia-nemotron-3-ultra-550b-a55b",
@@ -147,7 +187,7 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "LUMENA_BRAIN_IMAGE_GEN", "label": "Mod\u00e8le g\u00e9n\u00e9ration d'images",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
      "options": ["auto",
-                 "gemini-3.1-flash-image", "gemini-3-pro-image", "gemini-2.5-flash-image",
+                 "gemini-3.1-flash-lite-image", "gemini-3.1-flash-image", "gemini-3-pro-image", "gemini-2.5-flash-image",
                  "huggingface-sdxl",
                  "cogview-4", "glm-image",
                  "gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini",
@@ -158,7 +198,7 @@ _CONFIG_SCHEMA: list[dict] = [
                  "ideogram-v4-quality", "ideogram-v4", "ideogram-v4-turbo",
                  "ideogram-v3-quality", "ideogram-v3-balanced", "ideogram-v3-turbo",
                  "recraft-v4", "recraft-v4-svg",
-                 "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-pro", "minimax-image-01",
+                 "grok-imagine-image-2.0", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-pro", "minimax-image-01",
                  "seedream-5-lite", "seedream-4.5", "wan-2.7-image-pro", "qwen-image", "hunyuan-image-3"],
      "default": "auto",
      "hint": "auto = cascade gratuite puis payante par co\u00fbt croissant selon les cl\u00e9s disponibles. Mod\u00e8les : Gemini, Z.AI, GPT-image, FLUX, Stable Diffusion, Imagen, Ideogram, Recraft, MiniMax, Replicate, HuggingFace."},
@@ -216,12 +256,42 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Nombre d'échecs consécutifs avant de mettre en pause un objectif. Protège contre les boucles d'erreur."},
     {"key": "LUMENA_VOICE_AUTO", "label": "Auto-démarrage voix", "group": "Voix", "type": "bool", "default": "0",
      "hint": "Démarre automatiquement l'écoute micro au lancement. 0 = activation manuelle uniquement."},
+    {"key": "LUMENA_VOICE_V2_AUTO", "label": "Voice V2 officielle", "group": "Voix", "type": "bool", "default": "0",
+     "hint": "Active Voice V2 derrière un flag. Désactivé = backend vocal historique inchangé."},
+    {"key": "LUMENA_VOICE_V2_MODE", "label": "Mode Voice V2", "group": "Voix", "type": "select", "options": ["chat", "agent"], "default": "chat",
+     "hint": "chat = conversation officielle | agent = ReAct et outils officiels. Le canal voix ne change jamais le mode implicitement."},
+    {"key": "LUMENA_VOICE_V2_FALLBACK_LEGACY", "label": "Fallback voix historique", "group": "Voix", "type": "bool", "default": "1",
+     "hint": "Après épuisement des reprises Voice V2, bascule vers le backend historique sans chevauchement audio."},
+    {"key": "LUMENA_VOICE_V2_MAX_RESTARTS", "label": "Reprises Voice V2", "group": "Voix", "type": "number", "default": "2", "min": 0, "max": 10,
+     "hint": "Nombre borné de redémarrages automatiques du pipeline Voice V2."},
+    {"key": "LUMENA_VOICE_V2_RESTART_BACKOFF_S", "label": "Backoff Voice V2 (sec)", "group": "Voix", "type": "number", "default": "2", "min": 0, "max": 60,
+     "hint": "Délai initial avant reprise automatique, avec augmentation exponentielle."},
+    {"key": "LUMENA_VOICE_AGENT_MAX_ITERATIONS", "label": "Max itérations Agent vocal", "group": "Voix", "type": "number", "default": "35", "min": 5, "max": 100, "restart": True,
+     "hint": "Budget ReAct des demandes lancées en mode Agent vocal. 35 = même profondeur que Lumena standard ; augmente seulement pour les missions complexes."},
+    {"key": "LUMENA_VOICE_SESSION_TRUSTED", "label": "Session vocale appairée", "group": "Voix", "type": "bool", "default": "0", "restart": True,
+     "hint": "Obligatoire avec user/admin/owner. OFF force le rôle guest. Le redémarrage applique la nouvelle identité."},
+    {"key": "LUMENA_VOICE_SESSION_ROLE", "label": "Rôle session vocale", "group": "Voix", "type": "select", "options": ["guest", "user", "admin", "owner"], "default": "guest", "restart": True,
+     "hint": "Choisir owner ne suffit pas seul : active aussi Session vocale appairée. Le wake word ne donne jamais ces droits."},
+    {"key": "LUMENA_VOICE_SESSION_USER_ID", "label": "Identité session vocale", "group": "Voix", "type": "text", "default": "voice:guest", "restart": True,
+     "hint": "Pour owner, utilise local:owner. L'identifiant ne constitue pas une authentification sans appairage."},
+    {"key": "LUMENA_VOICE_PROFILE_PATH", "label": "Profil vocal Lumena", "group": "Voix", "type": "text", "default": "",
+     "hint": "Chemin du profil vocal local (diction, prosodie, référence consentie). Vide = profil Lumena intégré. Redémarrage requis."},
+    {"key": "LUMENA_VOICE_INPUT_DEVICE", "label": "Micro Voice V2", "group": "Voix", "type": "number", "default": "", "min": 0, "max": 128,
+     "hint": "Index PyAudio du micro. Vide = périphérique système par défaut."},
     {"key": "LUMENA_TTS_AUTO", "label": "TTS automatique", "group": "Voix", "type": "bool", "default": "0",
      "hint": "Lit automatiquement les réponses à voix haute. 0 = texte uniquement sauf demande explicite."},
     {"key": "LUMENA_TTS_MODE", "label": "Mode TTS (fast/premium/offline)", "group": "Voix", "type": "select", "options": ["fast", "premium", "offline"], "default": "premium",
      "hint": "fast = pyttsx3 local rapide | premium = edge-tts Microsoft (meilleure qualité) | offline = Piper ONNX local"},
     {"key": "LUMENA_STT_MODEL", "label": "Modèle Whisper", "group": "Voix", "type": "select", "options": ["tiny", "base", "small", "medium", "large-v3-turbo"], "default": "large-v3-turbo",
      "hint": "Taille du modèle Whisper pour la reconnaissance vocale. Plus gros = plus précis mais plus lent et plus de VRAM."},
+    {"key": "LUMENA_STT_DEVICE", "label": "Calcul Whisper", "group": "Voix", "type": "select", "options": ["cuda", "cpu"], "default": "cuda", "restart": True,
+     "hint": "cuda = GPU avec fallback CPU automatique si les bibliothèques NVIDIA manquent ; cpu = local CPU uniquement."},
+    {"key": "LUMENA_STT_COMPUTE", "label": "Précision Whisper", "group": "Voix", "type": "select", "options": ["float16", "int8", "float32"], "default": "float16", "restart": True,
+     "hint": "float16 pour CUDA ; int8 recommandé sur CPU. Le fallback CUDA utilise toujours CPU int8."},
+    {"key": "LUMENA_CHAT_DICTATION_MAX_S", "label": "Durée max dictée chat (sec)", "group": "Voix", "type": "number", "default": "60", "min": 5, "max": 300,
+     "hint": "Durée maximale d'une prise micro depuis le bouton du compositeur."},
+    {"key": "LUMENA_CHAT_DICTATION_SILENCE_MS", "label": "Silence final dictée (ms)", "group": "Voix", "type": "number", "default": "1800", "min": 800, "max": 5000,
+     "hint": "Silence continu après la parole avant transcription. Le silence n'envoie jamais le message à lui seul."},
     {"key": "LUMENA_VOICE_CONV_TIMEOUT", "label": "Timeout conversation (sec)", "group": "Voix", "type": "number", "default": "45", "min": 10, "max": 300,
      "hint": "Durée max d'écoute vocale continue avant arrêt automatique. 45s = par défaut."},
     {"key": "LUMENA_TTS_TELEGRAM", "label": "TTS Telegram", "group": "Voix", "type": "bool", "default": "0",
@@ -299,9 +369,19 @@ _CONFIG_SCHEMA: list[dict] = [
      "options": ["", "professional", "creative", "companion"], "default": "",
      "hint": "Applique un preset de traits. Les valeurs individuelles LUMENA_TRAIT_* ont priorité."},
     {"key": "LUMENA_DOCUMENT_THEME", "label": "Thème documents",
-     "group": "Préférences", "type": "select",
+     "group": "Documents", "type": "select",
      "options": ["", "corporate", "minimal", "modern", "legal", "creative"], "default": "",
      "hint": "Thème par défaut pour les PDF/DOCX générés. Vide = corporate."},
+    {"key": "LUMENA_DOCUMENT_STUDIO_DIR", "label": "Dossier Document Studio",
+     "group": "Documents", "type": "text", "default": "",
+     "restart": True,
+     "hint": "Dossier de stockage du catalogue, des modèles et des livrables Document Studio. Vide = data/document_studio. Redémarrage requis."},
+    {"key": "LUMENA_DOCUMENT_BATCH_SIZE", "label": "Documents par lot",
+     "group": "Documents", "type": "number", "default": "30", "min": 1, "max": 30,
+     "hint": "Nombre maximal généré par un appel. La limite d'intégrité dure reste 30."},
+    {"key": "LUMENA_DOCUMENT_WORKFLOW_MAX_DOCUMENTS", "label": "Documents par workflow",
+     "group": "Documents", "type": "number", "default": "100", "min": 1, "max": 100,
+     "hint": "Nombre maximal demandé dans un workflow complet. La limite d'intégrité dure reste 100."},
     {"key": "OPENAI_API_KEY", "label": "OpenAI API Key", "group": "Clés API", "type": "secret", "default": "",
      "hint": "Clé API OpenAI (sk-...). Utilisée pour GPT-5.4, GPT-4o, DALL-E 3. Obtenir sur platform.openai.com"},
     {"key": "ANTHROPIC_API_KEY", "label": "Anthropic API Key", "group": "Clés API", "type": "secret", "default": "",
@@ -311,7 +391,7 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "DEEPSEEK_API_KEY", "label": "DeepSeek API Key", "group": "Clés API", "type": "secret", "default": "",
      "hint": "Clé API DeepSeek (sk-...). Modèle principal par défaut. ~0.27$/M tokens. Obtenir sur platform.deepseek.com"},
     {"key": "MOONSHOT_API_KEY", "label": "Moonshot (Kimi) API Key", "group": "Clés API", "type": "secret", "default": "",
-     "hint": "Clé API Moonshot/Kimi pour Kimi K2.7 Code et K2.6. Obtenir sur platform.kimi.ai"},
+     "hint": "Clé API Moonshot/Kimi pour Kimi K3, K2.7 Code et K2.6. Obtenir sur platform.kimi.ai"},
     {"key": "XAI_API_KEY", "label": "xAI (Grok) API Key", "group": "Clés API", "type": "secret", "default": "",
      "hint": "Clé API xAI pour les modèles Grok. Obtenir sur console.x.ai"},
     {"key": "NVIDIA_API_KEY", "label": "NVIDIA NIM API Key", "group": "Clés API", "type": "secret", "default": "",
@@ -430,6 +510,15 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "LUMENA_PEER_HALT", "label": "Kill-switch réseau (urgence)", "group": "Instance",
      "type": "bool", "default": "0",
      "hint": "Coupe-circuit d'URGENCE (effet immédiat, pas de redémarrage). Veto TOUTE nouvelle activité réseau : nouvelles délégations (entrantes ET sortantes), découverte, conscience. IMPORTANT : ne coupe PAS les missions EN COURS (Lumena 24/7) — elles se terminent et leurs résultats reviennent. Remets sur 0 pour reprendre."},
+    {"key": "LUMENA_PEER_AUTONOMY", "label": "Autonomie P2P (initiative)", "group": "Instance",
+     "type": "select", "options": ["off", "shadow", "live"], "default": "off",
+     "hint": "Initiative inter-Lumena (par instance). off = ne délègue que si on lui demande. shadow = elle DÉCIDE et te montre ce qu'elle aurait délégué, mais N'AGIT PAS (mode observation). live = elle agit seule 24/7, dans les limites des scopes accordés et sous le filet (kill-switch + quarantaine). Effet immédiat."},
+    {"key": "LUMENA_PEER_AUTONOMY_MAX_PER_HOUR", "label": "Autonomie P2P — délégations max/heure", "group": "Instance",
+     "type": "number", "default": "3", "min": 1, "max": 60,
+     "hint": "Frein anti-flood du mode live : nombre maximum de délégations autonomes par heure. Au-delà, Lumena attend l'heure suivante (les missions en cours ne sont jamais touchées). Effet immédiat."},
+    {"key": "LUMENA_PEER_AUTONOMY_WHEN_PRESENT", "label": "Autonomie P2P — agir même si présent", "group": "Instance",
+     "type": "bool", "default": "0",
+     "hint": "Mode live : par défaut (0), Lumena ne délègue seule que si tu es ABSENT (inactif >10 min). Mets 1 pour qu'elle agisse 24/7 même quand tu es devant l'écran. Effet immédiat."},
     {"key": "LUMENA_PEER_QUARANTINE_THRESHOLD", "label": "Quarantaine auto — seuil d'échecs", "group": "Instance",
      "type": "number", "default": "5", "min": 2, "max": 50,
      "hint": "Nombre d'échecs CONSÉCUTIFS (pair injoignable/erreur) avant mise en quarantaine automatique. Le pair isolé ne reçoit plus de NOUVELLES délégations (les missions en cours ne sont pas touchées). Un succès remet le compteur à zéro. Effet immédiat."},
@@ -830,6 +919,52 @@ async def reveal_config_secret(key: str):
     return {"success": True, "key": key, "value": env_vals.get(key, "")}
 
 
+def _voice_pairing_error(updates: dict[str, str], current: dict[str, str]) -> str:
+    """Reject contradictory privileged voice identities before persisting them."""
+    role = updates.get(
+        "LUMENA_VOICE_SESSION_ROLE",
+        current.get("LUMENA_VOICE_SESSION_ROLE", "guest"),
+    ).strip().lower()
+    trusted_raw = updates.get(
+        "LUMENA_VOICE_SESSION_TRUSTED",
+        current.get("LUMENA_VOICE_SESSION_TRUSTED", ""),
+    ).strip().lower()
+    if role not in {"guest", "user", "admin", "owner"}:
+        return "Rôle vocal invalide."
+    trusted = trusted_raw in {"1", "true", "yes", "on"}
+    if role != "guest" and not trusted:
+        return (
+            "Le rôle vocal privilégié exige Session vocale appairée = ON. "
+            "Active l'appairage puis redémarre Lumena."
+        )
+    return ""
+
+
+def _normalize_voice_pairing_updates(
+    updates: dict[str, str], current: dict[str, str],
+) -> dict[str, str]:
+    """Keep an explicitly paired owner identity internally coherent."""
+    normalized = dict(updates)
+    role = normalized.get(
+        "LUMENA_VOICE_SESSION_ROLE",
+        current.get("LUMENA_VOICE_SESSION_ROLE", "guest"),
+    ).strip().lower()
+    trusted_raw = normalized.get(
+        "LUMENA_VOICE_SESSION_TRUSTED",
+        current.get("LUMENA_VOICE_SESSION_TRUSTED", ""),
+    ).strip().lower()
+    user_id = normalized.get(
+        "LUMENA_VOICE_SESSION_USER_ID",
+        current.get("LUMENA_VOICE_SESSION_USER_ID", ""),
+    ).strip()
+    if role == "owner" and trusted_raw in {"1", "true", "yes", "on"}:
+        if not user_id or user_id == "voice:guest":
+            normalized["LUMENA_VOICE_SESSION_USER_ID"] = (
+                current.get("LUMENA_OWNER_USER_ID", "").strip() or "local:owner"
+            )
+    return normalized
+
+
 @router.put("/api/config", dependencies=[Depends(verify_admin_token)])
 async def update_config(request: Request):
     body = await request.json()
@@ -840,6 +975,11 @@ async def update_config(request: Request):
     filtered = {k: str(v) for k, v in updates.items() if k in allowed_keys}
     if not filtered:
         return {"success": False, "error": "Aucune clé valide trouvée"}
+    current_env = _read_env_file()
+    filtered = _normalize_voice_pairing_updates(filtered, current_env)
+    pairing_error = _voice_pairing_error(filtered, current_env)
+    if pairing_error:
+        return {"success": False, "error": pairing_error}
     # P3.1 — Validation min/max pour les champs number
     schema_map = {s["key"]: s for s in _CONFIG_SCHEMA}
     errors: list[str] = []

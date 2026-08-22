@@ -903,16 +903,24 @@ class LumenaMemory:
         """Récupère tous les faits."""
         return dict(self.facts)
     
-    def get_context_for_prompt(self, query: str, max_memories: int = 3) -> str:
+    def get_context_for_prompt(self, query: str, max_memories: int = 3,
+                               exclude_episodic: bool = False) -> str:
         """
         Génère un contexte mémoire pour le prompt LLM.
-        
+
         Recherche hybride + inclusion des détails complets.
-        
+
         Args:
             query: La question/message actuel
             max_memories: Nombre max de souvenirs à inclure
-            
+            exclude_episodic: B0bis (run TriboBlog 2026-07-07) — si True, EXCLUT les
+                souvenirs épisodiques (auto-logs conversationnels, défaut de add()).
+                Utilisé en mode MISSION : sans ce filtre, le rappel par similarité
+                réinjecte le RÉCIT d'anciens runs (« le site est publié ») et
+                deepseek NARRE un run imaginaire au lieu de le faire (fabrication
+                TriboBlog). Les FAITS durables (self.facts : identité, préférences)
+                passent par un chemin SÉPARÉ ci-dessous → toujours préservés.
+
         Returns:
             Texte à ajouter au prompt système
         """
@@ -961,7 +969,15 @@ class LumenaMemory:
         
         # Souvenirs pertinents avec recherche hybride
         memories = self.recall(query, search_limit)
-        
+
+        # B0bis (run TriboBlog) — en mode MISSION, retirer les souvenirs épisodiques
+        # (récits d'anciens runs) qui poussent le modèle à FABRIQUER. Les faits
+        # durables (identité, préférences) sont injectés plus haut via self.facts,
+        # donc RIEN d'utile n'est perdu. Filtre par TYPE, jamais par contenu.
+        if exclude_episodic:
+            memories = [m for m in memories
+                        if getattr(m, "memory_type", "episodic") != "episodic"]
+
         # Filtrage intelligent par score de pertinence :
         # Ne garder que les mémoires vraiment pertinentes au lieu d'injecter du bruit.
         # Seuil adaptatif : plus strict pour les questions génériques, plus souple pour le personnel.
