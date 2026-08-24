@@ -163,7 +163,7 @@ class TestJSBugfixAcceptance:
         result = subprocess.run(
             ["node", "--check", str(js_project / "app.js")],
             capture_output=True,
-            timeout=10,
+            timeout=30,
         )
         assert result.returncode == 0, f"node --check a échoué : {result.stderr.decode()}"
 

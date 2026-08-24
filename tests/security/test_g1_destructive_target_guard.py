@@ -38,16 +38,16 @@ def _v(cmd: str) -> str:
 
 def test_the_real_incident_is_blocked():
     """La commande exacte qui a supprimé pytest.ini."""
-    cmd = "del C:" + BS + "Users" + BS + "charl" + BS + "Desktop" + BS + "lumena" + BS + "pytest.ini"
+    cmd = "del " + REPO.replace("/", BS) + BS + "pytest.ini"
     assert _v(cmd).endswith("pytest.ini")
 
 
 def test_forward_slashes_are_equivalent():
-    assert _v("del C:/Users/charl/Desktop/lumena/pytest.ini")
+    assert _v(f"del {REPO}/pytest.ini")
 
 
 def test_powershell_remove_item_on_repo_file():
-    assert _v("Remove-Item -Path C:/Users/charl/Desktop/lumena/pyproject.toml")
+    assert _v(f"Remove-Item -Path {REPO}/pyproject.toml")
 
 
 def test_relative_escape_out_of_the_mission():
@@ -57,25 +57,25 @@ def test_relative_escape_out_of_the_mission():
 
 def test_moving_a_repo_file_counts_as_destroying_it():
     """Déplacer `core.py` équivaut à le supprimer de sa place."""
-    assert _v("move C:/Users/charl/Desktop/lumena/core.py old.py")
+    assert _v(f"move {REPO}/core.py old.py")
 
 
 def test_rename_of_repo_file_is_blocked():
-    assert _v("ren C:/Users/charl/Desktop/lumena/pytest.ini pytest.ini.bak")
+    assert _v(f"ren {REPO}/pytest.ini pytest.ini.bak")
 
 
 def test_repo_source_tree_is_protected():
-    assert _v("rm C:/Users/charl/Desktop/lumena/src/reasoning/react.py")
+    assert _v(f"rm {REPO}/src/reasoning/react.py")
 
 
 def test_chained_command_is_inspected_too():
     """Le verbe destructif peut être en seconde position d'un chaînage."""
-    assert _v("echo hello && del C:/Users/charl/Desktop/lumena/pytest.ini")
+    assert _v(f"echo hello && del {REPO}/pytest.ini")
 
 
 def test_every_shell_flavour_is_covered():
     """Le point de l'incident : changer de shell ne doit plus contourner."""
-    target = "C:/Users/charl/Desktop/lumena/pytest.ini"
+    target = f"{REPO}/pytest.ini"
     for verb in ("del", "erase", "rm", "rmdir", "rd", "Remove-Item", "unlink"):
         assert _v(f"{verb} {target}"), f"{verb} devrait être bloqué"
 
@@ -129,10 +129,10 @@ def test_mission_tests_directory_is_not_the_repo_one():
 
 def test_non_destructive_commands_are_never_touched():
     """Même en visant le dépôt : lire, tester, inspecter reste libre."""
-    assert _v("python -m pytest C:/Users/charl/Desktop/lumena/tests") == ""
+    assert _v(f"python -m pytest {REPO}/tests") == ""
     assert _v("git status") == ""
     assert _v("node --check static/script.js") == ""
-    assert _v("type C:/Users/charl/Desktop/lumena/pytest.ini") == ""
+    assert _v(f"type {REPO}/pytest.ini") == ""
 
 
 def test_paths_outside_the_repo_are_not_our_business():
@@ -155,12 +155,12 @@ def test_redirection_inside_the_mission_is_fine():
 
 def test_inert_without_mission_root():
     """Chat, CodeAgent direct, autonomie : comportement strictement inchangé."""
-    assert violation("del C:/Users/charl/Desktop/lumena/pytest.ini",
+    assert violation(f"del {REPO}/pytest.ini",
                      mission_root=None, repo_root=REPO) == ""
 
 
 def test_inert_without_repo_root():
-    assert violation("del C:/Users/charl/Desktop/lumena/pytest.ini",
+    assert violation(f"del {REPO}/pytest.ini",
                      mission_root=MISSION, repo_root=None) == ""
 
 

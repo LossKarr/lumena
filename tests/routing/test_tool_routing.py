@@ -486,9 +486,10 @@ async def test_ionos_bdd_context_hard_blocks_file_shell_and_agents(_registry):
 
 
 @pytest.mark.asyncio
-async def test_ionos_config_path_hard_blocks_without_context_query(_registry):
+async def test_ionos_config_path_hard_blocks_without_context_query(_registry, monkeypatch):
     from src.reasoning.caller_context import REACT
 
+    monkeypatch.setenv("LUMENA_IONOS_DEFAULT_SITE", "openlumena.com")
     _registry.clear_context_filter()
     config_path = (
         _registry.lumena_root / "workspace" / "openlumena" / "api" / "config.local.php"
