@@ -31,6 +31,7 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import subprocess
           import re
           from pathlib import Path
 
@@ -40,22 +41,63 @@ jobs:
           if not match:
               raise SystemExit("Canonical version missing from src/version.py")
           major, minor, patch = map(int, match.groups())
-          old = ".".join(match.groups())
-          new = f"{major}.{minor}.{patch + 1}"
-          path.write_text(text.replace(f'__version__ = "{old}"', f'__version__ = "{new}"', 1), encoding="utf-8")
+          current = ".".join(match.groups())
+          tag_exists = subprocess.run(
+              ["git", "rev-parse", "--quiet", "--verify", f"refs/tags/v{current}"],
+              check=False,
+              stdout=subprocess.DEVNULL,
+          ).returncode == 0
+          new = f"{major}.{minor}.{patch + 1}" if tag_exists else current
+          if new != current:
+              path.write_text(
+                  text.replace(f'__version__ = "{current}"', f'__version__ = "{new}"', 1),
+                  encoding="utf-8",
+              )
           Path(".release-version").write_text(new, encoding="ascii")
           PY
           VERSION=$(cat .release-version)
           rm .release-version
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/version.py
-          git commit -m "release: v$VERSION [skip ci]"
-          git push origin "HEAD:${{ github.ref_name }}"
+          if ! git diff --quiet -- src/version.py; then
+            git add src/version.py
+            git commit -m "release: v$VERSION [skip ci]"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
           COMMIT=$(git rev-parse HEAD)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
-      - run: python -m pytest tests/release -q
+
+  release:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.commit }}
+      - name: Create visible release immediately
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          TAG="v${{ needs.prepare.outputs.version }}"
+          EXPECTED="${{ needs.prepare.outputs.commit }}"
+          if git rev-parse --quiet --verify "refs/tags/$TAG" >/dev/null; then
+            ACTUAL=$(git rev-list -n 1 "$TAG")
+            test "$ACTUAL" = "$EXPECTED"
+          else
+            git tag -a "$TAG" "$EXPECTED" -m "Lumena $TAG"
+            git push origin "$TAG"
+          fi
+      - name: Publish GitHub Release shell
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: Lumena v${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
 
   lint:
     needs: prepare
@@ -135,7 +177,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [prepare, lint, test, package]
+    needs: [prepare, release, lint, test, package]
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -164,14 +206,7 @@ jobs:
         uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: release-assets/lumena-update-windows-x64.zip
-      - name: Create immutable tag
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.commit }}" -m "Lumena v${{ needs.prepare.outputs.version }}"
-          git push origin "v${{ needs.prepare.outputs.version }}"
-      - name: Publish certified GitHub Release
+      - name: Attach certified assets to existing release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}

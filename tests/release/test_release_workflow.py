@@ -26,12 +26,19 @@ def test_each_main_push_triggers_a_release_but_bot_bumps_do_not_recurse() -> Non
     assert "[skip ci]" in text
 
 
-def test_publish_is_downstream_of_validation_tests_lint_and_package() -> None:
+def test_release_is_visible_immediately_then_assets_are_certified_downstream() -> None:
     _, workflow = _workflow()
     jobs = workflow["jobs"]
-    assert set(jobs["publish"]["needs"]) == {"prepare", "lint", "test", "package"}
+    assert jobs["release"]["needs"] == "prepare"
+    assert set(jobs["publish"]["needs"]) == {"prepare", "release", "lint", "test", "package"}
     assert set(jobs["package"]["needs"]) == {"prepare", "lint", "test"}
     assert jobs["publish"]["environment"] == "production"
+
+
+def test_failed_unpublished_bump_is_reused_instead_of_skipping_a_version() -> None:
+    text, _ = _workflow()
+    assert "refs/tags/v{current}" in text
+    assert 'new = f"{major}.{minor}.{patch + 1}" if tag_exists else current' in text
 
 
 def test_full_windows_regression_allows_cold_lsp_startup() -> None:
