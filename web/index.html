@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="/static/css/missions.css?v=1">
 <link rel="stylesheet" href="/static/css/document-studio.css?v=9">
 <link rel="stylesheet" href="/static/css/overview.css?v=2">
+<link rel="stylesheet" href="/static/css/updates.css?v=1">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -369,6 +370,7 @@
         <div class="theme-orb" data-action="toggleTheme" title="Changer le theme" id="theme-orb" role="button" aria-label="Basculer theme clair/sombre"><i data-lucide="moon"></i></div>
       </div>
     </div>
+    <div id="update-banner" class="update-banner" hidden role="status" aria-live="polite"></div>
   </header>
 
   <!-- ==================== CONTENT ==================== -->
@@ -1684,6 +1686,7 @@ window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form')
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
 <script type="module" src="/static/js/main.js?v=29"></script>
+<script type="module" src="/static/js/updates.js?v=1"></script>
 <script type="module">
 import { initSetupWizard } from '/static/js/setup.js?v=20';
 import { initContextMenu } from '/static/js/contextmenu.js?v=1';

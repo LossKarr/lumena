@@ -1,4 +1,4 @@
-name: Auto Release
+name: Certified Release - Lumena
 
 on:
   push:
@@ -6,99 +6,181 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: certified-release
+  cancel-in-progress: false
 
 jobs:
-  release:
-    name: Bump version & Release
+  prepare:
+    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
     runs-on: ubuntu-latest
-    # Ne pas tourner sur les commits de bump automatique
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-
-      - name: Bump patch version
-        id: bump
+      - id: version
+        shell: bash
         run: |
-          python - <<'PYEOF'
-          import re, os
+          python - <<'PY'
+          import re
+          from pathlib import Path
 
-          # ── Lire la version actuelle depuis pyproject.toml ──
-          with open("pyproject.toml", "r", encoding="utf-8") as f:
-              content = f.read()
-
-          match = re.search(r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', content, re.MULTILINE)
+          path = Path("src/version.py")
+          text = path.read_text(encoding="utf-8")
+          match = re.search(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', text, re.MULTILINE)
           if not match:
-              raise SystemExit("Version introuvable dans pyproject.toml")
+              raise SystemExit("Canonical version missing from src/version.py")
+          major, minor, patch = map(int, match.groups())
+          old = ".".join(match.groups())
+          new = f"{major}.{minor}.{patch + 1}"
+          path.write_text(text.replace(f'__version__ = "{old}"', f'__version__ = "{new}"', 1), encoding="utf-8")
+          Path(".release-version").write_text(new, encoding="ascii")
+          PY
+          VERSION=$(cat .release-version)
+          rm .release-version
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/version.py
+          git commit -m "release: v$VERSION [skip ci]"
+          git push origin "HEAD:${{ github.ref_name }}"
+          COMMIT=$(git rev-parse HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+      - run: python -m pytest tests/release -q
 
-          major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
-          old_version = f"{major}.{minor}.{patch}"
-          new_version = f"{major}.{minor}.{patch + 1}"
-          print(f"Bump: {old_version} → {new_version}")
+  lint:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - name: Lint certified updater surface
+        run: >-
+          ruff check
+          src/version.py
+          src/runtime/update_manifest.py
+          src/runtime/update_service.py
+          src/runtime/update_installation.py
+          src/runtime/update_guard_smoke.py
+          web/routes/updates.py
+          scripts/build_release_artifacts.py
+          scripts/lumena_updater.py
+          tests/release
+          tests/runtime/test_update_manifest.py
+          tests/runtime/test_update_service.py
+          tests/runtime/test_update_installation.py
+          tests/runtime/test_lumena_updater_helper.py
+          tests/web/test_health_identity.py
+          tests/web/test_updates_routes.py
+          tests/web/test_updates_ui.py
+          --select F821,F811,E722 --ignore E501,E402
 
-          # ── Mettre à jour pyproject.toml ──
-          content = content.replace(f'version = "{old_version}"', f'version = "{new_version}"', 1)
-          with open("pyproject.toml", "w", encoding="utf-8") as f:
-              f.write(content)
+  test:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt
+          pip install pytest pytest-asyncio pytest-timeout pytest-mock
+      - run: python -m pytest tests/ --timeout=60 --tb=short -q
 
-          # ── Mettre à jour src/__init__.py ──
-          init_path = "src/__init__.py"
-          with open(init_path, "r", encoding="utf-8") as f:
-              init_content = f.read()
-          init_content = init_content.replace(f'__version__ = "{old_version}"', f'__version__ = "{new_version}"', 1)
-          init_content = init_content.replace(f'Version: {old_version}', f'Version: {new_version}', 1)
-          with open(init_path, "w", encoding="utf-8") as f:
-              f.write(init_content)
+  package:
+    needs: [prepare, lint, test]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Build lightweight certified package
+        shell: pwsh
+        run: |
+          python scripts/build_release_artifacts.py `
+            --output release-assets `
+            --commit "${{ needs.prepare.outputs.commit }}" `
+            --ci-run-id "${{ github.run_id }}" `
+            --ci-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" `
+            --release-notes-url "${{ github.server_url }}/${{ github.repository }}/releases/tag/v${{ needs.prepare.outputs.version }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: certified-release-assets
+          path: release-assets/*
+          if-no-files-found: error
 
-          # ── Exporter pour les steps suivantes ──
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"old_version={old_version}\n")
-              f.write(f"new_version={new_version}\n")
-              f.write(f"tag=v{new_version}\n")
-          PYEOF
-
-      - name: Commit version bump
+  publish:
+    needs: [prepare, lint, test, package]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.prepare.outputs.commit }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: certified-release-assets
+          path: release-assets
+      - name: Verify exact release SHA
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ needs.prepare.outputs.commit }}"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          m = json.loads(Path("release-assets/update-manifest.json").read_text())
+          expected = "${{ needs.prepare.outputs.commit }}"
+          assert m["commit"] == expected
+          assert m["ci"]["conclusion"] == "success"
+          assert m["ci"]["commit"] == expected
+          PY
+      - name: Attest update package provenance
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        with:
+          subject-path: release-assets/lumena-update-windows-x64.zip
+      - name: Create immutable tag
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml src/__init__.py
-          git commit -m "release: v${{ steps.bump.outputs.new_version }} [skip ci]"
-          git tag "v${{ steps.bump.outputs.new_version }}"
-          git push origin HEAD --tags
-
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Récupérer les commits depuis le dernier tag (ou les 20 derniers si premier release)
-          PREV_TAG=$(git tag --sort=-v:refname | head -2 | tail -1) || true
-          if [ -z "$PREV_TAG" ] || [ "$PREV_TAG" = "v${{ steps.bump.outputs.new_version }}" ]; then
-            LOG=$(git log --oneline -20 --no-decorate)
-          else
-            LOG=$(git log --oneline --no-decorate "$PREV_TAG"..HEAD~1)
-          fi
-          {
-            echo "body<<EOFLOG"
-            echo "## Changements"
-            echo ""
-            echo "$LOG" | sed 's/^/- /'
-            echo ""
-            echo "EOFLOG"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ needs.prepare.outputs.version }}" "${{ needs.prepare.outputs.commit }}" -m "Lumena v${{ needs.prepare.outputs.version }}"
+          git push origin "v${{ needs.prepare.outputs.version }}"
+      - name: Publish certified GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: v${{ steps.bump.outputs.new_version }}
-          name: Lumena v${{ steps.bump.outputs.new_version }}
-          body: ${{ steps.changelog.outputs.body }}
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: Lumena v${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
           draft: false
           prerelease: false
+          files: |
+            release-assets/lumena-update-windows-x64.zip
+            release-assets/lumena-update-windows-x64.zip.sha256
+            release-assets/update-manifest.json
+            release-assets/release-certification.json

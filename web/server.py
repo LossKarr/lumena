@@ -19,19 +19,20 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from src.version import __version__
 
 # ── Lifespan (startup / shutdown logic) ──
 from web.routes.lifespan import lifespan  # noqa: E402
 
 # ── Route modules ──
-from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, document_studio, codex_subscription  # noqa: E402
+from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, document_studio, codex_subscription, updates  # noqa: E402
 
 # ── App creation ──
 _SETUP_DONE = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
 
 app = FastAPI(
     title="Lumena Web API",
-    version="2.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url=None if _SETUP_DONE else "/docs",
     redoc_url=None if _SETUP_DONE else "/redoc",
@@ -252,6 +253,7 @@ app.include_router(mcp.router)
 app.include_router(missions.router)
 app.include_router(document_studio.router)
 app.include_router(codex_subscription.router)
+app.include_router(updates.router)
 
 # ── Static files and root page ──
 _WEB_DIR = Path(__file__).parent

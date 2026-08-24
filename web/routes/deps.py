@@ -127,6 +127,10 @@ _SLO_MONITOR = None
 _AUTONOMY_DAEMON = None
 _AUTONOMY_STARTED_BY_WEB = False
 _AUTONOMY_LAST_ERROR: Optional[str] = None
+# Updater GitHub Releases. Initialises par le lifespan ; aucun check reseau ne
+# bloque le demarrage et aucune application n'est possible depuis ce module.
+_UPDATE_SERVICE_SINGLETON: Optional[Any] = None
+_UPDATE_CHECK_TASK: Optional[Any] = None
 _TG_MODE_STATE_LOCK = threading.Lock()
 _TG_MODE_STATE: Dict[str, str] = {}
 _TG_MODE_STATE_LOADED = False
@@ -176,6 +180,10 @@ def get_task_orchestrator():
 
 def get_session_store():
     return _SESSION_STORE
+
+
+def get_update_service_singleton():
+    return _UPDATE_SERVICE_SINGLETON
 
 
 def get_mcp_approval_queue_singleton():

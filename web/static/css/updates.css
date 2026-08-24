@@ -1,0 +1,25 @@
+.update-banner{
+  position:absolute;top:calc(100% + 8px);right:18px;z-index:80;
+  width:min(430px,calc(100vw - 28px));padding:10px 12px;
+  display:flex;align-items:center;gap:10px;
+  border:1px solid color-mix(in srgb,var(--accent) 42%,var(--border));
+  border-radius:var(--radius-md);background:color-mix(in srgb,var(--card) 96%,transparent);
+  box-shadow:var(--shadow-lg);color:var(--text);font-size:12px;
+}
+.update-banner[hidden]{display:none}
+.update-banner-copy{min-width:0;flex:1;line-height:1.35}
+.update-banner-copy strong{display:block;color:var(--text-strong)}
+.update-banner-copy span{color:var(--muted);font-size:10px}
+.update-center-card{border:1px solid var(--border);border-radius:var(--radius-md);background:var(--card);padding:14px;margin-bottom:14px}
+.update-center-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.update-center-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:650;color:var(--text-strong)}
+.update-center-meta{font-size:10px;color:var(--muted);margin-top:4px}
+.update-state-pill{font-size:10px;padding:3px 7px;border:1px solid var(--border);border-radius:var(--radius-full);color:var(--muted)}
+.update-state-pill.available,.update-state-pill.verified{border-color:color-mix(in srgb,var(--ok) 45%,var(--border));color:var(--ok)}
+.update-version-row{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px;align-items:center}
+.update-version-detail{margin-top:10px;padding:10px;border-left:2px solid var(--border-strong);background:var(--bg-elevated);font-size:11px;line-height:1.55;color:var(--muted)}
+.update-version-detail strong{color:var(--text)}
+.update-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
+.update-progress{height:4px;margin-top:10px;border-radius:var(--radius-full);background:var(--border);overflow:hidden}
+.update-progress>span{display:block;height:100%;background:var(--accent);transition:width .2s}
+@media(max-width:640px){.update-banner{right:8px}.update-version-row{grid-template-columns:1fr}.update-center-head{flex-direction:column}.update-actions .btn{flex:1}}

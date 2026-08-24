@@ -702,6 +702,7 @@ const _LEVEL_ORDER=['simple','avancé','expert'];
 
 // P5.1 — Ordre et niveau des groupes
 const _GROUP_ORDER=[
+  {name:'Mises a jour',      level:'simple',  icon:'package-open'},
   {name:'Acces OpenAI',      level:'simple',  icon:'badge-check'},
   {name:'LLM',               level:'simple',  icon:'brain'},
   {name:'Cerveaux Spécialisés',level:'simple', icon:'cpu'},
@@ -791,6 +792,9 @@ function _switchCfgGroup(name){
   if(name==='Acces OpenAI'){
     box.innerHTML='<div class="cfg-group-content" id="codex-access-mount"></div>';
     mountCodexSubscriptionCard(document.getElementById('codex-access-mount'),items);
+  }else if(name==='Mises a jour'){
+    box.innerHTML=`<div class="cfg-group-content"><div id="update-center"></div>${_renderGroupCard(name,items)}</div>`;
+    if(window.renderUpdateCenter)window.renderUpdateCenter(document.getElementById('update-center'));
   }else if(!items.length){
     box.innerHTML=`<div class="cfg-empty">Aucun paramètre dans ce groupe.</div>`;
   }else{

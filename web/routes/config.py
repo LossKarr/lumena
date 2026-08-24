@@ -23,6 +23,18 @@ _ENV_BACKUP_DIR = DATA_DIR / "env_backups"
 router = APIRouter()
 
 _CONFIG_SCHEMA: list[dict] = [
+    {"key": "LUMENA_UPDATE_CHECK_ENABLED", "label": "Verifier les mises a jour",
+     "group": "Mises a jour", "type": "bool", "default": "1",
+     "hint": "Verifie GitHub Releases en arriere-plan, sans ralentir le demarrage ni installer automatiquement."},
+    {"key": "LUMENA_UPDATE_AUTO_INSTALL", "label": "Installation automatique quand Lumena est inactive",
+     "group": "Mises a jour", "type": "bool", "default": "0",
+     "hint": "Desactive par defaut. Une mise a jour n'est appliquee qu'apres certification et verification d'inactivite."},
+    {"key": "LUMENA_UPDATE_CHANNEL", "label": "Canal de mise a jour",
+     "group": "Mises a jour", "type": "select", "options": ["stable"], "default": "stable",
+     "hint": "La V1 accepte uniquement les releases stables certifiees."},
+    {"key": "LUMENA_UPDATE_INTERVAL_HOURS", "label": "Frequence de verification (heures)",
+     "group": "Mises a jour", "type": "number", "default": "24", "min": 1, "max": 168,
+     "hint": "Le resultat est mis en cache. Le bouton Verifier permet une actualisation immediate."},
     {"key": "LUMENA_OPENAI_ACCESS_MODE", "label": "Mode d'acces OpenAI",
      "group": "Acces OpenAI", "type": "select",
      "options": ["api", "chatgpt_codex"], "default": "api",

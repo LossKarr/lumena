@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from loguru import logger
+from src.version import get_build_identity
 
 from web.routes import deps
 from web.routes.schemas import UndoEditsRequest, FileEditItem
@@ -565,8 +566,9 @@ async def root():
 
 @router.get("/api/health")
 async def health():
-    """Lightweight health probe — returns 200 instantly."""
-    return {"status": "ok"}
+    """Lightweight liveness and immutable build-identity probe."""
+    identity = get_build_identity().as_dict()
+    return {"status": "ok", **identity}
 
 
 @router.post("/api/shutdown")

@@ -518,6 +518,7 @@ async def lifespan(app: FastAPI):
     _n8n_bg_task = None
     _peer_network_task = None
     _heartbeat_task = None  # stocké pour cancellation propre au shutdown
+    _update_check_task = None
 
     try:
         # ensure_instance_id() DOIT être appelé avant le lock pour garantir
@@ -2081,11 +2082,66 @@ async def lifespan(app: FastAPI):
             if _emotion_ws_cb not in _emgr._mood_change_callbacks:
                 _emgr._mood_change_callbacks.append(_emotion_ws_cb)
 
+        # Verification des releases differee : aucun appel GitHub sur le chemin
+        # critique du demarrage et aucune installation implicite ici.
+        try:
+            from src.runtime.update_service import UpdateService
+
+            deps._UPDATE_SERVICE_SINGLETON = UpdateService()
+
+            async def _check_updates_later():
+                await asyncio.sleep(60)
+                service = deps._UPDATE_SERVICE_SINGLETON
+                if service is not None and service.settings.check_enabled:
+                    try:
+                        status = await service.check()
+                        if service.settings.auto_install and status.get("available_version"):
+                            await service.prepare_version(str(status["available_version"]))
+                            await service.download_selected()
+                            from web.routes.updates import collect_update_busy_reasons
+                            while True:
+                                busy = collect_update_busy_reasons()
+                                if not busy:
+                                    port = int(os.getenv("LUMENA_PORT", "8080"))
+                                    await service.launch_apply(
+                                        busy_reasons=[], parent_pid=os.getpid(),
+                                        restart_command=[sys.executable, str(_PROJECT_ROOT / "run_desktop.py")],
+                                        health_url=f"http://127.0.0.1:{port}/api/health",
+                                    )
+                                    break
+                                service._transition("waiting_idle", busy_reasons=busy)
+                                await asyncio.sleep(60)
+                    except Exception as _update_err:
+                        logger.debug("[UPDATES] verification differee impossible: {}", _update_err)
+
+            _update_check_task = asyncio.create_task(_check_updates_later())
+            deps._UPDATE_CHECK_TASK = _update_check_task
+        except Exception as _update_init_err:
+            deps._UPDATE_SERVICE_SINGLETON = None
+            deps._UPDATE_CHECK_TASK = None
+            logger.debug("[UPDATES] initialisation ignoree: {}", _update_init_err)
+
         yield  # L'application tourne ici
 
     finally:
         # === SHUTDOWN ===
         print(" Arret de Lumena...")
+
+        if _update_check_task is not None:
+            _update_check_task.cancel()
+            try:
+                await _update_check_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        deps._UPDATE_CHECK_TASK = None
+        if deps._UPDATE_SERVICE_SINGLETON is not None:
+            try:
+                await deps._UPDATE_SERVICE_SINGLETON.close()
+            except Exception as _update_close_err:
+                logger.debug("[UPDATES] fermeture ignoree: {}", _update_close_err)
+            deps._UPDATE_SERVICE_SINGLETON = None
 
         # S1 Codex subscription: stop the optional App Server before releasing
         # Lumena's other long-lived services. The helper is dormant when no

@@ -251,9 +251,10 @@ def start_mdns_advertise_from_env() -> bool:
     if not is_mdns_available() or _ADVERTISE_HANDLE is not None:
         return _ADVERTISE_HANDLE is not None
     try:
+        from src import __version__
         from src.utils.paths import INSTANCE_ID, INSTANCE_NAME
         role = os.getenv("LUMENA_INSTANCE_ROLE", "standalone")
-        version = os.getenv("LUMENA_VERSION", "") or "1.0"
+        version = os.getenv("LUMENA_VERSION", "") or __version__
         port = int(os.getenv("LUMENA_PORT", "8080"))
         caps = ["chat"]
         extra = os.getenv("LUMENA_EXTRA_CAPABILITIES", "").strip()
