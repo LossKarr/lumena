@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.0.49"
+__version__ = "1.0.50"
 VERSION = __version__
 MIN_UPDATE_VERSION = "1.0.47"
 BUILD_INFO_FILENAME = "build-info.json"
