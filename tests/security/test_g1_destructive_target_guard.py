@@ -23,8 +23,9 @@ from __future__ import annotations
 import types
 
 from src.utils.command_sanitizer import destructive_command_target_violation as violation
+from src.utils.paths import ROOT_DIR
 
-REPO = "C:/Users/charl/Desktop/lumena"
+REPO = ROOT_DIR.as_posix()
 MISSION = REPO + "/workspace/missions/task_abc"
 BS = chr(92)  # antislash, pour écrire des chemins Windows sans échappement
 

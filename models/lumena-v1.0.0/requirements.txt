@@ -1,0 +1,56 @@
+# Lumena v1.0.0 — Dépendances Fine-Tuning
+# Installé avec : pip install -r requirements.txt
+# Python 3.11 recommandé, CUDA 12.1+
+
+# ─────────────────────────────────────────
+# CORE : Unsloth (fine-tuning rapide)
+# ─────────────────────────────────────────
+# IMPORTANT : installer Unsloth selon votre CUDA version
+# Voir : https://github.com/unslothai/unsloth
+# Pour CUDA 12.1 (le plus courant) :
+#   pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
+# Ou via PyPI :
+unsloth>=2025.3.0
+
+# ─────────────────────────────────────────
+# Hugging Face Ecosystem
+# ─────────────────────────────────────────
+transformers>=4.51.0        # Requis pour Qwen3
+datasets>=3.0.0
+peft>=0.15.0
+trl>=0.12.0
+accelerate>=1.3.0
+bitsandbytes>=0.45.0        # Quantization 4-bit
+
+# ─────────────────────────────────────────
+# Utilitaires
+# ─────────────────────────────────────────
+torch>=2.5.0                # PyTorch (installer selon CUDA : voir pytorch.org)
+sentencepiece>=0.2.0
+tokenizers>=0.21.0
+huggingface-hub>=0.27.0
+
+# ─────────────────────────────────────────
+# Traitement des données
+# ─────────────────────────────────────────
+pandas>=2.2.0
+numpy>=1.26.0
+tqdm>=4.67.0
+pyyaml>=6.0.2
+
+# ─────────────────────────────────────────
+# Export GGUF (llama.cpp)
+# ─────────────────────────────────────────
+# llama-cpp-python est installé séparément (lourd)
+# pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+
+# ─────────────────────────────────────────
+# Évaluation
+# ─────────────────────────────────────────
+rouge-score>=0.1.2
+sacrebleu>=2.4.3
+
+# ─────────────────────────────────────────
+# Optionnel : ChromaDB (extraction mémoire Lumena)
+# ─────────────────────────────────────────
+# chromadb>=0.5.0           # Décommenter pour extraire depuis ChromaDB de Lumena

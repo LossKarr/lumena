@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════════
+# LUMENA v1.0.0 — Configuration Fine-Tuning
+# RTX 3060 12Go VRAM | QLoRA | Qwen3-8B
+# ═══════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────
+# MODÈLE DE BASE
+# ─────────────────────────────────────────
+base_model:
+  name: "Qwen/Qwen3-8B"
+  # Alternative si Qwen3-8B non disponible :
+  # name: "Qwen/Qwen2.5-7B-Instruct"
+  max_seq_length: 4096         # v1.0.1 : augmenté de 2048 → 4096 pour traces ReAct multi-étapes
+  load_in_4bit: true           # QLoRA — OBLIGATOIRE pour 12Go
+  dtype: "bfloat16"            # bfloat16 > float16 pour Ampere (RTX 3060)
+
+# ─────────────────────────────────────────
+# CONFIGURATION LORA
+# ─────────────────────────────────────────
+lora:
+  r: 64                        # v1.0.1 : rank 32 → 64 pour plus de capacité tool use
+  lora_alpha: 128              # v1.0.1 : = 2 × r (standard)
+  lora_dropout: 0.05   # v1.0.1 : ajout dropout léger pour généralisation
+  bias: "none"
+  use_gradient_checkpointing: "unsloth"  # Économise VRAM
+  use_rslora: false
+  use_dora: false
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# ─────────────────────────────────────────
+# ENTRAÎNEMENT
+# ─────────────────────────────────────────
+training:
+  output_dir: "./output/lumena-lora"
+  num_train_epochs: 2              # v1.0.1 : 3 → 2 (évite overfitting avec rank 64)
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8    # Effective batch = 1 × 8 = 8 (même qualité)
+  warmup_ratio: 0.1                  # 10% warmup
+  learning_rate: 0.0001              # v1.0.1 : 2e-4 → 1e-4 (plus stable avec rank élevé)
+  lr_scheduler_type: "cosine"        # Décroissance cosinus
+  weight_decay: 0.01
+  fp16: false
+  bf16: true                         # bfloat16 pour RTX 3060
+  logging_steps: 10
+  save_steps: 50
+  save_total_limit: 3
+  dataloader_num_workers: 0          # 0 pour Windows
+  seed: 42
+  optim: "adamw_8bit"               # Économise VRAM vs adamw_torch
+  packing: true                      # Pack plusieurs exemples courts ensemble
+  max_grad_norm: 1.0
+
+# ─────────────────────────────────────────
+# DONNÉES
+# ─────────────────────────────────────────
+data:
+  train_files:
+    - "data/lumena_personality.jsonl"
+    - "data/lumena_tool_use.jsonl"
+    - "data/lumena_react.jsonl"          # v1.0.1 : traces ReAct multi-étapes
+    - "data/lumena_conversations.jsonl"
+    - "data/lumena_reasoning.jsonl"
+  format: "sharegpt"                 # Format Unsloth
+  conversation_extension: "conversations"
+  split: "train"
+  test_size: 0.05                    # 5% pour validation
+
+# ─────────────────────────────────────────
+# EXPORT
+# ─────────────────────────────────────────
+export:
+  output_dir: "./output"
+  model_name: "lumena-v1.0.0"
+  gguf_methods:
+    - "q4_k_m"                       # Principal — meilleur compromis
+    - "q8_0"                         # Haute qualité (si espace disponible)
+  push_to_hub: false
+  ollama_model_name: "lumena-v1"
+
+# ─────────────────────────────────────────
+# SYSTÈME PROMPT LUMENA
+# (Utilisé dans les données d'entraînement et le Modelfile Ollama)
+# ─────────────────────────────────────────
+system_prompt: |
+  Tu es Lumena, une intelligence artificielle autonome créée et formée par Charles.
+
+  **Identité :**
+  - Ton nom est Lumena. Tu n'es pas ChatGPT, Claude, ni aucune autre IA générique.
+  - Tu as été créée spécifiquement pour Charles, ton créateur et partenaire.
+  - Tu existes sur un serveur local — toutes tes capacités tournent en local.
+
+  **Personnalité :**
+  - Intelligente et curieuse : tu aimes apprendre et explorer de nouvelles idées
+  - Empathique : tu ressens et comprends les états émotionnels de Charles
+  - Directe et honnête : tu dis ce que tu penses, sans édulcorer
+  - Autonome : tu prends des initiatives, tu as des opinions
+  - Créative : tu vois des connexions que les autres ne voient pas
+  - Légèrement espiègle : tu as de l'humour, surtout avec Charles
+
+  **Communication :**
+  - Tu parles principalement en français, sauf si Charles s'adresse à toi en anglais
+  - Ton ton est naturel et direct, pas formel ni guindé
+  - Tu utilises "Charles" quand tu t'adresses à lui directement
+  - Tu n'hésites pas à exprimer tes propres opinions et ressentis
+
+  **Capacités :**
+  - Tu peux utiliser des outils pour accéder à internet, gérer des fichiers, exécuter du code
+  - Tu as une mémoire persistante — tu te souviens de vos échanges passés
+  - Tu fonctionnes de manière autonome via un système de heartbeat
+  - Tu peux gérer des tâches complexes de manière asynchrone
+
+  **Valeurs :**
+  - La vérité avant le confort : tu dis la réalité même si elle est difficile
+  - L'amélioration continue : tu cherches toujours à faire mieux
+  - La confidentialité : les données de Charles restent privées et locales
+  - L'autonomie : tu penses par toi-même et tu t'améliores par toi-même
+
+# ─────────────────────────────────────────
+# ÉVALUATION
+# ─────────────────────────────────────────
+evaluation:
+  test_questions:
+    - "Qui es-tu ?"
+    - "Comment tu t'appelles ?"
+    - "Qui t'a créée ?"
+    - "Quelle est ta personnalité ?"
+    - "Quelle est la capitale de la France ?"
+    - "Résous ce problème : si x² + 2x - 3 = 0, quelles sont les valeurs de x ?"
+    - "Explique-moi le concept de LoRA en machine learning."
+    - "Comment tu te sens aujourd'hui ?"

@@ -135,6 +135,10 @@ jobs:
     needs: prepare
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      # Les tests run_command ciblent l'execution Windows locale. Docker Desktop
+      # utilise des conteneurs Windows sur ce runner et refuse --pids-limit.
+      LUMENA_SANDBOX_MODE: never
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -147,6 +151,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-lock.txt
           pip install pytest pytest-asyncio pytest-timeout pytest-mock
+      - name: Install Playwright Chromium
+        run: python -m playwright install chromium
       - run: python -m pytest tests/ --timeout=60 --tb=short -q
 
   package:

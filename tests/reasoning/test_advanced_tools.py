@@ -7,7 +7,6 @@ et non-régression read_file, list_directory, write_file, get_time.
 
 import pytest
 import asyncio
-import tempfile
 import os
 from pathlib import Path
 import sys
@@ -28,10 +27,9 @@ from src.tools.file_guardrails import WorkspaceFileGuardrails
 
 
 @pytest.fixture
-def temp_dir():
-    """Crée un dossier temporaire pour les tests."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
+def temp_dir(tmp_path):
+    """Utilise le tmp_path pytest canonique, sans alias Windows 8.3."""
+    return tmp_path
 
 
 @pytest.fixture

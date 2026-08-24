@@ -144,6 +144,8 @@ def test_dirty_git_checkout_is_refused_without_mutation(tmp_path: Path) -> None:
 
 
 def test_guard_smoke_requires_exact_identity_and_truth_lock(tmp_path: Path) -> None:
+    from src.version import __version__
+
     managed = tmp_path / "managed-files.json"
     managed.write_text('{"schema_version":1,"files":[]}\n', encoding="utf-8")
     (tmp_path / "build-info.json").write_text(
@@ -151,7 +153,7 @@ def test_guard_smoke_requires_exact_identity_and_truth_lock(tmp_path: Path) -> N
         encoding="utf-8",
     )
 
-    result = run_update_guard_smoke(tmp_path, expected_version="1.0.47", expected_commit="abc")
+    result = run_update_guard_smoke(tmp_path, expected_version=__version__, expected_commit="abc")
 
     assert result["ok"]
     assert result["checks"]["mission_truth_lock"]

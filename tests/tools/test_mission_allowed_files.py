@@ -204,8 +204,14 @@ async def test_apply_patch_simple_out_of_scope_blocked(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_undo_edit_out_of_scope_blocked(tmp_path):
+async def test_undo_edit_out_of_scope_blocked(tmp_path, monkeypatch):
     from src.reasoning.handlers.files import write_file_handler, undo_edit_handler
+    from src.utils import paths
+
+    # Le test ne doit pas dépendre des backups présents sur la machine du dev.
+    backup_root = tmp_path / "backups"
+    (backup_root / "session-1").mkdir(parents=True)
+    monkeypatch.setattr(paths, "BACKUPS_DIR", backup_root)
     lead = _lead_ctx(tmp_path)
     await write_file_handler(lead, path="other.py", content="v1")
     worker = _worker_ctx(tmp_path, ["app.py"])

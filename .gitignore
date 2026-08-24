@@ -33,6 +33,12 @@ data/
 workspace/
 backups/
 
+
+# Catalogue MCP livré avec Lumena
+!src/mcp/data/
+src/mcp/data/*
+!src/mcp/data/curated_mcp_catalog.json
+
 # Docs internes
 docs/
 docs-plan/
@@ -111,4 +117,8 @@ test_log_fixes.py
 test_run_desktop.py
 /models/lumena-v1.0.0/unsloth_compiled_cache
 README_TEST.md
-/models
+
+models/lumena-v1.0.0/llama.cpp/
+models/lumena-v1.0.0/4.51.0
+models/lumena-v1.0.0/Modelfile
+/models/piper

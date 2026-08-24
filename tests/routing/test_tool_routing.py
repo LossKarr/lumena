@@ -490,9 +490,12 @@ async def test_ionos_config_path_hard_blocks_without_context_query(_registry):
     from src.reasoning.caller_context import REACT
 
     _registry.clear_context_filter()
+    config_path = (
+        _registry.lumena_root / "workspace" / "openlumena" / "api" / "config.local.php"
+    )
     obs = await _registry.execute(
         "read_file",
-        {"path": r"C:\Users\user\Desktop\lumena\workspace\openlumena\api\config.local.php"},
+        {"path": str(config_path)},
         caller=REACT,
     )
 
