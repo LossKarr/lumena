@@ -7,7 +7,7 @@ import pytest
 
 from src.runtime.update_manifest import (
     ReleaseManifest, UpdateManifestError, Version, validate_certification,
-    validate_download_url,
+    validate_download_response_url, validate_download_url,
 )
 
 
@@ -104,3 +104,33 @@ def test_certification_must_match_every_authoritative_field() -> None:
 def test_download_url_rejects_untrusted_locations(url: str) -> None:
     with pytest.raises(UpdateManifestError):
         validate_download_url(url)
+
+
+def test_catalog_download_url_requires_exact_lumena_release_namespace() -> None:
+    validate_download_url(
+        "https://github.com/LossKarr/lumena/releases/download/v1.0.51/update-manifest.json"
+    )
+    with pytest.raises(UpdateManifestError):
+        validate_download_url(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/file"
+        )
+
+
+@pytest.mark.parametrize("host", [
+    "release-assets.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "github-releases.githubusercontent.com",
+])
+def test_effective_download_url_accepts_official_github_release_cdns(host: str) -> None:
+    validate_download_response_url(f"https://{host}/github-production-release-asset/file")
+
+
+@pytest.mark.parametrize("url", [
+    "http://release-assets.githubusercontent.com/file",
+    "https://release-assets.githubusercontent.com.evil.example/file",
+    "https://evil.example/file",
+    "https://github.com/other/repo/releases/download/v1.0.51/file.zip",
+])
+def test_effective_download_url_rejects_insecure_or_untrusted_destinations(url: str) -> None:
+    with pytest.raises(UpdateManifestError):
+        validate_download_response_url(url)

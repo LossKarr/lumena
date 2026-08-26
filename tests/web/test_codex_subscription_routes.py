@@ -287,6 +287,7 @@ def test_diagnostic_is_passive_bounded_and_contains_no_local_secret(monkeypatch)
     assert body["transport"]["turn_count"] == 2
     assert body["transport"]["recycle_count"] == 0
     assert body["configuration"]["api_fallback"] == "never"
+    assert body["configuration"]["api_rescue_enabled"] is True
     assert "private" not in rendered
     assert "abcdefghijklmnop" not in rendered
     assert "[REDACTED]" in rendered

@@ -363,6 +363,9 @@ def _neutralize_codex_subscription(monkeypatch):
     explicitement via `monkeypatch.setenv` — ils continuent de fonctionner.
     """
     monkeypatch.setenv("LUMENA_OPENAI_ACCESS_MODE", "api")
+    # API mode may retain a configured Codex model for rescue. Tests opt in
+    # explicitly so a developer's real subscription never answers by accident.
+    monkeypatch.setenv("LUMENA_CODEX_API_RESCUE", "0")
 
 
 # ============================================================================

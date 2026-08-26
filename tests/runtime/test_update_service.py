@@ -113,6 +113,36 @@ def _client(payload: bytes, manifest: dict, certification: dict, releases: list[
     return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
+def _redirecting_client(
+    payload: bytes, manifest: dict, certification: dict,
+    releases: list[dict], calls: list[str],
+):
+    """Reproduce GitHub's browser_download_url -> release CDN redirects."""
+    cdn_host = "release-assets.githubusercontent.com"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        path = request.url.path
+        if path.endswith("/releases"):
+            return httpx.Response(200, json=releases, request=request)
+        if request.url.host == "github.com":
+            asset_name = path.rsplit("/", 1)[-1]
+            return httpx.Response(
+                302,
+                headers={"Location": f"https://{cdn_host}/github-production-release-asset/{asset_name}"},
+                request=request,
+            )
+        if request.url.host == cdn_host and path.endswith("/update-manifest.json"):
+            return httpx.Response(200, json=manifest, request=request)
+        if request.url.host == cdn_host and path.endswith("/release-certification.json"):
+            return httpx.Response(200, json=certification, request=request)
+        if request.url.host == cdn_host and path.endswith("/lumena-update-windows-x64.zip"):
+            return httpx.Response(200, content=payload, request=request)
+        raise AssertionError(f"unexpected updater request: {request.url}")
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
+
+
 @pytest.mark.asyncio
 async def test_catalog_keeps_history_but_only_certified_release_is_installable(tmp_path: Path) -> None:
     payload, manifest, certification, releases = _release_fixture(tmp_path)
@@ -126,6 +156,24 @@ async def test_catalog_keeps_history_but_only_certified_release_is_installable(t
     assert entries[0].certified and entries[0].installable
     assert not entries[1].certified and not entries[1].installable
     assert "historique" in (entries[1].blocked_reason or "")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_catalog_and_download_accept_github_release_asset_cdn_redirects(tmp_path: Path) -> None:
+    payload, manifest, certification, releases = _release_fixture(tmp_path)
+    calls: list[str] = []
+    client = _redirecting_client(payload, manifest, certification, releases, calls)
+    service = UpdateService(root=tmp_path, updates_dir=tmp_path / "updates", client=client)
+
+    entries = await service.list_releases(force=True)
+    assert entries[0].certified and entries[0].installable
+
+    await service.prepare_version("1.0.48")
+    result = await service.download_selected()
+
+    assert result["state"] == "verified"
+    assert any("release-assets.githubusercontent.com" in call for call in calls)
     await client.aclose()
 
 

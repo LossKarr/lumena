@@ -143,6 +143,8 @@ def test_public_external_metadata_contract_filters_unknown_fields(monkeypatch):
     meta = llm.get_last_response_meta()
     assert meta["provider_used"] == "openai-codex"
     assert meta["model_used"] == "account-model"
+    assert meta["access_source_used"] == "codex"
+    assert meta["billing_source"] == "chatgpt_subscription"
     assert "access_token" not in meta
 
 

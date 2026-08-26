@@ -217,6 +217,31 @@ def _mission_destructive_target_violation(ctx: HandlerContext, command: str) -> 
         return ""
 
 
+# Z39 — signatures « executable introuvable », toutes coquilles confondues.
+# Volontairement restreint aux formulations SANS ambiguïté : un shell qui dit
+# « je ne connais pas ce programme » n'a rien exécuté, point. On ne marque PAS
+# le stderr en général — git, curl et npm écrivent des avertissements sur
+# stderr en cas de succès parfaitement légitime.
+_COMMAND_NOT_FOUND_SIGNATURES: tuple[str, ...] = (
+    "n'est pas reconnu comme nom d'applet de commande",   # PowerShell FR
+    "is not recognized as the name of a cmdlet",          # PowerShell EN
+    "commandnotfoundexception",                           # PowerShell (.NET)
+    "n'est pas reconnu en tant que commande interne",     # cmd.exe FR
+    "is not recognized as an internal or external command",  # cmd.exe EN
+    "command not found",                                  # bash / sh
+    # PAS « no such file or directory » : ça parle d'un FICHIER, pas d'un
+    # exécutable, et `find` sur un lien cassé sort 0 en l'écrivant.
+)
+
+
+def _command_not_found_in(stderr: str) -> bool:
+    """Vrai si stderr porte une signature d'exécutable introuvable."""
+    if not stderr or not stderr.strip():
+        return False
+    bas = stderr.lower()
+    return any(signature in bas for signature in _COMMAND_NOT_FOUND_SIGNATURES)
+
+
 async def run_command_handler(
     ctx: HandlerContext, command: str,
     stdin_input: str = "", timeout: int = 0,
@@ -654,10 +679,19 @@ async def run_command_handler(
                             output = summary
                         else:
                             output = output[:output_limit] + "\n[... tronque ...]"
-                    if exit_code == -1:
-                        return HandlerResult.ok(
-                            f"Timeout commande sandbox (>{timeout_sec}s)", handler_name="run_command",
-                        )
+                    # `-1` : le conteneur n'a meme pas rendu la main (filet externe).
+                    # `124` : `timeout` a tue le processus DANS le conteneur — c'est
+                    # desormais le cas normal, le sandbox appliquant la borne demandee.
+                    from ...utils.docker_sandbox import SANDBOX_TIMEOUT_EXIT_CODE
+
+                    if exit_code in (-1, SANDBOX_TIMEOUT_EXIT_CODE):
+                        # La sortie deja produite accompagne le timeout : elle dit
+                        # souvent OU la commande s'est arretee. La jeter, c'est
+                        # perdre la seule information utile de l'echec.
+                        _msg = f"Timeout commande sandbox (>{timeout_sec}s)"
+                        if output.strip():
+                            _msg += f"\n\n[sortie partielle]\n{output}"
+                        return HandlerResult.ok(_msg, handler_name="run_command")
                     # Fallback local si l'outil n'existe pas dans le container,
                     # OU si pytest manque au Docker jetable (ciblé, cf. helper).
                     if exit_code != 0 and sandbox_error_needs_local_fallback(stderr):
@@ -923,6 +957,22 @@ async def run_command_handler(
         # le worker a conclu « les tests passent ». Marqueur d'échec EN TÊTE.
         if exit_code != 0 and output:
             output = f"⚠️ ÉCHEC de la commande (exit code {exit_code}) :\n{output}"
+        # Z39 (run « SaaS complet » 2026-08-25) — le marqueur A4/A5 ne se posait
+        # QUE sur exit != 0. Or `powershell -Command "... | ForEach-Object { php
+        # -l $_ }"` rend exit:0 meme quand les 26 iterations echouent : la boucle
+        # ne propage pas le code de sortie des commandes natives. Le CodeAgent a
+        # donc lu « exit:0 » sur une validation PHP qui n'avait rien valide.
+        #
+        # On ne devine pas : on ferme le seul cas SANS ambiguite — un executable
+        # introuvable n'a jamais rien execute, quel que soit le code rendu.
+        elif exit_code == 0 and _command_not_found_in(stderr):
+            output = (
+                "⚠️ COMMANDE INTROUVABLE malgré exit code 0 — le programme appelé "
+                "n'existe pas, RIEN n'a été exécuté ni vérifié. Un code de sortie 0 "
+                "rendu par une boucle (ForEach-Object, xargs, ;) ne dit rien des "
+                "commandes qu'elle contient.\n"
+                f"{output}"
+            )
         return HandlerResult.ok(
             output if output else "Commande executee (pas de sortie)",
             handler_name="run_command",

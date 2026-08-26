@@ -109,6 +109,7 @@ class CodexSubscriptionSettings:
     default_model: str = ""
     surfaces: frozenset[CodexSurface] = frozenset({CodexSurface.CODEAGENT})
     api_fallback: CodexAPIFallback = CodexAPIFallback.NEVER
+    api_rescue_enabled: bool = True
 
     @property
     def enabled(self) -> bool:
@@ -116,6 +117,17 @@ class CodexSubscriptionSettings:
 
     def surface_requested(self, surface: CodexSurface) -> bool:
         return self.enabled and surface in self.surfaces
+
+    @property
+    def rescue_configured(self) -> bool:
+        """Whether an API run may try the already configured Codex account.
+
+        This is deliberately independent from ``enabled``: selecting an API
+        model makes API the primary source, but must not erase the user's
+        previously connected subscription as a no-API-billing rescue path.
+        """
+
+        return self.api_rescue_enabled and bool(self.default_model)
 
 
 def load_codex_subscription_settings(
@@ -153,12 +165,20 @@ def load_codex_subscription_settings(
     except ValueError:
         api_fallback = CodexAPIFallback.NEVER
 
+    api_rescue_enabled = env.get("LUMENA_CODEX_API_RESCUE", "1").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     return CodexSubscriptionSettings(
         access_mode=access_mode,
         cli_path=env.get("LUMENA_CODEX_CLI_PATH", "").strip(),
         default_model=env.get("LUMENA_CODEX_DEFAULT_MODEL", "").strip(),
         surfaces=frozenset(surfaces),
         api_fallback=api_fallback,
+        api_rescue_enabled=api_rescue_enabled,
     )
 
 

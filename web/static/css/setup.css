@@ -91,9 +91,20 @@
   flex-direction: column;
   min-height: 100%;
 }
+.setup-paths{display:grid;gap:10px;margin:4px 0 18px;text-align:left}.setup-path{width:100%;display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:10px;padding:13px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface,#111827);color:var(--text);cursor:pointer}.setup-path:hover,.setup-path.selected{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--surface,#111827))}.setup-path>svg{width:20px;height:20px;color:var(--accent)}.setup-path span{display:flex;flex-direction:column;gap:3px}.setup-path strong{font-size:13px}.setup-path small{color:var(--muted);font-size:11px;line-height:1.35}.setup-path>b{font-size:10px;color:var(--accent);font-weight:700}
 @keyframes setupFadeIn {
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-wizard-overlay,
+  .setup-step,
+  .setup-dot,
+  .setup-btn {
+    animation: none;
+    transition: none;
+  }
 }
 
 .setup-step-icon {
@@ -472,6 +483,56 @@
 }
 .setup-summary-row .label { color: var(--muted); }
 .setup-summary-row .value { color: var(--text); font-weight: 500; }
+.setup-save-error {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger, #ef4444) 45%, transparent);
+  border-left: 3px solid var(--danger, #ef4444);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger, #ef4444) 8%, transparent);
+  color: var(--text, #e6e6e6);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.setup-access-detected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border, rgba(255,255,255,.1));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-2, #182131) 92%, transparent);
+  font-size: 12px;
+}
+.setup-access-detected > svg { width: 17px; color: var(--accent); flex: 0 0 auto; }
+.setup-access-detected span { display: grid; gap: 2px; flex: 1; }
+.setup-access-detected small { color: var(--muted); }
+.setup-access-detected button {
+  border: 1px solid var(--accent); border-radius: 6px; padding: 7px 10px;
+  background: transparent; color: var(--accent); font: inherit; font-weight: 700; cursor: pointer;
+}
+.setup-access-grid { display: grid; gap: 8px; }
+.setup-access-card {
+  width: 100%; min-height: 68px; display: grid; grid-template-columns: 28px 1fr auto;
+  align-items: center; gap: 11px; padding: 11px 12px; text-align: left;
+  border: 1px solid var(--border, rgba(255,255,255,.1)); border-radius: 7px;
+  background: var(--surface-2, #182131); color: var(--text); cursor: pointer;
+}
+.setup-access-card:hover,.setup-access-card:focus-visible { border-color: var(--accent); outline: none; }
+.setup-access-card > svg { width: 20px; color: var(--accent); }
+.setup-access-card span { display: grid; gap: 3px; min-width: 0; }
+.setup-access-card small { color: var(--muted); line-height: 1.4; }
+.setup-access-card > b { color: var(--accent); font-size: 11px; }
+.setup-access-status { margin-top: 10px; padding: 9px 11px; border-left: 2px solid var(--border); font-size: 12px; line-height: 1.45; }
+.setup-access-status.success { border-color: var(--ok, #34d399); color: var(--ok, #34d399); }
+.setup-access-status.warning { border-color: var(--warning, #fbbf24); color: var(--warning, #fbbf24); }
+.setup-access-status.error { border-color: var(--danger, #ef4444); color: var(--danger, #ef4444); }
+.setup-codex-picker { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 9px; margin-top: 10px; }
+.setup-codex-picker label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.setup-codex-picker .input { min-height: 38px; }
+@media(max-width:600px){.setup-codex-picker{grid-template-columns:1fr}.setup-access-card{grid-template-columns:24px 1fr}.setup-access-card>b{grid-column:2}}
 
 /* ─── Optional badge ─── */
 .setup-optional {
@@ -1024,6 +1085,15 @@
   }
   .setup-help-text {
     margin-bottom: 10px;
+  }
+}
+
+@media (max-height: 500px) {
+  .setup-nav {
+    position: static;
+    margin-top: 14px;
+    padding-top: 10px;
+    background: none;
   }
 }
 

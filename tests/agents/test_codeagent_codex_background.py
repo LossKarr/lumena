@@ -107,9 +107,21 @@ async def test_codex_background_cancellation_uses_existing_cancel_registry(monke
 
 
 @pytest.mark.asyncio
-async def test_delegate_task_bg_routes_codex_without_legacy_provider(
+async def test_delegate_task_bg_routes_codex_through_historic_loop(
     tmp_path, monkeypatch
 ):
+    """L'abonnement Codex passe par la boucle CodeAgent HISTORIQUE.
+
+    Comportement precedent — desormais retire : `delegate_task_bg` quittait la
+    boucle historique pour `run_codeagent_with_codex_subscription`, un tour Codex
+    autonome. Prompts, outils, tests, reprises et garde-fous de Lumena etaient
+    contournes, et chaque delegation rouvrait une session (`account/read` puis
+    `model/list`, 30 s chacun au timeout sur un run reel).
+
+    Ce test decrit la garantie qui remplace : un seul moteur, l'abonnement comme
+    simple cerveau, et le marqueur transmis par le contexte de tache — un dict
+    SERIALISABLE, seul moyen de survivre au lancement en arriere-plan.
+    """
     workspace = tmp_path / "project"
     workspace.mkdir()
     ctx = HandlerContext.for_testing(lumena_root=tmp_path, runtime_root=workspace)
@@ -121,34 +133,19 @@ async def test_delegate_task_bg_routes_codex_without_legacy_provider(
         "_mission_codeagent_scope",
         lambda *_args, **_kwargs: (str(workspace), ["app.py"]),
     )
-
-    legacy = AsyncMock(return_value="ca-legacy")
-    monkeypatch.setattr("src.agents.sub_agent.delegate_to_agent_bg", legacy)
     supervisor = SimpleNamespace(is_running=True)
     monkeypatch.setattr(
         "src.llm.codex_app_server.get_shared_codex_app_server",
         lambda: supervisor,
     )
-    codex_run = AsyncMock(
-        return_value=CodexCodeAgentResult(
-            task_id="codex-inner",
-            success=True,
-            output="ok",
-            meta={"model": "gpt-test", "engine": "codex_subscription"},
-        )
-    )
+
+    historique = AsyncMock(return_value="ca-legacy")
+    monkeypatch.setattr("src.agents.sub_agent.delegate_to_agent_bg", historique)
+    rail_autonome = AsyncMock()
     monkeypatch.setattr(
         "src.llm.codex_codeagent.run_codeagent_with_codex_subscription",
-        codex_run,
+        rail_autonome,
     )
-    captured: dict = {}
-
-    async def fake_start(description, **kwargs):
-        captured.update(kwargs)
-        captured["result"] = await kwargs["runner"]()
-        return "ca-codex"
-
-    monkeypatch.setattr(codex_background, "start_codex_codeagent_bg", fake_start)
 
     result = await agents.delegate_task_bg_handler(
         ctx,
@@ -158,15 +155,110 @@ async def test_delegate_task_bg_routes_codex_without_legacy_provider(
     )
 
     assert result.success is True
-    assert "ca-codex" in result.output
-    legacy.assert_not_awaited()
-    codex_run.assert_awaited_once()
-    call = codex_run.await_args
-    assert call.kwargs["workspace_path"] == workspace
-    assert call.kwargs["allowed_files"] == ["app.py"]
-    assert call.kwargs["supervisor"] is supervisor
-    assert captured["agent_type"] == "code"
-    assert captured["result"].meta["engine"] == "codex_subscription"
+    # La boucle historique est le SEUL moteur.
+    historique.assert_awaited_once()
+    # Et le rail autonome n'est plus jamais emprunte.
+    rail_autonome.assert_not_awaited()
+
+    # Le marqueur voyage dans le contexte : serialisable, donc il survit au
+    # lancement en arriere-plan.
+    contexte = historique.await_args.args[2]
+    assert contexte["_codex_brain"] is True
+
+
+@pytest.mark.asyncio
+async def test_delegate_task_sync_routes_codex_through_historic_loop(
+    tmp_path, monkeypatch
+):
+    """Le chemin synchrone utilise lui aussi le moteur historique, sans rail autonome."""
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    ctx = HandlerContext.for_testing(lumena_root=tmp_path, runtime_root=workspace)
+    monkeypatch.setenv("LUMENA_OPENAI_ACCESS_MODE", "chatgpt_codex")
+    monkeypatch.setenv("LUMENA_CODEX_SURFACES", "codeagent")
+    monkeypatch.setattr(
+        agents,
+        "_mission_codeagent_scope",
+        lambda *_args, **_kwargs: (str(workspace), ["app.py"]),
+    )
+    monkeypatch.setattr(
+        "src.llm.codex_app_server.get_shared_codex_app_server",
+        lambda: SimpleNamespace(is_running=True),
+    )
+    historique = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            output="travail termine",
+            artifacts=[],
+            meta={
+                "iterations": 1,
+                "engine": "codex_subscription",
+                "model": "gpt-5.6-sol",
+                "fallback_used": False,
+            },
+            duration_ms=10,
+            status_code="success",
+        )
+    )
+    monkeypatch.setattr("src.agents.sub_agent.delegate_to_agent_full", historique)
+    rail_autonome = AsyncMock()
+    monkeypatch.setattr(
+        "src.llm.codex_codeagent.run_codeagent_with_codex_subscription",
+        rail_autonome,
+    )
+
+    result = await agents.delegate_task_handler(
+        ctx,
+        description="Implemente app.py",
+        agent_type="code",
+        project_path=str(workspace),
+    )
+
+    assert result.success is True
+    assert "**Moteur** : abonnement ChatGPT Codex" in result.output
+    assert "**Modèle réel** : `gpt-5.6-sol`" in result.output
+    assert "**Fallback API** : aucun" in result.output
+    historique.assert_awaited_once()
+    rail_autonome.assert_not_awaited()
+    assert historique.await_args.args[2]["_codex_brain"] is True
+
+
+@pytest.mark.asyncio
+async def test_delegate_task_bg_marker_is_serialisable(tmp_path, monkeypatch):
+    """Le marqueur DOIT rester serialisable : un objet en memoire serait perdu.
+
+    C'est la contrainte qui a dicte la conception. Un cerveau passe comme objet
+    ne franchit pas la frontiere du lancement background ; un booleen dans le
+    contexte, si.
+    """
+    import json
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    ctx = HandlerContext.for_testing(lumena_root=tmp_path, runtime_root=workspace)
+    monkeypatch.setenv("LUMENA_OPENAI_ACCESS_MODE", "chatgpt_codex")
+    monkeypatch.setenv("LUMENA_CODEX_SURFACES", "codeagent")
+    monkeypatch.setattr(
+        agents,
+        "_mission_codeagent_scope",
+        lambda *_args, **_kwargs: (str(workspace), ["app.py"]),
+    )
+    monkeypatch.setattr(
+        "src.llm.codex_app_server.get_shared_codex_app_server",
+        lambda: SimpleNamespace(is_running=True),
+    )
+    historique = AsyncMock(return_value="ca-legacy")
+    monkeypatch.setattr("src.agents.sub_agent.delegate_to_agent_bg", historique)
+
+    await agents.delegate_task_bg_handler(
+        ctx,
+        description="Implémente app.py",
+        agent_type="code",
+        project_path=str(workspace),
+    )
+
+    contexte = historique.await_args.args[2]
+    json.dumps(contexte)  # leve si un objet non serialisable s'y est glisse
 
 
 @pytest.mark.asyncio

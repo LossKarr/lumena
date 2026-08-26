@@ -11,9 +11,9 @@
 <link rel="stylesheet" href="/static/css/tokens.css?v=4">
 <link rel="stylesheet" href="/static/css/layout.css?v=4">
 <link rel="stylesheet" href="/static/css/chat.css?v=8">
-<link rel="stylesheet" href="/static/css/components.css?v=6">
+<link rel="stylesheet" href="/static/css/components.css?v=7">
 <link rel="stylesheet" href="/static/css/thinking.css?v=3">
-<link rel="stylesheet" href="/static/css/setup.css?v=9">
+<link rel="stylesheet" href="/static/css/setup.css?v=10">
 <link rel="stylesheet" href="/static/css/product-docs.css?v=1">
 <link rel="stylesheet" href="/static/css/config-panel.css?v=1">
 <link rel="stylesheet" href="/static/css/codex-subscription.css?v=2">
@@ -21,6 +21,7 @@
 <link rel="stylesheet" href="/static/css/document-studio.css?v=9">
 <link rel="stylesheet" href="/static/css/overview.css?v=2">
 <link rel="stylesheet" href="/static/css/updates.css?v=1">
+<link rel="stylesheet" href="/static/css/onboarding.css?v=3">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -77,7 +78,7 @@
   <button class="focus-exit" data-action="toggleFocus" title="Quitter le focus"><i data-lucide="x"></i></button>
 
   <!-- ==================== SIDEBAR ==================== -->
-  <aside class="shell-nav" id="shell-nav" role="navigation" aria-label="Navigation principale">
+  <aside class="shell-nav" id="shell-nav" role="navigation" aria-label="Navigation principale" data-onboarding-target="navigation">
     <div class="nav-logo">
       <span class="nav-logo-icon"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:28px;height:28px;object-fit:contain"></span>
       <span class="nav-logo-text">Lumena</span>
@@ -152,7 +153,7 @@
         <div class="nav-section-title" data-action="toggleSection">
           <span>Agent</span><span class="chevron">▾</span>
         </div>
-        <div class="nav-section-items">
+        <div class="nav-section-items" data-onboarding-target="agent-navigation">
           <div class="nav-item" data-panel="tools">
             <span class="nav-item-icon"><i data-lucide="wrench"></i></span>
             <span class="nav-item-label">Outils</span>
@@ -357,7 +358,7 @@
         </div>
 
         <!-- Model selector -->
-        <div id="model-selector-wrap">
+        <div id="model-selector-wrap" data-onboarding-target="model-selector">
           <button class="btn" id="model-btn" data-action="toggleModelDropdown">
             <span><i data-lucide="cpu"></i></span>
             <span id="current-model-name">Chargement...</span>
@@ -365,7 +366,7 @@
           </button>
         </div>
 
-        <button class="btn" id="agent-toggle" data-action="toggleAgent"><i data-lucide="plug"></i> Agent OFF</button>
+        <button class="btn" id="agent-toggle" data-action="toggleAgent" data-onboarding-target="agent-mode"><i data-lucide="plug"></i> Agent OFF</button>
         <button class="btn" id="shutdown-btn" data-action="_shutdownLumena" title="Arreter Lumena proprement" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:4px 10px;font-size:11px"><i data-lucide="power"></i></button>
         <div class="theme-orb" data-action="toggleTheme" title="Changer le theme" id="theme-orb" role="button" aria-label="Basculer theme clair/sombre"><i data-lucide="moon"></i></div>
       </div>
@@ -380,7 +381,7 @@
     <div class="panel active" id="panel-chat">
       <div class="chat-wrap">
         <div class="chat-main">
-          <div class="chat-thread" id="chat-thread" aria-live="polite" aria-relevant="additions">
+          <div class="chat-thread" id="chat-thread" aria-live="polite" aria-relevant="additions" data-onboarding-target="chat-area">
             <div class="chat-welcome" id="chat-welcome">
               <div class="chat-welcome-avatar">
                 <img src="/static/branding/lumena-logo.png" alt="Lumena">
@@ -408,7 +409,7 @@
               <div class="task-progress-bar-bg"><div class="task-progress-bar-fill" id="task-progress-fill" style="width:0%"></div></div>
               <div class="task-progress-list" id="task-progress-list"></div>
             </div>
-            <div class="compose-box" id="compose-box">
+            <div class="compose-box" id="compose-box" data-onboarding-target="composer">
               <div class="compose-drop-zone" id="compose-drop-zone" role="region" aria-label="Zone de depot de fichiers">Deposer fichiers ici</div>
               <div class="compose-input-wrap">
                 <div class="compose-attachments" id="compose-attachments" style="display:none"></div>
@@ -419,7 +420,7 @@
                 <span class="char-counter" id="char-counter"></span>
                 <button class="btn-icon" id="btn-export-md" title="Exporter en Markdown"><i data-lucide="download"></i></button>
                 <button class="btn-icon" id="btn-clear-chat" title="Effacer le chat"><i data-lucide="trash-2"></i></button>
-                <button class="btn-icon" id="btn-attach-file" title="Joindre fichier"><i data-lucide="paperclip"></i></button>
+                <button class="btn-icon" id="btn-attach-file" title="Joindre fichier" data-onboarding-target="file-button"><i data-lucide="paperclip"></i></button>
                 <input type="file" id="file-upload-input" multiple style="display:none" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.html,.css,.json,.xml,.csv,.doc,.docx">
                 <button class="btn-icon" id="btn-chat-dictation" title="Dicter un message" aria-label="Dicter un message" aria-pressed="false"><i data-lucide="mic"></i></button>
                 <button class="btn-icon" id="btn-toggle-focus" title="Mode focus"><i data-lucide="maximize"></i></button>
@@ -1392,6 +1393,9 @@
           <div id="config-groups" class="cfg-content">
             <div class="cfg-loading">Chargement de la configuration...</div>
           </div>
+          <div class="cfg-content" style="padding-top:0">
+            <button class="btn" id="replay-onboarding-btn" type="button"><i data-lucide="route"></i> Rejouer le tutoriel</button>
+          </div>
         </main>
       </div>
     </div>
@@ -1667,10 +1671,27 @@
 <!-- ============================================================
      COMMAND PALETTE
      ============================================================ -->
-<div class="cmd-palette-overlay" id="cmd-palette-overlay" data-action="closeCommandPalette" data-self-only="true">
-  <div class="cmd-palette">
-    <input type="text" id="cmd-input" placeholder="Taper une commande ou recherche..." oninput="filterCommands()">
-    <div class="cmd-palette-results" id="cmd-results"></div>
+<div class="cmd-palette-overlay" id="cmd-palette-overlay" data-action="closeCommandPalette" data-self-only="true" aria-hidden="true">
+  <div class="cmd-palette" role="dialog" aria-modal="true" aria-labelledby="cmd-palette-title">
+    <header class="cmd-palette-header">
+      <div class="cmd-palette-brand">
+        <span class="cmd-palette-brand-icon"><i data-lucide="command"></i></span>
+        <span><strong id="cmd-palette-title">Acces rapide</strong><small>Tout Lumena, sans quitter ton travail</small></span>
+      </div>
+      <button type="button" class="cmd-palette-close" data-action="closeCommandPalette" aria-label="Fermer"><i data-lucide="x"></i></button>
+    </header>
+    <div class="cmd-palette-search">
+      <i data-lucide="search"></i>
+      <input type="text" id="cmd-input" placeholder="Rechercher un panneau, un outil ou une action..." autocomplete="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="cmd-results" aria-expanded="true">
+      <kbd>ESC</kbd>
+    </div>
+    <div class="cmd-palette-meta"><span id="cmd-result-count">0 acces</span><span>Navigation globale</span></div>
+    <div class="cmd-palette-results" id="cmd-results" role="listbox"></div>
+    <footer class="cmd-palette-footer">
+      <span><kbd>&uarr;</kbd><kbd>&darr;</kbd> naviguer</span>
+      <span><kbd>&crarr;</kbd> ouvrir</span>
+      <span><kbd>ESC</kbd> fermer</span>
+    </footer>
   </div>
 </div>
 
@@ -1685,10 +1706,10 @@
 window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
-<script type="module" src="/static/js/main.js?v=29"></script>
+<script type="module" src="/static/js/main.js?v=37"></script>
 <script type="module" src="/static/js/updates.js?v=1"></script>
 <script type="module">
-import { initSetupWizard } from '/static/js/setup.js?v=20';
+import { initSetupWizard } from '/static/js/setup.js?v=21';
 import { initContextMenu } from '/static/js/contextmenu.js?v=1';
 document.addEventListener('DOMContentLoaded', () => { initSetupWizard(); initContextMenu(); });
 </script>

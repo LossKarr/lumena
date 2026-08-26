@@ -321,8 +321,28 @@ def _build_docker_args(
         args += ["-v", f"{mount_src}:/work:rw"]
         args += ["-w", "/work"]
 
-    args += [_DOCKER_IMAGE, "bash", "-c", command]
+    # ── Le timeout est APPLIQUE, plus seulement recu ─────────────────────
+    # `timeout_sec` etait accepte en parametre puis jamais utilise : le
+    # conteneur tournait sans borne et seule l'attente EXTERNE le limitait,
+    # a `timeout_sec + 30 s` de marge de demarrage. Sur un timeout de 3 s
+    # demande, une commande de 30 s se terminait donc naturellement — le
+    # timeout ne servait a rien.
+    #
+    # `timeout` (GNU coreutils 9.7, verifie present dans l'image) borne le
+    # processus DANS le conteneur : TERM a l'echeance, KILL 5 s plus tard si
+    # le processus resiste. Il sort avec 124, que l'appelant reconnait.
+    # L'attente externe reste en filet, pour le cas ou le conteneur lui-meme
+    # ne demarrerait pas.
+    args += [
+        _DOCKER_IMAGE,
+        "timeout", "--kill-after=5", f"{max(1, int(timeout_sec))}s",
+        "bash", "-c", command,
+    ]
     return args
+
+
+# Code de sortie de `timeout` quand il a tue le processus (GNU coreutils).
+SANDBOX_TIMEOUT_EXIT_CODE = 124
 
 
 async def run_in_sandbox(
@@ -361,11 +381,22 @@ async def run_in_sandbox(
             timeout=timeout_sec + int(os.environ.get("LUMENA_SANDBOX_STARTUP_MARGIN", "30")),  # marge startup
         )
     except asyncio.TimeoutError:
+        # Filet externe : le conteneur n'a pas rendu la main malgre le `timeout`
+        # interne. On tue, mais on NE JETTE PAS ce qui a deja ete ecrit — c'est
+        # souvent la seule indication de l'endroit ou la commande s'est bloquee.
+        _partiel = ""
         try:
             proc.kill()
         except ProcessLookupError:
             pass
-        return "", f"Timeout sandbox ({timeout_sec}s)", -1
+        try:
+            _out, _err = await asyncio.wait_for(proc.communicate(), timeout=2)
+            _partiel = (_out or b"").decode("utf-8", errors="replace")
+            if _err:
+                _partiel += (_err or b"").decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        return _partiel, f"Timeout sandbox ({timeout_sec}s)", -1
 
     stdout = stdout_raw.decode("utf-8", errors="replace")
     stderr = stderr_raw.decode("utf-8", errors="replace")

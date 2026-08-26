@@ -52,6 +52,8 @@ def test_settings_are_off_and_fail_closed_by_default():
     assert settings.enabled is False
     assert settings.surfaces == frozenset({CodexSurface.CODEAGENT})
     assert settings.api_fallback is CodexAPIFallback.NEVER
+    assert settings.api_rescue_enabled is True
+    assert settings.rescue_configured is False
     assert settings.surface_requested(CodexSurface.CODEAGENT) is False
 
 
@@ -77,6 +79,8 @@ def test_settings_parse_explicit_mode_surfaces_and_ask_fallback():
         }
     )
     assert settings.api_fallback is CodexAPIFallback.ASK
+    assert settings.api_rescue_enabled is True
+    assert settings.rescue_configured is True
     assert settings.surface_requested(CodexSurface.CHAT) is True
 
 
@@ -91,6 +95,27 @@ def test_invalid_mode_and_fallback_never_enable_or_spend():
     assert settings.access_mode is OpenAIAccessMode.API
     assert settings.api_fallback is CodexAPIFallback.NEVER
     assert settings.surfaces == frozenset()
+
+
+def test_rescue_is_independent_from_primary_mode_but_explicitly_disableable():
+    configured = load_codex_subscription_settings(
+        {
+            "LUMENA_OPENAI_ACCESS_MODE": "api",
+            "LUMENA_CODEX_DEFAULT_MODEL": "account-model",
+            "LUMENA_CODEX_API_RESCUE": "1",
+        }
+    )
+    disabled = load_codex_subscription_settings(
+        {
+            "LUMENA_OPENAI_ACCESS_MODE": "api",
+            "LUMENA_CODEX_DEFAULT_MODEL": "account-model",
+            "LUMENA_CODEX_API_RESCUE": "0",
+        }
+    )
+
+    assert configured.enabled is False
+    assert configured.rescue_configured is True
+    assert disabled.rescue_configured is False
 
 
 def test_surface_matrix_keeps_agent_and_missions_behind_tool_bridge():

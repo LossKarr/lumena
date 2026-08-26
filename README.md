@@ -281,6 +281,13 @@ minimaux. Les actions externes importantes doivent rester supervisées.
 
 ## Installation
 
+![Le tutoriel d'accueil de Lumena](assets/onboarding-tutoriel.png)
+
+Au premier lancement, Lumena guide la prise en main directement dans son
+interface : elle montre où se trouvent les projets, la mémoire, les missions et
+les réglages. Le tutoriel se passe, se reprend là où il s'est arrêté, et se
+rejoue depuis la configuration.
+
 ### Prérequis
 
 - Python 3.10 à 3.12 ;

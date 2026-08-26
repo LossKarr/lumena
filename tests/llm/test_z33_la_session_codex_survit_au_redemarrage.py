@@ -92,9 +92,50 @@ def test_une_session_morte_n_est_pas_rendue(monkeypatch):
 
 
 def test_abonnement_desactive_ne_lance_rien(monkeypatch):
-    """`access_mode=api` → Lumena tourne exactement comme avant, aucun process."""
+    """API sans secours configure → comportement historique, aucun process."""
     monkeypatch.setenv("LUMENA_OPENAI_ACCESS_MODE", "api")
+    monkeypatch.delenv("LUMENA_CODEX_DEFAULT_MODEL", raising=False)
     assert _ensure() is None
+
+
+def test_secours_codex_api_survit_au_redemarrage(monkeypatch):
+    """API primaire + modele Codex conserve doit pouvoir rouvrir App Server.
+
+    Sinon le secours source-aware fonctionne dans les tests mocks mais meurt au
+    premier reboot, car aucun superviseur partage n'existe encore.
+    """
+    import src.llm.codex_subscription as csub
+
+    settings = csub.CodexSubscriptionSettings(
+        access_mode=csub.OpenAIAccessMode.API,
+        default_model="gpt-5.6-sol",
+        api_rescue_enabled=True,
+    )
+
+    class _Preflight:
+        state = csub.CodexCLIState.READY
+        executable = "codex.exe"
+        detail = "ready"
+
+    class _Supervisor(_FausseSession):
+        def __init__(self, _config):
+            super().__init__(running=False)
+
+        async def start(self):
+            self.is_running = True
+
+    async def _probe(_path=None):
+        return _Preflight()
+
+    monkeypatch.setattr(csub, "load_codex_subscription_settings", lambda: settings)
+    monkeypatch.setattr(csub, "probe_codex_cli_async", _probe)
+    monkeypatch.setattr(cas, "CodexAppServerSupervisor", _Supervisor)
+
+    supervisor = _ensure()
+
+    assert isinstance(supervisor, _Supervisor)
+    assert supervisor.is_running is True
+    assert cas.get_shared_codex_app_server() is supervisor
 
 
 def test_ne_leve_jamais_meme_si_tout_casse(monkeypatch):
@@ -119,6 +160,7 @@ def test_un_app_absent_ne_pose_pas_de_probleme(monkeypatch):
     processus selon l'ordre d'exécution n'est pas un test.
     """
     monkeypatch.setenv("LUMENA_OPENAI_ACCESS_MODE", "api")
+    monkeypatch.delenv("LUMENA_CODEX_DEFAULT_MODEL", raising=False)
     assert _ensure(app=None) is None
 
 

@@ -539,7 +539,7 @@ export async function sendMessage(){
               }
             }
           }
-          else if(data.type==='todo_update'){renderTaskProgress(data.todos||[])}
+          else if(data.type==='todo_update'){renderTaskProgress(data.todos||[]);document.dispatchEvent(new CustomEvent('lumena:agent-progress'))}
           else if(data.type==='done'){
             // Update streaming preview with the properly rendered full response
             // so the user sees correct markdown even if tokens arrived without newlines
@@ -656,6 +656,7 @@ export async function sendMessage(){
       if(finalResponse.fallback_used){pushActivity('error','',`Fallback: ${finalResponse.fallback_reason||'?'}`);logC(`Fallback: ${finalResponse.fallback_reason||'?'}`,'warning')}
       if(finalResponse.continuation_used){pushActivity('checkpoint','',`Continuation x${finalResponse.continuation_steps||0}`);logC(`Continuation x${finalResponse.continuation_steps||0}`,'tool')}
       if((finalResponse.agent_repair_attempts||0)>0)pushActivity('tool','',`Auto-repair x${finalResponse.agent_repair_attempts}`);
+      document.dispatchEvent(new CustomEvent('lumena:chat-response',{detail:{agent:!!useAgent}}));
     }else{
       thread.insertAdjacentHTML('beforeend',`<div class="msg-group assistant"><div class="msg-avatar"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:28px;height:28px;object-fit:contain"></div><div class="msg-bubble" style="display:flex;align-items:center;gap:12px"><span>Pas de réponse reçue (timeout API).</span><button onclick="retryLastMessage()" style="flex-shrink:0;background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 14px;cursor:pointer;font-size:13px">↺ Réessayer</button></div></div>`);
       if(window.lucide)window.lucide.createIcons({nodes:[thread.lastElementChild.querySelector('.msg-avatar')]});

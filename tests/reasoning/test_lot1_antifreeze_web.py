@@ -242,3 +242,53 @@ class TestRunnerNoHang:
     async def test_normal_command_unchanged(self, ctx):
         r = await run_command_handler(ctx, command="echo LOT1_OK")
         assert "LOT1_OK" in r.output
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Le timeout sandbox est APPLIQUÉ, plus seulement reçu
+# ══════════════════════════════════════════════════════════════════════════
+#
+# `_build_docker_args` acceptait `timeout_sec` et ne l'utilisait JAMAIS :
+#
+#     args += [_DOCKER_IMAGE, "bash", "-c", command]      # le timeout est jeté
+#
+# Le conteneur tournait donc sans borne, et seule l'attente EXTERNE le limitait
+# — à `timeout_sec + 30 s` de marge de démarrage. Sur un timeout de 3 s demandé,
+# une commande de 30 s se terminait naturellement à 30 s, avant les 33 s d'attente.
+# Le paramètre existait, était transmis, était journalisé — et n'avait aucun effet.
+
+
+def test_le_timeout_entre_dans_le_conteneur():
+    """La borne demandée doit atteindre le processus, pas rester dehors."""
+    from src.utils.docker_sandbox import _build_docker_args
+
+    args = _build_docker_args("sleep 30", ".", timeout_sec=3, network=False)
+    assert "timeout" in args, "le timeout n'entre pas dans le conteneur"
+    assert "3s" in args, "la durée demandée n'est pas celle appliquée"
+    # TERM d'abord, KILL seulement si le processus résiste.
+    assert any(a.startswith("--kill-after") for a in args)
+
+
+def test_la_duree_appliquee_suit_la_duree_demandee():
+    from src.utils.docker_sandbox import _build_docker_args
+
+    for demande in (1, 3, 45, 600):
+        args = _build_docker_args("x", ".", timeout_sec=demande, network=False)
+        assert f"{demande}s" in args
+
+
+def test_une_duree_absurde_ne_produit_pas_un_timeout_nul():
+    """`timeout 0s` désactiverait la borne au lieu de la resserrer."""
+    from src.utils.docker_sandbox import _build_docker_args
+
+    args = _build_docker_args("x", ".", timeout_sec=0, network=False)
+    assert "0s" not in args
+    assert "1s" in args
+
+
+def test_le_code_de_sortie_du_timeout_est_nomme():
+    """124 est la convention GNU. La nommer évite un nombre magique dans le
+    handler, qui doit le reconnaître pour rendre « Timeout »."""
+    from src.utils.docker_sandbox import SANDBOX_TIMEOUT_EXIT_CODE
+
+    assert SANDBOX_TIMEOUT_EXIT_CODE == 124

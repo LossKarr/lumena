@@ -388,6 +388,7 @@ async def codex_diagnostic(request: Request):
             "access_mode": settings.access_mode.value,
             "surfaces": sorted(surface.value for surface in settings.surfaces),
             "api_fallback": settings.api_fallback.value,
+            "api_rescue_enabled": settings.api_rescue_enabled,
             "model_selected": bool(settings.default_model),
         },
         "account": account,

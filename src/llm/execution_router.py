@@ -1,8 +1,9 @@
-"""Opt-in Agent/Mission execution through Codex plus Lumena's tool registry.
+"""Opt-in Codex decision brain for Lumena's existing ReAct runtime.
 
-This module is a routing adapter, not a second agent runtime.  Codex chooses the
-next tool; the live ReAct instance still owns policies, mission context, ledger,
-truth locks, task state and the final delivery chokepoint.
+Codex produces exactly one structured ReAct decision per model call. Lumena
+alone executes tools and keeps policies, mission context, ledger, truth locks,
+task state and the final delivery chokepoint. The older whole-turn bridge is
+kept below for compatibility tests, but is no longer wired into ``ReActLoop``.
 """
 
 from __future__ import annotations
@@ -11,8 +12,10 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -31,6 +34,7 @@ from src.llm.codex_subscription import (
     CodexSubscriptionGateway,
     CodexSubscriptionSettings,
     CodexSurface,
+    OpenAIAccessMode,
     load_codex_subscription_settings,
 )
 from src.reasoning.react_config import Action, ActionType, Observation, ReActStep, Thought
@@ -43,10 +47,15 @@ THREAD_START_METHOD = "thread/start"
 TURN_START_METHOD = "turn/start"
 TURN_STEER_METHOD = "turn/steer"
 TURN_INTERRUPT_METHOD = "turn/interrupt"
+THREAD_ARCHIVE_METHOD = "thread/archive"
 
 _CONTROL_TOOLS = frozenset({"final_answer", "ask_user"})
 _CODEX_RESPONSE_META: ContextVar[dict[str, Any] | None] = ContextVar(
     "lumena_codex_response_meta",
+    default=None,
+)
+_CODEX_CODEAGENT_BRAIN: ContextVar[Any | None] = ContextVar(
+    "lumena_codex_codeagent_brain",
     default=None,
 )
 # LOT Z34 phase 1 — `website` manquait, et ça a coûté une preuve.
@@ -84,6 +93,580 @@ _TOOL_TRANSITIONS: Mapping[str, frozenset[str]] = {
 
 class CodexReActUnavailable(RuntimeError):
     """Selected Codex Agent/Mission surface cannot execute; never API-fallback."""
+
+
+_REACT_DECISION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "thought": {"type": "string"},
+        "action": {"type": "string"},
+        "action_input": {"type": "string"},
+    },
+    "required": ["thought", "action", "action_input"],
+}
+_FORBIDDEN_BRAIN_ITEM_TYPES = frozenset(
+    {
+        "commandExecution",
+        "fileChange",
+        "mcpToolCall",
+        "dynamicToolCall",
+        "webSearch",
+    }
+)
+
+
+def _decision_prompt(messages: Sequence[Mapping[str, Any]]) -> str:
+    """Wrap the normal ReAct prompt without changing its historical content."""
+
+    prompt = "\n\n".join(
+        str(message.get("content", "") or "")
+        for message in messages
+        if isinstance(message, Mapping)
+    ).strip()
+    return (
+        "Tu es uniquement le cerveau de decision d'une iteration ReAct Lumena.\n"
+        "N'execute AUCUN outil Codex, MCP, shell, fichier ou recherche. Lumena "
+        "executera elle-meme l'action apres validation de ses politiques.\n"
+        "Retourne exactement l'objet JSON impose. `action` est le nom exact d'un "
+        "outil visible dans le prompt, ou `FINAL`. `action_input` est une CHAINE: "
+        "pour un outil elle contient son objet JSON encode; pour FINAL elle contient "
+        "la reponse utilisateur. `thought` reste bref et ne contient aucun raisonnement "
+        "cache detaille.\n\n"
+        "=== PROMPT REACT LUMENA AUTORITAIRE ===\n"
+        + prompt
+    )
+
+
+def _parse_codex_decision(value: str) -> str:
+    """Convert a schema-constrained Codex answer to Lumena's native wire format."""
+
+    text = str(value or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError) as exc:
+        raise CodexReActUnavailable(
+            "Codex n'a pas retourne une decision ReAct JSON valide"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise CodexReActUnavailable("La decision Codex ReAct n'est pas un objet JSON")
+    thought = str(payload.get("thought", "") or "").strip()
+    action = str(payload.get("action", "") or "").strip()
+    action_input = payload.get("action_input", "")
+    if not action:
+        raise CodexReActUnavailable("La decision Codex ReAct ne contient aucune action")
+    if not isinstance(action_input, str):
+        action_input = json.dumps(action_input, ensure_ascii=False)
+    return (
+        f"THOUGHT: {thought or 'Je choisis la prochaine action utile.'}\n"
+        f"ACTION: {action}\n"
+        f"ACTION_INPUT: {action_input}"
+    )
+
+
+class CodexReActBrain:
+    """API-shaped callable backed by one isolated Codex App Server process."""
+
+    # ── Points d'extension ────────────────────────────────────────────────
+    # `__call__` porte toute la machinerie : processus isole, sandbox
+    # lecture-seule sans reseau, detection d'effet, archivage du thread. Le
+    # CodeAgent a besoin de la MEME machinerie avec un contrat different
+    # (texte libre au lieu d'une decision JSON schematisee), d'ou ces cinq
+    # points plutot qu'une duplication du corps.
+    _service_name: str = "lumena-react-brain"
+    _output_schema: Any = _REACT_DECISION_SCHEMA   # None = texte libre (CodeAgent)
+    _turn_timeout: float = 220.0
+
+    def _build_prompt(self, messages: Sequence[Mapping[str, Any]]) -> str:
+        return _decision_prompt(messages)
+
+    def _parse_final(self, final_text: str) -> str:
+        return _parse_codex_decision(final_text)
+
+    def __init__(self, react: Any, settings: CodexSubscriptionSettings) -> None:
+        self.react = react
+        self.settings = settings
+        self.supervisor: CodexAppServerSupervisor | None = None
+        self.model = ""
+        self._tempdir: tempfile.TemporaryDirectory[str] | None = None
+        self._last_meta: dict[str, Any] = {
+            "provider_requested": "openai-codex",
+            "provider_used": "openai-codex",
+            "model_requested": settings.default_model or "auto",
+            "model_used": settings.default_model or "auto",
+            "access_source_requested": "codex",
+            "access_source_used": "codex",
+            "billing_source": "chatgpt_subscription",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "fallback_attempts": [],
+            "finish_reason": "pending",
+        }
+
+    def get_last_response_meta(self) -> dict[str, Any]:
+        return dict(self._last_meta)
+
+    async def _ensure_started(self) -> None:
+        if self.supervisor is not None and self.supervisor.is_running:
+            return
+        shared = get_shared_codex_app_server()
+        if shared is None or not shared.is_running:
+            try:
+                from src.llm.codex_app_server import ensure_shared_codex_app_server
+
+                shared = await ensure_shared_codex_app_server()
+            except Exception as exc:
+                logger.debug("[Codex/ReAct brain] reouverture impossible: {}", exc)
+                shared = None
+        if shared is None or not shared.is_running:
+            raise CodexReActUnavailable(
+                "Aucune session Codex connectee (reouverture automatique tentee, "
+                "sans succes). Ouvre Configuration > Acces OpenAI."
+            )
+        executable = str(shared.config.command[0]) if shared.config.command else ""
+        if not executable:
+            raise CodexReActUnavailable("Executable Codex introuvable")
+
+        self._tempdir = tempfile.TemporaryDirectory(prefix="lumena-codex-react-")
+        environment = dict(shared.config.environ or os.environ)
+        overrides = codex_compatibility_config_overrides(environment)
+        # The decision brain must never inherit user MCP servers. ReAct owns tools.
+        overrides = {**overrides, "mcp_servers": {}}
+        config = CodexAppServerConfig.from_executable(
+            executable,
+            cwd=self._tempdir.name,
+            environ=environment,
+            config_overrides=overrides,
+            request_timeout_s=30,
+            handshake_timeout_s=20,
+            max_auto_restarts=1,
+        )
+        self.supervisor = CodexAppServerSupervisor(config)
+        try:
+            await self.supervisor.start()
+            gateway = CodexSubscriptionGateway(self.supervisor)
+            await gateway.require_chatgpt_account()
+            models = await gateway.list_models()
+            if not models:
+                raise CodexReActUnavailable("Le compte Codex ne retourne aucun modele")
+            self.model = _select_model(models, self.settings.default_model)
+        except CodexReActUnavailable:
+            await self.aclose()
+            raise
+        except Exception as exc:
+            await self.aclose()
+            raise CodexReActUnavailable(f"Session ChatGPT Codex inutilisable: {exc}") from exc
+
+    async def __call__(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        stop: Sequence[str] | None = None,
+    ) -> str:
+        del stop  # The JSON output schema is the authoritative stop contract.
+        await self._ensure_started()
+        assert self.supervisor is not None
+        assert self._tempdir is not None
+        thread_id = ""
+        turn_id = ""
+        final_text = ""
+        effectful_items: list[str] = []
+        try:
+            thread_params: dict[str, Any] = {
+                "cwd": self._tempdir.name,
+                "approvalPolicy": "never",
+                "sandbox": "read-only",
+                "serviceName": self._service_name,
+            }
+            if self.model:
+                thread_params["model"] = self.model
+            started = await self.supervisor.request(
+                THREAD_START_METHOD, thread_params, timeout=30
+            )
+            thread_id = _id_from_result(started, "thread")
+            if not thread_id:
+                raise CodexReActUnavailable("Codex n'a retourne aucun thread ReAct")
+            turn_params: dict[str, Any] = {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": self._build_prompt(messages)}],
+                "cwd": self._tempdir.name,
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+            }
+            if self._output_schema is not None:
+                turn_params["outputSchema"] = self._output_schema
+            if self.model:
+                turn_params["model"] = self.model
+            started_turn = await self.supervisor.request(
+                TURN_START_METHOD, turn_params, timeout=30
+            )
+            turn_id = _id_from_result(started_turn, "turn")
+            if not turn_id:
+                raise CodexReActUnavailable("Codex n'a retourne aucun tour ReAct")
+
+            async with asyncio.timeout(self._turn_timeout):
+                while True:
+                    if _cancel_requested(self.react):
+                        raise asyncio.CancelledError
+                    try:
+                        notification = await self.supervisor.next_notification(timeout=1.0)
+                    except CodexAppServerTimeout:
+                        continue
+                    if not _event_matches(
+                        notification.params, thread_id=thread_id, turn_id=turn_id
+                    ):
+                        continue
+                    params = (
+                        notification.params
+                        if isinstance(notification.params, Mapping)
+                        else {}
+                    )
+                    if notification.method == "item/completed":
+                        item = params.get("item")
+                        if isinstance(item, Mapping):
+                            item_type = str(item.get("type", "") or "")
+                            if item_type == "agentMessage":
+                                final_text = str(item.get("text", "") or final_text)
+                            elif item_type in _FORBIDDEN_BRAIN_ITEM_TYPES:
+                                effectful_items.append(item_type)
+                    elif notification.method == "turn/completed":
+                        turn = params.get("turn")
+                        turn = turn if isinstance(turn, Mapping) else {}
+                        status = str(turn.get("status", "") or "")
+                        if status != "completed":
+                            raise CodexReActUnavailable(
+                                f"Tour Codex ReAct termine avec status={status}: {turn.get('error')}"
+                            )
+                        if effectful_items:
+                            raise CodexReActUnavailable(
+                                "Le cerveau Codex a tente d'executer hors de Lumena: "
+                                + ", ".join(effectful_items)
+                            )
+                        decision = self._parse_final(final_text)
+                        _record_codex_response_meta(
+                            configured_model=self.settings.default_model,
+                            selected_model=self.model,
+                        )
+                        self._last_meta = peek_codex_response_meta()
+                        logger.debug(
+                            "[Codex/ReAct brain] decision model={} task={}",
+                            self.model or "server-default",
+                            getattr(self.react, "task_id", None),
+                        )
+                        return decision
+        except (asyncio.CancelledError, TimeoutError, CodexAppServerTimeout):
+            await _interrupt_turn(self.supervisor, thread_id, turn_id)
+            raise
+        except CodexReActUnavailable:
+            raise
+        except CodexAppServerError as exc:
+            raise CodexReActUnavailable(f"Codex App Server indisponible: {exc}") from exc
+        finally:
+            if thread_id and self.supervisor.is_running:
+                try:
+                    await self.supervisor.request(
+                        THREAD_ARCHIVE_METHOD, {"threadId": thread_id}, timeout=5
+                    )
+                except Exception:
+                    pass
+
+    async def aclose(self) -> None:
+        supervisor, self.supervisor = self.supervisor, None
+        if supervisor is not None:
+            await supervisor.stop()
+        tempdir, self._tempdir = self._tempdir, None
+        if tempdir is not None:
+            try:
+                tempdir.cleanup()
+            except OSError:
+                pass
+
+
+class CodexCodeAgentBrain(CodexReActBrain):
+    """Cerveau Codex pour la boucle CodeAgent HISTORIQUE, contrat `llm.chat`.
+
+    Pourquoi cette classe existe
+    ----------------------------
+    Le rail `run_codeagent_with_codex_subscription` remplacait TOUTE la boucle
+    CodeAgent par un tour Codex autonome : prompts, outils, tests, retries et
+    garde-fous de Lumena etaient contournes, et chaque delegation rouvrait une
+    session (`account/read` puis `model/list`, 30 s chacun au timeout).
+
+    Ici, Codex ne fournit que le TEXTE de chaque decision, exactement comme
+    `MultiProviderLLM.chat()`. La boucle historique reste seule proprietaire des
+    outils, du perimetre, des tests, des reprises et des preuves.
+
+    Deux differences avec le cerveau ReAct, et seulement deux :
+      * une enveloppe schema-contraint transporte le texte brut attendu par le
+        parseur CodeAgent, au lieu du schema d'action ReAct ;
+      * un tour plus long — une iteration CodeAgent reflechit davantage qu'une
+        decision ReAct (3 min 39 mesurees sur un run reel).
+
+    L'isolation est identique et non negociable : dossier temporaire en lecture
+    seule, sans reseau, sans MCP. Toute tentative d'effet cote Codex
+    (`commandExecution`, `fileChange`, appel MCP, recherche web) fait echouer le
+    tour — les outils passent par `ToolRegistry`, jamais autrement.
+    """
+
+    _service_name = "lumena-codeagent-brain"
+    _output_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"response": {"type": "string"}},
+        "required": ["response"],
+    }
+    _turn_timeout = 600.0                # une iteration CodeAgent est longue
+
+    def __init__(self, react: Any, settings: CodexSubscriptionSettings) -> None:
+        super().__init__(react, settings)
+        self._chat_lock = asyncio.Lock()
+        self._closing = False
+
+    def _build_prompt(self, messages: Sequence[Mapping[str, Any]]) -> str:
+        """Transmet le prompt CodeAgent tel quel, sans le reecrire.
+
+        Le prompt historique porte deja son format d'action, ses exemples et
+        ses garde-fous. Y superposer des consignes creerait deux contrats
+        concurrents. On ajoute uniquement l'interdiction d'agir hors de Lumena,
+        que l'isolation impose de toute facon.
+        """
+        prompt = "\n\n".join(
+            str(message.get("content", "") or "")
+            for message in messages
+            if isinstance(message, Mapping)
+        ).strip()
+        return (
+            "Tu es le cerveau de decision d'une iteration du CodeAgent Lumena.\n"
+            "N'execute AUCUN outil Codex, MCP, shell, fichier ou recherche : "
+            "Lumena executera elle-meme l'action que tu choisis.\n"
+            "Le transport exige un objet JSON avec une unique cle `response`. "
+            "Place dans `response` le TEXTE EXACT attendu par le prompt ci-dessous "
+            "(action JSON, plan, jugement ou resume selon l'appel). N'ajoute aucun "
+            "markdown ni commentaire autour.\n\n"
+            "=== PROMPT CODEAGENT LUMENA AUTORITAIRE ===\n"
+            + prompt
+        )
+
+    def _parse_final(self, final_text: str) -> str:
+        """Extrait le texte transporte; le CodeAgent garde son propre parseur."""
+        try:
+            payload = json.loads(str(final_text or "").strip())
+        except (TypeError, ValueError) as exc:
+            raise CodexReActUnavailable(
+                "Codex n'a pas retourne l'enveloppe CodeAgent JSON attendue"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise CodexReActUnavailable(
+                "L'enveloppe Codex CodeAgent n'est pas un objet JSON"
+            )
+        response = payload.get("response")
+        if not isinstance(response, str) or not response.strip():
+            raise CodexReActUnavailable(
+                "L'enveloppe Codex CodeAgent ne contient aucune reponse"
+            )
+        return response.strip()
+
+    # ── Contrat `llm.chat` attendu par la boucle historique ───────────────
+    # `sub_agent.py` appelle uniquement `llm.chat(messages=, temperature=,
+    # max_tokens=)` sur l'objet rendu par `_get_llm(task)` — verifie sur ses
+    # 7 points d'appel. `max_output_tokens` est lu par defaut a la ligne 3492.
+    max_output_tokens: int = 65536
+
+    @property
+    def model_name(self) -> str:
+        return self.model or self.settings.default_model or "codex-subscription"
+
+    async def chat(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+        **_ignored: Any,
+    ) -> str:
+        """Une decision CodeAgent, rendue en texte.
+
+        `temperature` et `max_tokens` sont acceptes pour respecter le contrat
+        d'appel, mais l'App Server ne les expose pas : les ignorer silencieusement
+        serait le defaut que ce lot corrige, donc on le dit ici plutot que nulle
+        part.
+        """
+        del temperature, max_tokens
+        if self._closing:
+            raise CodexReActUnavailable("Le cerveau Codex CodeAgent est deja ferme")
+        async with self._chat_lock:
+            if self._closing:
+                raise CodexReActUnavailable("Le cerveau Codex CodeAgent est deja ferme")
+            return await self(messages)
+
+    async def aclose(self) -> None:
+        """Attend l'appel actif puis ferme exactement une fois le processus prive."""
+        self._closing = True
+        async with self._chat_lock:
+            await super().aclose()
+
+
+class CodexTextBrain(CodexCodeAgentBrain):
+    """API-shaped text model backed by the configured Codex subscription.
+
+    This adapter is used only as an alternate *model access source*.  It cannot
+    execute Codex tools: the same read-only, no-network, no-MCP isolation as the
+    ReAct decision brain remains authoritative.  Consequently any tool syntax
+    in the answer is still parsed and executed by the calling Lumena runtime.
+    """
+
+    _service_name = "lumena-codex-text-backend"
+    _turn_timeout = 600.0
+
+    def _build_prompt(self, messages: Sequence[Mapping[str, Any]]) -> str:
+        rendered: list[str] = []
+        for message in messages:
+            if not isinstance(message, Mapping):
+                continue
+            role = str(message.get("role", "user") or "user").strip().upper()
+            content = str(message.get("content", "") or "")
+            rendered.append(f"[{role}]\n{content}")
+        return (
+            "Tu fournis uniquement la reponse modele demandee par Lumena.\n"
+            "N'execute AUCUN outil Codex, MCP, shell, fichier ou recherche. "
+            "Si le prompt demande un format d'action, respecte-le textuellement: "
+            "Lumena seule validera et executera l'action.\n"
+            "Le transport exige un objet JSON avec une unique cle `response`; "
+            "place-y le texte exact de la reponse, sans commentaire autour.\n\n"
+            "=== MESSAGES LUMENA AUTORITAIRES ===\n"
+            + "\n\n".join(rendered)
+        )
+
+
+async def chat_with_codex_rescue(
+    messages: Sequence[Mapping[str, Any]],
+    *,
+    requested_model: str = "",
+    owner: Any = None,
+    settings: CodexSubscriptionSettings | None = None,
+) -> dict[str, Any]:
+    """Attempt one text call through Codex, never through the paid API.
+
+    ``access_mode`` describes the selected primary source, so API mode is valid
+    here.  Rescue eligibility is instead explicit and requires a previously
+    configured Codex model.  Quota is checked before starting the model turn.
+    """
+
+    resolved = settings or load_codex_subscription_settings()
+    if not resolved.rescue_configured:
+        raise CodexReActUnavailable("Secours Codex non configure")
+    effective = replace(
+        resolved,
+        access_mode=OpenAIAccessMode.CHATGPT_CODEX,
+        # The subscription model is an explicit user choice. The failed API
+        # model is useful trace context, not permission to overwrite it.
+        default_model=str(resolved.default_model or requested_model).strip(),
+    )
+    brain = CodexTextBrain(owner, effective)
+    try:
+        await brain._ensure_started()
+        assert brain.supervisor is not None
+        quota = await CodexSubscriptionGateway(brain.supervisor).read_rate_limits()
+        if quota.exhausted:
+            raise CodexReActUnavailable("Quota de l'abonnement Codex epuise")
+        text = await brain.chat(messages=messages)
+        meta = brain.get_last_response_meta()
+        return {
+            "text": text,
+            "provider_used": "openai-codex",
+            "model_used": brain.model_name,
+            "finish_reason": meta.get("finish_reason") or "stop",
+            "prompt_tokens": meta.get("prompt_tokens"),
+            "completion_tokens": meta.get("completion_tokens"),
+            "access_source": "codex",
+            "billing_source": "chatgpt_subscription",
+        }
+    finally:
+        await brain.aclose()
+
+
+def get_active_codex_codeagent_brain() -> CodexCodeAgentBrain | None:
+    """Retourne le cerveau lie a la tache courante, jamais un nouvel objet."""
+    brain = _CODEX_CODEAGENT_BRAIN.get()
+    return brain if isinstance(brain, CodexCodeAgentBrain) else None
+
+
+@asynccontextmanager
+async def codex_codeagent_brain_scope(
+    agent: Any,
+    *,
+    settings: CodexSubscriptionSettings | None = None,
+):
+    """Installe le cerveau Codex sur UNE delegation CodeAgent, puis le retire.
+
+    Rend `(actif, cerveau)`. Hors abonnement Codex, rend `(False, None)` et le
+    chemin API historique reste strictement inchange.
+    """
+    resolved = settings or load_codex_subscription_settings()
+    if not should_route_codeagent_to_codex_brain(settings=resolved):
+        yield False, None
+        return
+    brain = CodexCodeAgentBrain(agent, resolved)
+    token = _CODEX_CODEAGENT_BRAIN.set(brain)
+    try:
+        yield True, brain
+    finally:
+        _CODEX_CODEAGENT_BRAIN.reset(token)
+        try:
+            await brain.aclose()
+        except Exception as exc:  # noqa: BLE001 — la fermeture ne doit jamais masquer l'erreur utile
+            logger.debug("[Codex/CodeAgent brain] fermeture: {}", exc)
+
+
+def should_route_codeagent_to_codex_brain(
+    *,
+    settings: CodexSubscriptionSettings | None = None,
+) -> bool:
+    """Vrai quand la surface CodeAgent est confiee a l'abonnement Codex.
+
+    `enabled` porte le mode d'acces (abonnement contre API) et
+    `surface_requested` la surface : les deux sont necessaires, comme dans
+    `should_route_codeagent_to_codex`.
+    """
+    resolved = settings or load_codex_subscription_settings()
+    return bool(resolved.enabled) and resolved.surface_requested(
+        CodexSurface.CODEAGENT
+    )
+
+
+@asynccontextmanager
+async def codex_react_brain_scope(
+    react: Any,
+    *,
+    settings: CodexSubscriptionSettings | None = None,
+):
+    """Temporarily replace only ReAct's model callback on opted-in surfaces."""
+
+    resolved = settings or load_codex_subscription_settings()
+    if not should_route_react_to_codex(
+        is_mission_run=bool(react._is_mission_run), settings=resolved
+    ):
+        yield False
+        return
+    brain = CodexReActBrain(react, resolved)
+    previous_chat = react.llm_chat
+    previous_meta_getter = react.llm_meta_getter
+    previous_marker = bool(getattr(react, "_codex_react_brain_run", False))
+    react.llm_chat = brain
+    react.llm_meta_getter = brain.get_last_response_meta
+    react._codex_react_brain_run = True
+    try:
+        yield True
+    finally:
+        react.llm_chat = previous_chat
+        react.llm_meta_getter = previous_meta_getter
+        react._codex_react_brain_run = previous_marker
+        await brain.aclose()
 
 
 @asynccontextmanager
@@ -136,8 +719,12 @@ def _record_codex_response_meta(
             "provider_used": "openai-codex",
             "model_requested": requested,
             "model_used": used,
+            "access_source_requested": "codex",
+            "access_source_used": "codex",
+            "billing_source": "chatgpt_subscription",
             "fallback_used": model_fallback,
             "fallback_reason": "codex_model_unavailable" if model_fallback else None,
+            "fallback_attempts": [],
             "continuation_used": False,
             "continuation_steps": 0,
             "finish_reason": "stop",
@@ -289,10 +876,15 @@ def _prepare_handler_context(react: Any) -> None:
 
 
 def _cancel_requested(react: Any) -> bool:
-    if not react.task_id or not react.task_orchestrator:
+    # `getattr` et non un acces direct : le meme cerveau sert desormais au
+    # CodeAgent, dont le SubAgent ne porte ni `task_id` ni orchestrateur.
+    # Strictement plus permissif — aucun changement pour ReAct.
+    task_id = getattr(react, "task_id", None)
+    orchestrator = getattr(react, "task_orchestrator", None)
+    if not task_id or not orchestrator:
         return False
     try:
-        return bool(react.task_orchestrator.is_cancel_requested(react.task_id))
+        return bool(orchestrator.is_cancel_requested(task_id))
     except Exception:
         return False
 

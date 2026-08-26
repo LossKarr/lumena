@@ -43,6 +43,15 @@ from .providers import (
     get_api_key, check_api_key, AVAILABLE_MODELS,
     get_default_model_for_provider, get_model_fallbacks,
 )
+from .model_access import (
+    ModelAccessRef,
+    ModelAccessSource,
+    ModelAttemptTrace,
+    ModelFailureKind,
+    classify_model_failure,
+    failure_allows_fallback,
+    serialise_attempts,
+)
 
 try:
     from ..telemetry import publish_trace
@@ -627,6 +636,9 @@ class MultiProviderLLM:
 
 
     def _default_response_meta(self) -> Dict[str, Any]:
+        default_source = (
+            "local" if self._config and self._config.is_local() else "api"
+        )
         return {
             "provider_requested": self.provider.value if self._config else "unknown",
             "provider_used": self.provider.value if self._config else "unknown",
@@ -642,6 +654,19 @@ class MultiProviderLLM:
             "continuation_warning": None,
             "prompt_tokens": None,
             "completion_tokens": None,
+            "access_source_requested": default_source,
+            "access_source_used": default_source,
+            "billing_source": default_source,
+            "fallback_attempts": [],
+        }
+
+    @staticmethod
+    def _access_meta_for_provider(provider: ProviderType | str) -> Dict[str, str]:
+        name = provider.value if isinstance(provider, ProviderType) else str(provider)
+        source = "local" if name == ProviderType.OLLAMA.value else "api"
+        return {
+            "access_source_used": source,
+            "billing_source": source,
         }
 
     def _set_last_response_meta(self, **kwargs) -> None:
@@ -668,9 +693,108 @@ class MultiProviderLLM:
         """
 
         allowed = self._default_response_meta()
+        if kwargs.get("provider_used") == "openai-codex":
+            kwargs.setdefault("access_source_requested", "codex")
+            kwargs.setdefault("access_source_used", "codex")
+            kwargs.setdefault("billing_source", "chatgpt_subscription")
+            kwargs.setdefault("fallback_attempts", [])
         self._set_last_response_meta(
             **{key: value for key, value in kwargs.items() if key in allowed}
         )
+
+    async def _try_codex_subscription_rescue(
+        self,
+        *,
+        messages: List[Dict[str, str]],
+        model: str,
+        error: BaseException,
+        attempts: list[ModelAttemptTrace],
+    ) -> Optional[Dict[str, Any]]:
+        """Try Codex after an OpenAI API access failure, never as paid API.
+
+        The import is lazy to keep the historical API-only startup graph exact.
+        A malformed request, cancellation, or model refusal is terminal and is
+        therefore never hidden by switching access source.
+        """
+
+        failure_kind = classify_model_failure(error)
+        if not failure_allows_fallback(failure_kind):
+            return None
+        from .codex_subscription import load_codex_subscription_settings
+
+        settings = load_codex_subscription_settings()
+        if not settings.rescue_configured:
+            return None
+
+        candidate = ModelAccessRef(
+            source=ModelAccessSource.CODEX,
+            provider="openai-codex",
+            model=str(settings.default_model or model or "auto"),
+            billing="chatgpt_subscription",
+        )
+        try:
+            from .execution_router import chat_with_codex_rescue
+
+            result = await chat_with_codex_rescue(
+                messages,
+                requested_model=str(model or ""),
+                owner=self,
+                settings=settings,
+            )
+        except Exception as codex_error:
+            attempts.append(
+                ModelAttemptTrace(
+                    candidate=candidate,
+                    status="failed",
+                    reason=str(codex_error),
+                    failure_kind=classify_model_failure(codex_error),
+                )
+            )
+            logger.warning(
+                "Secours Codex indisponible apres echec OpenAI API: {}",
+                codex_error,
+            )
+            return None
+
+        attempts.append(ModelAttemptTrace(candidate=candidate, status="success"))
+        result["fallback_attempts"] = serialise_attempts(attempts)
+        logger.info(
+            "Fallback source-aware OpenAI API -> abonnement Codex ({})",
+            result.get("model_used") or candidate.model,
+        )
+        return result
+
+    def _publish_codex_rescue_meta(
+        self,
+        *,
+        result: Dict[str, Any],
+        requested_provider: str,
+        requested_model: str,
+        error: BaseException,
+        auto_switch_used: bool,
+        auto_switch_reason: Optional[str],
+    ) -> str:
+        self._set_last_response_meta(
+            provider_requested=requested_provider,
+            provider_used="openai-codex",
+            model_requested=requested_model,
+            model_used=result.get("model_used") or "codex-subscription",
+            auto_switch_used=auto_switch_used,
+            auto_switch_reason=auto_switch_reason,
+            fallback_used=True,
+            fallback_reason=f"openai_api_failed:{classify_model_failure(error).value}",
+            continuation_used=False,
+            continuation_steps=0,
+            finish_reason=result.get("finish_reason") or "stop",
+            continuation_warning=None,
+            prompt_tokens=result.get("prompt_tokens"),
+            completion_tokens=result.get("completion_tokens"),
+            access_source_requested="api",
+            access_source_used="codex",
+            billing_source="chatgpt_subscription",
+            fallback_attempts=result.get("fallback_attempts", []),
+        )
+        return str(result.get("text", ""))
 
     def _clear_preserved_assistant_message(self) -> None:
         self._preserved_assistant_message_var.set(None)
@@ -1271,9 +1395,14 @@ class MultiProviderLLM:
         max_tokens_for_call = max_tokens
         auto_switch_used = False
         auto_switch_reason: Optional[str] = None
+        fallback_attempts: list[ModelAttemptTrace] = []
 
         should_switch, switch_reason = self._is_code_heavy_request(messages, max_tokens=max_tokens)
-        if should_switch and not no_upgrade:
+        deepseek_chat_primary = (
+            provider_for_call is ProviderType.DEEPSEEK
+            and str(model_for_call or "").strip().lower() == "deepseek-chat"
+        )
+        if should_switch and not no_upgrade and deepseek_chat_primary:
             reasoner_cfg = get_model_config("deepseek-reasoner")
             reasoner_model = reasoner_cfg.model_id if reasoner_cfg else "deepseek-reasoner"
             if str(model_for_call).lower() != str(reasoner_model).lower():
@@ -1385,11 +1514,34 @@ class MultiProviderLLM:
                 text_may_be_incomplete=result.get("text_may_be_incomplete", False),
                 prompt_tokens=result.get("prompt_tokens"),
                 completion_tokens=result.get("completion_tokens"),
+                access_source_requested=(
+                    "local" if provider is ProviderType.OLLAMA else "api"
+                ),
+                **self._access_meta_for_provider(provider_for_call),
+                fallback_attempts=[],
             )
             return result.get("text", "")
         except Exception as e:
             error_msg = str(e) or f"{type(e).__name__}"
             logger.error(f"❌ Erreur {provider.value} ({type(e).__name__}): {error_msg}")
+            primary_source = (
+                ModelAccessSource.LOCAL
+                if provider is ProviderType.OLLAMA
+                else ModelAccessSource.API
+            )
+            fallback_attempts.append(
+                ModelAttemptTrace(
+                    candidate=ModelAccessRef(
+                        source=primary_source,
+                        provider=requested_provider,
+                        model=str(model_for_call or requested_model or ""),
+                        billing="local" if primary_source is ModelAccessSource.LOCAL else "api",
+                    ),
+                    status="failed",
+                    reason=error_msg,
+                    failure_kind=classify_model_failure(e),
+                )
+            )
             
             # Si c'est une erreur d'authentification, donner un conseil
             if "401" in error_msg or "Unauthorized" in error_msg:
@@ -1405,6 +1557,23 @@ class MultiProviderLLM:
             if not is_model_refusal:
                 self._mark_failure(provider_name)
 
+            if provider is ProviderType.OPENAI:
+                rescue = await self._try_codex_subscription_rescue(
+                    messages=messages,
+                    model=str(model_for_call or requested_model or ""),
+                    error=e,
+                    attempts=fallback_attempts,
+                )
+                if rescue is not None:
+                    return self._publish_codex_rescue_meta(
+                        result=rescue,
+                        requested_provider=requested_provider,
+                        requested_model=requested_model,
+                        error=e,
+                        auto_switch_used=auto_switch_used,
+                        auto_switch_reason=auto_switch_reason,
+                    )
+
             # Fallbacks gratuits rattaches au modele demande, avant la cascade provider globale.
             tried_model_names = {self.model_name, str(model_for_call), str(requested_model)}
             for fb_model_name in get_model_fallbacks(self.model_name):
@@ -1414,6 +1583,36 @@ class MultiProviderLLM:
                 if not fb_config:
                     continue
                 if not (fb_config.is_local() or check_api_key(fb_config.provider)):
+                    if fb_config.provider is ProviderType.OPENAI:
+                        no_key_error = RuntimeError("401 OpenAI API key unavailable")
+                        fallback_attempts.append(
+                            ModelAttemptTrace(
+                                candidate=ModelAccessRef(
+                                    source=ModelAccessSource.API,
+                                    provider=ProviderType.OPENAI.value,
+                                    model=fb_config.model_id,
+                                    billing="api",
+                                ),
+                                status="failed",
+                                reason=str(no_key_error),
+                                failure_kind=ModelFailureKind.AUTH,
+                            )
+                        )
+                        rescue = await self._try_codex_subscription_rescue(
+                            messages=messages,
+                            model=fb_config.model_id,
+                            error=no_key_error,
+                            attempts=fallback_attempts,
+                        )
+                        if rescue is not None:
+                            return self._publish_codex_rescue_meta(
+                                result=rescue,
+                                requested_provider=requested_provider,
+                                requested_model=requested_model,
+                                error=no_key_error,
+                                auto_switch_used=auto_switch_used,
+                                auto_switch_reason=auto_switch_reason,
+                            )
                     continue
                 try:
                     logger.info(
@@ -1441,6 +1640,21 @@ class MultiProviderLLM:
                     if isinstance(fallback_result, str):
                         fallback_result = {"text": fallback_result, "finish_reason": "stop"}
                     self._mark_success(fb_config.provider.value)
+                    fallback_attempts.append(
+                        ModelAttemptTrace(
+                            candidate=ModelAccessRef(
+                                source=(
+                                    ModelAccessSource.LOCAL
+                                    if fb_config.is_local()
+                                    else ModelAccessSource.API
+                                ),
+                                provider=fb_config.provider.value,
+                                model=fb_config.model_id,
+                                billing="local" if fb_config.is_local() else "api",
+                            ),
+                            status="success",
+                        )
+                    )
                     self._set_last_response_meta(
                         provider_requested=requested_provider,
                         provider_used=fallback_result.get("provider_used", fb_config.provider.value),
@@ -1456,11 +1670,49 @@ class MultiProviderLLM:
                         continuation_warning=fallback_result.get("continuation_warning"),
                         prompt_tokens=fallback_result.get("prompt_tokens"),
                         completion_tokens=fallback_result.get("completion_tokens"),
+                        access_source_requested=(
+                            "local" if provider is ProviderType.OLLAMA else "api"
+                        ),
+                        **self._access_meta_for_provider(fb_config.provider),
+                        fallback_attempts=serialise_attempts(fallback_attempts),
                     )
                     return fallback_result.get("text", "")
                 except Exception as fallback_error:
                     logger.error(f"Fallback modele {fb_model_name} echoue: {fallback_error}")
                     self._mark_failure(fb_config.provider.value)
+                    fallback_attempts.append(
+                        ModelAttemptTrace(
+                            candidate=ModelAccessRef(
+                                source=(
+                                    ModelAccessSource.LOCAL
+                                    if fb_config.is_local()
+                                    else ModelAccessSource.API
+                                ),
+                                provider=fb_config.provider.value,
+                                model=fb_config.model_id,
+                                billing="local" if fb_config.is_local() else "api",
+                            ),
+                            status="failed",
+                            reason=str(fallback_error),
+                            failure_kind=classify_model_failure(fallback_error),
+                        )
+                    )
+                    if fb_config.provider is ProviderType.OPENAI:
+                        rescue = await self._try_codex_subscription_rescue(
+                            messages=messages,
+                            model=fb_config.model_id,
+                            error=fallback_error,
+                            attempts=fallback_attempts,
+                        )
+                        if rescue is not None:
+                            return self._publish_codex_rescue_meta(
+                                result=rescue,
+                                requested_provider=requested_provider,
+                                requested_model=requested_model,
+                                error=fallback_error,
+                                auto_switch_used=auto_switch_used,
+                                auto_switch_reason=auto_switch_reason,
+                            )
 
             # Fallback intelligent : parcourt TOUTE la chaîne de providers sains
             tried_providers = [provider_name]
@@ -1497,6 +1749,23 @@ class MultiProviderLLM:
                     if isinstance(fallback_result, str):
                         fallback_result = {"text": fallback_result, "finish_reason": "stop"}
                     self._mark_success(fallback_provider_name)
+                    fallback_attempts.append(
+                        ModelAttemptTrace(
+                            candidate=ModelAccessRef(
+                                source=(
+                                    ModelAccessSource.LOCAL
+                                    if fallback_provider_name == "ollama"
+                                    else ModelAccessSource.API
+                                ),
+                                provider=fallback_provider_name,
+                                model=fb_model,
+                                billing=(
+                                    "local" if fallback_provider_name == "ollama" else "api"
+                                ),
+                            ),
+                            status="success",
+                        )
+                    )
                     self._set_last_response_meta(
                         provider_requested=requested_provider,
                         provider_used=fallback_result.get("provider_used", fallback_provider_name),
@@ -1512,12 +1781,52 @@ class MultiProviderLLM:
                         continuation_warning=fallback_result.get("continuation_warning"),
                         prompt_tokens=fallback_result.get("prompt_tokens"),
                         completion_tokens=fallback_result.get("completion_tokens"),
+                        access_source_requested=(
+                            "local" if provider is ProviderType.OLLAMA else "api"
+                        ),
+                        **self._access_meta_for_provider(fb_provider),
+                        fallback_attempts=serialise_attempts(fallback_attempts),
                     )
                     return fallback_result.get("text", "")
                 except Exception as fallback_error:
                     logger.error(f"❌ Fallback {fallback_provider_name} échoué: {fallback_error}")
                     self._mark_failure(fallback_provider_name)
                     fallback_errors.append(f"{fallback_provider_name}: {fallback_error}")
+                    fallback_attempts.append(
+                        ModelAttemptTrace(
+                            candidate=ModelAccessRef(
+                                source=(
+                                    ModelAccessSource.LOCAL
+                                    if fallback_provider_name == "ollama"
+                                    else ModelAccessSource.API
+                                ),
+                                provider=fallback_provider_name,
+                                model=fb_model,
+                                billing=(
+                                    "local" if fallback_provider_name == "ollama" else "api"
+                                ),
+                            ),
+                            status="failed",
+                            reason=str(fallback_error),
+                            failure_kind=classify_model_failure(fallback_error),
+                        )
+                    )
+                    if fb_provider is ProviderType.OPENAI:
+                        rescue = await self._try_codex_subscription_rescue(
+                            messages=messages,
+                            model=fb_model,
+                            error=fallback_error,
+                            attempts=fallback_attempts,
+                        )
+                        if rescue is not None:
+                            return self._publish_codex_rescue_meta(
+                                result=rescue,
+                                requested_provider=requested_provider,
+                                requested_model=requested_model,
+                                error=fallback_error,
+                                auto_switch_used=auto_switch_used,
+                                auto_switch_reason=auto_switch_reason,
+                            )
                     current_fb = fallback_provider_name
                     continue  # essayer le suivant
 
@@ -1536,6 +1845,11 @@ class MultiProviderLLM:
                     continuation_steps=0,
                     finish_reason="error",
                     continuation_warning=None,
+                    access_source_requested=(
+                        "local" if provider is ProviderType.OLLAMA else "api"
+                    ),
+                    **self._access_meta_for_provider(provider),
+                    fallback_attempts=serialise_attempts(fallback_attempts),
                 )
                 return f"[Erreur] Tous les providers ont échoué: {'; '.join(fallback_errors)}"
             
@@ -1552,6 +1866,11 @@ class MultiProviderLLM:
                 continuation_steps=0,
                 finish_reason="error",
                 continuation_warning=None,
+                access_source_requested=(
+                    "local" if provider is ProviderType.OLLAMA else "api"
+                ),
+                **self._access_meta_for_provider(provider),
+                fallback_attempts=serialise_attempts(fallback_attempts),
             )
             return f"[Erreur] {error_msg}"
     

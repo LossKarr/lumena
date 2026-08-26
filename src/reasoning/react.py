@@ -8798,6 +8798,14 @@ Maintenant, reflechis et reponds:"""
         return marked
 
     async def run(self, query: str) -> str:
+        """Execute ReAct with the selected provider-shaped decision callback."""
+
+        from src.llm.execution_router import codex_react_brain_scope
+
+        async with codex_react_brain_scope(self):
+            return await self._run_with_timeout(query)
+
+    async def _run_with_timeout(self, query: str) -> str:
         """
         Exécute la boucle ReAct avec timeout global.
 
@@ -9061,16 +9069,6 @@ Maintenant, reflechis et reponds:"""
         _pipeline_result = await self._try_direct_pipeline(query)
         if _pipeline_result is not None:
             return _pipeline_result
-
-        # S7: Codex may choose the next tool, while this ReAct instance keeps
-        # ToolRegistry policies, mission context, ledger and the FINAL choke point.
-        # The adapter returns None when the opt-in surface is disabled.
-        from src.llm.execution_router import maybe_run_codex_surface
-        _codex_surface_result = await maybe_run_codex_surface(
-            self, query, original_query,
-        )
-        if _codex_surface_result is not None:
-            return _codex_surface_result
 
         # v2: Auto-route supprimé — le LLM utilise delegate_task / delegate_task_bg via le prompt
 
@@ -9431,6 +9429,10 @@ Maintenant, reflechis et reponds:"""
                         await asyncio.sleep(1.0)
                 except Exception as e:
                     _llm_last_exc = e
+                    from src.llm.execution_router import CodexReActUnavailable
+                    if isinstance(e, CodexReActUnavailable):
+                        logger.error("Codex ReAct indisponible, aucun fallback API: {}", e)
+                        break
                     if _attempt < 2:
                         logger.warning(f"⚠️ LLM tentative {_attempt + 1}/3 échouée ({e}), retry dans {1.5 * (_attempt + 1):.1f}s…")
                         await asyncio.sleep(1.5 * (_attempt + 1))

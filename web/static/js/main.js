@@ -14,7 +14,7 @@ import {
   setupNavigation, switchPanel, toggleSection, toggleNavCollapse,
   toggleMobileNav, toggleFocus, toggleTheme, applyTheme,
   loadPanelData, openCommandPalette, closeCommandPalette, filterCommands
-} from './navigation.js';
+} from './navigation.js?v=2';
 
 // ── Activity ──
 import {
@@ -93,6 +93,7 @@ import {
 } from './workspaces.js';
 
 import { loadDocumentStudio } from './document-studio.js?v=14';
+import { initOnboarding, replayOnboarding } from './onboarding.js?v=8';
 
 // ── Tasks ──
 import {
@@ -184,6 +185,7 @@ Object.assign(window, {
   toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, setModelSource, filterModelSearch,
   loadModels, loadImageModels, switchModel, switchCatalogModel, toggleAgent,
   startLiveRefreshLoops, scheduleStatusRefresh,
+  initOnboarding, replayOnboarding,
 });
 
 // ── Shutdown Lumena ──
@@ -227,6 +229,7 @@ window._shutdownLumena = async function() {
   q('btn-chat-dictation', () => toggleChatDictation());
   q('btn-toggle-focus', () => toggleFocus());
   q('send-btn', () => { if(isLoading) cancelStream(); else sendMessage(); });
+  q('replay-onboarding-btn', () => replayOnboarding());
   const fileInput = document.getElementById('file-upload-input');
   if (fileInput) fileInput.addEventListener('change', e => handleFileSelect(e));
 })();

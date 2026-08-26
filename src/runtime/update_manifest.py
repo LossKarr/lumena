@@ -15,6 +15,11 @@ UPDATE_ASSET_NAME = "lumena-update-windows-x64.zip"
 INSTALLER_ASSET_NAME = "lumena-setup-windows-x64.exe"
 MANIFEST_ASSET_NAME = "update-manifest.json"
 CERTIFICATION_ASSET_NAME = "release-certification.json"
+_GITHUB_RELEASE_CDN_HOSTS = frozenset({
+    "github-releases.githubusercontent.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -228,12 +233,25 @@ def validate_certification(value: Mapping[str, Any], manifest: ReleaseManifest) 
 
 def validate_download_url(url: str, *, repository: str = EXPECTED_REPOSITORY) -> None:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname not in {"github.com", "objects.githubusercontent.com"}:
+    if parsed.scheme != "https" or parsed.hostname != "github.com":
+        raise UpdateManifestError("download URL is outside trusted GitHub HTTPS hosts")
+    prefix = f"/{repository}/releases/download/"
+    if not parsed.path.startswith(prefix):
+        raise UpdateManifestError("download URL is outside the Lumena release namespace")
+
+
+def validate_download_response_url(
+    url: str, *, repository: str = EXPECTED_REPOSITORY,
+) -> None:
+    """Validate the effective URL after GitHub has followed an asset redirect."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
         raise UpdateManifestError("download URL is outside trusted GitHub HTTPS hosts")
     if parsed.hostname == "github.com":
-        prefix = f"/{repository}/releases/download/"
-        if not parsed.path.startswith(prefix):
-            raise UpdateManifestError("download URL is outside the Lumena release namespace")
+        validate_download_url(url, repository=repository)
+        return
+    if parsed.hostname not in _GITHUB_RELEASE_CDN_HOSTS:
+        raise UpdateManifestError("download URL is outside trusted GitHub HTTPS hosts")
 
 
 def sha256_path(path: Path) -> str:

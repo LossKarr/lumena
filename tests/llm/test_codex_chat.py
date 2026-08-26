@@ -176,6 +176,8 @@ async def test_dynamic_model_context_read_only_stream_and_metadata(tmp_path):
     assert "".join(streamed) == result.response
     assert result.model == "account-choice"
     assert result.meta["provider_used"] == "openai-codex"
+    assert result.meta["access_source_used"] == "codex"
+    assert result.meta["billing_source"] == "chatgpt_subscription"
     assert result.meta["fallback_used"] is False
 
     thread = next(params for method, params, _ in supervisor.requests if method == "thread/start")

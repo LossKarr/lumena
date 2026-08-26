@@ -291,7 +291,10 @@ async def ensure_shared_codex_app_server(app: Any = None) -> "CodexAppServerSupe
 
     try:
         settings = load_codex_subscription_settings()
-        if not settings.enabled:
+        # API can remain the primary source while a previously configured
+        # Codex subscription is kept as the no-API-billing rescue path.  That
+        # rescue must survive a process restart just like direct Codex mode.
+        if not settings.enabled and not settings.rescue_configured:
             return None
         preflight = await probe_codex_cli_async(settings.cli_path or None)
         if preflight.state is not CodexCLIState.READY:

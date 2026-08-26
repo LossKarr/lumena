@@ -21,9 +21,11 @@ def test_codex_preferences_are_non_secret_and_safe_by_default():
         "LUMENA_CODEX_DEFAULT_MODEL",
         "LUMENA_CODEX_SURFACES",
         "LUMENA_CODEX_API_FALLBACK",
+        "LUMENA_CODEX_API_RESCUE",
     }
     assert entries["LUMENA_OPENAI_ACCESS_MODE"]["default"] == "api"
     assert entries["LUMENA_CODEX_API_FALLBACK"]["default"] == "never"
+    assert entries["LUMENA_CODEX_API_RESCUE"]["default"] == "1"
     assert entries["LUMENA_CODEX_SURFACES"]["options"] == [
         "codeagent", "codeagent,chat", "codeagent,agent", "codeagent,missions",
         "codeagent,chat,agent", "codeagent,chat,missions",
@@ -58,6 +60,8 @@ def test_codex_card_is_dynamic_and_never_requests_api_credentials():
     assert "Confier une revue" in script
     assert "approve_memory:false" in script
     assert "Aucun fallback API payant implicite" in script
+    assert "Secours API vers abonnement Codex" in script
+    assert 'data-cfg="LUMENA_CODEX_API_RESCUE"' in script
     assert "CodeAgent" in script
     assert "<strong>Agent</strong>" in script
     assert "<strong>Missions</strong>" in script
@@ -73,7 +77,7 @@ def test_codex_card_assets_are_loaded_and_responsive():
         encoding="utf-8"
     )
     assert "/static/css/codex-subscription.css?v=2" in index
-    assert "/static/js/main.js?v=29" in index
+    assert "/static/js/main.js?v=37" in index
     assert "@media(max-width:820px)" in css
     assert "@media(max-width:560px)" in css
     assert ".codex-access-segment" in css

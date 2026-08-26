@@ -1327,8 +1327,12 @@ Conversations et apprentissages de la journée.
                     "provider_used": "openai-codex",
                     "model_requested": settings.default_model or "auto",
                     "model_used": settings.default_model or "unavailable",
+                    "access_source_requested": "codex",
+                    "access_source_used": "codex",
+                    "billing_source": "chatgpt_subscription",
                     "fallback_used": False,
                     "fallback_reason": None,
+                    "fallback_attempts": [],
                     "continuation_used": False,
                     "continuation_steps": 0,
                     "finish_reason": "codex_unavailable",
@@ -2527,6 +2531,21 @@ Conversations et apprentissages de la journée.
             logger.error(f"Erreur ReAct: {e}\n{traceback.format_exc()}")
 
             try:
+                from src.llm.execution_router import CodexReActUnavailable
+            except Exception:
+                CodexReActUnavailable = ()
+            if isinstance(e, CodexReActUnavailable):
+                c._last_agent_meta = {
+                    **self._default_agent_meta(),
+                    "agent_output_incomplete": True,
+                    "agent_output_warning": f"codex_react_unavailable: {e}",
+                }
+                return (
+                    f"Session ChatGPT Codex indisponible : {e}. "
+                    "Aucun fallback vers une API ou un autre modele n'a ete utilise."
+                )
+
+            try:
                 fallback_answer = await c.chat(query, source_channel=source_channel, sender=sender)
                 c._last_agent_meta = {
                     **self._default_agent_meta(),
@@ -2776,6 +2795,17 @@ Conversations et apprentissages de la journée.
                 raise asyncio.TimeoutError(f"mission_timeout:{timeout}s")
             return ""
         except Exception as e:
+            try:
+                from src.llm.execution_router import CodexReActUnavailable
+            except Exception:
+                CodexReActUnavailable = ()
+            if isinstance(e, CodexReActUnavailable):
+                if task_id is not None:
+                    raise RuntimeError(f"mission_codex_unavailable:{e}") from e
+                return (
+                    f"Session ChatGPT Codex indisponible : {e}. "
+                    "Aucun fallback vers une API ou un autre modele n'a ete utilise."
+                )
             if task_id is not None:
                 logger.warning(
                     f"think_and_act_silent: erreur ReAct mission ({e}), "

@@ -7,11 +7,22 @@
  */
 
 let _steps = [];
+let _allSteps = [];
 let _currentStep = 0;
 let _isPreview = false;
+let _setupMode = 'quick';
 let _config = {};
 let _modelsInfo = {};
 let _keyDebounceTimer = null;  // P2.1: Debounce timer for key validation
+let _focusTrapBound = false;
+let _accessChoice = '';
+let _modelAccessFilter = '';
+
+function _currentAdminToken() {
+  return typeof ADMIN_TOKEN !== 'undefined' && ADMIN_TOKEN
+    ? ADMIN_TOKEN
+    : (window.ADMIN_TOKEN || '');
+}
 
 // ─── Boot ─────────────────────────────────────────────────────────
 export async function initSetupWizard() {
@@ -35,7 +46,8 @@ async function _loadSchema() {
   try {
     const res = await fetch('/api/setup/schema');
     const data = await res.json();
-    _steps = data.steps || [];
+    _allSteps = data.steps || [];
+    _applySetupMode();
     const modelStep = _steps.find(s => s.id === 'model');
     if (modelStep && modelStep.models_info) {
       _modelsInfo = modelStep.models_info;
@@ -45,11 +57,27 @@ async function _loadSchema() {
   }
 }
 
+function _applySetupMode() {
+  if (_setupMode !== 'quick') {
+    _steps = [..._allSteps];
+    return;
+  }
+  const access = {
+    id: 'access', title: 'Choisir comment Lumena réfléchit', icon: 'cpu',
+    subtitle: 'Utilise une configuration existante, une API, ton abonnement ChatGPT ou un modèle local.',
+  };
+  const byId = id => _allSteps.find(step => step.id === id);
+  const middle = _accessChoice === 'api' ? [byId('keys'), byId('model')]
+    : _accessChoice === 'local' ? [byId('model')] : [];
+  _steps = [access, ...middle, byId('locale'), byId('security')].filter(Boolean);
+}
+
 // ─── Render ───────────────────────────────────────────────────────
 function _showWizard() {
   const overlay = document.getElementById('setup-wizard-overlay');
   if (!overlay) return;
   overlay.removeAttribute('hidden');
+  _bindWizardFocusTrap(overlay);
 
   if (_isPreview) {
     const banner = document.createElement('div');
@@ -61,6 +89,27 @@ function _showWizard() {
   // Build step 0 = welcome, steps 1..N = schema steps, step N+1 = summary
   _renderDots();
   _renderStep();
+}
+
+function _bindWizardFocusTrap(overlay) {
+  if (_focusTrapBound) return;
+  _focusTrapBound = true;
+  overlay.addEventListener('keydown', event => {
+    if (event.key !== 'Tab' || overlay.hasAttribute('hidden')) return;
+    const focusable = [...overlay.querySelectorAll(
+      'button:not([disabled]):not([hidden]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    )].filter(element => element.getClientRects().length > 0);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
 }
 
 function _totalSteps() {
@@ -110,7 +159,8 @@ function _renderStep() {
     const step = _steps[_currentStep - 1];
     // P0.1: Pre-fill defaults for any field the user hasn't touched yet
     _prefillDefaults(step);
-    if (step.id === 'model') _renderModelStep(cont, step);
+    if (step.id === 'access') _renderAccessStep(cont, step);
+    else if (step.id === 'model') _renderModelStep(cont, step);
     else if (step.id === 'keys' || step.id === 'image_gen_keys') _renderKeysStep(cont, step);
     else if (step.id === 'security') _renderSecurityStep(cont, step);
     else if (step.id === 'telegram') _renderTelegramStep(cont, step);
@@ -129,26 +179,176 @@ function _renderStep() {
   if (typeof lucide !== 'undefined') lucide.createIcons();
 }
 
+function _accessHeaders(json=false) {
+  const token = _currentAdminToken();
+  return {
+    ...(json ? {'Content-Type':'application/json'} : {}),
+    ...(token ? {Authorization:`Bearer ${token}`} : {}),
+  };
+}
+
+async function _accessJson(url, options={}) {
+  const response = await fetch(url, {...options, headers:{..._accessHeaders(!!options.body), ...(options.headers||{})}});
+  let payload = {};
+  try { payload = await response.json(); } catch (_) {}
+  if (!response.ok) {
+    const detail = payload?.detail?.message || payload?.detail || payload?.error || `HTTP ${response.status}`;
+    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+  }
+  return payload;
+}
+
+function _setAccessStatus(cont, message, tone='muted') {
+  const box = cont.querySelector('[data-access-status]');
+  if (!box) return;
+  box.hidden = !message;
+  box.className = `setup-access-status ${tone}`;
+  box.textContent = message || '';
+}
+
+function _chooseAccessPath(choice, currentModel='') {
+  _accessChoice = choice;
+  _modelAccessFilter = choice === 'local' ? 'local' : '';
+  if (currentModel) _config.LUMENA_DEFAULT_MODEL = currentModel;
+  _applySetupMode();
+  _renderDots();
+  _goNext();
+}
+
+async function _loadAccessStatus(cont) {
+  const [modelsResult, codexResult, ollamaResult] = await Promise.allSettled([
+    _accessJson('/api/models'),
+    _accessJson('/api/codex-subscription/account/status'),
+    _accessJson('/api/setup/ollama-models'),
+  ]);
+  if (!cont.isConnected) return;
+  const models = modelsResult.status === 'fulfilled' ? (modelsResult.value.models || []) : [];
+  const current = models.find(model => model.current && model.available);
+  const codex = codexResult.status === 'fulfilled' ? codexResult.value : {};
+  const ollama = ollamaResult.status === 'fulfilled' ? ollamaResult.value : {};
+  const detected = cont.querySelector('[data-access-detected]');
+  const facts = [];
+  if (current) facts.push(`${current.display_name || current.name} actif`);
+  if (codex.account) facts.push('compte ChatGPT connecté');
+  if (ollama.installed_count) facts.push(`${ollama.installed_count} modèle(s) local(aux)`);
+  if (!detected) return;
+  if (!facts.length) {
+    detected.innerHTML = '<i data-lucide="scan-line"></i><span>Aucune configuration prête détectée. Choisis une méthode ci-dessous.</span>';
+  } else {
+    detected.innerHTML = `<i data-lucide="badge-check"></i><span><strong>Configuration détectée</strong><small>${facts.map(_esc).join(' · ')}</small></span>${current ? '<button type="button" data-use-current>Utiliser</button>' : ''}`;
+    detected.querySelector('[data-use-current]')?.addEventListener('click',()=>_chooseAccessPath('existing',current.name));
+  }
+  if (typeof lucide !== 'undefined') lucide.createIcons({nodes:[detected]});
+}
+
+async function _prepareCodexAccess(cont) {
+  _setAccessStatus(cont, 'Recherche d’une session Codex existante…');
+  try {
+    let status = await _accessJson('/api/codex-subscription/account/status');
+    if (!status.account) {
+      try {
+        await _accessJson('/api/codex-subscription/adopt', {method:'POST'});
+      } catch (_) {
+        _setAccessStatus(cont, 'Connexion ChatGPT requise. Une page sécurisée va s’ouvrir.', 'warning');
+        const started = await _accessJson('/api/codex-subscription/login/start', {method:'POST'});
+        const challenge = started.challenge || {};
+        if (!challenge.login_id || !challenge.auth_url) throw new Error('Défi de connexion Codex incomplet');
+        window.open(challenge.auth_url, '_blank', 'noopener,noreferrer');
+        await _accessJson(`/api/codex-subscription/login/wait?login_id=${encodeURIComponent(challenge.login_id)}&timeout_s=120`);
+      }
+      status = await _accessJson('/api/codex-subscription/account/status');
+    }
+    const catalog = await _accessJson('/api/codex-subscription/models');
+    const models = catalog.models || [];
+    if (!models.length) throw new Error('Aucun modèle Codex disponible pour ce compte');
+    const choices = models.map(model => `<option value="${_esc(model.model_id)}" ${model.model_id===catalog.selected_model?'selected':''}>${_esc(model.display_name||model.model_id)}</option>`).join('');
+    const panel = cont.querySelector('[data-codex-picker]');
+    panel.hidden = false;
+    panel.innerHTML = `<label>Modèle de l’abonnement<select class="input" data-codex-model>${choices}</select></label><button type="button" class="setup-btn setup-btn-primary" data-use-codex>Utiliser cet abonnement</button>`;
+    panel.querySelector('[data-use-codex]').onclick = async () => {
+      const button = panel.querySelector('[data-use-codex]');
+      button.disabled = true;
+      _setAccessStatus(cont, 'Activation du modèle Codex…');
+      try {
+        const modelId = panel.querySelector('[data-codex-model]').value;
+        if (_isPreview) {
+          _setAccessStatus(cont, `Aperçu : ${modelId} serait activé via l’abonnement ChatGPT.`, 'success');
+          _chooseAccessPath('codex');
+          return;
+        }
+        await _accessJson('/api/codex-subscription/model/select', {method:'POST', body:JSON.stringify({selection_id:`codex:${modelId}`})});
+        _setAccessStatus(cont, 'Abonnement ChatGPT connecté et modèle activé.', 'success');
+        _chooseAccessPath('codex');
+      } catch (error) {
+        button.disabled = false;
+        _setAccessStatus(cont, error.message, 'error');
+      }
+    };
+    _setAccessStatus(cont, status.account ? 'Compte ChatGPT connecté.' : 'Session Codex prête.', 'success');
+  } catch (error) {
+    _setAccessStatus(cont, `Codex indisponible : ${error.message}`, 'error');
+  }
+}
+
+function _renderAccessStep(cont, step) {
+  cont.innerHTML = `
+    <div class="setup-step active">
+      <div class="setup-step-icon"><i data-lucide="${step.icon}"></i></div>
+      <h2>${_esc(step.title)}</h2>
+      <p class="setup-subtitle">${_esc(step.subtitle)}</p>
+      <div class="setup-access-detected" data-access-detected><i data-lucide="loader-circle"></i><span>Détection de la configuration actuelle…</span></div>
+      <div class="setup-access-grid" role="list">
+        <button type="button" class="setup-access-card" data-access="api"><i data-lucide="key-round"></i><span><strong>Clé API</strong><small>OpenAI, Anthropic, Google, DeepSeek et autres fournisseurs configurés dans Lumena.</small></span><b>Configurer</b></button>
+        <button type="button" class="setup-access-card" data-access="codex"><i data-lucide="badge-check"></i><span><strong>Abonnement ChatGPT</strong><small>Utilise les quotas Codex de ton compte, sans remplacer tes clés API.</small></span><b>Connecter</b></button>
+        <button type="button" class="setup-access-card" data-access="local"><i data-lucide="hard-drive"></i><span><strong>Modèle local</strong><small>Ollama sur cette machine. Les données restent locales et aucune clé n’est requise.</small></span><b>Choisir</b></button>
+      </div>
+      <div class="setup-access-status muted" data-access-status role="status" aria-live="polite" hidden></div>
+      <div class="setup-codex-picker" data-codex-picker hidden></div>
+      <div class="setup-nav"><button class="setup-btn setup-btn-secondary" id="setup-back"><i data-lucide="arrow-left"></i> Retour</button></div>
+    </div>`;
+  cont.querySelector('#setup-back').onclick=()=>_goBack();
+  cont.querySelector('[data-access="api"]').onclick=()=>_chooseAccessPath('api');
+  cont.querySelector('[data-access="local"]').onclick=()=>_chooseAccessPath('local');
+  cont.querySelector('[data-access="codex"]').onclick=()=>_prepareCodexAccess(cont);
+  _loadAccessStatus(cont).catch(error=>_setAccessStatus(cont,error.message,'error'));
+}
+
 function _renderWelcome(cont) {
   cont.innerHTML = `
     <div class="setup-step active">
       <div class="setup-welcome-logo"><img src="/static/branding/lumena-logo.png" alt="Lumena" style="width:64px;height:64px;object-fit:contain"></div>
       <h2>Bienvenue</h2>
-      <p class="setup-subtitle">Je suis Lumena, ton assistant IA personnel.<br>Configurons-moi ensemble en quelques étapes simples.</p>
+      <p class="setup-subtitle">Configurons Lumena, puis réalisons ensemble une première action.</p>
       <div class="setup-info-box">
         <i data-lucide="info" style="width:18px;height:18px;flex-shrink:0;margin-top:2px"></i>
         <div>
-          <strong>Pas de panique !</strong><br>
-          Tu pourras tout modifier après dans les paramètres. Ce wizard configure juste l'essentiel pour démarrer.
+          <strong>Rien n'est définitif.</strong><br>
+          Tous les réglages restent disponibles ensuite dans Configuration.
         </div>
       </div>
       <div id="preflight-results" class="setup-preflight" style="margin:1em 0;font-size:.9em;opacity:.7">
         <i data-lucide="loader" style="width:14px;height:14px;animation:spin 1s linear infinite"></i> Vérification du système...
       </div>
+      <div class="setup-paths" role="radiogroup" aria-label="Niveau de configuration">
+        <button class="setup-path selected" type="button" data-setup-mode="quick" role="radio" aria-checked="true">
+          <i data-lucide="sparkles"></i><span><strong>Configuration rapide</strong><small>L'essentiel pour démarrer, recommandé</small></span><b>5 min</b>
+        </button>
+        <button class="setup-path" type="button" data-setup-mode="complete" role="radio" aria-checked="false">
+          <i data-lucide="sliders-horizontal"></i><span><strong>Configuration complète</strong><small>Toutes les intégrations et options avancées</small></span>
+        </button>
+      </div>
       <div class="setup-nav">
         <button class="setup-btn setup-btn-primary" id="setup-next">Commencer <i data-lucide="arrow-right" style="width:16px;height:16px;vertical-align:middle"></i></button>
       </div>
     </div>`;
+  cont.querySelectorAll('[data-setup-mode]').forEach(button=>button.onclick=()=>{
+    _setupMode=button.dataset.setupMode;
+    _applySetupMode();
+    _renderDots();
+    cont.querySelectorAll('[data-setup-mode]').forEach(item=>{
+      const selected=item===button;item.classList.toggle('selected',selected);item.setAttribute('aria-checked',String(selected));
+    });
+  });
   cont.querySelector('#setup-next').onclick = () => _goNext();
   // P3: Preflight — async check du système
   _loadPreflight();
@@ -158,7 +358,7 @@ async function _loadPreflight() {
   const box = document.getElementById('preflight-results');
   if (!box) return;
   try {
-    const _pfh={};if(window.ADMIN_TOKEN)_pfh['Authorization']=`Bearer ${window.ADMIN_TOKEN}`;
+    const _pfh={};const _token=_currentAdminToken();if(_token)_pfh.Authorization=`Bearer ${_token}`;
     const r = await fetch('/api/preflight',{headers:_pfh});
     if (!r.ok) { box.textContent = ''; return; }
     const data = await r.json();
@@ -194,6 +394,7 @@ function _renderModelStep(cont, step) {
 
   const groups = { 'Gratuits (NVIDIA NIM)': [], 'Payants (Cloud)': [] };
   for (const opt of options) {
+    if (_modelAccessFilter === 'local') continue;
     const info = _modelsInfo[opt];
     if (!info) { groups['Payants (Cloud)'].push(opt); continue; }
     // Les modèles Ollama locaux sont dans le catalogue en bas — pas besoin de les dupliquer ici
@@ -278,9 +479,9 @@ function _renderModelStep(cont, step) {
   cont.innerHTML = `
     <div class="setup-step active">
       <div class="setup-step-icon"><i data-lucide="${step.icon || 'brain'}"></i></div>
-      <h2>${_esc(step.title)}</h2>
-      <p class="setup-subtitle">${_esc(step.subtitle || '')}</p>
-      <div class="setup-help-text"><i data-lucide="lightbulb" style="width:16px;height:16px;flex-shrink:0;margin-top:2px"></i> ${_esc(step.help || '')}</div>
+      <h2>${_esc(_modelAccessFilter === 'local' ? 'Choisir un modèle local' : step.title)}</h2>
+      <p class="setup-subtitle">${_esc(_modelAccessFilter === 'local' ? 'Sélectionne un modèle Ollama déjà installé ou télécharge-en un.' : (step.subtitle || ''))}</p>
+      <div class="setup-help-text"><i data-lucide="lightbulb" style="width:16px;height:16px;flex-shrink:0;margin-top:2px"></i> ${_esc(_modelAccessFilter === 'local' ? 'Les modèles locaux restent sur ta machine. Le matériel requis dépend de leur taille.' : (step.help || ''))}</div>
       <div class="models-scroll-container">
         ${modelsHtml}
         <div id="ollama-pull-section" data-field-key="${_esc(field ? field.key : '')}"></div>
@@ -1748,6 +1949,7 @@ function _renderSummary(cont) {
       <h2>Tout est prêt !</h2>
       <p class="setup-subtitle">${_isPreview ? 'Mode aperçu — rien ne sera sauvegardé.' : `${count} paramètre${count > 1 ? 's' : ''} configuré${count > 1 ? 's' : ''}. Vérifie avant de lancer.`}</p>
       <div class="setup-summary">${rows}</div>
+      <div class="setup-save-error" id="setup-save-error" role="alert" aria-live="assertive" hidden></div>
       ${!_isPreview ? `<div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;padding:0 2px">
         <button id="setup-pingtest" style="padding:7px 14px;border-radius:8px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:var(--text,#e6e6e6);font-size:12px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:6px"><i data-lucide="wifi" style="width:14px;height:14px"></i> Tester la connexion</button>
         <span id="setup-ping-result" style="font-size:12px;color:var(--muted,#8c8c9a)"></span>
@@ -1941,6 +2143,9 @@ function _esc(s) {
 
 // ─── Navigation ───────────────────────────────────────────────────
 function _goNext() {
+  if (_currentStep === 0) {
+    _applySetupMode();
+  }
   if (_currentStep < _totalSteps() - 1) {
     _currentStep++;
     _renderStep();
@@ -1973,11 +2178,15 @@ async function _finishSetup() {
 
   const btn = document.getElementById('setup-finish');
   if (btn) { btn.disabled = true; btn.textContent = 'Sauvegarde...'; }
+  _showSetupError('');
 
   try {
     const res = await fetch('/api/setup/complete', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(_currentAdminToken() ? {Authorization: `Bearer ${_currentAdminToken()}`} : {}),
+      },
       body: JSON.stringify({ config: _config, preview: false }),
     });
     const data = await res.json();
@@ -1986,6 +2195,7 @@ async function _finishSetup() {
       if (data.admin_token) {
         window.ADMIN_TOKEN = data.admin_token;
       }
+      localStorage.setItem('lumena_onboarding_pending', '1');
       // P0.7: Warn if LLM is not ready (no valid API key)
       if (data.llm_ready === false && !data.restart_needed) {
         const overlay = document.getElementById('setup-wizard-overlay');
@@ -2039,13 +2249,21 @@ async function _finishSetup() {
         _closeWizard();
       }
     } else {
-      alert(data.error || 'Erreur lors de la sauvegarde.');
+      _showSetupError(data.error || 'Erreur lors de la sauvegarde.');
       if (btn) { btn.disabled = false; btn.textContent = 'Démarrer Lumena'; }
     }
   } catch (e) {
-    alert('Erreur réseau: ' + e.message);
+    _showSetupError('Erreur réseau : ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Démarrer Lumena'; }
   }
+}
+
+function _showSetupError(message) {
+  const box = document.getElementById('setup-save-error');
+  if (!box) return;
+  box.hidden = !message;
+  box.textContent = message || '';
+  if (message) box.focus({preventScroll: false});
 }
 
 // P1.1: Inject a dynamic welcome message after first wizard completion
@@ -2087,14 +2305,16 @@ function _closeWizard() {
         if (typeof window.loadStartupModels === 'function') {
           await window.loadStartupModels();
         }
-        window.selectedModel = _config.LUMENA_DEFAULT_MODEL
+        const selectedModel = _config.LUMENA_DEFAULT_MODEL
           || (window.allModels && (window.allModels.find(m => m.available) || {}).name)
           || 'deepseek-v3';
-        if (typeof window.startLumena === 'function') {
-          window.startLumena();
+        if (typeof window.selectStartupModel === 'function') {
+          window.selectStartupModel(selectedModel);
         }
-        // P1.1: Inject welcome message in chat thread after first setup
-        _injectWelcomeMessage();
+        if (typeof window.startLumena === 'function') {
+          const started = await window.startLumena();
+          if (started === false) return;
+        }
       } catch (e) {
         console.error('[setup] Post-wizard startup failed:', e);
         location.reload();

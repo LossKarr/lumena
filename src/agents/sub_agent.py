@@ -379,6 +379,81 @@ def _action_write_paths(action: Any) -> list:
     return paths
 
 
+# ── LOT Z36 — « je n'ai rien ecrit » n'est pas « projet cree » ───────────────
+#
+# Z35 (2026-08-23) a ferme ce defaut sur la route Codex autonome :
+#
+#     if not changed:  return CodexCodeAgentResult(success=False, ...)
+#
+# Mais Z35 ne gardait QUE ce rail. Depuis qu'il est retire et que l'abonnement
+# passe par la boucle historique, la garantie disparaissait — la boucle
+# historique n'a jamais eu l'equivalent. Sa porte `done` :
+#
+#     _edited_now = list(getattr(self, "_edited_files", []))
+#     if _edited_now:              # <- zero fichier => porte SAUTEE
+#         ... run_gate(...) ...
+#     return AgentResult(success=True, ...)
+#
+# Le fait existe, il est calcule trois lignes plus haut, et il n'est jamais
+# consulte pour la decision. Meme motif que les 53 lots.
+#
+# PERIMETRE VOLONTAIREMENT ETROIT : on ferme le ZERO, pas le « un sur vingt ».
+# Une tache d'analyse ou de lecture ne produit legitimement aucun fichier ;
+# exiger une ecriture pour tout casserait la moitie des usages du CodeAgent.
+_CREATION_VERBS = (
+    "cree", "créé", "crée", "creer", "créer", "genere", "génère", "generer",
+    "générer", "construis", "construire", "developpe", "développe",
+    # « fais » couvre « fais-moi », « fais moi » et « fais un jeu 3D » : la
+    # forme nue existe dans le corpus reel et manquait aux trois autres.
+    "fais ", "fais-", "ecris-moi un", "écris-moi un", "implemente", "implémente",
+    "build", "create", "generate", "make ",
+)
+_READING_VERBS = (
+    "analyse", "explique", "cherche", "recherche", "resume", "résume", "liste",
+    "audit", "compare", "verifie", "vérifie", "lis ", "montre", "trouve",
+)
+
+_CREATION_WROTE_NOTHING_MESSAGE = (
+    "Tu as demande `done` sans avoir ecrit AUCUN fichier, alors que la tache "
+    "demande une creation. Un projet qui n'existe pas sur le disque n'est pas "
+    "un projet cree.\n"
+    "Utilise `write_file` pour produire les fichiers demandes, puis `done`. "
+    "Si la creation est impossible, dis precisement ce qui bloque au lieu de "
+    "conclure."
+)
+
+
+def _creation_task_wrote_nothing(
+    *,
+    intent: Any,
+    edited_files: Any,
+    description: Any,
+) -> bool:
+    """Vrai quand une tache de CREATION se termine sans le moindre fichier.
+
+    Les trois conditions doivent tenir ensemble :
+      * l'intention resolue est `create` ;
+      * aucun fichier n'a ete ecrit ;
+      * la description demande bien de produire quelque chose, et ne demande pas
+        seulement de lire ou d'analyser.
+
+    La troisieme evite le faux positif qui rendrait ce garde inutilisable :
+    « analyse ce projet » arrive avec `intent=create` par defaut et n'ecrit
+    rien — c'est normal, et ce n'est pas ce qu'on attrape ici.
+    """
+    if str(intent or "").strip().lower() != "create":
+        return False
+    if list(edited_files or []):
+        return False
+    texte = str(description or "").strip().lower()
+    if not texte:
+        return False
+    # Une demande de lecture prime : elle est explicite, la creation est le defaut.
+    if any(verbe in texte for verbe in _READING_VERBS):
+        return False
+    return any(verbe in texte for verbe in _CREATION_VERBS)
+
+
 def _write_within_perimeter(path_str: Any, allowed_files: Any, workspace_root: Any = None) -> bool:
     """LOT I.2 — une écriture CodeAgent est-elle DANS le périmètre du worker ?
 
@@ -636,6 +711,43 @@ class SubAgent:
         from ..llm.multi_provider import MultiProviderLLM
 
         core = get_lumena()
+
+        # ── Cerveau Codex : un CALLBACK MODELE, pas un moteur parallele ──────
+        # Le rail precedent (`run_codeagent_with_codex_subscription`) remplacait
+        # TOUTE cette boucle par un tour Codex autonome : prompts, outils, tests,
+        # reprises et garde-fous de Lumena etaient contournes, et chaque
+        # delegation rouvrait une session (`account/read` puis `model/list`,
+        # 30 s chacun au timeout — mesure sur un run reel).
+        #
+        # Le marqueur vit dans `task.context`, comme `_best_model` ci-dessous :
+        # un dict SERIALISABLE, donc il survit au lancement en arriere-plan la
+        # ou un objet passe en memoire serait perdu.
+        if task is not None and (task.context or {}).get("_codex_brain"):
+            try:
+                from ..llm.execution_router import (
+                    CodexReActUnavailable,
+                    get_active_codex_codeagent_brain,
+                )
+
+                brain = get_active_codex_codeagent_brain()
+                if brain is None:
+                    raise CodexReActUnavailable(
+                        "Le marqueur Codex CodeAgent est actif sans scope d'execution"
+                    )
+                logger.debug(
+                    "\U0001f9e0 [{}] cerveau Codex partage par la tache "
+                    "(boucle CodeAgent historique)",
+                    self.name,
+                )
+                return brain
+            except Exception as exc:
+                # Pas de repli silencieux vers DeepSeek : l'abonnement a ete
+                # choisi explicitement, une panne doit se voir.
+                from ..llm.execution_router import CodexReActUnavailable
+
+                raise CodexReActUnavailable(
+                    f"Cerveau Codex CodeAgent indisponible: {exc}"
+                ) from exc
 
         # ── Override per-agent (panel config / env) ──
         # LUMENA_AGENT_{CODE|RESEARCH|FILE|BROWSER|DEBUG|REFACTOR|PLANNER|GENERAL}_MODEL
@@ -1768,6 +1880,67 @@ class CodeAgent(SubAgent):
             )
 
         # ── Boucle itérative pour les tâches complexes ──
+        return await self._execute_iterative_with_brain(task)
+
+    async def _execute_iterative_with_brain(self, task: AgentTask) -> AgentResult:
+        """Lance la boucle historique avec le cerveau sélectionné pour la tâche.
+
+        DebugAgent et RefactorAgent enrichissent la tâche avant d'entrer dans la
+        même boucle. Le scope doit donc vivre dans ce point partagé, sinon ces
+        deux variantes voient le marqueur Codex sans cerveau actif et échouent.
+        Hors abonnement Codex, l'appel reste exactement celui d'avant.
+        """
+        if (task.context or {}).get("_codex_brain"):
+            from ..llm.execution_router import codex_codeagent_brain_scope
+
+            async with codex_codeagent_brain_scope(self) as (active, brain):
+                if not active or brain is None:
+                    return AgentResult(
+                        task_id=task.task_id,
+                        success=False,
+                        output=(
+                            "Le CodeAgent demande l'abonnement Codex, mais cette "
+                            "surface n'est plus active. Aucun fallback API n'a ete utilise."
+                        ),
+                        status_code=StatusCode.ERROR,
+                        meta={
+                            "engine": "codex_subscription",
+                            "fallback_used": False,
+                        },
+                    )
+                # Les captures SuccessStore et auto-eval sont historiquement
+                # lancees en fire-and-forget depuis `_iterative_code_loop`.
+                # Avec un cerveau prive, elles doivent finir AVANT sa fermeture;
+                # sinon elles voient le marqueur Codex mais un cerveau deja ferme
+                # et tentent ensuite de retomber sur le modele global. Le tableau
+                # reste task-scoped sous `_exec_lock`; le chemin API ne le cree pas.
+                post_tasks: list[asyncio.Task] = []
+                self._codex_post_success_tasks = post_tasks
+                try:
+                    result = await self._iterative_code_loop(task)
+                    if post_tasks:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.gather(*post_tasks, return_exceptions=True),
+                                timeout=120.0,
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                "[Codex/CodeAgent brain] apprentissage post-succes "
+                                "interrompu apres 120 s"
+                            )
+                            for pending in post_tasks:
+                                if not pending.done():
+                                    pending.cancel()
+                    result.meta = {
+                        **(result.meta or {}),
+                        "engine": "codex_subscription",
+                        "model": brain.model_name,
+                        "fallback_used": False,
+                    }
+                    return result
+                finally:
+                    self._codex_post_success_tasks = None
         return await self._iterative_code_loop(task)
 
     # ── Boucle itérative (outer retry + inner loop) ──────────────────────────
@@ -1883,7 +2056,7 @@ class CodeAgent(SubAgent):
                 try:
                     _iter_count = int((getattr(last_result, "meta", {}) or {}).get("iterations", 0))
                     _outcome = str(getattr(last_result, "output", "") or "")[:600]
-                    asyncio.create_task(
+                    _success_task = asyncio.create_task(
                         self._maybe_generate_success_pattern(
                             task_description=getattr(task, "description", "") or "",
                             tools_used=list(self._tools_used_this_task),
@@ -1891,16 +2064,22 @@ class CodeAgent(SubAgent):
                             outcome_summary=_outcome,
                         )
                     )
+                    _codex_post = getattr(self, "_codex_post_success_tasks", None)
+                    if isinstance(_codex_post, list):
+                        _codex_post.append(_success_task)
                 except Exception:
                     pass
                 # P2 : auto-évaluation critique post-succès (fire-and-forget)
                 try:
-                    asyncio.create_task(
+                    _auto_eval_task = asyncio.create_task(
                         self._maybe_auto_evaluate_success(
                             task_description=getattr(task, "description", "") or "",
                             edits_done=list(self._session_memory.get("edits_done", [])),
                         )
                     )
+                    _codex_post = getattr(self, "_codex_post_success_tasks", None)
+                    if isinstance(_codex_post, list):
+                        _codex_post.append(_auto_eval_task)
                 except Exception:
                     pass
                 # Git commit initial après succès CodeAgent (optionnel — jamais bloquant)
@@ -3628,6 +3807,52 @@ class CodeAgent(SubAgent):
                         except Exception:
                             pass  # jamais bloquant
                 report.append(f"[iter {iteration}] done")
+
+                # ── LOT Z36 — le ZERO fichier, AVANT la gate soft ─────────
+                # La gate ci-dessous ne tourne que `if _edited_now` : sur un
+                # diff vide elle est sautee et `done` passait droit en succes.
+                # Le controle doit donc venir ICI, pas dedans. Meme place que
+                # dans Z35 : avant la validation, jamais apres.
+                if _creation_task_wrote_nothing(
+                    intent=getattr(self, "_resolved_intent", "auto"),
+                    edited_files=getattr(self, "_edited_files", None),
+                    description=getattr(task, "description", ""),
+                ):
+                    _z36_used = int(getattr(self, "_z36_refusals", 0) or 0)
+                    # Le refus RELANCE la boucle, il ne tue pas la tache : c'est
+                    # la lecon de Z23. Il reste des dizaines d'iterations.
+                    if _z36_used < 2:
+                        self._z36_refusals = _z36_used + 1
+                        messages.append(
+                            {"role": "user", "content": _CREATION_WROTE_NOTHING_MESSAGE}
+                        )
+                        report.append(f"[iter {iteration}] done refuse - aucun fichier ecrit")
+                        logger.info(
+                            "[CodeAgent] Z36 iter={} done refuse : aucun fichier ecrit",
+                            iteration,
+                        )
+                        continue
+                    # Budget epuise : on rend un ECHEC honnete plutot qu'un
+                    # succes demenit par le disque.
+                    return AgentResult(
+                        task_id=task.task_id,
+                        success=False,
+                        output=(
+                            "Le CodeAgent s'est termine sans ecrire AUCUN fichier "
+                            "alors que la tache demandait une creation.\n"
+                            + _CREATION_WROTE_NOTHING_MESSAGE
+                        ),
+                        status_code=StatusCode.ERROR,
+                        meta=_failure_meta(
+                            report=report,
+                            blocked_at="aucun fichier ecrit sur une tache de creation",
+                            task_description=getattr(task, "description", ""),
+                            next_step="Produire les fichiers demandes avec write_file",
+                            iterations=iteration,
+                            attempt=attempt,
+                        ),
+                    ), False
+
                 # ── Gate soft : validation courte avant de conclure ───────
                 try:
                     from src.config.codeagent_flags import CODEAGENT_DONE_GATE_SOFT
@@ -3658,7 +3883,7 @@ class CodeAgent(SubAgent):
                                             f"Validation avant fin echouee apres {_soft_gate_max} tentative(s).\n"
                                             + "\n".join(_soft_gate.errors[:5])
                                         ),
-                                        status_code=StatusCode.FAILURE,
+                                        status_code=StatusCode.ERROR,
                                         meta=_failure_meta(
                                             report=report,
                                             blocked_at=(
@@ -3762,7 +3987,7 @@ class CodeAgent(SubAgent):
                                         + "\n".join(_gate.errors[:5])
                                         + (_rb_note or "")
                                     ),
-                                    status_code=StatusCode.FAILURE,
+                                    status_code=StatusCode.ERROR,
                                     meta=_failure_meta(
                                         report=report,
                                         blocked_at=f"gate échec après {_gate_max_retries} retries : " + "; ".join(_gate.errors[:2]),
@@ -6817,7 +7042,7 @@ class DebugAgent(CodeAgent):
                 "_system_prompt_override": _DEBUG_SYSTEM_PROMPT,
             },
         )
-        return await self._iterative_code_loop(enriched)
+        return await self._execute_iterative_with_brain(enriched)
 
 
 class RefactorAgent(CodeAgent):
@@ -6858,7 +7083,7 @@ class RefactorAgent(CodeAgent):
                 "_system_prompt_override": _REFACTOR_SYSTEM_PROMPT,
             },
         )
-        return await self._iterative_code_loop(enriched)
+        return await self._execute_iterative_with_brain(enriched)
 
 
 class BrowserAgent(SubAgent):
@@ -7309,6 +7534,7 @@ class SubAgentOrchestrator:
         # Attempt 1 : escalade OpenAI par grade (gpt-5.4-mini → gpt-5.4)
         # Attempt 2 : escalade Anthropic par grade (claude-sonnet → claude-opus)
         _user_locked_model = task.context.get("_best_model")
+        _codex_brain_locked = bool(task.context.get("_codex_brain"))
         if _attempt == 0:
             # Premier essai : on ne touche PAS au modèle, laisser l'auto-swap
             # deepseek→reasoner se faire dans _iterative_code_loop
@@ -7320,7 +7546,7 @@ class SubAgentOrchestrator:
                 logger.debug(
                     f"\U0001f3af Model router: attempt=0 → conserve {_user_locked_model}"
                 )
-        elif _attempt > 0:
+        elif _attempt > 0 and not _codex_brain_locked:
             # Escalade progressive par provider
             _ESCALATION_CHAIN = [
                 # attempt=1 : OpenAI par grade
@@ -7351,6 +7577,12 @@ class SubAgentOrchestrator:
                 logger.debug(
                     f"\U0001f3af Model router: escalation chain {chain_idx} — aucun modèle disponible"
                 )
+        elif _attempt > 0:
+            logger.info(
+                "\U0001f512 Model escalation API ignoree: abonnement Codex verrouille "
+                "(retry {})",
+                _attempt,
+            )
 
         result = await agent.execute(task)
 

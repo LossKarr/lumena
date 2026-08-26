@@ -24,6 +24,7 @@ from src.runtime.update_manifest import (
     Version,
     sha256_path,
     validate_certification,
+    validate_download_response_url,
     validate_download_url,
 )
 from src.runtime.update_installation import (
@@ -378,7 +379,7 @@ class UpdateService:
                 partial.unlink(missing_ok=True)
                 existing = 0
             response.raise_for_status()
-            validate_download_url(str(response.url))
+            validate_download_response_url(str(response.url))
             mode = "ab" if existing and response.status_code == 206 else "wb"
             with partial.open(mode) as handle:
                 async for chunk in response.aiter_bytes(1024 * 256):
@@ -459,8 +460,8 @@ class UpdateService:
             )
             manifest_response.raise_for_status()
             cert_response.raise_for_status()
-            validate_download_url(str(manifest_response.url))
-            validate_download_url(str(cert_response.url))
+            validate_download_response_url(str(manifest_response.url))
+            validate_download_response_url(str(cert_response.url))
             manifest = ReleaseManifest.from_json(manifest_response.content)
             certification = cert_response.json()
             validate_certification(certification, manifest)

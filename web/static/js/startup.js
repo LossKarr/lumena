@@ -49,7 +49,7 @@ export function selectStartupModel(name){
 }
 
 export async function startLumena(){
-  if(!selectedModel)return;
+  if(!selectedModel)return false;
   const btn=document.getElementById('startup-btn');
   btn.textContent='Initialisation...';btn.disabled=true;
   try{
@@ -66,8 +66,11 @@ export async function startLumena(){
     if(savedTheme&&typeof applyTheme==='function')applyTheme(savedTheme);
     setupNavigation();setupTextarea();loadStatus();loadModels();loadTools();initTraceStream();loadTraceRecent();startLiveRefreshLoops();loadChatHistory();
     document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModelPicker()});
+    document.dispatchEvent(new CustomEvent('lumena:app-ready'));
+    return true;
   }catch(e){
     alert('Erreur: '+e.message);btn.textContent='Demarrer Lumena';btn.disabled=false;
+    return false;
   }
 }
 
@@ -490,6 +493,7 @@ export function toggleAgent(){
   const btn=document.getElementById('agent-toggle');
   btn.innerHTML=useAgent?'<i data-lucide="plug"></i> Agent ON':'<i data-lucide="plug"></i> Agent OFF';
   btn.classList.toggle('active',useAgent);
+  document.dispatchEvent(new CustomEvent('lumena:mode-changed',{detail:{agent:useAgent}}));
 }
 
 /* ============================================================

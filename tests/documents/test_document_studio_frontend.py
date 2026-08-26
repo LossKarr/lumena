@@ -25,7 +25,7 @@ def test_frontend_cache_versions_load_the_fixed_module():
 
     assert "./document-studio.js?v=14" in main
     assert 'href="/static/css/document-studio.css?v=9"' in index
-    assert 'src="/static/js/main.js?v=29"' in index
+    assert 'src="/static/js/main.js?v=37"' in index
 
 
 def test_document_studio_style_uses_lumena_design_tokens():

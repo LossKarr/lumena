@@ -442,11 +442,12 @@ async def delegate_task_handler(
         # S4 - abonnement ChatGPT via Codex App Server. Le rail est strictement
         # opt-in; le chemin historique reste inchangé en mode API.
         from ...llm.codex_subscription import load_codex_subscription_settings
-        from ...llm.codex_codeagent import (
-            CodexCodeAgentResult,
-            run_codeagent_with_codex_subscription,
-            should_route_codeagent_to_codex,
-        )
+        # NB : `run_codeagent_with_codex_subscription` n'est PLUS importé ici.
+        # Le rail whole-turn qui remplaçait toute la boucle CodeAgent a été
+        # retiré au profit de `_codex_brain` (Codex sert de cerveau, la boucle
+        # et ses gardes restent). Garder l'import « au cas où » invitait à le
+        # rebrancher — le module existe encore, il n'a plus d'appelant ici.
+        from ...llm.codex_codeagent import should_route_codeagent_to_codex
 
         _codex_settings = load_codex_subscription_settings()
         _use_codex_subscription = should_route_codeagent_to_codex(
@@ -468,24 +469,20 @@ async def delegate_task_handler(
                 )
 
         async def _execute_delegate():
+            # ── UN SEUL moteur, deux cerveaux possibles ──────────────────────
+            # Avant : l'abonnement Codex quittait la boucle CodeAgent historique
+            # pour un tour autonome separe — prompts, outils, tests, reprises et
+            # garde-fous de Lumena contournes, et une session rouverte a chaque
+            # delegation (`account/read` + `model/list`, 30 s chacun au timeout).
+            #
+            # Maintenant : la boucle historique est la SEULE, et l'abonnement ne
+            # fournit que le texte de chaque decision, exactement comme une API.
+            # Le marqueur passe par le contexte de tache (dict serialisable), donc
+            # il survit aussi au lancement en arriere-plan.
+            _ctx = dict(safe_context or {})
             if _use_codex_subscription:
-                if task_ctx.workspace_path is None:
-                    return CodexCodeAgentResult(
-                        task_id="codex_no_workspace",
-                        success=False,
-                        output="CodeAgent Codex exige un workspace projet explicite.",
-                        status_code="invalid_workspace",
-                    )
-                return await run_codeagent_with_codex_subscription(
-                    description,
-                    agent_type=_agent_kind,
-                    context=safe_context,
-                    workspace_path=task_ctx.workspace_path,
-                    allowed_files=_mission_allowed,
-                    settings=_codex_settings,
-                    supervisor=_codex_supervisor,
-                )
-            return await delegate_to_agent_full(description, agent_type, safe_context)
+                _ctx["_codex_brain"] = True
+            return await delegate_to_agent_full(description, agent_type, _ctx)
 
         # ── Canal cancel coopératif ───────────────────────────────────────────
         _parent_task_id = ctx.runtime_task_id
@@ -569,6 +566,14 @@ async def delegate_task_handler(
                 "(edit_file/apply_patch) le corps du fichier."
             )
         _iterations = _meta.get("iterations", "?")
+        _engine_note = ""
+        if _meta.get("engine") == "codex_subscription":
+            _codex_model = str(_meta.get("model") or "modele Codex actif")
+            _engine_note = (
+                "\n\n**Moteur** : abonnement ChatGPT Codex"
+                f"\n**Modèle réel** : `{_codex_model}`"
+                "\n**Fallback API** : aucun"
+            )
         # LOT Z8 (run Tanière) — une correction postérieure à la publication ne
         # part pas toute seule. Le CodeAgent vient de corriger dans le dossier de
         # mission ; si la mission a DÉJÀ publié, l'utilisateur reçoit encore la
@@ -587,6 +592,7 @@ async def delegate_task_handler(
             f"{_icon} **{agent_type}Agent terminé** ({_duration}, {_iterations} itérations)"
             f"{_artifacts_str}\n\n"
             f"{result.output}"
+            f"{_engine_note}"
             f"{_stale_note}"
         )
         if _suspicious_reason:
@@ -724,10 +730,7 @@ async def delegate_task_bg_handler(
         # Il doit donc survivre à la délégation background au lieu de retomber
         # sur core.llm (souvent deepseek-chat) et son auto-switch reasoner.
         from ...llm.codex_subscription import load_codex_subscription_settings
-        from ...llm.codex_codeagent import (
-            run_codeagent_with_codex_subscription,
-            should_route_codeagent_to_codex,
-        )
+        from ...llm.codex_codeagent import should_route_codeagent_to_codex
 
         _codex_settings = load_codex_subscription_settings()
         _use_codex_subscription = should_route_codeagent_to_codex(
@@ -746,36 +749,19 @@ async def delegate_task_bg_handler(
                     handler_name="delegate_task_bg",
                     status_code="codex_not_connected",
                 )
-            if task_ctx.workspace_path is None:
-                return HandlerResult.fail(
-                    "⛔ CodeAgent Codex exige un workspace projet explicite. "
-                    "Aucun fallback API n'a été utilisé.",
-                    handler_name="delegate_task_bg",
-                    status_code="invalid_workspace",
-                )
-
-            async def _run_codex_bg():
-                return await run_codeagent_with_codex_subscription(
-                    description,
-                    agent_type=_agent_kind,
-                    context=safe_context,
-                    workspace_path=task_ctx.workspace_path,
-                    allowed_files=_mission_allowed,
-                    settings=_codex_settings,
-                    supervisor=_codex_supervisor,
-                )
-
-            from ...agents.codex_background import start_codex_codeagent_bg
-
-            task_id = await start_codex_codeagent_bg(
-                description,
-                agent_type=_agent_kind,
-                context=safe_context,
-                runner=_run_codex_bg,
+            # Meme moteur que le chemin synchrone : la boucle CodeAgent
+            # historique, avec l'abonnement comme simple cerveau. Le marqueur
+            # passe par le contexte de tache — un dict SERIALISABLE, seul moyen
+            # de survivre au lancement en arriere-plan la ou un objet passe en
+            # memoire serait perdu.
+            _ctx_bg = dict(safe_context or {})
+            _ctx_bg["_codex_brain"] = True
+            task_id = await delegate_to_agent_bg(
+                description, agent_type, _ctx_bg,
                 progress_callback=_progress_cb,
             )
             logger.info(
-                "delegate_task_bg: route=codex_subscription task={} model={}",
+                "delegate_task_bg: route=codex_brain task={} model={}",
                 task_id,
                 _codex_settings.default_model or "server-default",
             )

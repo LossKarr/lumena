@@ -23,6 +23,10 @@ DEFAULT_ALLOWED_EXECUTABLES: Set[str] = {
     "node", "node.exe", "npm", "npm.cmd", "npx", "npx.cmd",
     "yarn", "yarn.cmd", "pnpm", "pnpm.cmd", "bun", "bun.exe",
     "tsc", "tsc.cmd", "eslint", "prettier",
+    # PHP — `php -l` est la SEULE facon de valider un fichier PHP ; sans lui
+    # le CodeAgent corrige a l'aveugle (run « SaaS complet » du 2026-08-25 :
+    # 20 fichiers PHP ecrits, zero valide, redeclarations reparees de tete).
+    "php", "php.exe", "composer", "composer.phar",
     # Git
     "git", "git.exe", "gh", "gh.exe",
     # Systeme (lecture seule / navigation)

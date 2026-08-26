@@ -25,7 +25,7 @@ from src.version import __version__
 from web.routes.lifespan import lifespan  # noqa: E402
 
 # ── Route modules ──
-from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, document_studio, codex_subscription, updates  # noqa: E402
+from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, onboarding, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, document_studio, codex_subscription, updates  # noqa: E402
 
 # ── App creation ──
 _SETUP_DONE = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
@@ -238,6 +238,7 @@ app.include_router(models.router)
 app.include_router(content.router)
 app.include_router(advanced.router)
 app.include_router(setup.router)
+app.include_router(onboarding.router)
 app.include_router(docs.router)
 app.include_router(product_docs.router)
 app.include_router(stripe_webhook.router)
