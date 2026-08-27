@@ -3,7 +3,7 @@
 **Assistant IA personnel autonome, local-first, doté d'une mémoire persistante et capable d'agir réellement.**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.0.51-F28C28)](#etat-du-projet)
+[![Version](https://img.shields.io/badge/version-v1.0.52-F28C28)](#etat-du-projet)
 [![Tests](https://img.shields.io/badge/tests-18K%2B_passed-22C55E)](#tests)
 [![License](https://img.shields.io/badge/license-AGPL--3.0_%2F_Commercial-2563EB)](#licence)
 [![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#etat-du-projet)
@@ -19,7 +19,7 @@ Elle ne se contente pas de proposer une procédure : en **mode Agent**, elle peu
 planifier une demande, appeler ses outils, produire des fichiers, contrôler les
 résultats obtenus et rendre compte des preuves réellement observées.
 
-> **Version bêta v1.0.51**
+> **Version bêta v1.0.52**
 >
 > Lumena est utilisable au quotidien, mais reste un projet solo en évolution.
 > Certaines fonctions dépendent d'API, de logiciels locaux, d'identifiants ou
@@ -507,4 +507,4 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
 
 ---
 
-**Lumena v1.0.51 — projet solo, architecture ouverte, actions contrôlées.**
+**Lumena v1.0.52 — projet solo, architecture ouverte, actions contrôlées.**
