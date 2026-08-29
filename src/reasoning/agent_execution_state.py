@@ -140,8 +140,45 @@ class RunMeta:
     agent_repair_attempts: int = 0
     agent_final_finish_reason: Optional[str] = None
 
+    # ── LOT RF-8-FIX-2 (2026-08-28) — six cles ECRITES mais jamais declarees ──
+    #
+    # `RunMetaProxy.__setitem__` leve `KeyError` hors de `_FIELDS`, et presque
+    # toutes les ecritures `_run_meta[...]` sont dans un `try/except` : ces six
+    # cles disparaissaient EN SILENCE. Mesure : **9 ecritures perdues sur 24**.
+    #
+    # Une seule avait un consommateur fonctionnel, et la chaine complete etait :
+    #
+    #   le truth-lock calcule `overclaim=True`   -> le fait EXISTE
+    #   `_note_truth_lock_outcome` l'ecrit       -> KeyError -> `except: pass`
+    #   `agent_service` teste `if _k in _meta`   -> __contains__ -> False
+    #   `runner.py` lit `proof.get(...)`         -> toujours False
+    #   `closure_decision(overclaim=False)`      -> jamais UNPROVEN_CLAIM
+    #
+    # Consequence : **une mission dont le FINAL a ete RETROGRADE pour
+    # affirmation non prouvee se cloturait `completed`** — mot pour mot ce que
+    # le lot F1.b (AUD-014) devait empecher.
+    #
+    # Le proxy portait deja son avertissement (« A retirer quand tous les
+    # consommateurs seront migres ») : la migration a type quatre champs et
+    # laisse les six autres tomber.
+    #: consomme par `runner.py` -> `closure_decision(overclaim=...)`
+    mission_truth_lock_overclaim: bool = False
+    #: consomme par `agent_service.py` (preuve F1.a)
+    mission_truth_lock_applied: bool = False
+    #: telemetrie, aucun consommateur a ce jour (voies I3 et Z28)
+    agent_output_delivered_anyway: bool = False
+    #: telemetrie, aucun consommateur a ce jour (lot Z28)
+    z28_lead_artifacts: List[str] = field(default_factory=list)
+    #: telemetrie, aucun consommateur a ce jour (lot Z29)
+    thought_leak_case: Optional[str] = None
+    #: telemetrie, aucun consommateur a ce jour (lot Z29)
+    thought_leak_len: int = 0
+
     _FIELDS = ("agent_output_incomplete", "agent_output_warning",
-                "agent_repair_attempts", "agent_final_finish_reason")
+                "agent_repair_attempts", "agent_final_finish_reason",
+                "mission_truth_lock_overclaim", "mission_truth_lock_applied",
+                "agent_output_delivered_anyway", "z28_lead_artifacts",
+                "thought_leak_case", "thought_leak_len")
 
     def to_dict(self) -> Dict[str, Any]:
         return {f: getattr(self, f) for f in self._FIELDS}

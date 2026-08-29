@@ -146,8 +146,19 @@ def test_browser_verify_guard_ignores_non_browser_tasks():
 
 
 def test_browser_verify_guard_wired_both_chains():
-    import src.reasoning.react as react_mod
-    src = inspect.getsource(react_mod)
+    """Lot RF-4 du refactor ReAct (2026-08-27) : le corps de
+    `_update_plan_progress` a quitté `react.py` pour
+    `src/reasoning/react_plan_runtime.py`. Les deux branchements du garde
+    BROWSER-ONLY y ont suivi ; aucun n'a été perdu.
+
+    Preuve COMPORTEMENTALE équivalente exigée par le plan avant ce repointage —
+    elle existe et elle est plus forte, car elle vérifie que le garde REFUSE
+    vraiment au lieu de compter des occurrences :
+      tests/reasoning/test_rf4_plan_runtime_extraction.py
+        - test_comportement_le_garde_browser_only_refuse_par_la_chaine_principale
+    """
+    import src.reasoning.react_plan_runtime as plan_runtime_mod
+    src = inspect.getsource(plan_runtime_mod)
     assert src.count("browser_verify_task_blocks(tool_name") == 2, (
         "le garde BROWSER-ONLY doit être branché aux 2 chaînes (principale + fallback)")
     assert "[PLAN] Guard BROWSER-ONLY" in src

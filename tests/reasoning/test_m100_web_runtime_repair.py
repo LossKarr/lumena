@@ -110,9 +110,16 @@ def test_truth_lock_runtime_failure_is_idempotent():
 
 
 def test_all_mission_truth_lock_sites_receive_runtime_verdict():
-    source = (
-        Path(__file__).resolve().parents[2] / "src" / "reasoning" / "react.py"
-    ).read_text(encoding="utf-8")
-    assert source.count(
-        "browser_runtime_failed=self._browser_runtime_failed_for_truth_lock()"
-    ) == 3
+    # Lot RF-8 : les arguments du verrou vivent desormais dans
+    # `final_delivery_runtime.py` (methode `_truth_lock_mission_message`
+    # extraite). Le test lit les DEUX fichiers : son intention — « un site
+    # oublie = un chemin de sortie qui ment par omission » — est inchangee.
+    _base = Path(__file__).resolve().parents[2] / "src" / "reasoning"
+    source = ((_base / "react.py").read_text(encoding="utf-8")
+              + (_base / "final_delivery_runtime.py").read_text(encoding="utf-8"))
+    # Lot RF-8 : le site extrait dit `etat.X()` la ou react disait
+    # `self._X()`. Les NOMS suivent le rebindage, l'intention est
+    # inchangee : les trois sites recoivent bien le verdict.
+    assert (source.count(
+        "browser_runtime_failed=self._browser_runtime_failed_for_truth_lock()")
+        + source.count("browser_runtime_failed=etat.navigateur_en_panne()")) == 3

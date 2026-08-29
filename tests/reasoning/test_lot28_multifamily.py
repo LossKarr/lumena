@@ -93,7 +93,12 @@ class TestTruthLockCatchesFabricatedDelivery:
         """Garde-fou anti-régression : les 3 appels react passent le jeu complet
         (has_any_mutation manquait à FINAL/FINALIZE → overclaim_delivery mort)."""
         import re
-        src = Path("src/reasoning/react.py").read_text(encoding="utf-8").splitlines()
+        # Lot RF-8 : un des trois sites vit desormais dans
+        # `final_delivery_runtime.py`. Le test lit les deux fichiers ; son
+        # intention — les 3 appels passent le jeu COMPLET — est inchangee.
+        src = (Path("src/reasoning/react.py").read_text(encoding="utf-8")
+               + Path("src/reasoning/final_delivery_runtime.py").read_text(
+                   encoding="utf-8")).splitlines()
         sites = []
         for i, l in enumerate(src):
             if "apply_mission_truth_lock(" in l:

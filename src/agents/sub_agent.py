@@ -463,15 +463,44 @@ def _write_within_perimeter(path_str: Any, allowed_files: Any, workspace_root: A
     laisse les autres gardes gérer)."""
     if not allowed_files:
         return True
-    wp = str(path_str or "").replace("\\", "/").strip().lstrip("./").strip("/")
+    # `.lstrip("./")` retirait TOUS les points et slashs de tete : `../parse.py`
+    # devenait `parse.py` et passait le perimetre. Defaut prealable a ce run,
+    # trouve en ecrivant son test. On retire le seul prefixe `./` voulu, et un
+    # segment `..` sort du perimetre par definition.
+    wp = str(path_str or "").replace("\\", "/").strip()
+    while wp.startswith("./"):
+        wp = wp[2:]
+    wp = wp.strip("/")
     if not wp:
         return True
+    if ".." in wp.split("/"):
+        return False
     try:
         p = Path(wp)
         if p.is_absolute() and workspace_root:
             wp = p.resolve().relative_to(Path(str(workspace_root)).resolve()).as_posix()
     except Exception:
         pass
+    # Run 2026-08-29 — le chemin peut aussi être relatif à la RACINE LUMENA et
+    # non au workspace : `workspace/missions/task_xxx/parse.py` au lieu de
+    # `parse.py`. Il n'est alors PAS absolu, la réduction ci-dessus ne tire pas,
+    # et le `"/" in wp` plus bas le refuse sec — alors qu'il désigne trait pour
+    # trait un fichier autorisé. Le CodeAgent y a perdu plusieurs itérations.
+    #
+    # On ne retire QUE le préfixe qui EST la queue du workspace réel : impossible
+    # d'élargir le périmètre avec ça, on ramène un chemin déjà dedans à sa forme
+    # relative attendue.
+    if "/" in wp and workspace_root:
+        try:
+            _ws = Path(str(workspace_root)).resolve().as_posix().rstrip("/")
+            _parts = wp.split("/")
+            for _i in range(len(_parts) - 1, 0, -1):
+                _prefixe = "/".join(_parts[:_i])
+                if _ws == _prefixe or _ws.endswith("/" + _prefixe):
+                    wp = "/".join(_parts[_i:])
+                    break
+        except Exception:
+            pass
     allowed = {str(a).replace("\\", "/").strip().strip("/") for a in allowed_files if str(a).strip()}
     if wp in allowed:
         return True
@@ -558,6 +587,29 @@ def files_created_outside_perimeter(
     return sorted(
         p for p in new_paths
         if not _write_within_perimeter(p, allowed_files, workspace_root)
+    )
+
+
+def _note_redirection(agent, chemin_demande: str) -> str:
+    """Z40a — rend visible une redirection de chemin decidee par `_resolve_path`.
+
+    Le garde de perimetre ne bloque pas : il REDIRIGE vers le workspace courant
+    et rend ce chemin. Sans cette note, l'appelant recoit un succes et croit
+    avoir ecrit la ou il demandait.
+
+    Retourne "" quand il n'y a rien a signaler : une ecriture legitime ne doit
+    pas etre decoree d'un avertissement, le bruit tue le signal.
+    """
+    redirection = getattr(agent, "_derniere_redirection_chemin", None)
+    if not redirection:
+        return ""
+    demande, obtenu = redirection
+    if demande != chemin_demande:
+        return ""
+    return (
+        f"\n⚠️ Chemin hors du workspace de la tache : `{demande}` a ete REDIRIGE "
+        f"vers `{obtenu}`. Le dossier demande n'a PAS ete cree — cherche tes "
+        f"fichiers a l'emplacement reel ci-dessus."
     )
 
 
@@ -650,6 +702,10 @@ class SubAgent:
     def _resolve_path(self, file_path: str) -> Path:
         """Résout un chemin de fichier. Si un workspace_path est actif, les chemins
         relatifs sont résolus depuis ce workspace. Sinon, depuis la racine Lumena."""
+        # Z40a — le refus doit ATTEINDRE l'appelant, pas seulement les logs.
+        # Remis a zero a CHAQUE resolution : sinon une redirection ancienne
+        # contaminerait une ecriture legitime.
+        self._derniere_redirection_chemin = None
         p = Path(file_path)
         if p.is_absolute():
             return p
@@ -668,7 +724,14 @@ class SubAgent:
                     f"[CodeAgent] BLOCKED path traversal '{file_path}' — "
                     f"sort du workspace {_ws_root}"
                 )
-                return _ws_root / Path(file_path).name  # Fichier seul, pas le chemin traversal
+                _redirige = _ws_root / Path(file_path).name  # Fichier seul, pas le chemin traversal
+                # Z40a — run « repartition » du 2026-08-28 : cette redirection
+                # etait SILENCIEUSE. L'ecriture reussissait, l'observation
+                # annoncait le chemin DEMANDE, et le CodeAgent a passe cinq
+                # iterations sur neuf a chercher ses propres fichiers. La
+                # destination ne change pas ; seule sa visibilite change.
+                self._derniere_redirection_chemin = (file_path, str(_redirige))
+                return _redirige
             # Guard: chemin relatif au vocabulaire source Lumena (src/, tests/…) →
             # RÉSOLU dans le workspace mission (rien n'est bloqué : le préfixe est
             # simplement ré-ancré). 2.13.E (M8) : l'ancien warning « BLOCKED read
@@ -2655,6 +2718,20 @@ class CodeAgent(SubAgent):
             pass
 
         parts = [llm_summary.rstrip()]
+
+        # Z40c — le constat de verification non concluante remonte ICI, et en
+        # TETE : `result[:3000]` plus bas tronque le resume, et une note placee
+        # en fin serait coupee des que les listes de fichiers sont longues.
+        # Ce serait exactement le defaut qu'on ferme : un fait calcule, puis
+        # jete avant d'atteindre celui qui decide.
+        _gate_note = getattr(self, "_gate_indetermine", "")
+        if _gate_note:
+            parts.append(
+                f"\n⚠️ VERIFICATION NON CONCLUANTE — la gate n'a PAS pu valider "
+                f"ce travail ({_gate_note}). Ce n'est pas une validation "
+                f"reussie : rien n'a ete verifie."
+            )
+
         mem = self._session_memory
 
         edits = mem.get("edits_done", [])
@@ -3873,6 +3950,14 @@ class CodeAgent(SubAgent):
                                 task_id=str(task.task_id),
                                 timeout=15.0,
                             )
+                            # Z40c — 50 fail-open sur 197 executions au corpus
+                            # reel, dont 50/50 par timeout a ce timeout de 15 s.
+                            if _soft_gate.indetermine:
+                                self._gate_indetermine = _soft_gate.raison_indetermination
+                                report.append(
+                                    f"[iter {iteration}] soft done gate NON CONCLUANTE : "
+                                    f"{_soft_gate.raison_indetermination}"
+                                )
                             if not _soft_gate.passed:
                                 if _soft_used >= _soft_gate_max:
                                     report.append(f"[iter {iteration}] done gate failed - budget exhausted")
@@ -3930,6 +4015,13 @@ class CodeAgent(SubAgent):
                             list(getattr(self, "_edited_files", [])),
                             task_id=str(task.task_id),
                         )
+                        # Z40c — meme constat sur la gate dure.
+                        if _gate.indetermine:
+                            self._gate_indetermine = _gate.raison_indetermination
+                            report.append(
+                                f"[iter {iteration}] verification gate NON CONCLUANTE : "
+                                f"{_gate.raison_indetermination}"
+                            )
                         if not _gate.passed:
                             if _gate_retries_used < _gate_max_retries:
                                 # Retry autorisé
@@ -5266,11 +5358,46 @@ class CodeAgent(SubAgent):
                     observation = str(observation) + f"\n\n[Tests ciblés post-edit: {', '.join(_related_bonus[:3])}]\n{_test_out}"
                     # Auto-revert si les tests cassent (aucun passed + FAILED/ERROR présents)
                     if ("FAILED" in _test_out or "ERROR" in _test_out) and "passed" not in _test_out.lower():
-                        _reverted = self._rollback_session(session_snapshots)
-                        observation = str(observation) + (
-                            f"\n\n🔄 AUTO-REVERT : {_reverted} fichier(s) restauré(s) — les tests ont cassé.\n"
-                            "Tu DOIS corriger ton approche : relis le fichier et tente une stratégie différente."
+                        # Run 2026-08-29 — UN REVERT DOIT ETRE IMPUTABLE.
+                        # `parse.py` a coute 325 s et 13 iterations (contre 67 s et
+                        # 5 pour `analyse.py`) : `run_tests` a trouve rouge un
+                        # `test_releve.py` encore a l'etat de STUB — le fichier d'un
+                        # AUTRE worker, pas encore ecrit — et a annule quatre editions
+                        # correctes d'affilee. Le CodeAgent l'avait diagnostique
+                        # lui-meme : « l'edit_lines avait bien modifie mais l'auto-revert
+                        # a reagi a un echec de tests non lies ».
+                        #
+                        # Un test HORS du perimetre du worker ne prouve RIEN sur son
+                        # edition : il peut etre rouge parce qu'un autre worker n'a pas
+                        # encore livre. On RAPPORTE l'echec — l'information reste
+                        # visible — mais on ne detruit pas un travail correct.
+                        # Hors mission (_allowed_files vide) : comportement INCHANGE.
+                        _perim_bonus = getattr(self, "_allowed_files", None)
+                        _tests_imputables = (not _perim_bonus) or any(
+                            _write_within_perimeter(
+                                _t, _perim_bonus,
+                                getattr(self, "_task_workspace_root", None),
+                            )
+                            for _t in _related_bonus[:3]
                         )
+                        if _tests_imputables:
+                            _reverted = self._rollback_session(session_snapshots)
+                            observation = str(observation) + (
+                                f"\n\n🔄 AUTO-REVERT : {_reverted} fichier(s) restauré(s) — les tests ont cassé.\n"
+                                "Tu DOIS corriger ton approche : relis le fichier et tente une stratégie différente."
+                            )
+                        else:
+                            logger.info(
+                                "[CodeAgent] tests rouges HORS perimetre ({}) — edition CONSERVEE",
+                                ", ".join(_related_bonus[:3]),
+                            )
+                            observation = str(observation) + (
+                                "\n\nℹ️ Ces tests rouges sont HORS de ton perimetre "
+                                f"({', '.join(_related_bonus[:3])}) : ton edition est "
+                                "CONSERVEE. Ces fichiers appartiennent a d'autres workers "
+                                "et peuvent etre encore incomplets — ne les corrige pas, "
+                                "poursuis ta tache."
+                            )
                     edits_since_last_test = 0
                 except Exception:
                     pass
@@ -5828,6 +5955,7 @@ class CodeAgent(SubAgent):
             syntax_err = await self._check_python_syntax(file_path)
             web_err = await self._check_web_syntax(file_path)
             msg = f"✅ Fichier écrit: {file_path} ({len(content)} chars)"
+            msg += _note_redirection(self, file_path)
             if syntax_err:
                 msg += f"\n⚠️ Erreur de syntaxe détectée:\n{syntax_err}\nCorrige avant de continuer."
             if web_err:
@@ -5841,8 +5969,13 @@ class CodeAgent(SubAgent):
         """Liste les fichiers d'un répertoire (profondeur 1)."""
         try:
             abs_path = self._resolve_path(dir_path)
+            # Z40a — la note doit partir AUSSI sur l'echec : au run
+            # « repartition », `list_files ../repartition` a rendu
+            # « Repertoire introuvable » sans dire que le chemin avait ete
+            # redirige, et le CodeAgent a perdu une iteration de plus.
+            _note = _note_redirection(self, dir_path)
             if not abs_path.exists():
-                return f"❌ Répertoire introuvable: {dir_path}"
+                return f"❌ Répertoire introuvable: {dir_path}" + _note
             entries: list[str] = []
             for item in sorted(abs_path.iterdir()):
                 prefix = "d " if item.is_dir() else "f "
@@ -5850,6 +5983,7 @@ class CodeAgent(SubAgent):
             return (
                 f"Contenu de {dir_path} ({len(entries)} entrées):\n"
                 + "\n".join(entries[:100])
+                + _note
             )
         except Exception as exc:
             return f"❌ Erreur list_files: {exc}"

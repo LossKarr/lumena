@@ -831,7 +831,7 @@ def _tcp_scan(target: str, ports: list[int] | None = None, timeout: float = 1.5)
                     sock.sendall(b"\r\n")
                     banner = sock.recv(256).decode("utf-8", errors="replace").strip()[:100]
                 except Exception as e:
-                    logger.debug("[osint] banner recv: %s", e)
+                    logger.debug("[osint] banner recv: {}", e)
                 open_ports.append({
                     "port": port,
                     "service": _PORT_SERVICES.get(port, "unknown"),
@@ -839,7 +839,7 @@ def _tcp_scan(target: str, ports: list[int] | None = None, timeout: float = 1.5)
                 })
             sock.close()
         except Exception as e:
-            logger.debug("[osint] tcp scan port %s: %s", port, e)
+            logger.debug("[osint] tcp scan port {}: {}", port, e)
     return open_ports
 
 
@@ -891,7 +891,7 @@ def _reverse_dns(ip: str) -> dict:
                 if ptr not in result["hostnames"]:
                     result["hostnames"].append(ptr)
         except Exception as e:
-            logger.debug("[osint] PTR resolve: %s", e)
+            logger.debug("[osint] PTR resolve: {}", e)
     return result
 
 

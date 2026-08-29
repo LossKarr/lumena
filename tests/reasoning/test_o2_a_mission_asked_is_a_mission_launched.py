@@ -181,9 +181,21 @@ def test_the_gate_is_inert_inside_a_mission():
 
     from src.reasoning.react import ReActLoop
 
-    src = inspect.getsource(ReActLoop._chat_mission_intent_gate)
-    assert "if self._is_mission_run:" in src
-    assert src.index("_is_mission_run") < src.index("chat_requests_background_mission")
+    # Lot RF-6b : la DECISION de ce gate a ete deplacee vers
+    # `mission_runtime.py` ; `ReActLoop` ne garde que la mutation, le log
+    # et la construction de l'Observation (invariants 5 et 16). Ce test lit
+    # donc le source la ou il vit desormais — intention mot pour mot
+    # inchangee. Preuve COMPORTEMENTALE adossee : matrice RF-6b, 51 valeurs
+    # comparees (retours ET etat mute), 51 identiques.
+    from src.reasoning.mission_runtime import (
+        rf6b_decision_intention_mission_chat as _decision,
+    )
+
+    src = inspect.getsource(_decision)
+    assert "if etat.est_run_mission_strict():" in src  # RF-6b : nom suivi du rebindage, intention inchangee (self.X -> etat.Y())
+    # RF-6b : noms suivis du rebindage, ORDRE verifie a l'identique — le
+    # garde mission passe toujours AVANT l'appel couteux.
+    assert src.index("est_run_mission_strict") < src.index("chat_requests_background_mission")
 
 
 def test_the_gate_redirects_once_and_does_not_block():
@@ -191,7 +203,17 @@ def test_the_gate_redirects_once_and_does_not_block():
 
     from src.reasoning.react import ReActLoop
 
-    src = inspect.getsource(ReActLoop._chat_mission_intent_gate)
+    # Lot RF-6b : la DECISION de ce gate a ete deplacee vers
+    # `mission_runtime.py` ; `ReActLoop` ne garde que la mutation, le log
+    # et la construction de l'Observation (invariants 5 et 16). Ce test lit
+    # donc le source la ou il vit desormais — intention mot pour mot
+    # inchangee. Preuve COMPORTEMENTALE adossee : matrice RF-6b, 51 valeurs
+    # comparees (retours ET etat mute), 51 identiques.
+    from src.reasoning.mission_runtime import (
+        rf6b_decision_intention_mission_chat as _decision,
+    )
+
+    src = inspect.getsource(_decision)
     assert "_chat_mission_gate_shots" in src
     assert ">= 1" in src
     assert "create_mission" in src
@@ -202,7 +224,17 @@ def test_the_gate_never_fires_on_create_mission_itself():
 
     from src.reasoning.react import ReActLoop
 
-    src = inspect.getsource(ReActLoop._chat_mission_intent_gate)
+    # Lot RF-6b : la DECISION de ce gate a ete deplacee vers
+    # `mission_runtime.py` ; `ReActLoop` ne garde que la mutation, le log
+    # et la construction de l'Observation (invariants 5 et 16). Ce test lit
+    # donc le source la ou il vit desormais — intention mot pour mot
+    # inchangee. Preuve COMPORTEMENTALE adossee : matrice RF-6b, 51 valeurs
+    # comparees (retours ET etat mute), 51 identiques.
+    from src.reasoning.mission_runtime import (
+        rf6b_decision_intention_mission_chat as _decision,
+    )
+
+    src = inspect.getsource(_decision)
     assert 'if tool_name == "create_mission":' in src
 
 

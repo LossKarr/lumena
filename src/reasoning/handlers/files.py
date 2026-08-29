@@ -764,7 +764,7 @@ async def list_directory_handler(ctx: HandlerContext, path: str = ".") -> Handle
                 ctx._discovered_executables.add(item.name.lower())
                 # Aussi le nom sans extension
                 ctx._discovered_executables.add(item.stem.lower())
-                logger.debug("🔓 Exe découvert et autorisé pour la session: %s", item.name)
+                logger.debug("🔓 Exe découvert et autorisé pour la session: {}", item.name)
 
         max_items = ctx.ide_list_max_items() if ctx.is_ide_runtime() else 50
         suffix = ""
@@ -1574,7 +1574,7 @@ async def apply_patch_handler(
                         category="code",
                     )
                 except Exception as e:
-                    logger.debug("[files] apply_patch learn: %s", e)
+                    logger.debug("[files] apply_patch learn: {}", e)
                 # P7 — syntax/lint warning post-patch
                 result = await _append_syntax_warning(
                     result_text, resolved, workspace_root=ctx.lumena_root,

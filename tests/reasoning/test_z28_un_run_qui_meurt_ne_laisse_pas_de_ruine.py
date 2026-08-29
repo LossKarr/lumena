@@ -223,7 +223,13 @@ def test_la_reponse_ne_leve_jamais():
 # ── Le branchement ───────────────────────────────────────────────────────────
 
 
-_SRC = Path("src/reasoning/react.py").read_text(encoding="utf-8")
+# Lot RF-6a : le corps de cette methode — et sa docstring, qui PORTE la
+# raison datee du lot — a ete deplace vers `mission_runtime.py`. Le test
+# suit son texte ; son intention est inchangee, mot pour mot.
+# La preuve COMPORTEMENTALE de l'extraction est la matrice RF-6a :
+# 476 comparaisons valeur-par-valeur, 476 identiques.
+_SRC = (Path("src/reasoning/react.py").read_text(encoding="utf-8")
+        + Path("src/reasoning/mission_runtime.py").read_text(encoding="utf-8"))
 
 
 def test_z28_est_branche_apres_I3_et_avant_le_mark_failed():

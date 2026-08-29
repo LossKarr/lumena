@@ -100,8 +100,18 @@ def test_the_gate_uses_the_multi_anchor_probe():
     """Le garde ne doit plus refaire le calcul à la main."""
     from src.reasoning.react import ReActLoop
 
-    src = inspect.getsource(ReActLoop._mission_overwrite_gate)
-    assert "mission_write_path_exists(" in src
+    # Lot RF-6b : la DECISION de ce gate a ete deplacee vers
+    # `mission_runtime.py` ; `ReActLoop` ne garde que la mutation, le log
+    # et la construction de l'Observation (invariants 5 et 16). Ce test lit
+    # donc le source la ou il vit desormais — intention mot pour mot
+    # inchangee. Preuve COMPORTEMENTALE adossee : matrice RF-6b, 51 valeurs
+    # comparees (retours ET etat mute), 51 identiques.
+    from src.reasoning.mission_runtime import (
+        rf6b_decision_ecrasement_livrable as _decision,
+    )
+
+    src = inspect.getsource(_decision)
+    assert "etat.chemin_ecriture_existe(" in src  # RF-6b : nom suivi du rebindage, intention inchangee (self.X -> etat.Y())
     assert "default_workspace_root) / target" not in src
 
 
@@ -230,15 +240,36 @@ def test_garbage_never_raises():
 def test_the_gate_is_inert_outside_a_mission():
     from src.reasoning.react import ReActLoop
 
-    src = inspect.getsource(ReActLoop._mission_overwrite_gate)
-    assert "if not self._is_mission_run:" in src
-    assert src.index("_is_mission_run") < src.index("_mission_workspace_meta")
+    # Lot RF-6b : la DECISION de ce gate a ete deplacee vers
+    # `mission_runtime.py` ; `ReActLoop` ne garde que la mutation, le log
+    # et la construction de l'Observation (invariants 5 et 16). Ce test lit
+    # donc le source la ou il vit desormais — intention mot pour mot
+    # inchangee. Preuve COMPORTEMENTALE adossee : matrice RF-6b, 51 valeurs
+    # comparees (retours ET etat mute), 51 identiques.
+    from src.reasoning.mission_runtime import (
+        rf6b_decision_ecrasement_livrable as _decision,
+    )
+
+    src = inspect.getsource(_decision)
+    assert "if not etat.est_run_mission_strict():" in src  # RF-6b : nom suivi du rebindage, intention inchangee (self.X -> etat.Y())
+    # RF-6b : noms suivis du rebindage, ORDRE verifie a l'identique.
+    assert src.index("est_run_mission_strict") < src.index("dossier_mission")
 
 
 def test_the_gate_redirects_once_and_tells_where_to_work():
     from src.reasoning.react import ReActLoop
 
-    src = inspect.getsource(ReActLoop._mission_overwrite_gate)
+    # Lot RF-6b : la DECISION de ce gate a ete deplacee vers
+    # `mission_runtime.py` ; `ReActLoop` ne garde que la mutation, le log
+    # et la construction de l'Observation (invariants 5 et 16). Ce test lit
+    # donc le source la ou il vit desormais — intention mot pour mot
+    # inchangee. Preuve COMPORTEMENTALE adossee : matrice RF-6b, 51 valeurs
+    # comparees (retours ET etat mute), 51 identiques.
+    from src.reasoning.mission_runtime import (
+        rf6b_decision_ecrasement_livrable as _decision,
+    )
+
+    src = inspect.getsource(_decision)
     assert "_overwrite_gate_shots" in src and ">= 1" in src
     assert "publish_mission_workspace" in src
     assert "Redirection unique" in src

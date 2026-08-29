@@ -172,30 +172,55 @@ def test_au_dela_de_six_pages_le_reste_est_compte():
 
 _REACT = Path("src/reasoning/react.py").read_text(encoding="utf-8")
 
+# Lot RF-7a du refactor ReAct (2026-08-28) : `_pages_never_opened_reason` et
+# `_finalize_browser_gate_pending` ont quitte `react.py` pour
+# `src/reasoning/browser_runtime.py`. Les assertions de ce fichier qui
+# DECOUPENT ces corps pointent donc leur nouveau proprietaire ; celles qui
+# visent le SITE D'APPEL (voie FINAL LLM, dans `_run_internal`) restent sur
+# `react.py` — elles n'ont pas bouge.
+#
+# Le rebindage a renomme les acces a `self` en appelables de l'entree. Les
+# assertions gardent leur INTENTION mot pour mot ; seuls les noms suivent :
+#
+#     self._is_worker_run()                    -> e.est_run_worker()
+#     self._current_browser_proof()            -> e.preuve_navigateur_courante()
+#     self._truth_lock_interaction_proven()    -> e.interaction_prouvee()
+#     self._pages_never_opened_reason()        -> e.pages_jamais_ouvertes()
+#     getattr(self, "_browser_gate_shots", 0)  -> e.tirs_gate_navigateur()
+#
+# Preuve COMPORTEMENTALE equivalente exigee par le plan avant ce repointage :
+#   tests/reasoning/test_rf7a_browser_runtime_extraction.py
+#     - test_les_gardes_refusent_autant_qu_ils_laissent_passer
+#     - test_comportement_le_constat_de_preview_ferme_la_relecture_de_CETTE_page
+# Elles verifient que les gardes REFUSENT vraiment (10 refus mesures), au lieu
+# de chercher des chaines dans un fichier.
+_GATE = Path("src/reasoning/browser_runtime.py").read_text(encoding="utf-8")
+
+
 
 def _corps_z11() -> str:
     """La méthode ENTIÈRE, bornée à la suivante — une fenêtre en nombre de
     caractères tronquait la fin et faisait échouer le test sur son propre
     découpage plutôt que sur le code."""
-    debut = _REACT.index("def _pages_never_opened_reason")
-    fin = _REACT.index("def _mission_js_present_for_gate", debut)
-    return _REACT[debut:fin]
+    debut = _GATE.index("def _pages_never_opened_reason")
+    fin = _GATE.index("def _finalize_browser_gate_pending", debut)
+    return _GATE[debut:fin]
 
 
 def test_le_gate_consulte_z11_avant_ses_sorties_anticipees():
     """Le gate rendait "" dès qu'UNE preuve navigateur existait : placé après,
     Z11 n'aurait jamais tiré sur Marée (9 navigations sur une seule page)."""
-    i = _REACT.index("_pages_never_opened_reason()")
-    bloc = _REACT[i : i + 1200]
-    assert "_truth_lock_interaction_proven()" in bloc
-    assert "_current_browser_proof()" in bloc
+    i = _GATE.index("e.pages_jamais_ouvertes()")
+    bloc = _GATE[i : i + 1200]
+    assert "e.interaction_prouvee()" in bloc
+    assert "e.preuve_navigateur_courante()" in bloc
 
 
 def test_z11_est_inerte_chez_un_worker():
     """LOT D-fix : la vérif navigateur est le job du TOP-LEAD ; l'app n'est pas
     servie pendant le run isolé d'un worker."""
     corps = _corps_z11()
-    assert "_is_worker_run()" in corps
+    assert "e.est_run_worker()" in corps
 
 
 def test_z11_lit_le_ledger_et_le_contrat():
@@ -221,5 +246,5 @@ def test_z11_ne_peut_pas_casser_le_gate():
 def test_z11_trace_ce_quil_bloque():
     """Sans trace, un gate qui tire est indistinguable d'une mission lente —
     c'est ce qui a coûté le plus de temps d'analyse sur les runs précédents."""
-    i = _REACT.index("def _pages_never_opened_reason")
-    assert "[Z11]" in _REACT[i : i + 2600]
+    i = _GATE.index("def _pages_never_opened_reason")
+    assert "[Z11]" in _GATE[i : i + 2600]

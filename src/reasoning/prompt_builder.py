@@ -32,7 +32,14 @@ def has_unclosed_quotes(text: str) -> bool:
     if double_quotes % 2 != 0:
         return True
 
-    single_quotes = len(re.findall(r"(?<!\\)'", text))
+    # L'apostrophe d'elision — « l'utilisateur », « n'a », « qu'il », « don't » —
+    # est une LETTRE au milieu d'un mot, jamais un delimiteur de chaine. La
+    # compter faisait juger TRONQUEE une reponse francaise complete une fois
+    # sur deux, sur la seule parite des apostrophes : meme texte, 1 apostrophe
+    # → tronque, 2 → correct, 3 → tronque. La version anglaise passait toujours.
+    # Run 2026-08-29 : bilan de mission valide envoye en reparation, puis perdu.
+    _sans_elision = re.sub(r"(?<=[^\W\d_])'(?=[^\W\d_])", "", text)
+    single_quotes = len(re.findall(r"(?<!\\)'", _sans_elision))
     if single_quotes % 2 != 0 and ("```" in text or "\n" in text):
         return True
 

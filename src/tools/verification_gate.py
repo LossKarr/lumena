@@ -22,6 +22,28 @@ class GateResult:
     passed: bool
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # Z40c — `passed=True` recouvrait DEUX faits distincts : « j'ai valide, tout
+    # va bien » et « je n'ai rien pu valider ». Sur le corpus reel, le second
+    # represente 25,4 % des executions (50 fail-open sur 197), et l'appelant
+    # n'avait aucun moyen de les distinguer. La porte laisse toujours passer
+    # (une panne d'infra ne doit pas bloquer le CodeAgent) — mais elle le DIT.
+    indetermine: bool = False
+    raison_indetermination: str = ""
+
+    def note_indetermination(self) -> str:
+        """Le constat, formule pour celui qui decide.
+
+        Volontairement distinct de `format_feedback` : ce n'est pas une erreur
+        a corriger. Formule ainsi, le CodeAgent tenterait de reparer une panne
+        d'infrastructure.
+        """
+        if not self.indetermine:
+            return ""
+        return (
+            "\n⚠️ VERIFICATION NON CONCLUANTE — la gate n'a PAS pu valider "
+            f"ce travail ({self.raison_indetermination}). Ce n'est pas une "
+            "validation reussie : rien n'a ete verifie."
+        )
 
     def format_feedback(self) -> str:
         lines = ["VERIFICATION GATE — problèmes détectés :"]
@@ -49,7 +71,18 @@ async def run_gate(
     from src.utils.gate_metrics import record_gate_pass, record_gate_fail, record_lsp_fail_open
 
     if workspace is None or not workspace.exists():
-        return GateResult(passed=True)
+        # Z40c — chemin fail-open le plus silencieux des quatre : il ne laisse
+        # meme pas de trace au compteur, donc il n'apparait pas dans les 25,4 %
+        # mesures. Le taux reel est un plancher.
+        return GateResult(
+            passed=True,
+            indetermine=True,
+            raison_indetermination=(
+                "aucun workspace a valider"
+                if workspace is None
+                else f"workspace introuvable : {workspace}"
+            ),
+        )
 
     try:
         result = await asyncio.wait_for(
@@ -64,11 +97,19 @@ async def run_gate(
     except asyncio.TimeoutError:
         logger.warning("[gate] timeout ({}s) — fail-open", timeout)
         record_lsp_fail_open(task_id=task_id, error=f"timeout {timeout}s")
-        return GateResult(passed=True)
+        return GateResult(
+            passed=True,
+            indetermine=True,
+            raison_indetermination=f"timeout {timeout}s",
+        )
     except Exception as exc:
         logger.warning("[gate] erreur inattendue — fail-open : {}", exc)
         record_lsp_fail_open(task_id=task_id, error=str(exc))
-        return GateResult(passed=True)
+        return GateResult(
+            passed=True,
+            indetermine=True,
+            raison_indetermination=str(exc),
+        )
 
 
 async def _do_validate(
@@ -102,6 +143,16 @@ async def _do_validate(
 
     errors: list[str] = []
     warnings: list[str] = []
+
+    if not files:
+        # Z40c — zero fichier lu n'est pas une validation reussie : c'est une
+        # absence de validation. Avant, ce cas rendait `passed=True` a
+        # l'identique d'un projet reellement verifie.
+        return GateResult(
+            passed=True,
+            indetermine=True,
+            raison_indetermination="aucun fichier a valider",
+        )
 
     if files:
         report = await validate_project_async(files, workspace)

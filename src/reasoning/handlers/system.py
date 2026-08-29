@@ -882,7 +882,7 @@ async def run_command_handler(
                 try:
                     proc.communicate(timeout=5)
                 except Exception as e:
-                    logger.debug("[cmd] cleanup communicate: %s", e)
+                    logger.debug("[cmd] cleanup communicate: {}", e)
                 # M1bis-F1 : la sortie déjà collectée accompagne le timeout — le
                 # worker VOIT ce qui s'est passé (ex. bannière de démarrage Flask)
                 # au lieu d'un timeout muet.

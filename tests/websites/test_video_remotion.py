@@ -673,9 +673,22 @@ class TestReactVideoContext:
         assert len(VIDEO_TEMPLATES) >= 4
 
     def test_react_prompt_contains_video_marker(self):
-        react_py = Path("src/reasoning/react.py").read_text(encoding="utf-8")
-        assert "video_context" in react_py, \
-            "Variable video_context absente de react.py _build_react_prompt"
+        """Lot RF-3 du refactor ReAct (2026-08-27) : le corps de
+        `_build_react_prompt` a quitte `react.py` pour
+        `src/prompts/react_prompt.py`. `video_context` y vit desormais.
+
+        Preuve COMPORTEMENTALE equivalente exigee par le plan avant ce
+        repointage :
+          tests/reasoning/test_rf3_react_prompt_extraction.py
+            - test_comportement_la_section_video_arrive_dans_le_prompt
+        Celle-la CONSTRUIT le prompt et verifie que la section Remotion y
+        arrive avec son outil et ses templates, au lieu de chercher le nom
+        d'une variable locale."""
+        from src.prompts import react_prompt
+
+        builder = Path(react_prompt.__file__).read_text(encoding="utf-8")
+        assert "video_context" in builder, \
+            "Variable video_context absente du constructeur de prompt ReAct"
 
 
 # ═══════════════════════════════════════════════════════════════

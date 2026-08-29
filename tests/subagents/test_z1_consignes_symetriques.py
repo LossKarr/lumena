@@ -99,9 +99,15 @@ def test_the_lead_is_now_required_to_delegate_code():
     n'a jamais été appelé. C'est mot pour mot la leçon du LOT I côté workers :
     un prompt se contourne, un rail tient.
     """
-    from src.reasoning.react import ReActLoop
+    # Lot RF-6a : le corps de `_worker_codeagent_first_gate` a ete deplace vers
+    # `mission_runtime.py` ; `ReActLoop` n'en garde qu'une coquille. Ce test
+    # lit donc le source la ou il vit desormais — son intention est inchangee,
+    # mot pour mot. Preuve COMPORTEMENTALE adossee : la matrice RF-6a compare
+    # cette methode sur 3 jeux d'arguments x 22 scenarios = 66 valeurs, toutes
+    # identiques avant/apres.
+    from src.reasoning.mission_runtime import rf6a_worker_codeagent_first_gate
 
-    src = inspect.getsource(ReActLoop._worker_codeagent_first_gate)
+    src = inspect.getsource(rf6a_worker_codeagent_first_gate)
     assert "is_lead" in src, "le garde doit distinguer le lead"
     # Le lead n'a pas de fichiers assignés : on juge le fichier qu'il VISE.
     assert "cible" in src and "endswith(code_ext)" in src
@@ -111,9 +117,15 @@ def test_the_lead_is_now_required_to_delegate_code():
 
 def test_only_code_files_are_gated_for_the_lead():
     """Une mission d'effets (mémo, rapport, CSV) ne doit rien voir changer."""
-    from src.reasoning.react import ReActLoop
+    # Lot RF-6a : le corps de `_worker_codeagent_first_gate` a ete deplace vers
+    # `mission_runtime.py` ; `ReActLoop` n'en garde qu'une coquille. Ce test
+    # lit donc le source la ou il vit desormais — son intention est inchangee,
+    # mot pour mot. Preuve COMPORTEMENTALE adossee : la matrice RF-6a compare
+    # cette methode sur 3 jeux d'arguments x 22 scenarios = 66 valeurs, toutes
+    # identiques avant/apres.
+    from src.reasoning.mission_runtime import rf6a_worker_codeagent_first_gate
 
-    src = inspect.getsource(ReActLoop._worker_codeagent_first_gate)
+    src = inspect.getsource(rf6a_worker_codeagent_first_gate)
     bloc = src.split("if is_lead:")[1].split("else:")[0]
     assert "return None" in bloc, "un fichier non-code doit sortir du garde"
     for ext in (".py", ".html", ".css", ".js"):
@@ -123,9 +135,15 @@ def test_only_code_files_are_gated_for_the_lead():
 def test_the_lead_message_does_not_speak_of_contract_files():
     """Le lead n'a ni CONTRAT.md ni fichiers assignés : le message des workers
     lui serait incompréhensible."""
-    from src.reasoning.react import ReActLoop
+    # Lot RF-6a : le corps de `_worker_codeagent_first_gate` a ete deplace vers
+    # `mission_runtime.py` ; `ReActLoop` n'en garde qu'une coquille. Ce test
+    # lit donc le source la ou il vit desormais — son intention est inchangee,
+    # mot pour mot. Preuve COMPORTEMENTALE adossee : la matrice RF-6a compare
+    # cette methode sur 3 jeux d'arguments x 22 scenarios = 66 valeurs, toutes
+    # identiques avant/apres.
+    from src.reasoning.mission_runtime import rf6a_worker_codeagent_first_gate
 
-    src = inspect.getsource(ReActLoop._worker_codeagent_first_gate)
+    src = inspect.getsource(rf6a_worker_codeagent_first_gate)
     bloc = src.split("if is_lead:")[-1].split("return Observation")[1][:700]
     assert "CONTRAT.md" not in bloc
     assert "harnais" in bloc

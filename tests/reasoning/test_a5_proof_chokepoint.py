@@ -133,17 +133,34 @@ def test_defaults_are_inert():
 
 # ── structurels : chokepoint + gate à 2 tirs ─────────────────────────────────────
 
+# Lot RF-8 : les arguments du verrou vivent desormais dans
+# `final_delivery_runtime.py` (methode `_truth_lock_mission_message`
+# extraite). Le test lit les DEUX fichiers : son intention — « un site
+# oublie = un chemin de sortie qui ment par omission » — est inchangee.
 def _react_src() -> str:
     import src.reasoning.react as react_mod
-    return inspect.getsource(react_mod)
+    import src.reasoning.final_delivery_runtime as fd_mod
+    return inspect.getsource(react_mod) + inspect.getsource(fd_mod)
 
 
 def test_chokepoint_passes_ledger_proofs():
+    # Lot RF-8-FIX-1 : les ~16 arguments du verrou vivent desormais dans
+    # `_truth_lock_mission_message`, appele par le goulot ET par les deux voies
+    # de sortie (I3, Z28) qui l'evitaient. Les recopier a chaque site laissait
+    # le verrou deriver d'une voie a l'autre. Intention du test INCHANGEE :
+    # les preuves LEDGER doivent arriver au verrou.
     src = _react_src()
-    i = src.find("def _stream_and_return_final")
+    # Lot RF-8 : le corps est dans `final_delivery_runtime.py`.
+    i = src.find("def rf8_truth_lock_mission_message")
     block = src[i:i + 3000]
-    assert "tests_present_not_run=self._tests_present_but_not_run()" in block
-    assert "has_any_mutation=self.execution_ledger.has_any_mutation()" in block
+    # Les noms suivent le rebindage (`self.X()` -> `etat.Y()`) ; l'intention est
+    # inchangee : les preuves LEDGER doivent arriver au verrou.
+    assert "tests_present_not_run=etat.tests_non_lances()" in block
+    assert "has_any_mutation=etat.ledger().has_any_mutation()" in block
+    # Et la fabrique cable bien ces deux lectures sur le ledger reel.
+    fabrique = _react_src()
+    assert "tests_non_lances=lambda: etat._tests_present_but_not_run()" in fabrique
+    assert "ledger=lambda: etat.execution_ledger" in fabrique
 
 
 def test_gate_uses_bounded_counter():

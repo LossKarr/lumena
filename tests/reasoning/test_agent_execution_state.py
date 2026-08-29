@@ -94,7 +94,12 @@ class TestRunMeta:
 
     def test_fields_tuple(self):
         assert "agent_output_incomplete" in RunMeta._FIELDS
-        assert len(RunMeta._FIELDS) == 4
+        # Lot RF-8-FIX-2 (2026-08-28) : 4 -> 10 champs. Six cles etaient
+        # ECRITES par le code sans etre declarees ; `RunMetaProxy` levait
+        # `KeyError` et les `except` avalaient la perte — 9 ecritures sur
+        # 24. La plus grave, `mission_truth_lock_overclaim`, laissait une
+        # mission au FINAL retrograde se cloturer `completed`.
+        assert len(RunMeta._FIELDS) == 10
 
 
 # ── RunMetaProxy ─────────────────────────────────────────────────────────────
@@ -136,17 +141,17 @@ class TestRunMetaProxy:
         proxy = RunMetaProxy(rm)
         d = dict(proxy)
         assert d["agent_output_warning"] == "test_warning"
-        assert len(d) == 4
+        assert len(d) == 10  # RF-8-FIX-2 : +6 champs
 
     def test_len(self):
         proxy = RunMetaProxy(RunMeta())
-        assert len(proxy) == 4
+        assert len(proxy) == 10  # RF-8-FIX-2 : +6 champs
 
     def test_iter(self):
         proxy = RunMetaProxy(RunMeta())
         keys = list(proxy)
         assert "agent_output_incomplete" in keys
-        assert len(keys) == 4
+        assert len(keys) == 10  # RF-8-FIX-2 : +6 champs
 
     def test_items(self):
         rm = RunMeta(agent_repair_attempts=3)

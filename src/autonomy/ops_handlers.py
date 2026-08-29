@@ -444,7 +444,7 @@ def _is_retrain_locked() -> bool:
             return False
         from ..utils.file_lock import _is_process_alive
         if not _is_process_alive(pid):
-            logger.warning("retrain_lock PID %d mort — suppression auto", pid)
+            logger.warning("retrain_lock PID {} mort — suppression auto", pid)
             try:
                 _RETRAIN_LOCK_PATH.unlink(missing_ok=True)
             except Exception:
@@ -1078,7 +1078,7 @@ async def handler_memory_hygiene() -> Dict[str, Any]:
     except ImportError:
         result["error"] = "chromadb_store not available"
     except Exception as e:
-        logger.error("[ops:memory_hygiene] %s", e)
+        logger.error("[ops:memory_hygiene] {}", e)
         result["error"] = str(e)[:200]
 
     result["success"] = "error" not in result
@@ -1196,7 +1196,7 @@ async def _run_micro_eval(prompts: List[Dict], eval_name: str) -> Dict[str, Any]
                 result["scores_by_category"][cat]["passed"] += 1
 
     except Exception as e:
-        logger.error("[ops:eval] %s", e)
+        logger.error("[ops:eval] {}", e)
         result["error"] = str(e)[:200]
 
     # Score global
@@ -1944,7 +1944,7 @@ async def handler_backup_rollback_test() -> Dict[str, Any]:
     except ImportError:
         result["error"] = "self_improve module not available"
     except Exception as e:
-        logger.error("[ops:backup_rollback_test] %s", e)
+        logger.error("[ops:backup_rollback_test] {}", e)
         result["error"] = str(e)[:200]
 
     result["success"] = result["backup_created"] and result["rollback_test_ok"]
@@ -1979,7 +1979,7 @@ async def handler_save_state_real() -> Dict[str, Any]:
             logger.debug(f"Scheduler stats unavailable: {e}")
 
     except Exception as e:
-        logger.error("[ops:save_state] %s", e)
+        logger.error("[ops:save_state] {}", e)
         result["error"] = str(e)[:200]
 
     result["success"] = result.get("saved", False)

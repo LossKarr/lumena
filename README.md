@@ -3,10 +3,10 @@
 **Assistant IA personnel autonome, local-first, doté d'une mémoire persistante et capable d'agir réellement.**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.0.52-F28C28)](#etat-du-projet)
-[![Tests](https://img.shields.io/badge/tests-18K%2B_passed-22C55E)](#tests)
+[![Version](https://img.shields.io/badge/version-v1.0.53-F28C28)](#état-des-composants)
+[![Tests](https://img.shields.io/badge/tests-20K%2B_passed-22C55E)](#tests)
 [![License](https://img.shields.io/badge/license-AGPL--3.0_%2F_Commercial-2563EB)](#licence)
-[![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#etat-du-projet)
+[![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#état-des-composants)
 
 ![Lumena Control Panel](assets/pic1readme.png)
 
@@ -19,7 +19,7 @@ Elle ne se contente pas de proposer une procédure : en **mode Agent**, elle peu
 planifier une demande, appeler ses outils, produire des fichiers, contrôler les
 résultats obtenus et rendre compte des preuves réellement observées.
 
-> **Version bêta v1.0.52**
+> **Version bêta v1.0.53**
 >
 > Lumena est utilisable au quotidien, mais reste un projet solo en évolution.
 > Certaines fonctions dépendent d'API, de logiciels locaux, d'identifiants ou
@@ -40,7 +40,7 @@ Ces nombres décrivent deux niveaux différents et ne doivent pas être confondu
 - deux usages distincts : **Chat** pour dialoguer et **Agent** pour exécuter ;
 - routage entre conversation, outil direct, projet et raisonnement multi-étapes ;
 - boucle de raisonnement ReAct avec plan, actions, observations et preuves ;
-- plus de **590 outils natifs**, répartis dans plus de **35 catégories** ;
+- plus de **590 outils natifs**, répartis dans **37 catégories** ;
 - réponses en streaming, interruption, reprise et suivi des tâches ;
 - identité, personnalité, humeur et contexte cohérents entre les interfaces ;
 - utilisation depuis le web, le terminal, Discord, Telegram, WhatsApp et
@@ -464,9 +464,10 @@ python -m pytest tests/ --timeout=15 -q
 python -m pytest tests/reasoning/test_react_plan.py -v
 ```
 
-La dernière certification documentaire connue dépasse **18 500 tests réussis**.
-Ce nombre n'est pas une promesse permanente : chaque modification doit être
-validée contre la suite correspondant à son périmètre.
+La dernière exécution complète connue rend **20 264 tests réussis, 0 échec**
+(7 ignorés selon l'environnement). Ce nombre n'est pas une promesse permanente :
+chaque modification doit être validée contre la suite correspondant à son
+périmètre.
 
 ---
 
@@ -507,4 +508,4 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
 
 ---
 
-**Lumena v1.0.52 — projet solo, architecture ouverte, actions contrôlées.**
+**Lumena v1.0.53 — projet solo, architecture ouverte, actions contrôlées.**

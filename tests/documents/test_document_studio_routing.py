@@ -318,7 +318,18 @@ def test_document_operation_filter_exposes_only_relevant_document_chain(query, e
 
 
 def test_react_prompt_declares_studio_mandatory_before_legacy_paths():
-    source = (ROOT / "src" / "reasoning" / "react.py").read_text(encoding="utf-8")
+    """Lot RF-3 du refactor ReAct (2026-08-27) : la regle de creation
+    d'artefact a quitte `react.py` avec le corps de `_build_react_prompt`
+    pour `src/prompts/react_prompt.py`. Les deux chaines y sont intactes.
+
+    Preuve COMPORTEMENTALE equivalente exigee par le plan avant ce
+    repointage :
+      tests/reasoning/test_rf3_react_prompt_extraction.py
+        - test_comportement_studio_est_declare_obligatoire_avant_les_chemins_legacy
+    Celle-la construit le prompt et mesure reellement l'ORDRE que le nom de
+    ce test-ci affirme — ce qu'une recherche de sous-chaine ne verifiait pas.
+    """
+    source = (ROOT / "src" / "prompts" / "react_prompt.py").read_text(encoding="utf-8")
     assert "`generate_studio_document` → OBLIGATOIRE" in source
     assert "N'utilise PAS create_pdf, Python ou CodeAgent" in source
 

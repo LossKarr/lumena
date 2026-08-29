@@ -41,7 +41,14 @@ import pytest
 
 from src.reasoning.react import _OBS_FILE_READ_TOOLS
 
-_SRC = Path("src/reasoning/react.py").read_text(encoding="utf-8")
+# Lot RF-9a : la compaction des observations — seuils ET strategies — a ete
+# deplacee vers `observation_synthesis.py` (feuille « ingestion
+# d'observation », §15). Le test lit les DEUX fichiers ; son intention est
+# inchangee : les deux listes ne doivent JAMAIS re-diverger.
+# Preuve COMPORTEMENTALE adossee : les 27 tests RF-9a couvrent seuils,
+# strategies et le partage de `_OBS_FILE_READ_TOOLS`.
+_SRC = (Path("src/reasoning/react.py").read_text(encoding="utf-8")
+        + Path("src/reasoning/observation_synthesis.py").read_text(encoding="utf-8"))
 
 
 # ── Les outils qui ont réellement souffert ───────────────────────────────────
@@ -85,8 +92,8 @@ def test_les_familles_qui_ont_leur_propre_strategie_restent_dehors(outil):
 
 
 def test_le_seuil_utilise_la_constante():
-    i = _SRC.index("_OBS_COMPACT_LIMIT = 8000")
-    assert "_OBS_FILE_READ_TOOLS" in _SRC[i - 700 : i]
+    i = _SRC.index("        return 8000")   # RF-9a : le seuil est un retour
+    assert "_OBS_FILE_READ_TOOLS" in _SRC[i - 900 : i]
 
 
 def test_la_strategie_utilise_la_meme_constante():
@@ -111,7 +118,7 @@ def test_les_deux_sites_sont_bien_deux_sites_distincts():
         m.start() for m in re.finditer(r"in _OBS_FILE_READ_TOOLS", _SRC)
     ]
     assert len(usages) == 2
-    seuil = _SRC.index("_OBS_COMPACT_LIMIT = 8000")
+    seuil = _SRC.index("        return 8000")   # RF-9a
     strategie = _SRC.index("Lectures fichiers : seuil élevé atteint")
     assert any(u < seuil for u in usages)
     assert any(seuil < u < strategie for u in usages)
@@ -126,8 +133,8 @@ def test_un_outil_protege_par_le_seuil_est_protege_par_la_strategie():
 
     Une seule constante sert aux deux endroits — l'assertion est donc vraie par
     construction, et ce test existe pour que ça le reste."""
-    i = _SRC.index("_OBS_COMPACT_LIMIT = 8000")
-    bloc_seuil = _SRC[i - 700 : i]
+    i = _SRC.index("        return 8000")   # RF-9a : le seuil est un retour
+    bloc_seuil = _SRC[i - 900 : i]
     j = _SRC.index("Lectures fichiers : seuil élevé atteint")
     bloc_strategie = _SRC[j - 300 : j]
     assert "_OBS_FILE_READ_TOOLS" in bloc_seuil
@@ -153,15 +160,34 @@ def test_le_message_invite_a_relire_par_plage():
 def test_le_seuil_des_livrables_de_workers_reste_intact():
     """20000 pour `delegate_and_wait` : les livrables doivent rester entiers pour
     que le lead fusionne sans re-fouiller le disque."""
-    assert "_OBS_COMPACT_LIMIT = 20000" in _SRC
+    # Lot RF-9a : le seuil n'est plus une VARIABLE mais le retour de
+    # `observation_compact_limit`. L'assertion devient COMPORTEMENTALE —
+    # intention identique, preuve plus forte : elle survivra au prochain
+    # deplacement du code.
+    from src.reasoning.observation_synthesis import observation_compact_limit
+
+    assert observation_compact_limit("delegate_and_wait", is_chat_surface=False) == 20000
 
 
 def test_les_seuils_navigateur_restent_intacts():
-    assert "_OBS_COMPACT_LIMIT = 4000 if _is_chat_surface else 1800" in _SRC
+    # Lot RF-9a : le seuil n'est plus une VARIABLE mais le retour de
+    # `observation_compact_limit`. L'assertion devient COMPORTEMENTALE —
+    # intention identique, preuve plus forte : elle survivra au prochain
+    # deplacement du code.
+    from src.reasoning.observation_synthesis import observation_compact_limit
+
+    assert observation_compact_limit("browser_get_content", is_chat_surface=True) == 4000
+    assert observation_compact_limit("browser_get_content", is_chat_surface=False) == 1800
 
 
 def test_le_seuil_par_defaut_reste_intact():
-    assert "_OBS_COMPACT_LIMIT = 3000" in _SRC
+    # Lot RF-9a : le seuil n'est plus une VARIABLE mais le retour de
+    # `observation_compact_limit`. L'assertion devient COMPORTEMENTALE —
+    # intention identique, preuve plus forte : elle survivra au prochain
+    # deplacement du code.
+    from src.reasoning.observation_synthesis import observation_compact_limit
+
+    assert observation_compact_limit("un_outil_quelconque", is_chat_surface=False) == 3000
 
 
 def test_les_strategies_des_autres_familles_restent_intactes():

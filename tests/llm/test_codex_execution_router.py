@@ -450,7 +450,15 @@ def test_codex_agent_final_uses_existing_truth_lock_without_changing_legacy_agen
         calls.append((message, kwargs))
         return "factual", {"changed": True, "mutation": True}
 
-    monkeypatch.setattr(react_module, "apply_mission_truth_lock", fake_lock)
+    # Lot RF-8 : le verrou est APPELE depuis `final_delivery_runtime.py`.
+    # Patcher `react_module` ne l'atteint plus — c'est exactement le risque que
+    # le fichier de tests de RF-1 avait nomme : « les monkeypatchs des tests
+    # patcheraient l'un et le code appellerait l'autre ». Ici le test l'a
+    # attrape au lieu de passer en silence. Son intention est inchangee : la
+    # voie codex passe bien par le verrou existant.
+    import src.reasoning.final_delivery_runtime as fd_module
+
+    monkeypatch.setattr(fd_module, "apply_mission_truth_lock", fake_lock)
     assert loop._stream_and_return_final("claim") == "factual"
     assert calls and calls[0][1]["has_any_mutation"] is False
     assert completed == ["factual"]

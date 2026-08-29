@@ -507,7 +507,7 @@ async def check_web_project_handler(
                 try:
                     all_files[rel] = fp.read_text(encoding="utf-8", errors="replace")
                 except Exception as e:
-                    logger.debug("[website] read file %s: %s", rel, e)
+                    logger.debug("[website] read file {}: {}", rel, e)
 
     if not all_files:
         return HandlerResult.fail(

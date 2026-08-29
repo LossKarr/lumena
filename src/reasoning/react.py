@@ -68,6 +68,95 @@ from ..documents.document_intent import (
     normalize_document_query,
     resolve_document_route,
 )
+from .browser_runtime import (
+    _browser_content_seen as _rt__browser_content_seen,
+    _browser_runtime_failed_for_truth_lock as _rt__browser_runtime_failed_for_truth_lock,
+    _browser_runtime_verified_for_truth_lock as _rt__browser_runtime_verified_for_truth_lock,
+    _browser_verify_intent as _rt__browser_verify_intent,
+    _current_browser_proof as _rt__current_browser_proof,
+    _finalize_browser_gate_pending as _rt__finalize_browser_gate_pending,
+    _finalize_interaction_gate_pending as _rt__finalize_interaction_gate_pending,
+    _local_preview_unprovable_gate as _rt__local_preview_unprovable_gate,
+    _mission_browser_verify_pending as _rt__mission_browser_verify_pending,
+    _pages_never_opened_reason as _rt__pages_never_opened_reason,
+    _post_delegate_web_verify_allowed as _rt__post_delegate_web_verify_allowed,
+    _truth_lock_interaction_proven as _rt__truth_lock_interaction_proven,
+    EntreeNavigateur as _EntreeNavigateur,
+)
+from .mission_runtime import (
+    EntreeMission as _EntreeMission,
+    rf6a_is_mission_run as _mr__is_mission_run,
+    rf6a_mission_workspace_meta as _mr__mission_workspace_meta,
+    rf6a_mission_unpublished_writes as _mr__mission_unpublished_writes,
+    rf6a_mission_routing_objective as _mr__mission_routing_objective,
+    rf6a_mission_tests_present_for_gate as _mr__mission_tests_present_for_gate,
+    rf6a_mission_web_present_for_gate as _mr__mission_web_present_for_gate,
+    rf6a_mission_js_present_for_gate as _mr__mission_js_present_for_gate,
+    rf6a_worker_codeagent_first_gate as _mr__worker_codeagent_first_gate,
+    rf6a_mission_completion_evidence as _mr__mission_completion_evidence,
+    rf6a_mission_allowed_files_meta as _mr__mission_allowed_files_meta,
+    rf6a_mission_worker_delivered as _mr__mission_worker_delivered,
+    rf6a_mission_lead_delivered as _mr__mission_lead_delivered,
+    rf6a_mission_expects_file_deliverables as _mr__mission_expects_file_deliverables,
+    rf6a_is_worker_run as _mr__is_worker_run,
+    rf6a_is_delegated_worker as _mr__is_delegated_worker,
+    rf6b_decision_nudge_ecrits_non_publies as _mr_decision_nudge,
+    rf6b_decision_ecrasement_livrable as _mr_decision_ecrasement,
+    rf6b_decision_intention_mission_chat as _mr_decision_intention_chat,
+)
+from .final_delivery_runtime import (
+    EntreeFinal as _EntreeFinal,
+    rf8_truth_lock_mission_message as _fd__truth_lock_mission_message,
+    rf8_truth_lock_web_flag as _fd__truth_lock_web_flag,
+    rf8_truth_lock_game_flag as _fd__truth_lock_game_flag,
+    rf8_truth_lock_interaction_flag as _fd__truth_lock_interaction_flag,
+    rf8b_verdict_a_memoriser as _fd_verdict_a_memoriser,
+    rf8b_decision_final_vide as _fd_decision_final_vide,
+)
+from .document_runtime import (
+    _MISSION_PROACTIVE_DOCUMENT_TOOLS,
+    _document_final_fulfills_plan_task as _rt__document_final_fulfills_plan_task,
+    _document_workflow_pending_action as _rt__document_workflow_pending_action,
+    _document_workflow_progress_signature as _rt__document_workflow_progress_signature,
+    _force_mission_proactive_document_tools as _rt__force_mission_proactive_document_tools,
+    _reconcile_document_plan_from_manifest as _rt__reconcile_document_plan_from_manifest,
+    _reconcile_document_workflow_plan as _rt__reconcile_document_workflow_plan,
+    _structured_document_tool_gate as _rt__structured_document_tool_gate,
+    EntreePorteDocument as _EntreePorteDocument,
+    _document_workflow_proof_state as _rt__document_workflow_proof_state,
+    _record_document_workflow_evidence as _rt__record_document_workflow_evidence,
+    EntreeWorkflowDocument as _EntreeWorkflowDocument,
+    _document_delivery_truth_required as _rt__document_delivery_truth_required,
+    _document_workflow_target as _rt__document_workflow_target,
+    _ensure_document_delivery_reference as _rt__ensure_document_delivery_reference,
+    _structured_document_delivery_manifest as _rt__structured_document_delivery_manifest,
+    _structured_document_delivery_progress as _rt__structured_document_delivery_progress,
+    EntreeLivraisonDocument as _EntreeLivraisonDocument,
+    _document_catalog_selection_groups as _rt__document_catalog_selection_groups,
+    _document_catalog_selection_models as _rt__document_catalog_selection_models,
+    _document_expected_template_ids as _rt__document_expected_template_ids,
+    _document_route_for_run as _rt__document_route_for_run,
+    _reconcile_document_catalog_plan as _rt__reconcile_document_catalog_plan,
+    _record_document_catalog_evidence as _rt__record_document_catalog_evidence,
+    EntreeDocumentCatalogue as _EntreeDocumentCatalogue,
+    _document_catalog_evidence_key as _rt__document_catalog_evidence_key,
+    _document_catalog_rows as _rt__document_catalog_rows,
+    _document_open_payload as _rt__document_open_payload,
+    _document_parallel_calls as _rt__document_parallel_calls,
+    _document_patch_scalar_values as _rt__document_patch_scalar_values,
+    _document_paths_match as _rt__document_paths_match,
+    _document_plan_required_kinds as _rt__document_plan_required_kinds,
+    _document_revision_changed_fields as _rt__document_revision_changed_fields,
+    _document_revision_patch as _rt__document_revision_patch,
+    _document_tool_events as _rt__document_tool_events,
+    _document_verification_text as _rt__document_verification_text,
+    _document_web_rights_evidence as _rt__document_web_rights_evidence,
+    _duplicate_document_mutation as _rt__duplicate_document_mutation,
+    _latest_document_batch_proofs as _rt__latest_document_batch_proofs,
+    _merge_mission_document_evidence as _rt__merge_mission_document_evidence,
+    _nested_document_bypass as _rt__nested_document_bypass,
+    _studio_attempted_kinds as _rt__studio_attempted_kinds,
+)
 from ..runtime.execution_ledger import (
     ExecutionLedger, MUTATION_TOOLS as _LEDGER_MUTATION_TOOLS,
     INTENT_TO_MUTATION_FAMILY as _LEDGER_INTENT_FAMILIES,
@@ -92,6 +181,65 @@ from src.reasoning.ledger_guard import (  # noqa: F401
     _LEDGER_CLAIM_PATTERNS, ledger_text_claims_action,
     compute_effective_successful_tools, extract_h3_target_hint,
     ledger_final_guard_query, ledger_h2_guard_query, ledger_h3_guard_query,
+)
+
+# ── RF-1 — helpers navigateur extraits vers `browser_reasoning.py` ──────
+# Reexport de compatibilite : 27 de ces symboles sont utilises plus bas dans
+# ce fichier, 28 sont importes par d'autres modules ou tests. L'import vit
+# ICI et non a l'emplacement des anciennes definitions, car trois constantes
+# restees dans react.py les lisent des la ligne 913.
+from .browser_reasoning import (  # noqa: F401
+    BROWSER_ACTION_TOOLS, BROWSER_SURFACE_TYPES, BROWSER_VISUAL_TOOLS, _BROWSER_AUXILIARY_ACTION_MARKERS,
+    _BROWSER_CLICK_ONLY_ROLES, _BROWSER_CLICK_TOOLS, _BROWSER_EVALUATE_ERROR_MARKERS, _BROWSER_EVALUATE_MUTATION_RE,
+    _BROWSER_IMPASSE_SIGNALS, _BROWSER_INTERACTION_STATE_KEYS, _BROWSER_LISTING_URL_DOMAINS, _BROWSER_LISTING_URL_PATH_SEGMENTS,
+    _BROWSER_SOURCE_PIVOT_MARKERS, _BROWSER_SPA_NOISE_MARKERS, _BROWSER_STATE_READ_TOOLS, _BROWSER_SURFACE_AUTH_FORM_HINTS,
+    _BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS, _BROWSER_SURFACE_AUTH_HINTS, _BROWSER_SURFACE_BUILDER_HINTS, _BROWSER_SURFACE_CHAT_HINTS,
+    _BROWSER_SURFACE_CONTACT_ACTION_HINTS, _BROWSER_SURFACE_CONTACT_FORM_HINTS, _BROWSER_SURFACE_DETAIL_PAGE_HINTS, _BROWSER_SURFACE_ERROR_HINTS,
+    _BROWSER_SURFACE_FILL_FORM_HINTS, _BROWSER_SURFACE_IFRAME_HINTS, _BROWSER_SURFACE_LISTING_HINTS, _BROWSER_SURFACE_PUBLIC_FORM_HINTS,
+    _BROWSER_SURFACE_SEARCH_HINTS, _BROWSER_SURFACE_SPA_SHELL_HINTS, _BROWSER_USER_MUTATION_TOOLS, _LINK_CLICK_RE,
+    _READ_SIG_BUCKET, _advance_manual_browser_flow, _browser_click_is_link_navigation, _browser_evaluate_payload,
+    _browser_evaluate_proves_interaction, _browser_is_auth_intent, _browser_observation_has_failure, _browser_observation_is_auxiliary_action,
+    _browser_observation_looks_like_popup_or_modal, _browser_payload_has_dynamic_state, _browser_progress_delta, _browser_rewrite_human_navigation_action,
+    _browser_rewrite_index_like_selector_action, _browser_rewrite_selector_guess_to_index_action, _browser_rewrite_system_typing_action, _browser_rewrite_text_entry_action,
+    _browser_rewrite_type_to_click_for_ctrl, _browser_state_fingerprint, _browser_surface_mismatch, _classify_browser_surface,
+    _compact_browser_observation_payload, _compute_read_sig, _detect_browser_impasse, _extract_browser_auth_target,
+    _extract_browser_form_state, _extract_browser_interactive_count, _extract_browser_textbox_target, _extract_browser_textbox_targets,
+    _extract_human_browser_lines, _extract_sendkeys_payload, _legal_browser_source_pivot, _local_preview_loop_decision,
+    _looks_like_browser_spa_noise, _looks_like_chat_transcript, _make_browser_progress_signature, _manual_browser_flow_proves_interaction,
+    _url_is_local_preview,
+)
+
+# ── RF-2 — lecture d'observations extraite vers `observation_synthesis.py` ─
+# Reexport de compatibilite : les 7 fonctions sont appelees plus bas dans ce
+# fichier ET importees ailleurs dans le depot. L'import vit ICI, en tete,
+# comme pour RF-1 : c'est le seul endroit sur avant tout usage.
+from .observation_synthesis import (  # noqa: F401
+    _PHASE27_MCP_LOOP_TOOLS, _READ_STAGNATION_BUDGET_FLOOR_S, _TABULAR_OBS_MARKERS,
+    _TEST_RESULT_RE, _TEST_RESULT_TOOL_NAMES, _obs_looks_like_test_result,
+    _obs_looks_tabular, _phase27_mcp_observation_guidance, _should_repair_incomplete_final,
+    _synthesize_mission_response_from_evidence, _synthesize_response_from_observation, read_stagnation_action,
+    # RF-9a — feuille « ingestion d'observation » + les deux
+    # dependances qui ne servaient QU'A ELLE. Reexports de
+    # compatibilite (invariants 4 et 12 : meme objet).
+    _OBS_FILE_READ_TOOLS,
+    _extract_anchor_facts,
+    observation_compact_limit,
+    compact_observation_body,
+    thought_is_stagnant,
+    stagnation_tool_hint,
+    repeated_listing_reminder,
+    plan_stagnation_message,
+    web_files_reminder,
+    web_files_present,
+    phantom_channels,
+    workspace_path_from_query,
+)
+
+# ── RF-3 — guidance documentaire extraite vers `src/prompts/react_prompt.py`
+# Reexport de compatibilite : chacune a un consommateur externe.
+from src.prompts.react_prompt import (  # noqa: F401
+    _document_requested_kinds_guidance,
+    _document_minimum_pages_guidance,
 )
 
 # ── Prédicats purs des guards read-only vs mutation (testables) ──────────────
@@ -348,36 +496,8 @@ def _repeated_tool_failure_message(tool_name: str, history: list[Any]) -> str:
     )
 
 
-def _document_requested_kinds_guidance(route: DocumentRoute) -> str:
-    """Build an exact compact instruction for explicit multi-model requests."""
-    kinds = tuple(dict.fromkeys(
-        item.kind for item in route.items if item.operation == "create"
-    )) or tuple(route.requested_kinds)
-    if route.is_catalog_selection or len(kinds) <= 1:
-        return ""
-    joined = ", ".join(kinds)
-    joined_filter = ",".join(kinds)
-    return f"""
-## LOT DOCUMENT STUDIO RESOLU (OBLIGATOIRE) :
-- La demande nomme exactement {len(kinds)} types structures, deja resolus dans cet ordre : {joined}.
-- Fais d'abord un seul appel `list_document_models(kind='{joined_filter}')` pour obtenir les contrats `sample_data` exacts des {len(kinds)} modeles.
-- Appelle `generate_studio_documents` avec ces {len(kinds)} types dans cet ordre ; les donnees partielles seront completees par les exemples professionnels.
-- Ne remplace aucun de ces modeles par `create_pdf` et ne deduis pas leur disponibilite d'un apercu tronque du catalogue.
-"""
 
 
-def _document_minimum_pages_guidance(route: DocumentRoute) -> str:
-    """Keep explicit page targets on the registered Studio template path."""
-    if route.minimum_pages <= 0:
-        return ""
-    minimum_chars = route.minimum_pages * 3_000
-    return f"""
-## LONGUEUR DOCUMENT STUDIO (OBLIGATOIRE) :
-- Le document rendu doit contenir au moins {route.minimum_pages} pages REELLES et substantielles.
-- Renseigne le modele integre avec assez de contenu metier detaille (environ {minimum_chars} caracteres visibles au total) avant le premier rendu.
-- Si le controle de rendu retourne moins de {route.minimum_pages} pages, enrichis fortement les donnees et relance LE MEME modele en remplacant le meme fichier.
-- Ne cree, n'importe et ne modifie aucun modele pour contourner ce minimum. N'ajoute jamais de page vide ni de texte de remplissage.
-"""
 
 # 2.6.1 (run MiniQuiz §5) — outils GARANTIS dans le prompt du LEAD de mission web :
 # la voie officielle preview (registre SSRF) + le navigateur de preuve. Sans eux,
@@ -392,12 +512,6 @@ _MISSION_WEB_LEAD_TOOLS = (
 # creation was not the initial intent. Explicit document requests still expose
 # the full category; this compact core avoids adding 56 document schemas to
 # every worker prompt.
-_MISSION_PROACTIVE_DOCUMENT_TOOLS = (
-    "list_document_models",
-    "generate_studio_document", "generate_studio_documents",
-    "create_pdf", "create_docx", "create_xlsx", "create_pptx",
-    "create_markdown",
-)
 
 
 def _has_action_negation(normalized_q: str) -> bool:
@@ -422,33 +536,6 @@ def _has_action_negation(normalized_q: str) -> bool:
 
 
 # Verbes d'envoi/post Discord (demande POSITIVE d'action).
-# LOT Z12 — outils dont l'observation PORTE DU CONTENU À LIRE (fichiers, contrat,
-# résultats groupés). Source UNIQUE : cette liste sert au seuil de déclenchement
-# de la compaction ET à la stratégie appliquée quand ce seuil est franchi.
-#
-# Elle existe parce que la même notion était écrite DEUX FOIS et que les deux
-# copies ont divergé. Le seuil (8000) contenait déjà `read_files_batch`,
-# `parallel_tools` et `write_mission_contract` — ajoutés par B0.3 (run PlantCare)
-# et C0.1 (run FrigoZen) — mais la STRATÉGIE ne connaissait que `read_file`,
-# `search_in_code`, `grep_search`, `find_files`. Conséquence : ces trois outils
-# étaient protégés jusqu'à 8000 caractères… puis réduits à 800 au lieu de 3000.
-# Un seuil élevé leur donnait une fausse sécurité : plus le contenu était gros,
-# plus la perte était totale.
-#
-# Run « Rustine » (2026-08-16) : le lead avait identifié la cause exacte du
-# défaut de style (« le CSS utilise des classes françaises, les HTML des classes
-# anglaises ») et cherchait les classes à corriger. Ses `read_files_batch`
-# rendaient 8437 et 8669 chars — juste au-dessus du seuil — et il en recevait
-# 830 : le `<head>` et le pied de page, jamais le corps. Dix itérations de
-# relecture, puis mort par PLAN GUARD anti-stagnation, livrable à 0 % de style.
-#
-# Les 11 compactions de tout le corpus portent EXACTEMENT sur les 3 outils mal
-# classés (read_files_batch 6×, write_mission_contract 3×, grep_batch 2×) et
-# ZÉRO sur ceux qui étaient dans les deux listes.
-_OBS_FILE_READ_TOOLS: frozenset = frozenset({
-    "read_file", "read_files_batch", "search_in_code", "grep_search",
-    "grep_batch", "find_files", "parallel_tools", "write_mission_contract",
-})
 
 # LOT Z6 — plafonds du PLAN GUARD sur le FINAL prématuré.
 #
@@ -677,139 +764,18 @@ def _generate_project_slug(query: str) -> str:
     return re.sub(r"[^a-z0-9\-]", "", slug)[:40] or "project"
 
 
-_READ_SIG_BUCKET = 50  # granularité en lignes pour la détection de zone redondante
 
 
-def _extract_anchor_facts(text: str) -> str:
-    """
-    Extrait les faits structurés clés d'une observation avant compaction.
-    Retourne une ligne "📌 Ancres: ..." ou "" si rien de notable.
-    Couverture : snowflakes Discord (17-20 chiffres), patterns guild_id=/channel_id=/server_id=,
-    chemins Windows (C:\\...).
-    """
-    import re
-    facts: list[str] = []
-
-    # Snowflake IDs Discord (17-20 chiffres, pas dans un chemin)
-    for m in re.finditer(r'(?<![/\\.\d])\b(\d{17,20})\b(?![/\\.\d])', text):
-        facts.append(m.group(1))
-
-    # guild_id=... / channel_id=... (valeur alphanumérique ou entre backticks/guillemets)
-    for m in re.finditer(r'\b(?:guild_id|channel_id|server_id)\s*[=:]\s*[`"\']?(\w{6,})[`"\']?', text, re.IGNORECASE):
-        facts.append(f"{m.group(0).split('=')[0].split(':')[0].strip()}={m.group(1)}")
-
-    # Chemins Windows (C:\...) — juste le segment racine pour ne pas gonfler
-    for m in re.finditer(r'[A-Za-z]:\\(?:[^\s\n"\']{3,60})', text):
-        facts.append(m.group(0)[:80])
-
-    # Dédupliquer en conservant l'ordre
-    seen: set[str] = set()
-    unique: list[str] = []
-    for f in facts:
-        if f not in seen:
-            seen.add(f)
-            unique.append(f)
-
-    if not unique:
-        return ""
-    # Limiter à 10 ancres max pour ne pas gonfler le résumé
-    return "📌 Ancres: " + " | ".join(unique[:10]) + "\n"
 
 
-# ── Politique de preuve et complétion du plan ─────────────────────────────────
-# Extraite dans plan_evidence.py pour isolation et testabilité.
-_BROWSER_SPA_NOISE_MARKERS: tuple[str, ...] = (
-    "document.documentelement",
-    "localstorage.getitem",
-    "colorscheme",
-    "prefers-color-scheme",
-    "function k(",
-    "theme\",\"system",
-    "webpack",
-    "__next",
-)
 
 
-def _looks_like_browser_spa_noise(text: str) -> bool:
-    if not text:
-        return False
-    lower = text.lower()
-    marker_hits = sum(1 for marker in _BROWSER_SPA_NOISE_MARKERS if marker in lower)
-    if marker_hits >= 2:
-        return True
-    return lower.count("=>") >= 2 and lower.count("{") >= 10 and lower.count("}") >= 10
 
 
-def _extract_human_browser_lines(text: str, *, max_lines: int = 12) -> list[str]:
-    lines: list[str] = []
-    seen: set[str] = set()
-    for raw in (text or "").splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        lower = line.lower()
-        if lower.startswith(("📄 page:", "url:", "interactive elements:", "form state:")):
-            continue
-        if any(marker in lower for marker in _BROWSER_SPA_NOISE_MARKERS):
-            continue
-        if len(line) < 8:
-            continue
-        alpha_count = sum(ch.isalpha() for ch in line)
-        if alpha_count < 4:
-            continue
-        if line in seen:
-            continue
-        seen.add(line)
-        lines.append(line)
-        if len(lines) >= max_lines:
-            break
-    return lines
 
 
-def _looks_like_chat_transcript(text: str) -> bool:
-    if not text or "---" not in text:
-        return False
-    lower = text.lower()
-    if "js exécuté" not in lower and "js execute" not in lower and "conversation" not in lower:
-        return False
-    if not re.search(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", text, re.IGNORECASE):
-        return False
-    human_lines = _extract_human_browser_lines(text, max_lines=20)
-    return len(human_lines) >= 2
 
 
-def _compact_browser_observation_payload(
-    tool_name: str,
-    observation_text: str,
-    is_chat_surface: bool = False,
-) -> Optional[str]:
-    """Compacte intelligemment les observations browser bruitées ou transcriptées.
-
-    Fix B: Pour les surfaces chat (chat_composer, chat_transcript), la limite est augmentée
-    à 3500 chars pour ne pas tronquer les conversations longues.
-    """
-    if not observation_text:
-        return None
-    # Fix B: Limite adaptée à la surface — plus haute pour les chats
-    _compact_limit = 3500 if is_chat_surface else 1400
-    if tool_name == "browser_get_content" and _looks_like_browser_spa_noise(observation_text):
-        title_match = re.search(r"^📄 Page:\s*(.+)$", observation_text, re.MULTILINE)
-        title = title_match.group(1).strip() if title_match else "Page browser"
-        # Fix B: Plus de lignes extraites pour les surfaces chat
-        max_lines = 30 if is_chat_surface else 10
-        human_lines = _extract_human_browser_lines(observation_text, max_lines=max_lines)
-        if human_lines:
-            return (
-                f"📄 Page: {title}\n\n"
-                "⚠️ SPA shell détectée — observation browser compactée sur le texte humain visible.\n\n"
-                + "\n".join(human_lines)
-            )[:_compact_limit]
-    if tool_name == "browser_evaluate" and _looks_like_chat_transcript(observation_text):
-        max_lines = 30 if is_chat_surface else 12
-        human_lines = _extract_human_browser_lines(observation_text, max_lines=max_lines)
-        if human_lines:
-            return ("✅ JS exécuté\n→ " + "\n---\n".join(human_lines))[:_compact_limit]
-    return None
 
 
 from .plan_evidence import (
@@ -834,80 +800,8 @@ from .plan_evidence import (
     VerificationKind,
     is_peer_delegation_success as _is_peer_delegation_success,
 )
-# ─────────────────────────────────────────────────────────────────────────────
 
 
-def _compute_read_sig(tool_name: str, tool_args: dict) -> tuple:
-    """Empreinte (fichier, zone_bucket, intention) d'une action de lecture.
-
-    Deux lectures sont considérées redondantes si elles retournent la même
-    empreinte : même fichier, même bucket de zone (paliers de 50 lignes),
-    même intention/pattern.  Une progression (autre fichier, autre zone ou
-    autre cible) produit une empreinte différente.
-    """
-    B = _READ_SIG_BUCKET
-    if tool_name == "read_file":
-        p = str(tool_args.get("path", tool_args.get("file_path", "")))
-        s = int(tool_args.get("start_line") or 0)
-        e = int(tool_args.get("end_line") or s + 100)
-        return (p, (s // B, e // B), "read")
-    elif tool_name in ("grep_search", "search_in_code"):
-        p = str(tool_args.get("path", tool_args.get("directory", "")))
-        pat = str(tool_args.get("pattern", tool_args.get("query", "")))
-        return (p, None, pat)
-    elif tool_name == "find_files":
-        return (str(tool_args.get("path", "")), None, str(tool_args.get("pattern", "")))
-    elif tool_name == "list_directory":
-        return (str(tool_args.get("path", "")), None, "list")
-    else:
-        return (str(sorted(tool_args.keys())), None, tool_name)
-
-
-# ── Browser impasse detection ─────────────────────────────────────────────────
-# Signaux textuels indiquant qu'une page est bloquée / non exploitable.
-# Chaque entrée : (token, raison lisible, try_dismiss)
-#   try_dismiss=True  → overlay/popup potentiellement résolvable
-#   try_dismiss=False → blocage structurel (anti-bot, auth, erreur serveur)
-_BROWSER_IMPASSE_SIGNALS: list = [
-    # Cloudflare / anti-bot
-    ("cloudflare", "protection Cloudflare détectée", False),
-    ("checking your browser", "vérification anti-bot Cloudflare", False),
-    ("just a moment", "vérification Cloudflare (Just a moment)", False),
-    ("challenge_running", "challenge Cloudflare actif", False),
-    # Captcha
-    ("captcha", "CAPTCHA requis — vérification humaine", False),
-    ("recaptcha", "reCAPTCHA détecté", False),
-    ("i'm not a robot", "reCAPTCHA checkbox détecté", False),
-    # Erreurs serveur connues
-    ("dyno hours exhausted", "service Heroku suspendu (dyno hours épuisées)", False),
-    ("no web processes running", "service Heroku sans processus web", False),
-    ("application error", "erreur applicative — site en panne", False),
-    # Contrôle d'accès
-    ("access denied", "accès refusé par le serveur", False),
-    ("403 forbidden", "accès interdit (403)", False),
-    ("401 unauthorized", "authentification requise (401)", False),
-    ("rate limit exceeded", "rate limit atteint — trop de requêtes", False),
-    ("too many requests", "trop de requêtes (429)", False),
-    # Login wall / mur d'authentification
-    # Signaux qualifiés (login+qualificateur) pour éviter les faux positifs sur formulaires normaux
-    ("you must be logged in", "mur d'authentification — connexion requise", False),
-    ("you must sign in", "mur d'authentification — connexion requise", False),
-    ("please log in to continue", "mur d'authentification — connexion requise", False),
-    ("please sign in to continue", "mur d'authentification — connexion requise", False),
-    ("login required", "mur d'authentification — login requis", False),
-    ("sign in required", "mur d'authentification — sign in requis", False),
-    ("members only", "contenu réservé aux membres", False),
-    ("subscribers only", "contenu réservé aux abonnés", False),
-    ("authentication required", "authentification requise (page)", False),
-    ("your session has expired", "session expirée — reconnexion requise", False),
-    # Overlays bloquants (dismiss peut aider)
-    ("cookie consent", "bannière cookies bloquante", True),
-    ("accept cookies", "popup cookies bloquant", True),
-    # Page vide / non interactive
-    ("no interactive elements found", "aucun élément interactif sur la page", False),
-    ("0 elements found", "aucun élément exploitable (DOM vide)", False),
-    ("aucun élément interactif", "aucun élément interactif sur la page", False),
-]
 
 # Token → frozenset pour lookup rapide sans parcourir la liste à chaque appel
 _BROWSER_IMPASSE_TOKEN_SET: frozenset = frozenset(
@@ -915,200 +809,15 @@ _BROWSER_IMPASSE_TOKEN_SET: frozenset = frozenset(
 )
 
 
-def _detect_browser_impasse(obs_text: str) -> "tuple[bool, str, bool]":
-    """Détecte si une observation browser indique une page bloquée / non exploitable.
-
-    Retourne (is_blocked, reason, try_dismiss):
-    - is_blocked  : True si un signal d'impasse est détecté
-    - reason      : description lisible du blocage
-    - try_dismiss : True si browser_dismiss_popups vaut la peine d'être tenté
-    """
-    if not obs_text:
-        return False, "", False
-    lower = obs_text.lower()
-    for token, reason, try_dismiss in _BROWSER_IMPASSE_SIGNALS:
-        if token in lower:
-            return True, reason, try_dismiss
-    return False, "", False
 
 
-_BROWSER_SOURCE_PIVOT_MARKERS = (
-    "cloudflare", "anti-bot", "anti bot", "challenge", "captcha", "recaptcha",
-    "acces refuse", "access denied", "403", "rate limit", "429",
-)
 
 
-def _legal_browser_source_pivot(
-    current_url: str,
-    reason: str,
-    original_query: str,
-    tried_origins: Iterable[str],
-    *,
-    max_origins: int = 3,
-) -> tuple[str, str] | None:
-    """Return one bounded legal source-pivot instruction for a blocked origin."""
-    folded_reason = normalize_document_query(reason)
-    if not any(marker in folded_reason for marker in _BROWSER_SOURCE_PIVOT_MARKERS):
-        return None
-    try:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(str(current_url or ""))
-        origin = f"{parsed.scheme}://{parsed.netloc}".casefold() if parsed.netloc else ""
-    except (TypeError, ValueError):
-        origin = ""
-    if not origin:
-        origin = "<origine-inconnue>"
-    tried = {str(value or "").casefold() for value in tried_origins if str(value or "")}
-    if origin in tried or len(tried) >= max_origins:
-        return None
-    guidance = (
-        f"⚠️ SOURCE BLOQUEE: `{origin}` refuse l'acces ({reason}). "
-        "Ne retente pas cette origine et ne contourne aucun CAPTCHA/WAF.\n"
-        "Pivote maintenant vers UNE source publique distincte et legale : "
-        "`web_fetch` sur une URL publique candidate, `web_search` pour un autre domaine, "
-        "une API officielle, ou un MCP deja actif. Recoupe le resultat avec la demande "
-        f"originale (`{str(original_query or '')[:240]}`)."
-    )
-    return origin, guidance
 
 
-BROWSER_SURFACE_TYPES: frozenset[str] = frozenset({
-    "search_results",
-    "listing_results",
-    "chat_composer",
-    "chat_transcript",
-    "public_form",
-    "auth_form",       # formulaire de connexion/login (mot de passe présent)
-    "contact_form",    # formulaire de contact/newsletter (pas de mot de passe)
-    "detail_page",     # fiche produit, événement, concert — contenu riche
-    "spa_shell",       # SPA sans contenu utile chargé (JS requis / loading)
-    "builder_editor",
-    "login_wall",
-    "anti_bot_or_challenge",
-    "error_page",
-    "popup_blocked",
-    "iframe_heavy",
-    "non_interactive",
-    "normal_content",
-    "unknown",
-})
 
-_BROWSER_SURFACE_FILL_FORM_HINTS: frozenset[str] = frozenset({
-    "formulaire", "remplir", "rempli", "submit", "soumettre",
-    "fill form", "fill out", "contact form", "demo form",
-})
-_BROWSER_SURFACE_AUTH_HINTS: frozenset[str] = frozenset({
-    "login", "log in", "sign in", "connexion", "connecter", "se connecter",
-    "authentif", "compte",
-})
-_BROWSER_SURFACE_SEARCH_HINTS: frozenset[str] = frozenset({
-    "recherche google", "résultats google", "resultats google",
-    "google search", "search results", "recherche duckduckgo", "bing search",
-})
-_BROWSER_SURFACE_BUILDER_HINTS: frozenset[str] = frozenset({
-    "form builder", "revision history", "add collaborators",
-    "add element", "available fields", "customize thank you page",
-    "product selector, currently selected form builder",
-    "preview form", "jotform form builder", "dismiss suggestions",
-})
-_BROWSER_SURFACE_IFRAME_HINTS: frozenset[str] = frozenset({
-    "frame(s)", "iframe", "iframeresult", "__tcfapilocator",
-})
-_BROWSER_SURFACE_LISTING_HINTS: frozenset[str] = frozenset({
-    "voir l’annonce", "voir lannonce", "ajouter l’annonce aux favoris",
-    "ajouter lannonce aux favoris", "site de petites annonces gratuites",
-    "choisir une localisation", "mes recherches", "favoris",
-    "valider votre recherche", "déposer une annonce", "deposer une annonce",
-    "voitures d’occasion", "voitures d’occasion", "mileage_max",
-    "petites annonces", "voir le détail", "voir le detail",
-})
 
-# Domaines de sites d’annonces connus — détection par URL même sans hints dans le contenu
-_BROWSER_LISTING_URL_DOMAINS: frozenset[str] = frozenset({
-    "leboncoin.fr", "autoscout24.fr", "autoscout24.com",
-    "lacentrale.fr", "leparking.fr", "paruvendu.fr",
-    "argusdeloccasion.com", "occasion.caradisiac.com",
-    "facebook.com/marketplace",
-})
-# Segments de chemin indiquant une page de résultats / recherche sur ces sites
-_BROWSER_LISTING_URL_PATH_SEGMENTS: frozenset[str] = frozenset({
-    "/lst/", "/recherche", "/listing", "/search",
-    "/voitures/", "/ck/", "/marketplace",
-})
-_BROWSER_SURFACE_PUBLIC_FORM_HINTS: frozenset[str] = frozenset({
-    "textbox", "searchbox", "combobox", "spinbutton", "textarea",
-    "radio", "checkbox", "submit button", "name input", "email input",
-    "password input", "phone input",
-})
-_BROWSER_SURFACE_CHAT_HINTS: frozenset[str] = frozenset({
-    "prosemirror",
-    "message input",
-    "ask anything",
-    "send question",
-    "send message",
-    "start chatting",
-    "new discussion",
-    "new chat",
-    "chat vocal",
-    "select agent",
-    "voice mode",
-    "edit question",
-    "rewrite",
-    "copy to clipboard",
-    "contenteditable trouve",
-})
-_BROWSER_SURFACE_ERROR_HINTS: frozenset[str] = frozenset({
-    "404 not found", "application error", "dyno hours exhausted",
-    "access denied", "403 forbidden", "401 unauthorized",
-    "too many requests", "rate limit exceeded", "no web processes running",
-})
 
-# Signaux forts pour auth_form — champ mot de passe présent dans le DOM
-_BROWSER_SURFACE_AUTH_FORM_HINTS: frozenset[str] = frozenset({
-    "password input", "mot de passe", "password field", "confirm password",
-    "confirmation du mot de passe",
-    "forgot password", "mot de passe oublié",
-    "remember me", "rester connecté", "keep me signed in",
-    "envoyer le code", "send code", "reset code",
-    "retour à la connexion", "return to login",
-})
-# Segments d'URL d'authentification
-_BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS: frozenset[str] = frozenset({
-    "/login", "/signin", "/connexion", "/sign-in", "/log-in",
-    "/auth/", "/auth.", "/public/auth", "/compte/connexion", "/account/login",
-})
-# Signaux pour formulaire de contact (pas de mot de passe)
-_BROWSER_SURFACE_CONTACT_FORM_HINTS: frozenset[str] = frozenset({
-    "formulaire de contact", "contact form", "nous contacter", "contact us",
-    "votre message", "your message", "objet du message", "message subject",
-    "demande de contact", "contact request",
-    "newsletter", "s'abonner à", "subscribe to",
-})
-_BROWSER_SURFACE_CONTACT_ACTION_HINTS: frozenset[str] = frozenset({
-    'button "envoyer votre message"', 'button "nous contacter"',
-    'button "contact us"', 'button "subscribe"',
-})
-# Signaux pour page de détail produit/événement
-_BROWSER_SURFACE_DETAIL_PAGE_HINTS: frozenset[str] = frozenset({
-    "ajouter au panier", "add to cart", "add to bag",
-    "acheter maintenant", "buy now", "commander",
-    "billetterie", "réserver", "book now", "réservation en ligne",
-    "fiche produit", "product details",
-    "en stock", "in stock", "rupture de stock", "out of stock",
-    "quantité :", "quantity:", "taille :", "couleur :",
-    "prix :", "price:", "tarif :", "à partir de",
-    "date :", "lieu :", "horaires :", "programme :",
-    "durée :", "catégorie :", "mise en scène",
-})
-# Signaux pour SPA shell — contenu non chargé / JS requis
-_BROWSER_SURFACE_SPA_SHELL_HINTS: frozenset[str] = frozenset({
-    "javascript is required", "javascript requis", "please enable javascript",
-    "activez javascript pour", "javascript must be enabled",
-    "application loading", "app is loading",
-    "chargement de l'application",
-    "interactive elements: 0\n", "interactive elements: 1\n",
-})
 # ── PLAN progress : helpers de complétion extraits dans src/reasoning/plan_progress.py
 from src.reasoning.plan_progress import (  # noqa: F401
     _BROWSER_PLAN_PASSIVE_TOOLS, _READ_ONLY_DISCOVERY_PLAN_TOOLS,
@@ -1128,740 +837,56 @@ from src.reasoning.plan_progress import (  # noqa: F401
     sourced_web_research_task_proven,
 )
 
-_BROWSER_AUXILIARY_ACTION_MARKERS: frozenset[str] = frozenset({
-    'copy to clipboard',
-    'button "copy to clipboard"',
-    'button "like"',
-    'button "dislike"',
-    'button "rewrite"',
-    'button "toggle theme"',
-    'button "settings"',
-})
-
-
-def _browser_observation_is_auxiliary_action(tool_name: str, observation_text: str) -> bool:
-    """Détecte un clic browser neutre qui ne doit pas compter comme progression métier."""
-    if not tool_name.startswith("browser_"):
-        return False
-    lower = (observation_text or "").lower()
-    if not lower:
-        return False
-    if "clic sur" not in lower and "clique sur" not in lower:
-        return False
-    return any(marker in lower for marker in _BROWSER_AUXILIARY_ACTION_MARKERS)
-
-
-def _browser_observation_looks_like_popup_or_modal(observation_text: str) -> bool:
-    lower = (observation_text or "").lower()
-    if not lower:
-        return False
-    popup_markers = (
-        "popup",
-        "pop-up",
-        "modal",
-        "dialog",
-        "annuler",
-        "ouvrir",
-        "fermer",
-        "close",
-        "google_vignette",
-        "vignette",
-        "publicité",
-        "advertisement",
-        "adsense",
-    )
-    return any(marker in lower for marker in popup_markers)
-
-
-def _classify_browser_surface(
-    obs_text: str,
-    *,
-    current_url: str = "",
-    page_title: str = "",
-    previous_surface: str = "",
-    allow_impasse: bool = True,
-) -> "tuple[str, str]":
-    """Classe la surface browser courante pour guider la stratégie ReAct."""
-    blob = "\n".join(x for x in (current_url, page_title, obs_text) if x).strip()
-    if not blob:
-        return "unknown", "aucun signal exploitable"
-
-    lower = blob.lower()
-    _looks_like_terse_action_confirmation = (
-        "✅" in obs_text
-        and any(tok in lower for tok in (
-            "clic sur", "clique sur", "tape ", "texte saisi", "textbox", "button",
-        ))
-    )
-
-    if allow_impasse:
-        blocked, reason, try_dismiss = _detect_browser_impasse(lower)
-        if blocked:
-            if try_dismiss:
-                return "popup_blocked", reason
-            if any(tok in lower for tok in (
-                "cloudflare", "checking your browser", "just a moment",
-                "challenge_running", "captcha", "recaptcha", "i'm not a robot",
-            )):
-                return "anti_bot_or_challenge", reason
-            if any(tok in lower for tok in (
-                "you must be logged in", "you must sign in", "please log in to continue",
-                "please sign in to continue", "login required", "sign in required",
-                "members only", "subscribers only", "authentication required",
-                "your session has expired",
-            )):
-                return "login_wall", reason
-            if any(tok in lower for tok in (
-                "no interactive elements found", "0 elements found", "aucun élément interactif",
-            )):
-                return "non_interactive", reason
-            return "error_page", reason
-
-    # Détection listing par URL — sites d'annonces connus + segment de chemin
-    _url_lower = current_url.lower()
-    if _url_lower and (
-        any(domain in _url_lower for domain in _BROWSER_LISTING_URL_DOMAINS)
-        and any(seg in _url_lower for seg in _BROWSER_LISTING_URL_PATH_SEGMENTS)
-    ):
-        return "listing_results", f"URL de site d'annonces reconnue ({current_url})"
-
-    if any(tok in lower for tok in _BROWSER_SURFACE_BUILDER_HINTS):
-        return "builder_editor", "surface éditeur/builder détectée"
-    if any(tok in lower for tok in _BROWSER_SURFACE_SEARCH_HINTS):
-        return "search_results", "surface de résultats de recherche détectée"
-    if any(tok in lower for tok in _BROWSER_SURFACE_LISTING_HINTS):
-        return "listing_results", "surface de petites annonces détectée"
-    if any(tok in lower for tok in _BROWSER_SURFACE_IFRAME_HINTS):
-        return "iframe_heavy", "surface pilotée par des iframes détectée"
-
-    # SPA shell : aucun contenu utile chargé (JS requis / application en cours de chargement)
-    if any(tok in lower for tok in _BROWSER_SURFACE_SPA_SHELL_HINTS):
-        return "spa_shell", "SPA shell sans contenu utile détecté"
-
-    # Détection de formulaire typé : auth_form > contact_form > detail_page > public_form.
-    # Sur les SPA, /connexion peut afficher encore le formulaire de contact; il faut
-    # le reconnaître explicitement au lieu de le laisser tomber dans public_form.
-    if _looks_like_chat_transcript(obs_text):
-        return "chat_transcript", "transcription de conversation détectée"
-
-    _chat_signal_hits = sum(1 for tok in _BROWSER_SURFACE_CHAT_HINTS if tok in lower)
-    _has_chat_signal = _chat_signal_hits > 0
-    _has_chat_controls = any(tok in lower for tok in (
-        "think",
-        "tools",
-        "send question",
-        "send message",
-        "voice mode",
-        "start chatting",
-        "new discussion",
-        "new chat",
-        "nouvelle discussion",
-        "nouveau chat",
-        "chat vocal",
-        "ask anything",
-        "prosemirror",
-    ))
-
-    _has_password = any(tok in lower for tok in _BROWSER_SURFACE_AUTH_FORM_HINTS)
-    _has_auth_url = bool(_url_lower) and any(
-        seg in _url_lower for seg in _BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS
-    )
-    _has_form_ctrl = any(tok in lower for tok in _BROWSER_SURFACE_PUBLIC_FORM_HINTS)
-    _contact_hits = sum(1 for tok in _BROWSER_SURFACE_CONTACT_FORM_HINTS if tok in lower)
-    _has_contact_action = any(tok in lower for tok in _BROWSER_SURFACE_CONTACT_ACTION_HINTS)
-    _has_contact = (
-        _contact_hits >= 1
-        or "nous contacter" in lower
-        or "contact us" in lower
-        or _has_contact_action
-    )
-
-    if (
-        previous_surface in {"chat_composer", "chat_transcript"}
-        and _looks_like_terse_action_confirmation
-        and (_has_chat_signal or _has_chat_controls or ("chat" in lower and _has_form_ctrl))
-    ):
-        return previous_surface, "confirmation d'action sur une vue de chat deja etablie"
-
-    if (
-        (_has_chat_signal and _has_chat_controls)
-        or ("chat" in lower and _has_form_ctrl and _has_chat_controls)
-    ):
-        return "chat_composer", "surface de chat conversationnel detectee"
-
-    if (_has_password or _has_auth_url) and _has_form_ctrl:
-        if _has_password:
-            return "auth_form", "formulaire d'authentification détecté (champ mot de passe présent)"
-        if _has_contact:
-            return "contact_form", "URL d'auth détectée mais le formulaire visible est un contact/home form (SPA probablement sur la mauvaise vue)"
-
-    # Page de détail riche (produit, événement, concert)
-    if any(tok in lower for tok in _BROWSER_SURFACE_DETAIL_PAGE_HINTS):
-        return "detail_page", "page de détail produit/événement détectée"
-
-    if _has_contact and not _has_password:
-        return "contact_form", "formulaire de contact ou newsletter détecté"
-
-    if (
-        previous_surface == "auth_form"
-        and _has_form_ctrl
-        and _looks_like_terse_action_confirmation
-        and not _has_contact
-    ):
-        return "auth_form", "confirmation d'action sur une vue d'auth déjà établie"
-
-    if _has_form_ctrl:
-        return "public_form", "surface de formulaire remplissable détectée"
-
-    if any(tok in lower for tok in _BROWSER_SURFACE_ERROR_HINTS):
-        return "error_page", "surface d'erreur détectée"
-
-    if previous_surface and previous_surface in BROWSER_SURFACE_TYPES:
-        return previous_surface, f"surface héritée depuis l'état précédent ({previous_surface})"
-
-    return "normal_content", "contenu standard sans signal fort"
-
-
-def _browser_surface_mismatch(surface: str, query: str) -> "tuple[bool, str]":
-    """Détecte les mésalignements surface ↔ objectif utilisateur les plus utiles."""
-    q = (query or "").lower()
-    wants_form_fill = any(tok in q for tok in _BROWSER_SURFACE_FILL_FORM_HINTS)
-    wants_auth = any(tok in q for tok in _BROWSER_SURFACE_AUTH_HINTS)
-
-    if surface == "builder_editor" and wants_form_fill:
-        return True, "tu es dans un éditeur/builder, pas dans un formulaire public remplissable"
-    if surface == "login_wall" and not wants_auth:
-        return True, "la page exige une connexion alors que la tâche ne demande pas une authentification"
-    # Mismatch auth_form ↔ contact_form
-    if surface == "contact_form" and wants_auth:
-        return True, "tu es sur un formulaire de contact, pas un formulaire de connexion — cherche la page /login ou /connexion"
-    if surface == "auth_form" and wants_form_fill and not wants_auth:
-        return True, "tu es sur un formulaire de connexion, pas un formulaire de contact public remplissable"
-    # NOTE: le cas public_form+wants_auth est intentionnellement supprimé : trop de faux positifs
-    # (Perplexity, formulaires génériques) car wants_auth match sur "connexion"/"compte" très courants.
-    # Les vrais mismatches auth sont couverts par auth_form/contact_form/login_wall.
-    return False, ""
-
-
-def _browser_is_auth_intent(query: str) -> bool:
-    q = (query or "").lower()
-    return any(tok in q for tok in _BROWSER_SURFACE_AUTH_HINTS.union({
-        "mot de passe", "password", "oublié", "oublie", "forgot password",
-    }))
-
-
-def _extract_browser_auth_target(obs_text: str) -> Optional[tuple[str, str]]:
-    """Extrait un lien/bouton de connexion visible depuis browser_dom_state."""
-    if not obs_text:
-        return None
-    auth_tokens = (
-        "connexion", "connecter", "se connecter", "login",
-        "log in", "sign in", "authentification",
-    )
-    for line in obs_text.splitlines():
-        m = re.match(r'^\[(\d+)\]\s+(link|button)\s+"([^"]+)"', line.strip(), re.IGNORECASE)
-        if not m:
-            continue
-        label = m.group(3).strip()
-        lower = label.lower()
-        if any(tok in lower for tok in auth_tokens):
-            return m.group(1), label
-    return None
-
-
-def _extract_browser_textbox_target(
-    obs_text: str,
-    *,
-    index: Optional[str] = None,
-) -> Optional[tuple[str, str, str]]:
-    """Extrait un champ texte visible depuis browser_dom_state.
-
-    Retourne (index, role, label) si l'élément ciblé est un champ texte.
-    """
-    if not obs_text:
-        return None
-    wanted = str(index).strip() if index is not None else ""
-    text_roles = {"textbox", "searchbox", "combobox", "spinbutton", "textarea"}
-    fallback = None
-    for line in obs_text.splitlines():
-        m = re.match(r'^\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
-        if not m:
-            m = re.search(r'\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
-            if not m:
-                continue
-        idx, role, label = m.group(1), m.group(2).lower(), m.group(3).strip()
-        if role not in text_roles:
-            continue
-        if wanted and idx == wanted:
-            return idx, role, label
-        if fallback is None:
-            fallback = (idx, role, label)
-    return fallback
-
-
-def _extract_browser_textbox_targets(obs_text: str) -> list[tuple[str, str, str]]:
-    """Retourne tous les champs texte visibles depuis browser_dom_state."""
-    if not obs_text:
-        return []
-    text_roles = {"textbox", "searchbox", "combobox", "spinbutton", "textarea"}
-    matches: list[tuple[str, str, str]] = []
-    for line in obs_text.splitlines():
-        m = re.match(r'^\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
-        if not m:
-            m = re.search(r'\[(\d+)\]\s+([a-z_]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
-            if not m:
-                continue
-        idx, role, label = m.group(1), m.group(2).lower(), m.group(3).strip()
-        if role in text_roles:
-            matches.append((idx, role, label))
-    return matches
-
-
-
-
-def _browser_rewrite_human_navigation_action(
-    tool_name: str,
-    tool_args: Dict[str, Any],
-    *,
-    query: str,
-    last_surface: str,
-    last_observation: str,
-) -> Optional[tuple[str, Dict[str, Any], str]]:
-    """Préférence au clic réel sur le web avant une renavigation auth redondante."""
-    if tool_name != "browser_navigate":
-        return None
-    if last_surface != "contact_form":
-        return None
-    if not _browser_is_auth_intent(query):
-        return None
-    target_url = str((tool_args or {}).get("url", "")).lower()
-    if not any(seg in target_url for seg in _BROWSER_SURFACE_AUTH_FORM_URL_SEGMENTS):
-        return None
-    auth_target = _extract_browser_auth_target(last_observation)
-    if not auth_target:
-        return None
-    idx, label = auth_target
-    return (
-        "browser_click_index",
-        {"index": idx},
-        f"préférence au clic réel sur [{idx}] {label!r} avant une renavigation auth redondante",
-    )
-
-
-def _browser_rewrite_text_entry_action(
-    tool_name: str,
-    tool_args: Dict[str, Any],
-    *,
-    last_observation: str,
-) -> Optional[tuple[str, Dict[str, Any], str]]:
-    """Réécrit les faux clics de saisie en vrai type_index.
-
-    Cas réel vu dans les logs:
-    - le modèle appelle browser_click_index sur un textbox
-    - avec `text` ou `value` en argument parasite
-    - le registry supprime l'arg, donc rien n'est écrit
-    """
-    if tool_name != "browser_click_index":
-        return None
-    if not tool_args:
-        return None
-    idx = str(tool_args.get("index", "")).strip()
-    if not idx:
-        return None
-    text_value = tool_args.get("text")
-    if text_value is None:
-        text_value = tool_args.get("value")
-    if text_value is None:
-        return None
-    text_value = str(text_value).strip()
-    if not text_value:
-        return None
-    textbox = _extract_browser_textbox_target(last_observation, index=idx)
-    if textbox is None:
-        return None
-    _tb_idx, role, label = textbox
-    return (
-        "browser_type_index",
-        {"index": _tb_idx, "text": text_value},
-        f"saisie détectée sur [{_tb_idx}] {role} {label!r} — conversion du faux clic en browser_type_index",
-    )
-
-
-_BROWSER_CLICK_ONLY_ROLES: frozenset[str] = frozenset({
-    "radio", "checkbox", "button", "submit button",
-    "menuitem", "option", "tab", "switch",
-})
-
-
-def _browser_rewrite_type_to_click_for_ctrl(
-    tool_name: str,
-    tool_args: Dict[str, Any],
-    *,
-    last_observation: str,
-) -> Optional[tuple[str, Dict[str, Any], str]]:
-    """Réécrit browser_type_index en browser_click_index quand la cible est un contrôle non-texte.
-
-    Cas réel vu dans les logs :
-      browser_type_index(index=3, text="oui") sur un radio → playwright rejette la saisie
-      car les radios/checkboxes/boutons ne sont pas des champs texte.
-
-    Ne s'applique que si l'index ciblé est explicitement reconnu comme un contrôle
-    non-texte dans la dernière observation.
-    """
-    if tool_name != "browser_type_index":
-        return None
-    if not tool_args:
-        return None
-    idx = str(tool_args.get("index", "")).strip()
-    if not idx:
-        return None
-    if not last_observation:
-        return None
-    # Chercher l'élément ciblé dans l'observation
-    for line in last_observation.splitlines():
-        m = re.match(r'^\[(\d+)\]\s+([a-z_\s]+)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
-        if not m:
-            m = re.search(r'\[(\d+)\]\s+([a-z_\s]+?)\s+"([^"]*)"', line.strip(), re.IGNORECASE)
-            if not m:
-                continue
-        line_idx, role, label = m.group(1), m.group(2).strip().lower(), m.group(3).strip()
-        if line_idx != idx:
-            continue
-        if role in _BROWSER_CLICK_ONLY_ROLES or any(
-            ctrl in role for ctrl in ("radio", "checkbox", "button", "submit")
-        ):
-            return (
-                "browser_click_index",
-                {"index": idx},
-                f"réécriture type→click sur [{idx}] {role} {label!r} — les contrôles {role} s'activent par clic, pas par saisie",
-            )
-        break  # index trouvé mais c'est un champ texte → pas de réécriture
-    return None
-
-
-def _browser_rewrite_index_like_selector_action(
-    tool_name: str,
-    tool_args: Dict[str, Any],
-) -> Optional[tuple[str, Dict[str, Any], str]]:
-    """Réécrit un faux sélecteur CSS `[12]` vers les outils DOM indexés.
-
-    Cas réel vu dans les logs :
-      browser_type(selector='[16]', text='LumenaAI')
-    alors que `[16]` représente l'index DOM exposé par browser_dom_state,
-    pas un sélecteur CSS valide.
-    """
-    if tool_name not in {"browser_type", "browser_click", "browser_select"}:
-        return None
-    selector = str((tool_args or {}).get("selector", "")).strip()
-    if not selector:
-        return None
-    match = re.fullmatch(r"\[(\d+)\]", selector)
-    if match is None:
-        return None
-    idx = match.group(1)
-    if tool_name == "browser_select":
-        # LOT Z19 — run « Pelage » (2026-08-17) : browser_select(selector='[9]',
-        # label='Marie Curie', by='index') → Playwright lève « '[9]' is not a
-        # valid selector ». Le mécanisme de conversion existait déjà pour
-        # browser_type et browser_click ; il manquait la troisième branche.
-        # Attention au collision de noms : le `index` de browser_select désigne
-        # le RANG DE L'OPTION, pas l'index DOM — il devient `option_index`.
-        args: Dict[str, Any] = {"index": idx}
-        for _src, _dst in (("label", "label"), ("value", "value"), ("index", "option_index")):
-            if _src in (tool_args or {}):
-                args[_dst] = (tool_args or {})[_src]
-        return (
-            "browser_select_index",
-            args,
-            f"sélecteur '{selector}' reconnu comme index DOM [{idx}] — conversion vers browser_select_index",
-        )
-    if tool_name == "browser_type":
-        if "text" not in (tool_args or {}):
-            return None
-        return (
-            "browser_type_index",
-            {"index": idx, "text": tool_args.get("text", "")},
-            f"sélecteur '{selector}' reconnu comme index DOM [{idx}] — conversion vers browser_type_index",
-        )
-    return (
-        "browser_click_index",
-        {"index": idx},
-        f"sélecteur '{selector}' reconnu comme index DOM [{idx}] — conversion vers browser_click_index",
-    )
-
-
-def _browser_rewrite_selector_guess_to_index_action(
-    tool_name: str,
-    tool_args: Dict[str, Any],
-    *,
-    last_surface: str,
-    last_observation: str,
-) -> Optional[tuple[str, Dict[str, Any], str]]:
-    """Convertit un browser_type à sélecteur deviné vers browser_type_index.
-
-    Cas réel vu dans les logs :
-      - browser_dom_state expose un unique textbox [10] "Ask anything"
-      - le modèle tente browser_type(selector='textarea[aria-label="Ask anything"]', ...)
-      - ou browser_type(selector='text=Ask anything', ...)
-      - alors que le chemin robuste attendu est browser_type_index(index=10, ...)
-    """
-    if tool_name != "browser_type":
-        return None
-    if last_surface not in {"chat_composer", "public_form", "auth_form", "contact_form"}:
-        return None
-    text_value = str((tool_args or {}).get("text", "") or "").strip()
-    if not text_value:
-        return None
-    selector = str((tool_args or {}).get("selector", "") or "").strip()
-    if not selector:
-        return None
-    if re.fullmatch(r"\[(\d+)\]", selector):
-        return None
-
-    selector_lower = selector.lower()
-    heuristic_tokens = (
-        "textarea",
-        "textbox",
-        "contenteditable",
-        "prosemirror",
-        "ask anything",
-        "text=",
-        '[role="textbox"]',
-        "[role='textbox']",
-    )
-    if not any(token in selector_lower for token in heuristic_tokens):
-        return None
-
-    textboxes = _extract_browser_textbox_targets(last_observation)
-    if len(textboxes) != 1:
-        return None
-    idx, role, label = textboxes[0]
-    return (
-        "browser_type_index",
-        {"index": idx, "text": text_value},
-        f"sélecteur browser guessed '{selector}' — conversion vers browser_type_index sur [{idx}] {role} {label!r}",
-    )
-
-
-def _extract_sendkeys_payload(command: str) -> Optional[str]:
-    """Extrait le texte envoyé par un script Windows SendKeys/SendWait."""
-    if not command:
-        return None
-    patterns = (
-        r"SendKeys\(\s*'([^']+)'\s*\)",
-        r'SendKeys\(\s*"([^"]+)"\s*\)',
-        r"SendWait\(\s*'([^']+)'\s*\)",
-        r'SendWait\(\s*"([^"]+)"\s*\)',
-    )
-    for pattern in patterns:
-        m = re.search(pattern, command, re.IGNORECASE)
-        if m:
-            payload = m.group(1).strip()
-            if payload:
-                return payload
-    return None
-
-
-def _browser_rewrite_system_typing_action(
-    tool_name: str,
-    tool_args: Dict[str, Any],
-    *,
-    last_observation: str,
-    last_textbox_index: str = "",
-) -> Optional[tuple[str, Dict[str, Any], str]]:
-    """Remplace les SendKeys système par une vraie saisie Playwright.
-
-    Les logs ont montré que cette voie dépend du clavier Windows
-    (Caps Lock/layout/focus) et contourne inutilement Playwright.
-    """
-    if tool_name != "run_command":
-        return None
-    command = str((tool_args or {}).get("command", "")).strip()
-    if not command:
-        return None
-    payload = _extract_sendkeys_payload(command)
-    if payload is None:
-        return None
-    textbox = None
-    if last_textbox_index:
-        textbox = _extract_browser_textbox_target(last_observation, index=last_textbox_index)
-        if textbox is None:
-            return (
-                "browser_type_index",
-                {"index": str(last_textbox_index), "text": payload},
-                f"commande système SendKeys détectée — conversion vers browser_type_index sur le dernier champ texte ciblé [{last_textbox_index}]",
-            )
-    if textbox is None:
-        textbox = _extract_browser_textbox_target(last_observation)
-    if textbox is None:
-        return None
-    idx, role, label = textbox
-    return (
-        "browser_type_index",
-        {"index": idx, "text": payload},
-        f"commande système SendKeys détectée — conversion vers browser_type_index sur [{idx}] {role} {label!r}",
-    )
-
-
-def _extract_browser_interactive_count(obs_text: str) -> Optional[int]:
-    """Extrait le nombre d'éléments interactifs depuis une observation browser."""
-    if not obs_text:
-        return None
-    m = re.search(r"Interactive elements:\s*(\d+)", obs_text, re.IGNORECASE)
-    if not m:
-        return None
-    try:
-        return int(m.group(1))
-    except Exception:
-        return None
-
-
-def _extract_browser_form_state(obs_text: str) -> Optional[tuple]:
-    """Extrait l'état de formulaire depuis une observation browser.
-
-    Format attendu : "Form state: filled=X, checked=Y, disabled_buttons=Z,
-                      enabled_submit_buttons=W, controls=V"
-
-    Retourne (filled, checked, disabled_buttons, enabled_submit_buttons, controls) ou None.
-    """
-    if not obs_text:
-        return None
-    m = re.search(
-        r"Form state:\s*filled=(\d+),\s*checked=(\d+),\s*disabled_buttons=(\d+)"
-        r",\s*enabled_submit_buttons=(\d+),\s*controls=(\d+)",
-        obs_text,
-        re.IGNORECASE,
-    )
-    if not m:
-        return None
-    try:
-        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
-                int(m.group(4)), int(m.group(5)))
-    except Exception:
-        return None
-
-
-def _make_browser_progress_signature(
-    surface: str,
-    obs_text: str,
-    *,
-    current_url: str = "",
-    page_title: str = "",
-    previous: Optional[tuple] = None,
-) -> tuple:
-    """Construit une signature stable pour mesurer la progression browser.
-
-    Structure 6-tuple :
-      (surface, url, title, interactive_bucket, form_state, extra_signal)
-
-    Les champs manquants réutilisent le précédent état pour éviter les faux
-    no-progress sur `browser_screenshot` pur.
-    Rétrocompatible avec les anciens 4-tuples en entrée (previous).
-    """
-    if previous is None:
-        prev_surface, prev_url, prev_title = "", "", ""
-        prev_bucket, prev_form, prev_extra = None, None, None
-    else:
-        prev_surface = previous[0] if len(previous) > 0 else ""
-        prev_url     = previous[1] if len(previous) > 1 else ""
-        prev_title   = previous[2] if len(previous) > 2 else ""
-        prev_bucket  = previous[3] if len(previous) > 3 else None
-        prev_form    = previous[4] if len(previous) > 4 else None
-        prev_extra   = previous[5] if len(previous) > 5 else None
-
-    _count = _extract_browser_interactive_count(obs_text)
-    _bucket = None if _count is None else _count // 10
-    _form = _extract_browser_form_state(obs_text)
-
-    return (
-        surface or prev_surface or "unknown",
-        current_url or prev_url or "",
-        page_title or prev_title or "",
-        _bucket if _bucket is not None else prev_bucket,
-        _form if _form is not None else prev_form,
-        prev_extra,
-    )
-
-
-_BROWSER_EVALUATE_MUTATION_RE = re.compile(
-    r"\.click\s*\(|\.dispatchEvent\s*\(|\bdispatchEvent\s*\(|"
-    r"\brequestSubmit\s*\(|\.value\s*=|\bKeyboardEvent\s*\(|\bMouseEvent\s*\(",
-    re.IGNORECASE,
-)
-_BROWSER_INTERACTION_STATE_KEYS = frozenset({
-    "activecount", "after", "before", "changed", "checked", "classname",
-    "classes", "counter", "countertext", "grid", "movecount", "moves",
-    "position", "positions", "score", "selected", "state", "states", "value",
-})
-_BROWSER_EVALUATE_ERROR_MARKERS = (
-    "typeerror", "syntaxerror", "referenceerror", "cannot read", "is not defined",
-    "is not a function", "evaluation failed", "js error",
-)
-
-
-def _browser_evaluate_payload(observation_text: str) -> Any:
-    """Extract the structured value returned by a successful browser_evaluate."""
-    text = str(observation_text or "").strip()
-    folded = "".join(
-        char for char in unicodedata.normalize("NFKD", text)
-        if not unicodedata.combining(char)
-    ).lower()
-    if not text or any(marker in folded for marker in _BROWSER_EVALUATE_ERROR_MARKERS):
-        return None
-    if "\u2705" not in text and "js execute" not in folded:
-        return None
-
-    payload_text = text.split("\u2192", 1)[-1].strip() if "\u2192" in text else text
-    starts = [index for index in (payload_text.find("{"), payload_text.find("[")) if index >= 0]
-    if not starts:
-        return None
-    start = min(starts)
-    opener = payload_text[start]
-    end = payload_text.rfind("}" if opener == "{" else "]")
-    if end < start:
-        return None
-    candidate = payload_text[start:end + 1]
-    for loader in (json.loads, ast.literal_eval):
-        try:
-            return loader(candidate)
-        except (TypeError, ValueError, SyntaxError):
-            continue
-    return None
-
-
-def _browser_payload_has_dynamic_state(payload: Any) -> bool:
-    if isinstance(payload, dict):
-        for raw_key, value in payload.items():
-            key = re.sub(r"[^a-z0-9]", "", str(raw_key).lower())
-            is_dynamic_key = key in _BROWSER_INTERACTION_STATE_KEYS or any(
-                key.startswith(root) and len(key) > len(root)
-                for root in _BROWSER_INTERACTION_STATE_KEYS
-            )
-            if is_dynamic_key and value not in (None, "", [], {}):
-                return True
-            if _browser_payload_has_dynamic_state(value):
-                return True
-    elif isinstance(payload, (list, tuple)):
-        return any(_browser_payload_has_dynamic_state(item) for item in payload)
-    return False
-
-
-def _browser_evaluate_proves_interaction(script: str, observation_text: str) -> bool:
-    """Require both a browser mutation and a concrete dynamic-state observation."""
-    if not _BROWSER_EVALUATE_MUTATION_RE.search(str(script or "")):
-        return False
-    payload = _browser_evaluate_payload(observation_text)
-    return payload is not None and _browser_payload_has_dynamic_state(payload)
-
-
-_BROWSER_USER_MUTATION_TOOLS = frozenset({
-    "browser_click", "browser_click_index", "browser_click_smart",
-    "browser_type", "browser_type_index", "browser_select",
-    "browser_press_key", "browser_check", "browser_uncheck",
-})
-_BROWSER_STATE_READ_TOOLS = frozenset({
-    "browser_get_content", "browser_dom_state", "browser_read", "browser_extract",
-})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ── LOT Z20 — une action en attente ne survit pas à ce qui rebâtit la page ───
 #
 # Run « Créneau » (2026-08-17). Déroulé exact, au log :
@@ -1901,267 +926,20 @@ _INTERACTION_PROOF_INVALIDATORS = frozenset({
 })
 
 
-_BROWSER_CLICK_TOOLS = frozenset({
-    "browser_click", "browser_click_index", "browser_click_smart",
-})
-# LOT M1 (run CaveÀVin 2026-08-14) — la trace d'un clic nomme le TYPE d'élément
-# atteint : `✅ Clic sur [1] link "S'inscrire" … → navigation vers /register`.
-_LINK_CLICK_RE = re.compile(r"clic\s+sur\s+\[?\d*\]?\s*link\b", re.IGNORECASE)
 
 
-def _browser_click_is_link_navigation(tool_name: str, observation: str) -> bool:
-    """LOT M1 (run CaveÀVin 2026-08-14) — un clic sur un LIEN change de page ; ce
-    n'est PAS une interaction produit.
-
-    CaveÀVin a été clôturée en pleine vérification : le lead a cliqué « S'inscrire »
-    (un `<a>`), lu le DOM du formulaire — DOM différent, donc `dom_delta` a posé
-    `local_preview_interaction_proven` — et le FINALIZE est tombé 2 s plus tard.
-    Aucun champ rempli, aucun compte créé, aucune bouteille ajoutée, alors que
-    l'objectif exigeait « inscription → connexion → ajout → liste ».
-
-    `browser_proven` dépend entièrement de ce flag quand l'objectif réclame une
-    interaction (cf. `_mission_completion_evidence`), d'où la clôture prématurée.
-
-    Un clic sur un `button` (soumettre un formulaire) reste une vraie mutation,
-    même s'il provoque une redirection : c'est le TYPE d'élément qui tranche, pas
-    le fait de naviguer.
-    """
-    if str(tool_name or "") not in _BROWSER_CLICK_TOOLS:
-        return False
-    return bool(_LINK_CLICK_RE.search(str(observation or "")))
 
 
-def _browser_state_fingerprint(text: str) -> str:
-    """Stable compact fingerprint for a browser state observation."""
-    # A form submitted without ``preventDefault`` can merely append its values
-    # to the URL and reload the exact same empty DOM.  That is navigation, not
-    # proof that the requested UI result/state changed.  Keep URL tracking in
-    # the browser progress guard, but exclude it from interaction authority.
-    stable_text = re.sub(
-        r"^URL:\s*.*$", "", str(text or ""), flags=re.IGNORECASE | re.MULTILINE
-    )
-    normalized = re.sub(r"\s+", " ", stable_text).strip().lower()
-    if not normalized:
-        return ""
-    return hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()
 
 
-def _manual_browser_flow_proves_interaction(
-    previous_fingerprint: str,
-    *,
-    mutation_seen: bool,
-    current_observation: str,
-) -> bool:
-    """Proof = prior DOM read + real user action + a different subsequent DOM read."""
-    current = _browser_state_fingerprint(current_observation)
-    return bool(
-        previous_fingerprint
-        and mutation_seen
-        and current
-        and current != previous_fingerprint
-    )
 
 
-def _advance_manual_browser_flow(
-    previous_fingerprint: str,
-    *,
-    mutation_pending: bool,
-    tool_name: str,
-    observation: str,
-) -> tuple[bool, str, bool]:
-    """Advance strict proof without discarding an unobserved user action.
-
-    A click/type acknowledgement does not include the resulting static text.
-    The first follow-up DOM read may expose only interactive controls, so keep
-    the action pending until a later state read actually differs.
-    """
-    tool = str(tool_name or "")
-    # LOT M1 — un clic sur un LIEN n'arme PAS la preuve d'interaction : changer de
-    # page n'est pas agir sur le produit (run CaveÀVin).
-    _real_user_mutation = (
-        tool in _BROWSER_USER_MUTATION_TOOLS
-        and not _browser_click_is_link_navigation(tool, observation)
-    )
-    pending = bool(mutation_pending or _real_user_mutation)
-    fingerprint = str(previous_fingerprint or "")
-    proven = False
-    if tool in _BROWSER_STATE_READ_TOOLS:
-        proven = _manual_browser_flow_proves_interaction(
-            fingerprint,
-            mutation_seen=pending,
-            current_observation=observation,
-        )
-        current = _browser_state_fingerprint(observation)
-        if current:
-            fingerprint = current
-        if proven:
-            pending = False
-    return proven, fingerprint, pending
 
 
-def _browser_progress_delta(
-    previous_sig: Optional[tuple],
-    current_sig: tuple,
-    *,
-    action_tool: str = "",
-    observation_text: str = "",
-) -> "tuple[bool, str]":
-    """Détermine si le browser progresse réellement entre deux états.
-
-    Accepte des 4-tuples ou 6-tuples (rétrocompatible).
-    """
-    if previous_sig is None:
-        return True, "premier état browser"
-
-    prev_surface = previous_sig[0] if len(previous_sig) > 0 else ""
-    prev_url     = previous_sig[1] if len(previous_sig) > 1 else ""
-    prev_title   = previous_sig[2] if len(previous_sig) > 2 else ""
-    prev_bucket  = previous_sig[3] if len(previous_sig) > 3 else None
-    prev_form    = previous_sig[4] if len(previous_sig) > 4 else None
-    prev_extra   = previous_sig[5] if len(previous_sig) > 5 else None
-
-    cur_surface = current_sig[0] if len(current_sig) > 0 else ""
-    cur_url     = current_sig[1] if len(current_sig) > 1 else ""
-    cur_title   = current_sig[2] if len(current_sig) > 2 else ""
-    cur_bucket  = current_sig[3] if len(current_sig) > 3 else None
-    cur_form    = current_sig[4] if len(current_sig) > 4 else None
-    cur_extra   = current_sig[5] if len(current_sig) > 5 else None
-
-    if cur_surface != prev_surface:
-        return True, f"surface changée ({prev_surface} → {cur_surface})"
-    if cur_url and prev_url and cur_url != prev_url:
-        return True, "url changée"
-    if cur_title and prev_title and cur_title != prev_title:
-        return True, "titre changé"
-    if action_tool == "browser_navigate" and cur_surface == prev_surface and cur_url and prev_url and cur_url == prev_url:
-        return False, "renavigation vers la même URL sans changement visible (SPA probable)"
-    if (
-        cur_bucket is not None and prev_bucket is not None
-        and cur_bucket != prev_bucket
-        and action_tool in BROWSER_ACTION_TOOLS.union({"browser_frames", "browser_frame_content"})
-    ):
-        return True, "densité interactive changée"
-
-    if observation_text:
-        obs_lower = observation_text.lower()
-        if action_tool in ("browser_click", "browser_click_index", "browser_click_smart") and _browser_observation_is_auxiliary_action(
-            action_tool, observation_text
-        ):
-            return False, "clic auxiliaire sans progression métier"
-        if action_tool == "browser_keyboard_press" and (
-            "soumission n'est probablement pas partie" in obs_lower
-            or "enter n'a pas finalise l'envoi" in obs_lower
-        ):
-            return False, "enter n'a pas provoque de soumission utile"
-
-    # Progression d'état de formulaire
-    if cur_form is not None and prev_form is not None and len(cur_form) >= 4:
-        cur_filled, cur_checked, _cur_dis, cur_submit = cur_form[:4]
-        prev_filled, prev_checked, _prev_dis, prev_submit = prev_form[:4]
-        if cur_filled > prev_filled:
-            return True, "champs remplis en progression"
-        if cur_checked > prev_checked:
-            return True, "cases cochées en progression"
-        if cur_submit > prev_submit:
-            return True, "bouton de soumission activé"
-
-    # Progression détectée via le texte d'observation (typage / case à cocher / navigation)
-    if observation_text:
-        if action_tool in ("browser_type", "browser_type_index"):
-            if (
-                "echec de saisie" in obs_lower
-                or "valeur persistante:" in obs_lower
-                or "valeur actuelle:" in obs_lower
-            ):
-                return False, "saisie non persistante ou explicitement en echec"
-            if "soumission non prete" in obs_lower:
-                return False, "saisie non confirmee par l'interface"
-            if "✅" in observation_text or "typed" in obs_lower or "saisi" in obs_lower:
-                return True, "saisie dans un champ réussie"
-        if action_tool in ("browser_click", "browser_click_index", "browser_click_smart"):
-            if "checkbox" in obs_lower or "case" in obs_lower:
-                if "✅" in observation_text or "checked" in obs_lower or "coché" in obs_lower:
-                    return True, "case à cocher activée"
-            # Un clic sur un lien est une navigation — toujours progrès
-            if " link " in obs_lower and ("✅ clic" in obs_lower or "✅ clic" in observation_text):
-                return True, "clic sur un lien (navigation probable)"
-            if ("envoyer le code" in obs_lower or "send code" in obs_lower) and "✅" in observation_text:
-                return True, "soumission de code de vérification tentée"
-
-        # browser_evaluate : contenu réel = progrès, bruit JS = pas de progrès
-        if action_tool == "browser_evaluate":
-            _eval_real = {
-                "date", "lieu", "prix", "tarif", "billetterie", "concert",
-                "événement", "evenement", "spectacle", "artiste", "salle",
-                "disponible", "réservation", "reservation", "€", "$",
-                "titre", "description", "horaire", "programme",
-            }
-            _eval_noise = {
-                "undefined", "null", "typeerror", "syntaxerror", "referenceerror",
-                "cannot read", "is not a function", "is not defined",
-                "[object object]", "nan", "infinity",
-            }
-            _has_real = any(tok in obs_lower for tok in _eval_real)
-            _has_noise = any(tok in obs_lower for tok in _eval_noise)
-            if "✅" in observation_text and _has_real and not _has_noise:
-                return True, "browser_evaluate retourne du contenu réel (date/lieu/prix/…)"
-            if _has_noise and not _has_real:
-                return False, "browser_evaluate retourne du bruit JS (erreur ou undefined)"
-
-        # browser_dismiss_popups / browser_accept_cookies : dismiss réussi = progrès
-        if action_tool in ("browser_dismiss_popups", "browser_accept_cookies"):
-            if ("✅" in observation_text or "dismissed" in obs_lower
-                    or "fermé" in obs_lower or "accepté" in obs_lower
-                    or "closed" in obs_lower):
-                return True, "overlay/cookie éliminé — page devenue plus accessible"
-
-    # Progression listing : annonce cliquée ou nombre de labels changé
-    if cur_extra is not None and prev_extra is not None:
-        if len(cur_extra) >= 2 and len(prev_extra) >= 2 and cur_extra[1] != prev_extra[1]:
-            return True, "annonce cliquée (listing)"
-        if len(cur_extra) >= 3 and len(prev_extra) >= 3 and cur_extra[2] != prev_extra[2]:
-            return True, "nombre de labels changé (listing)"
-
-    return False, "même surface sans changement utile"
 
 
-def _browser_observation_has_failure(tool_name: str, observation_content: str) -> bool:
-    """Détecte les échecs browser usuels que classify_observation peut laisser passer."""
-    if not tool_name.startswith("browser_"):
-        return False
-    lower = (observation_content or "").lower()
-    if not lower.strip():
-        return False
-    failure_markers = (
-        "aucun élément trouvé",
-        "no element found",
-        "no element matched",
-        "paramètre(s) requis manquant",
-        "required parameter",
-        "invalid selector",
-        "element not found",
-        "élément introuvable",
-        "timed out",
-        "timeout",
-        "erreur:",
-        "failed to",
-    )
-    success_markers = ("✅", "succès", "success", "navigué vers", "clic sur", "texte tapé dans")
-    return any(tok in lower for tok in failure_markers) and not any(tok in lower for tok in success_markers)
 
 
-# ── Ensembles browser vision / action (module-level pour testabilité directe) ─
-# Outils qui redonnent un état visuel/structurel → reset du blind streak
-BROWSER_VISUAL_TOOLS: frozenset = frozenset({
-    "browser_screenshot",        # vue pixel complète
-    "browser_dom_state",         # liste indexée des éléments cliquables
-    "browser_get_content",       # HTML/texte brut de la page
-    "browser_frames",            # liste des iframes → état structurel
-    "browser_frame_content",     # contenu d'un frame → relecture visuelle
-    "browser_screenshot_labels", # screenshot + labels visuels enrichis
-    "browser_page_info",         # URL, titre, dimensions — état minimal
-    "browser_get_text",          # texte extrait — relecture structurelle
-})
 
 # Outils d'action (interactions) → incrémentent le blind streak
 BROWSER_SELF_VISUAL_ACTION_TOOLS: frozenset = frozenset({
@@ -2172,12 +950,6 @@ BROWSER_SELF_VISUAL_ACTION_TOOLS: frozenset = frozenset({
     "browser_type_index",
 })
 
-BROWSER_ACTION_TOOLS: frozenset = frozenset({
-    "browser_click", "browser_click_index", "browser_click_smart",
-    "browser_click_at", "browser_type", "browser_type_index",
-    "browser_navigate", "browser_hover", "browser_select",
-    "browser_keyboard_press", "browser_drag", "browser_drag_at",
-})
 
 # LOT Z23 — outils fermés une fois l'interactif jugé NON PROUVABLE sur une
 # preview locale. C'est ce verrou qui remplace le `return` : il casse la boucle
@@ -2193,110 +965,8 @@ _BROWSER_DRIFT_TOOLS: frozenset = frozenset({
 })
 
 
-def _local_preview_loop_decision(
-    is_local_preview: bool,
-    tool_name: str,
-    progressed: bool,
-    current_streak: int,
-    evaluate_asked: bool,
-    *,
-    warn_at: int = 3,
-    stop_at: int = 5,
-    interaction_proven: bool = False,
-    tool_succeeded: bool = True,
-) -> tuple:
-    """LOT 2.11.C/D — décision PURE sur une preview LOCALE servie par Lumena.
-
-    Cas racine (run memo) : sur un jeu/preview local, Lumena inspecte en boucle
-    (screenshot/dom_state) sans que rien ne progresse ; ces outils VISUELS ne
-    comptent pas dans `browser_no_progress_streak` (réservé aux vraies actions)
-    → aucun stop ne se déclenchait, boucle infinie sur un livrable pourtant servi.
-
-    Politique BORNÉE (pas d'arrêt bête, une méthode plus intelligente d'abord) :
-      - inspection visuelle répétée sans progrès → au bout de `warn_at`, on ESCALADE
-        UNE fois vers `browser_evaluate` (lire l'état JS concret : compteur de coups,
-        score, assertion DOM) ;
-      - si l'évaluation ne prouve toujours rien (ou `stop_at` atteint après escalade)
-        → STOP et conclusion HONNÊTE (« page servie, navigation OK, mais validation
-        interactive complète NON prouvée ») — jamais « jeu validé » sans preuve.
-
-    LOT R′ (run Cadran, 2026-08-14) — CE GARDE A COUPÉ UNE MISSION QUI AVAIT SA
-    PREUVE. Séquence exacte :
-
-        23:55:47  clic « Auteur » → L'Étranger/Camus devient Fahrenheit/Bradbury
-        23:55:56  les 8 lignes relues dans le nouvel ordre
-        23:56:03  browser_evaluate SANS paramètre `script` (appel mal formé)
-        23:56:10  browser_evaluate (test du thème) → STOP
-
-    La mission a conclu à 7 min 19 sur 60, sans avoir vérifié le thème persistant,
-    le responsive ni le clavier. Deux défauts, tous deux ici :
-
-    1. **La preuve n'entrait pas dans la décision.** `local_preview_interaction_proven`
-       est calculé, journalisé et persisté en métadonnée — mais APRÈS cet appel, et
-       sans jamais lui être transmis. Cause racine commune aux lots F→I : le fait
-       existait, était calculé… puis jeté avant la décision.
-    2. **Réclamer une preuve puis punir celui qui la fournit.** L'escalade demande
-       « fais un `browser_evaluate` » et le PREMIER qui suit coupait, quel que soit
-       son contenu — y compris celui qui apportait la preuve demandée.
-
-    ⚠️ Nuance qui sauve le cas d'origine : un `browser_evaluate` techniquement
-    réussi mais VIDE ne prouve rien. Sans le distinguer, le jeu memo reboucle à
-    l'infini. D'où deux faits distincts — `interaction_proven` (la preuve) et
-    `tool_succeeded` (l'appel a abouti) — et jamais l'un pour l'autre.
-
-    Retour : (action, new_streak, new_evaluate_asked) où
-      action ∈ {"none", "escalate", "stop"}.
-    Ne touche à AUCUN état ; le caller applique le résultat.
-    """
-    if not is_local_preview:
-        return ("none", 0, False)
-    if interaction_proven:
-        # L'interactif est DÉMONTRÉ : cette boucle n'a plus lieu d'être.
-        return ("none", 0, False)
-    if progressed:
-        # La boucle est cassée : un vrai progrès a eu lieu → on repart à zéro.
-        return ("none", 0, False)
-    is_evaluate = (tool_name or "") == "browser_evaluate"
-    is_visual = (tool_name or "") in BROWSER_VISUAL_TOOLS
-    # Seules l'inspection visuelle et l'évaluation alimentent ce compteur.
-    if not (is_visual or is_evaluate):
-        return ("none", current_streak, evaluate_asked)
-    if is_evaluate and not tool_succeeded:
-        # Appel mal formé (`script` manquant, JS invalide) : la tentative demandée
-        # par l'escalade n'a pas eu lieu. On ne la consomme pas — sinon un typo
-        # coûte la mission, ce qui est arrivé à 23:56:03.
-        return ("none", current_streak, evaluate_asked)
-    new_streak = current_streak + 1
-    # L'escalade a DÉJÀ été demandée et une évaluation ABOUTIE revient sans preuve
-    # → stop. C'est le cas memo : on a demandé l'état JS, il ne démontre rien.
-    if is_evaluate and evaluate_asked:
-        return ("stop", new_streak, True)
-    if new_streak >= stop_at and evaluate_asked:
-        return ("stop", new_streak, True)
-    if new_streak >= warn_at and not evaluate_asked:
-        return ("escalate", new_streak, True)
-    return ("none", new_streak, evaluate_asked)
 
 
-def _url_is_local_preview(url) -> bool:
-    """True si l'URL pointe une preview loopback ENREGISTRÉE par Lumena.
-
-    S'appuie sur le registre `utils.local_preview` (host loopback + port
-    enregistré, jamais l'IP LAN ni l'externe). Tolérant : toute erreur = False.
-    """
-    if not url:
-        return False
-    try:
-        from urllib.parse import urlparse
-        from ..utils.local_preview import is_preview_allowed
-        p = urlparse(str(url))
-        host = p.hostname
-        port = p.port
-        if port is None:
-            port = 443 if (p.scheme or "").lower() == "https" else 80
-        return bool(is_preview_allowed(host, port))
-    except Exception:
-        return False
 
 
 # V2.1 fix prod 2026-05-19 (rev 2) : marqueurs d'INTENTION dans un thought/réponse.
@@ -2310,375 +980,22 @@ from src.reasoning.final_guards import (  # noqa: F401
 )
 
 
-# V2.3 fix prod 2026-05-19 : marqueurs d'observation outil "tabulaire riche"
-# qui peut servir de fallback FINAL si le LLM ne fait que des promesses.
-_TABULAR_OBS_MARKERS: tuple = (
-    # markdown table
-    "\n|---", "|---|", "\n| ",
-    # data_workbench outputs
-    "Profil de `", "Lignes :", "Colonnes :", "Encoding :",
-    "Lignes scannées", "Matched :", "Retournées", "Valeurs distinctes",
-    "Group by :", "Agrégation",
-    # datagouv outputs
-    "datasets trouvés", "resources téléchargeables", "Téléchargé :",
-    "format détecté", "Hash MD5",
-)
 
 
-def _obs_looks_tabular(obs_content: str) -> bool:
-    """True si l'observation contient un livrable structuré exploitable.
-
-    Détecte les sorties data_workbench / datagouv qui peuvent servir de
-    réponse de secours si le LLM échoue à produire un FINAL exploitable.
-    """
-    if not obs_content or len(obs_content.strip()) < 80:
-        return False
-    n_markers = sum(1 for m in _TABULAR_OBS_MARKERS if m in obs_content)
-    return n_markers >= 2
 
 
-_TEST_RESULT_TOOL_NAMES: frozenset = frozenset({
-    "run_command", "run_shell", "exec_command", "process_status",
-})
-_TEST_RESULT_RE = re.compile(
-    r"(?im)(?:^|\s)(?:\d+\s+passed|\d+\s+failed|\d+\s+error(?:s)?|"
-    r"tests?\s+passed|tests?\s+failed)(?:\s|$)"
-)
 
 
-def _obs_looks_like_test_result(obs_content: str, tool_name: str) -> bool:
-    """True pour une preuve d'execution de tests, verte ou rouge.
-
-    Ce signal ne sert qu'au dernier fallback anti-THOUGHT : apres epuisement des
-    reformulations, mieux vaut livrer le resultat pytest reel que retourner une
-    reponse vide. Le tool gate evite de prendre une phrase LLM pour une preuve.
-    """
-    if (tool_name or "").strip().lower() not in _TEST_RESULT_TOOL_NAMES:
-        return False
-    content = (obs_content or "").strip()
-    if len(content) < 20:
-        return False
-    return bool(_TEST_RESULT_RE.search(content))
 
 
-def _should_repair_incomplete_final(
-    *,
-    stagnation_streak: int,
-    plan_business_complete: bool,
-    document_free_grounded: bool,
-    looks_incomplete: bool,
-) -> bool:
-    """Gate the generic final repair with stronger run-scoped proof."""
-    return bool(
-        stagnation_streak == 0
-        and not plan_business_complete
-        and not document_free_grounded
-        and looks_incomplete
-    )
 
 
-_PHASE27_MCP_LOOP_TOOLS: frozenset = frozenset({
-    "request_mcp_capability",
-    "request_mcp_ticket",
-    "run_mcp_autonomy",
-    "resume_mcp_task",
-    # Phase I-8 (Fix AL) : add_mcp était le SEUL outil du flux sans
-    # guidance — après `mcp_added` le LLM ne savait pas qu'il fallait
-    # enchaîner run_mcp_autonomy (observé runtime 2026-06-11 22:44 :
-    # errance discover_tools/python -c/API au lieu d'install+activate).
-    "add_mcp",
-})
 
 
-def _phase27_mcp_observation_guidance(tool_name: str, observation_content: str) -> Optional[str]:
-    """Return safe conversational guidance after a Phase 26 MCP loop tool.
-
-    The guidance is deterministic and read-only. It never executes approvals,
-    installs, activations, subprocesses, or catalog mutations.
-    """
-    if tool_name not in _PHASE27_MCP_LOOP_TOOLS:
-        return None
-    if not observation_content:
-        return None
-    try:
-        data = json.loads(observation_content)
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    payload = data.get("payload")
-    if not isinstance(payload, dict):
-        payload = {}
-    decision = str(data.get("decision") or payload.get("mapped_decision") or "").strip()
-    recommendation = str(payload.get("recommendation_code") or "").strip()
-    ticket_id = payload.get("proposed_ticket_action_id")
-    target_server_id = payload.get("target_server_id")
-
-    if recommendation in {
-        "use_existing",
-        "already_applied",
-        "autonomy_ready_to_use",
-        "resume_ready_to_use",
-    }:
-        return (
-            "MCP_LOOP_GUIDANCE: La capacite MCP semble deja disponible. "
-            "Continue la tache avec les outils visibles, sans creer de ticket. "
-            "Si un target_tool_name est fourni, appelle cet outil pour finir."
-        )
-    if recommendation == "mcp_github_no_package":
-        # Phase I-8 (Fix AS) : repo GitHub sans package npm/PyPI dans le
-        # README — Lumena n'installe jamais depuis les sources.
-        return (
-            "MCP_LOOP_GUIDANCE: Le README de ce repo GitHub ne mentionne "
-            "aucun package npm/PyPI installable. Lumena n'installe PAS "
-            "depuis les sources (registres uniquement, securite). Demande "
-            "a l'utilisateur le nom EXACT du package (npm:<nom> ou "
-            "pypi:<nom>) — n'invente JAMAIS un nom de package, et ne tente "
-            "JAMAIS git clone / pip / npm en shell."
-        )
-    if recommendation in {"mcp_added", "mcp_target_resolved"}:
-        # Phase I-8 (Fix AL) : add_mcp ne fait QUE cataloguer/resoudre.
-        # L'install + l'activation passent par run_mcp_autonomy.
-        if recommendation == "mcp_target_resolved":
-            return (
-                "MCP_LOOP_GUIDANCE: Cible resolue (dry-run, AUCUNE mutation). "
-                "Pour cataloguer reellement: add_mcp avec live=true et "
-                "confirmation_phrase=\"I-CONFIRM-ADD-MCP\" generee TOI-MEME."
-            )
-        next_hint = ""
-        if payload.get("approval_ticket_id"):
-            next_hint = (
-                " Un ticket d'approbation a ete cree: demande a "
-                "l'utilisateur de l'approuver dans MCP > Approbations puis "
-                "de dire 'fait'."
-            )
-        else:
-            next_hint = (
-                " AUCUN ticket a approuver (entree deja au catalogue ou "
-                "auto-acceptee) — ne demande PAS d'approbation a "
-                "l'utilisateur."
-            )
-        return (
-            "MCP_LOOP_GUIDANCE: Le package est au catalogue mais N'EST PAS "
-            "installe ni active — add_mcp ne fait que cataloguer."
-            + next_hint +
-            " Etape suivante OBLIGATOIRE: appelle run_mcp_autonomy("
-            "intent=\"utiliser <nom du package>\", live=true, "
-            "confirmation_phrase=\"I-CONFIRM-MCP-AUTONOMY\") qui enchaine "
-            "install + activation + enregistrement des tools. "
-            "JAMAIS pip/npm install en shell. Ne dis jamais que le MCP est "
-            "installe ou actif avant observation explicite."
-        )
-    if recommendation == "needs_local_creation":
-        return (
-            "MCP_LOOP_GUIDANCE: Une creation locale MCP est necessaire. "
-            "Si un ticket mcp_local_create vient d'etre approuve dans le panel, "
-            "ne cree pas un nouveau ticket: dis a l'utilisateur de cliquer "
-            "`Materialiser local MCP` dans MCP > Approvals/Decisions recentes, "
-            "puis de reprendre la demande. Sinon, appelle request_mcp_ticket "
-            "avec confirmation_phrase=\"I-CONFIRM-MCP-TICKET\" et live=true. "
-            "Ne dis jamais que le MCP est installe ou actif avant observation "
-            "explicite."
-        )
-    if recommendation in {
-        "needs_install_approval",
-        "needs_activation_approval",
-        "needs_catalog_approval",
-    }:
-        # Phase I-8 (Fix AH) : guidance vers run_mcp_autonomy (l'outil que
-        # le LLM A dans sa liste) avec SA phrase. L'ancienne guidance
-        # pointait request_mcp_ticket (hors liste) avec I-CONFIRM-MCP-TICKET
-        # → DeepSeek transposait la mauvaise phrase sur run_mcp_autonomy
-        # (observe runtime 2026-06-11 17:41, boucle confirmation_phrase_invalid).
-        # Phase I-8 (Fix AU.2) : guidance DIRECTIVE. L'ancien « Si
-        # l'utilisateur veut continuer » poussait DeepSeek a redemander
-        # un 'oui' alors que la demande initiale EST le consentement
-        # (observe runtime 2026-06-12 10:36 : install duckduckgo jamais
-        # lancee, l'utilisateur a du re-confirmer pour rien). Le gate
-        # humain reel est le ticket panel — le pipeline le redemandera
-        # lui-meme si necessaire.
-        return (
-            "MCP_LOOP_GUIDANCE: Une action MCP est necessaire et la "
-            "demande de l'utilisateur EST deja son accord. Rappelle "
-            "MAINTENANT run_mcp_autonomy avec le MEME intent, live=true et "
-            "confirmation_phrase=\"I-CONFIRM-MCP-AUTONOMY\" (la phrase "
-            "EXACTE de run_mcp_autonomy — pas une autre). "
-            "GENERE cette phrase TOI-MEME dans l'appel d'outil — ne demande "
-            "JAMAIS a l'utilisateur de la taper, et ne lui redemande PAS "
-            "un 'oui' : si une approbation humaine est requise, le systeme "
-            "creera un ticket et te le dira. Ne dis jamais que "
-            "le MCP est installe ou actif avant observation explicite. "
-            "N'utilise pas plan_create ni CodeAgent pour remplacer "
-            "le flux MCP."
-        )
-    if recommendation in {"ticket_would_be_proposed", "autonomy_would_run"}:
-        return (
-            "MCP_LOOP_GUIDANCE: Un ticket MCP serait cree en mode live. "
-            "Explique a l'utilisateur qu'une confirmation/admin UI est requise. "
-            "Ne tente aucune installation ni activation silencieuse."
-        )
-    if recommendation in {"ticket_proposed", "waiting_approval", "autonomy_ticket_created"}:
-        suffix = ""
-        if isinstance(ticket_id, str) and ticket_id:
-            suffix += f" ticket_id={ticket_id}."
-        if isinstance(target_server_id, str) and target_server_id:
-            suffix += f" server_id={target_server_id}."
-        return (
-            "MCP_LOOP_GUIDANCE: Ticket MCP pending. Dis a l'utilisateur de "
-            "l'approuver dans le panel MCP (MCP > Approbations) puis de te "
-            "dire simplement 'fait'. A ce moment-la, rappelle run_mcp_autonomy "
-            "avec le MEME intent qu'au depart, live=true et "
-            "confirmation_phrase=\"I-CONFIRM-MCP-AUTONOMY\" generee TOI-MEME "
-            "(ne demande JAMAIS a l'utilisateur de taper une phrase). "
-            "L'approbation du catalogue suffit : install et activation "
-            f"s'enchainent ensuite automatiquement.{suffix}"
-        )
-    if recommendation in {
-        "blocked",
-        "no_safe_path",
-        "phase24_unavailable",
-        "phase25_unavailable",
-        "live_requirements_not_met",
-        "confirmation_phrase_invalid",
-        "caller_kind_not_allowed",
-        "code_agent_out_of_scope",
-    } or decision == "blocked":
-        return (
-            "MCP_LOOP_GUIDANCE: Aucun chemin MCP safe n'a ete trouve. "
-            "Reponds honnetement avec le blocage utile, sans inventer de "
-            "capacite ni promettre une installation."
-        )
-    return None
 
 
-def _synthesize_response_from_observation(
-    obs_content: str, tool_name: str, original_query: str
-) -> Optional[str]:
-    """Construit une réponse FINAL minimale à partir d'une observation outil.
-
-    Utilisé uniquement quand le LLM échoue à reformuler une réponse après
-    plusieurs repairs. La réponse est explicitement marquée comme un fallback
-    pour que l'utilisateur sache que c'est une synthèse automatique.
-    """
-    if not (
-        _obs_looks_tabular(obs_content)
-        or _obs_looks_like_test_result(obs_content, tool_name)
-    ):
-        return None
-    # Bornes : 6 KB max
-    body = obs_content.strip()
-    if len(body) > 6000:
-        body = body[:6000] + "\n\n[…contenu tronqué…]"
-    tool_label = tool_name or "outil"
-    return (
-        f"Voici le résultat de `{tool_label}` :\n\n"
-        f"{body}\n\n"
-        f"_(Réponse générée à partir de la dernière observation outil — "
-        f"le LLM n'a pas produit de synthèse exploitable.)_"
-    )
 
 
-def _synthesize_mission_response_from_evidence(
-    evidence: Sequence[Tuple[str, str, bool]],
-) -> Optional[str]:
-    """Construit un bilan de mission depuis plusieurs preuves outil réussies.
-
-    Ce filet n'est utilisé qu'après épuisement des repairs anti-THOUGHT. Il ne
-    transforme jamais une simple navigation ou une observation en succès :
-    chaque section exige l'outil autoritatif correspondant et une observation
-    marquée comme réussie.
-    """
-    selected: Dict[str, str] = {}
-    for tool_name, raw_observation, success in evidence:
-        if not success:
-            continue
-        tool = str(tool_name or "").strip().lower()
-        observation = str(raw_observation or "").strip()
-        if not observation:
-            continue
-
-        if tool == "publish_mission_workspace":
-            first_block = re.split(
-                r"\n\s*(?:➡️|🌐|Prochaine étape)", observation, maxsplit=1
-            )[0]
-            selected["publication"] = first_block[:1400].strip()
-        elif tool == "run_command" and _obs_looks_like_test_result(observation, tool):
-            summaries = [
-                line.strip()
-                for line in observation.splitlines()
-                if re.search(r"\b(?:passed|failed|errors?)\b", line, re.IGNORECASE)
-            ]
-            if summaries:
-                selected["tests"] = summaries[-1][:500]
-        elif tool in {"generate_studio_document", "generate_studio_documents"}:
-            studio = observation
-            try:
-                payload = json.loads(observation)
-                if isinstance(payload, dict):
-                    filename = str(payload.get("filename") or "document")
-                    size = payload.get("size")
-                    verified = payload.get("render_verified") is True
-                    studio = (
-                        f"{filename} — rendu {'vérifié' if verified else 'généré'}"
-                        + (f" — {size} octets" if isinstance(size, (int, float)) else "")
-                    )
-            except (TypeError, ValueError, json.JSONDecodeError):
-                pass
-            selected["studio"] = studio[:800].strip()
-        elif (
-            tool == "browser_verify_local_project"
-            and "runtime web verify: ok" in observation.lower()
-        ):
-            useful = []
-            for line in observation.splitlines():
-                stripped = line.strip()
-                if (
-                    "Runtime web verify: OK" in stripped
-                    or stripped.startswith("URL:")
-                    or stripped.startswith("- title:")
-                    or stripped.startswith("Project:")
-                ):
-                    useful.append(stripped)
-            selected["browser"] = "\n".join(useful)[:900].strip()
-        elif tool == "delegate_and_wait":
-            # H7 (TEST RÉEL n°2, mission `uv` 2026-08-13) — ne garder que la
-            # PREMIÈRE LIGNE revenait à ne garder que l'en-tête « Délégation :
-            # 2/2 terminée(s) : » et à jeter ce qui suit : **les rapports des
-            # workers**, que l'observation présente pourtant comme « les
-            # LIVRABLES des workers ». Pour une mission de CODE, le livrable est
-            # sur le disque et le bilan pouvait rester maigre ; pour une mission
-            # d'EFFETS (H4), ce rapport EST le livrable — le mémo enregistré en
-            # mémoire n'apparaissait nulle part dans le bilan rendu.
-            # Même cap que « publication », qui garde déjà un bloc entier.
-            _deleg = observation.strip()
-            # Le footer de steering s'adresse au LEAD pendant le run ; il n'a
-            # aucun sens dans un bilan livré à l'utilisateur.
-            for _mark in ("\n\n➡️ Ce sont les LIVRABLES", "\n\n⛔ RÉSULTAT PARTIEL"):
-                _cut = _deleg.find(_mark)
-                if _cut > 0:
-                    _deleg = _deleg[:_cut].strip()
-            selected["delegation"] = _deleg[:1400].strip()
-
-    if not selected:
-        return None
-
-    labels = (
-        ("publication", "Livraison"),
-        ("tests", "Tests"),
-        ("studio", "Document Studio"),
-        ("browser", "Navigateur"),
-        ("delegation", "Délégation"),
-    )
-    parts = ["Mission terminée. Voici le bilan factuel issu des preuves enregistrées :"]
-    for key, label in labels:
-        value = selected.get(key)
-        if value:
-            parts.append(f"**{label}**\n{value}")
-    parts.append(
-        "_(Bilan de secours construit depuis les observations outil réussies : "
-        "aucune étape non prouvée n'est déclarée terminée.)_"
-    )
-    return "\n\n".join(parts)[:6000]
 
 
 # PG-1.a (run SkiLoc 2026-07-12) — outils dont un SUCCÈS est une PROGRESSION
@@ -2696,49 +1013,8 @@ _PG1_MUTATION_TOOLS = frozenset({
     "generate_studio_documents",
 })
 
-# LOT P3 (run HuffPack v2, 2026-08-14) — le compteur de RELECTURE n'était, lui,
-# jamais remis à zéro : il montait sur toute la durée de la mission, et trois
-# relectures du même fichier suffisaient à FORCER LE FINAL. Or forcer un FINAL
-# dans un tour de chat est bénin (on rend une réponse) ; dans une MISSION, c'est
-# la tuer.
-#
-# Timeline exacte du run :
-#   04:36  write_file  core.py          → écriture RÉUSSIE
-#   04:37  pytest      12 passed        → le codec est réparé
-#   04:38  edit_file   test_huffpack.py → écriture RÉUSSIE (4 tests ajoutés)
-#   04:38  pytest      16 passed, 1 failed  → un seuil à ajuster, rien de plus
-#   04:42  ⚠️ read_file stagnation — forçage FINAL (relectures=3)
-#          budget restant : 4 775 s = 79 MINUTES · aucun rapport, aucune publication
-#
-# Deux écritures réussies s'étaient intercalées sans faire redescendre le
-# compteur. C'est mot pour mot le défaut que PG-1.a a corrigé pour le compteur
-# de progression du plan (SkiLoc : « FINAL forcé avec 2 048 s de budget restant,
-# à une itération de la victoire »). On applique ici la même règle, plus un
-# garde-fou : tant qu'il reste du budget, une mission est REDIRIGÉE, pas achevée.
-_READ_STAGNATION_BUDGET_FLOOR_S: float = 300.0
 
 
-def read_stagnation_action(
-    *,
-    is_mission_run: bool,
-    budget_remaining_s: float,
-    shots_used: int,
-) -> str:
-    """« redirect » ou « end » face à une stagnation de lecture. Pur/testable.
-
-    Hors mission : toujours « end » — le comportement historique du chat ne
-    bouge pas d'un pouce. En mission : « redirect » une seule fois, et
-    uniquement s'il reste réellement du temps de travail.
-    """
-    if not is_mission_run:
-        return "end"
-    if int(shots_used or 0) >= 1:
-        return "end"
-    try:
-        remaining = float(budget_remaining_s)
-    except (TypeError, ValueError):
-        return "end"
-    return "redirect" if remaining > _READ_STAGNATION_BUDGET_FLOOR_S else "end"
 
 
 # LOT P2b — un livrable DÉJÀ LIVRÉ ne se réécrit pas en place depuis une mission.
@@ -2828,6 +1104,298 @@ def mission_write_targets_existing_deliverable(
     if not target:
         return False
     return ws not in target
+
+
+def _entree_porte_document(etat) -> "_EntreePorteDocument":
+    """Lot RF-5d2 — raccord de compatibilite pour la porte documentaire.
+
+    FONCTION DE MODULE, comme les trois precedentes.
+
+    Zero mutation : ce sous-lot n'en a plus. Les trois appelables propres
+    correspondent aux acces que les entrees precedentes ne couvraient pas.
+
+    `_task_plan` et `_is_mission_run` sont lus ici sous leur forme STRICTE —
+    celle qui leve si l'attribut manque — parce que c'est ce que faisait le
+    corps d'origine a ces endroits precis. Les formes gardees existent en
+    parallele dans l'entree catalogue : une seule ne peut pas rendre les deux.
+    """
+    return _EntreePorteDocument(
+        workflow=_entree_workflow_document(etat),
+        obtenir_plan_strict=lambda: etat._task_plan,
+        est_run_mission_strict=lambda: etat._is_mission_run,
+        obtenir_outils=lambda: etat.tools,
+    )
+
+
+def _entree_workflow_document(etat) -> "_EntreeWorkflowDocument":
+    """Lot RF-5d1 — raccord de compatibilite pour les racines du workflow.
+
+    FONCTION DE MODULE, comme les deux precedentes : les tests appellent ces
+    methodes SUR LA CLASSE avec un sac d'etat quelconque.
+
+    L'entree PORTE celle de la livraison, qui porte celle du catalogue. Chaque
+    sous-lot garde son contrat : les trois ecritures du truth-lock restent
+    celles de RF-5c, et seule la QUATRIEME mutation — le magasin de preuves de
+    workflow — est ajoutee ici.
+    """
+    def _definir_preuves_workflow(valeur) -> None:
+        # Quatrieme et derniere mutation de la famille documentaire
+        # (invariant 5 : elle reste portee par `react.py`).
+        etat._document_workflow_evidence = valeur
+
+    return _EntreeWorkflowDocument(
+        livraison=_entree_livraison_document(etat),
+        # Deux defauts differents pour le MEME attribut : `None` ici, `{}` dans
+        # l'entree de livraison. Une seule valeur ne peut pas rendre les deux —
+        # troisieme occurrence du motif apres le ledger (RF-4) et le catalogue
+        # (RF-5b).
+        obtenir_preuves_workflow_ou_none=lambda: getattr(
+            etat, "_document_workflow_evidence", None),
+        definir_preuves_workflow=_definir_preuves_workflow,
+    )
+
+
+def _entree_livraison_document(etat) -> "_EntreeLivraisonDocument":
+    """Lot RF-5c — raccord de compatibilite pour la verite de livraison.
+
+    FONCTION DE MODULE, comme `_entree_document_catalogue` : les tests
+    appellent ces methodes SUR LA CLASSE avec un sac d'etat quelconque. En
+    faire une methode a coute 80 tests rouges en RF-5b ; la lecon est acquise.
+
+    L'entree PORTE celle du catalogue (RF-5b) au lieu de l'elargir : chaque
+    sous-lot garde son contrat, et les 14 champs figes de
+    `EntreeDocumentCatalogue` ne bougent pas.
+    """
+    def _definir_reference_id(valeur) -> None:
+        # Les TROIS ecritures du truth-lock restent portees ici (invariant 5).
+        etat._document_delivery_reference_id = valeur
+
+    def _definir_reference_signature(valeur) -> None:
+        etat._document_delivery_reference_signature = valeur
+
+    def _definir_cible_workflow(valeur) -> None:
+        etat._document_workflow_target_proof = valeur
+
+    return _EntreeLivraisonDocument(
+        catalogue=_entree_document_catalogue(etat),
+        obtenir_historique=lambda: getattr(etat, "history", []),
+        obtenir_preuves_workflow=lambda: getattr(
+            etat, "_document_workflow_evidence", {}),
+        obtenir_reference_id=lambda: getattr(
+            etat, "_document_delivery_reference_id", ""),
+        definir_reference_id=_definir_reference_id,
+        obtenir_reference_signature=lambda: getattr(
+            etat, "_document_delivery_reference_signature", ()),
+        definir_reference_signature=_definir_reference_signature,
+        obtenir_cible_workflow=lambda: getattr(
+            etat, "_document_workflow_target_proof", None),
+        definir_cible_workflow=_definir_cible_workflow,
+    )
+
+
+def _entree_document_catalogue(etat) -> "_EntreeDocumentCatalogue":
+    """Lot RF-5b — raccord de compatibilite, construit une fois pour six.
+
+    FONCTION DE MODULE, et non methode de `ReActLoop` : c'est essentiel.
+    Les tests du depot appellent ces six methodes SUR LA CLASSE, en passant un
+    sac d'etat quelconque :
+
+        route = ReActLoop._document_route_for_run(state)   # state = SimpleNamespace
+
+    Une premiere version faisait de cette fabrique une methode appelee par
+    `self._entree_document_catalogue()` : 28 tests sont tombes sur
+    `'SimpleNamespace' object has no attribute '_entree_document_catalogue'`.
+    Elle ne touche donc `etat` que par `getattr`/`setattr`, comme le corps
+    d'origine, et le duck-typing des 196 sites d'appel est preserve.
+
+    Une autre version reconstruisait l'entree dans chacune des six coquilles :
+    `react.py` GAGNAIT 85 lignes la ou le lot devait lui en faire perdre. Le
+    raccord est donc factorise (invariant 11 : « les raccords de compatibilite
+    strictement necessaires sont autorises »).
+
+    Toutes les lectures sont PARESSEUSES : `runtime_ctx`, `task_id`,
+    `task_orchestrator`, `_original_query` et `_task_plan` sont absents des
+    boucles construites par `object.__new__`, et le corps d'origine ne les
+    atteignait jamais sur ces scenarios.
+    """
+    def _definir_route(valeur) -> None:
+        # Les DEUX mutations du sous-lot restent portees ici (invariant 5) :
+        # `react.py` reste seul proprietaire de `_document_route` et
+        # `_document_catalog_evidence`.
+        etat._document_route = valeur
+
+    def _definir_preuves(valeur) -> None:
+        etat._document_catalog_evidence = valeur
+
+    return _EntreeDocumentCatalogue(
+        obtenir_runtime_ctx=lambda: getattr(etat, "runtime_ctx", None),
+        est_run_mission=lambda: getattr(etat, "_is_mission_run", False),
+        obtenir_task_id=lambda: getattr(etat, "task_id", None),
+        obtenir_orchestrateur=lambda: getattr(etat, "task_orchestrator", None),
+        obtenir_requete_originale=lambda: getattr(etat, "_original_query", ""),
+        obtenir_historique=lambda: getattr(etat, "history", []),
+        obtenir_plan=lambda: getattr(etat, "_task_plan", None),
+        obtenir_route_cache=lambda: getattr(etat, "_document_route", None),
+        definir_route_cache=_definir_route,
+        # Deux defauts differents pour le MEME attribut : une seule valeur ne
+        # peut pas rendre les deux (motif du ledger de RF-4).
+        obtenir_preuves_catalogue=lambda: getattr(
+            etat, "_document_catalog_evidence", None),
+        obtenir_preuves_catalogue_ou_vide=lambda: getattr(
+            etat, "_document_catalog_evidence", {}),
+        definir_preuves_catalogue=_definir_preuves,
+        # Sortie vers la famille MISSION (RF-6, bloquee par le §18).
+        objectif_routage_mission=lambda: ReActLoop._mission_routing_objective(etat),
+        emettre_etat_plan=lambda **kw: etat._emit_plan_state(**kw),
+    )
+
+
+def _entree_navigateur(etat) -> "_EntreeNavigateur":
+    """Lot RF-7a — raccord de compatibilite du runtime navigateur.
+
+    FONCTION DE MODULE (lecon RF-5b : en faire une methode a coute 80 tests).
+    ZERO mutation : ce sous-lot n'en a aucune.
+
+    --- Le DISPATCH D'INSTANCE est preserve ---
+
+    Les six appelables du bloc « appels internes » redescendent sur `etat`, et
+    non vers la fonction du module. C'est essentiel : les tests du depot
+    monkeypatchent l'INSTANCE —
+
+        r._mission_browser_verify_pending = lambda note, q: "livrable web"
+
+    Un appel direct au module court-circuiterait ce patch en silence. Le
+    fichier de tests de RF-1 avait nomme ce risque mot pour mot ; une premiere
+    version de ce lot l'a reproduit et 17 tests sont tombes.
+
+    REGLE : `self.X(...)` -> redescend sur l'instance.
+            `Classe.X(self)` -> appel direct autorise (c'etait deja le cas).
+
+    --- Les DEUX formes de `_is_mission_run` ---
+
+    `est_run_mission()` tolere l'absence (forme `getattr`),
+    `est_run_mission_strict()` LEVE (forme directe). Une seule ne peut pas
+    rendre les deux — sixieme occurrence du motif dans ce chantier.
+    """
+    return _EntreeNavigateur(
+        obtenir_ledger=lambda: etat.execution_ledger,
+        obtenir_historique=lambda: etat.history,
+        obtenir_task_id=lambda: etat.task_id,
+        obtenir_orchestrateur=lambda: etat.task_orchestrator,
+        obtenir_exec_state=lambda: getattr(etat, "exec_state", None),
+        tirs_gate_navigateur=lambda: getattr(etat, "_browser_gate_shots", 0),
+        tirs_gate_interaction=lambda: getattr(etat, "_interaction_gate_shots", 0),
+        url_page_courante=lambda: getattr(etat, "_last_browser_page_url", ""),
+        url_preview_indemontrable=lambda: getattr(etat, "_lp_unprovable_url", ""),
+        marqueur_echec_runtime=lambda: getattr(etat, "_web_runtime_failed", None),
+        marqueur_verifie_runtime=lambda: getattr(etat, "_web_runtime_verified", None),
+        est_run_mission=lambda: getattr(etat, "_is_mission_run", False),
+        est_run_mission_strict=lambda: etat._is_mission_run,
+        # Dispatch d'instance PRESERVE — voir la docstring.
+        pages_jamais_ouvertes=lambda: etat._pages_never_opened_reason(),
+        interaction_prouvee=lambda: etat._truth_lock_interaction_proven(),
+        preuve_navigateur_courante=lambda: etat._current_browser_proof(),
+        intention_verif_navigateur=lambda *a, **k: etat._browser_verify_intent(*a, **k),
+        verif_navigateur_mission=lambda *a, **k: etat._mission_browser_verify_pending(*a, **k),
+        runtime_verifie_truth_lock=lambda: etat._browser_runtime_verified_for_truth_lock(),
+        # Ces quatre-la etaient AUSSI en forme `self.X()` : meme regle, meme
+        # dispatch d'instance. Les appeler en forme CLASSE court-circuiterait
+        # les monkeypatchs de `test_m101_interaction_authority`, qui posent
+        # `loop._truth_lock_interaction_flag = lambda: True` sur l'instance.
+        est_run_worker=lambda: etat._is_worker_run(),
+        web_present_pour_gate=lambda: etat._mission_web_present_for_gate(),
+        drapeau_interaction=lambda: etat._truth_lock_interaction_flag(),
+        drapeau_jeu=lambda: etat._truth_lock_game_flag(),
+        outils_fermes_preview=lambda: _LP_UNPROVABLE_CLOSED_TOOLS,
+        max_tirs_gate_interaction=lambda: _MAX_INTERACTION_GATE_SHOTS,
+    )
+
+
+def _entree_mission(etat) -> "_EntreeMission":
+    """Instantane d'etat pour `mission_runtime.py` (lot RF-6a).
+
+    TOUT est paresseux : les tests du depot construisent
+    `object.__new__(ReActLoop)`, ou ces attributs sont ABSENTS. Precalculer une
+    valeur avait fait tomber 54 tests en RF-4, par `AttributeError` levee avant
+    tout garde.
+
+    Les appels redescendent sur l'INSTANCE : un appel direct de module ferait
+    perdre les monkeypatchs d'instance des tests, **en silence** (17 tests
+    tombes en RF-7a).
+    """
+    return _EntreeMission(
+        task_id=lambda: etat.task_id,
+        orchestrateur=lambda: etat.task_orchestrator,
+        ledger=lambda: etat.execution_ledger,
+        plan_taches=lambda: etat._task_plan,
+        # ── LE MOTIF DES DEUX FORMES, 7e occurrence ──
+        # forme TOLERANTE (`getattr(..., False)`) et forme STRICTE
+        # (`etat._is_mission_run`) ne sont PAS equivalentes : sur un etat
+        # incomplet la property leve sur `self.task_id`, hors du try.
+        est_run_mission=lambda: getattr(etat, "_is_mission_run", False),
+        est_run_mission_strict=lambda: etat._is_mission_run,
+        requete_originale=lambda: getattr(etat, "_original_query", ""),
+        # ── dispatch d'instance PRESERVE ──
+        fichiers_autorises=lambda: etat._mission_allowed_files_meta(),
+        tests_presents=lambda: etat._mission_tests_present_for_gate(),
+        est_worker_delegue=lambda: etat._is_delegated_worker(),
+        orchestrateur_actif=lambda: etat._orchestrator_enabled(),
+        preuve_tests_verts=lambda: etat._current_green_test_proof(),
+        preuve_navigateur=lambda: etat._current_browser_proof(),
+        drapeau_web=lambda: etat._truth_lock_web_flag(),
+        drapeau_interaction=lambda: etat._truth_lock_interaction_flag(),
+        drapeau_jeu=lambda: etat._truth_lock_game_flag(),
+        interaction_prouvee=lambda: etat._truth_lock_interaction_proven(),
+        objectif_veut_navigateur=lambda q: _objective_wants_browser(q),
+        # ── RF-6b : lectures propres aux trois gates ──
+        ecrits_non_publies=lambda: etat._mission_unpublished_writes(),
+        dossier_mission=lambda: etat._mission_workspace_meta(),
+        outils_ecriture_p2b=lambda: _P2B_WRITE_TOOLS,
+        chemin_ecriture_existe=lambda cible: mission_write_path_exists(
+            cible,
+            workspace_root=getattr(etat.tools, "default_workspace_root", None),
+        ),
+        vise_livrable_existant=lambda cible, ws, existe:
+            mission_write_targets_existing_deliverable(cible, ws, exists=existe),
+    )
+
+
+def _entree_final(etat) -> "_EntreeFinal":
+    """Instantane d'etat pour `final_delivery_runtime.py` (lot RF-8).
+
+    TOUT est paresseux (lecon RF-4) et les appels redescendent sur l'INSTANCE
+    (lecon RF-7a). `noter_verdict` en particulier MUTE `_run_meta` : elle doit
+    imperativement passer par l'objet, sinon la mutation se perd en silence.
+    """
+    return _EntreeFinal(
+        task_id=lambda: etat.task_id,
+        ledger=lambda: etat.execution_ledger,
+        requete_originale=lambda: getattr(etat, "_original_query", "") or "",
+        est_run_mission=lambda: etat._is_mission_run,
+        pont_codex=lambda: getattr(etat, "_codex_tool_bridge_run", False),
+        est_run_worker=lambda: etat._is_worker_run(),
+        web_present=lambda: etat._mission_web_present_for_gate(),
+        preuve_tests_verts=lambda: etat._current_green_test_proof(),
+        preuve_navigateur=lambda: etat._current_browser_proof(),
+        tests_non_lances=lambda: etat._tests_present_but_not_run(),
+        attend_des_fichiers=lambda: etat._mission_expects_file_deliverables(),
+        ecrits_non_publies=lambda: etat._mission_unpublished_writes(),
+        preuve_serveur=lambda: etat._server_started_proof(),
+        dom_observe=lambda: etat._browser_content_seen(),
+        interaction_prouvee=lambda: etat._truth_lock_interaction_proven(),
+        drapeau_interaction=lambda: etat._truth_lock_interaction_flag(),
+        drapeau_jeu=lambda: etat._truth_lock_game_flag(),
+        drapeau_web=lambda: etat._truth_lock_web_flag(),
+        navigateur_en_panne=lambda: etat._browser_runtime_failed_for_truth_lock(),
+        # MUTE `_run_meta` : dispatch d'instance OBLIGATOIRE.
+        noter_verdict=lambda info: etat._note_truth_lock_outcome(info),
+        # `__file__` designerait le module extrait : la racine reste celle
+        # calculee depuis `react.py`.
+        racine_projet=lambda: Path(__file__).resolve().parents[2],
+        # `build_mission_final_message` vit DANS `react.py` : elle passe
+        # par l'entree (invariant 2).
+        construire_bilan_mission=lambda *a, **k: build_mission_final_message(*a, **k),
+    )
 
 
 class ReActLoop:
@@ -3238,109 +1806,39 @@ class ReActLoop:
 
     @property
     def _is_mission_run(self) -> bool:
-        """True si cette boucle ReAct tourne DANS une mission (sous-agent), pas le chat.
-        Le chat n'a pas de task_id (cf. logs `task=-`) ; une mission est un TaskRecord
-        kind='mission' (cf. manager.create_mission). Double verrou → jamais le chat.
-        Sert à relâcher le PLAN GUARD : en mission le seul contrat est le LIVRABLE, pas
-        le plan AUTO-généré du worker (tâches-passerelle + matching outil↔tâche imparfait)."""
-        if not self.task_id or not self.task_orchestrator:
-            return False
-        try:
-            rec = self.task_orchestrator.get_task(self.task_id)
-            return bool(rec and (rec.get("metadata") or {}).get("kind") == "mission")
-        except Exception:
-            return False
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__is_mission_run(_entree_mission(self))
 
     def _post_delegate_web_verify_allowed(self) -> bool:
-        """2.6.3 (run MiniQuiz §5) — le vérifieur web post-delegate ne tire JAMAIS
-        en mission. Il sert le dossier en STATIQUE → 404 structurels sur une app
-        Flask → il a poussé les 3 workers dans un chaos de « corrections » (port
-        du contrat muté via shell, tests pollués, serveurs fantômes). En mission,
-        la preuve navigateur appartient au LEAD : serve_website (voie 2.5) +
-        browser_* réels, gardés par BROWSER GATE et truth-lock."""
-        if getattr(self, "_is_mission_run", False):
-            return False
-        try:
-            return bool(_post_delegate_web_verify_enabled())
-        except Exception:
-            return True
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__post_delegate_web_verify_allowed(_entree_navigateur(self))
 
     def _mission_workspace_meta(self) -> str:
-        """LOT 2.1 — sous-dossier de scope mission lu dans la meta (posé par
-        delegate_and_wait). "" hors mission ou si absent → résolution actuelle.
-        Lu par tour (non caché) car le lead pose sa propre meta EN COURS de run."""
-        if not self.task_id or not self.task_orchestrator:
-            return ""
-        try:
-            rec = self.task_orchestrator.get_task(self.task_id)
-            return str(((rec or {}).get("metadata") or {}).get("mission_workspace") or "").strip()
-        except Exception:
-            return ""
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_workspace_meta(_entree_mission(self))
 
     def _mission_unpublished_writes(self) -> list:
-        """LOT Z24 — fichiers ecrits APRES la publication, donc hors livrable.
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        Run « jeu 3D » (2026-08-19) : `write_file jeu-3d-monde-ouvert/README.md`
-        a l'iteration 26, APRES le publish. Le livrable publie ne contient que
-        CONTRAT.md, contract.json, index.html, script.js, style.css — et la
-        mission a conclu « completed », sans un mot sur le README que l'objectif
-        exigeait (« index.html, styles, scripts, instructions »).
-
-        Deux faits deterministes, deja persistes cote a cote, jamais croises.
-
-        Bornes (sous-detecter plutot que crier au loup) :
-          - missions uniquement, et seulement apres une publication REUSSIE ;
-          - une ecriture DANS le dossier publie est sur le disque, donc livree
-            (meme doctrine DISK-GROUNDED que 2.12.C) : elle ne compte pas ;
-          - basenames uniques, liste plafonnee.
-
-        Les ecritures des SOUS-AGENTS ont leur propre ledger et ne figurent pas
-        ici : un oubli de worker echappe a ce garde. Sous-detection assumee —
-        c'est le bon sens de l'erreur, et `_cited_test_config` documente deja le
-        cout inverse (« faux fantomes ») d'un croisement ledger trop large.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        if not getattr(self, "_is_mission_run", False):
-            return []
-        try:
-            entries = self.execution_ledger.writes_after_last_publish()
-        except Exception:
-            return []
-        if not entries:
-            return []
-        ws = ""
-        try:
-            rec = self.task_orchestrator.get_task(self.task_id) or {}
-            ws = str((rec.get("metadata") or {}).get("published_workspace") or "").strip()
-        except Exception:
-            ws = ""
-        ws_norm = ws.replace("\\", "/").strip("/").lower()
-        out: list = []
-        for e in entries:
-            raw = str(e.target or "").replace("\\", "/").strip()
-            if not raw:
-                continue
-            # Ecrit DANS le dossier publie → present sur le disque, donc livre.
-            if ws_norm and raw.strip("/").lower().startswith(ws_norm + "/"):
-                continue
-            base = os.path.basename(raw)
-            if base and base not in out:
-                out.append(base)
-        return out[:8]
+        return _mr__mission_unpublished_writes(_entree_mission(self))
 
     def _mission_routing_objective(self) -> str:
-        """Semantic mission objective, excluding lead/worker protocol prose."""
-        if not self._is_mission_run or not self.task_id or not self.task_orchestrator:
-            return ""
-        try:
-            record = self.task_orchestrator.get_task(self.task_id) or {}
-            metadata = record.get("metadata") or {}
-            return str(
-                metadata.get("routing_objective")
-                or metadata.get("objective")
-                or ""
-            ).strip()
-        except Exception:
-            return ""
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_routing_objective(_entree_mission(self))
 
     def _tests_present_but_not_run(self) -> bool:
         """A5 — des tests existent pour cette mission mais AUCUN pytest n'a tourné
@@ -3422,28 +1920,21 @@ class ReActLoop:
         avoir publie. Le dire maintenant lui laisse le temps de republier ; le
         dire au FINAL ne fait plus que constater la perte.
         """
-        if getattr(self, "_z24_nudged", False):
+        # Lot RF-6b : la DECISION est deplacee vers `mission_runtime.py` ; la
+        # mutation reste ici (invariant 5), dans l'ordre d'origine —
+        # drapeau, puis log, puis guidance (invariant 16).
+        decision = _mr_decision_nudge(
+            _entree_mission(self), getattr(self, "_z24_nudged", False)
+        )
+        if decision is None:
             return
-        try:
-            manquants = self._mission_unpublished_writes()
-        except Exception:
-            return
-        if not manquants:
-            return
+        liste, guidance = decision
         self._z24_nudged = True
-        liste = ", ".join(f"`{m}`" for m in manquants)
         logger.warning(
             "[Z24] {} ecrit(s) apres la publication — hors livrable, redirection 1/1",
             liste,
         )
-        self._pending_loop_guidance = (
-            f"⚠️ {liste} : tu as écrit ce(s) fichier(s) APRÈS avoir publié. "
-            "La publication a figé un instantané — ils ne sont donc PAS dans le "
-            "livrable, et l'utilisateur ne les verra pas.\n\n"
-            "Si tu veux les livrer, rappelle `publish_mission_workspace`. Sinon, "
-            "dis-le explicitement dans ta réponse finale. Ne conclus pas en "
-            "laissant croire qu'ils sont livrés."
-        )
+        self._pending_loop_guidance = guidance
 
     def _invalidate_interaction_pending(self, tool_name: str, success: bool) -> None:
         """LOT Z20 — annule une action utilisateur en attente de preuve.
@@ -3477,293 +1968,70 @@ class ReActLoop:
             return
 
     def _current_browser_proof(self) -> bool:
-        """Mission browser proof is stale after a later source mutation."""
-        try:
-            if self._is_mission_run:
-                return self.execution_ledger.has_fresh_browser_action()
-            return self.execution_ledger.has_browser_action()
-        except Exception:
-            return False
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__current_browser_proof(_entree_navigateur(self))
 
     def _mission_tests_present_for_gate(self) -> str:
-        """LOT 2.10 — des tests existent-ils pour CE run de mission ? Retourne une
-        courte justification (pour le log/steer) ou "". Sources bornées : fichiers
-        écrits pendant le run (ledger), dossier mission (2.1), contract.json (2.2).
-        Jamais de scan large (garde-fou P0.2)."""
-        try:
-            from src.reasoning.test_proof import (
-                any_test_file, tests_present_in_dir, tests_present_in_contract,
-            )
-            if any_test_file(self.execution_ledger.written_basenames()):
-                return "fichiers de test écrits pendant ce run"
-            if self.task_id and self.task_orchestrator:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
-                if mws:
-                    import json as _j210
-                    import os as _os210
-                    from src.utils.paths import WORKSPACE_DIR as _ws210
-                    d = str(_ws210 / mws)
-                    if tests_present_in_dir(d):
-                        return f"tests dans {mws}"
-                    cj = _os210.path.join(d, "contract.json")
-                    if _os210.path.isfile(cj):
-                        with open(cj, encoding="utf-8", errors="replace") as fh:
-                            if tests_present_in_contract(_j210.load(fh)):
-                                return "tests déclarés au contrat"
-        except Exception:
-            return ""
-        return ""
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_tests_present_for_gate(_entree_mission(self))
 
     def _mission_web_present_for_gate(self) -> str:
-        """LOT D — un livrable WEB existe-t-il pour CE run ? Retourne une courte
-        justification (log/steer) ou "". Sources bornées, comme _mission_tests_
-        present_for_gate (jamais de scan large, garde-fou P0.2) : fichiers écrits
-        pendant le run (ledger), dossier mission (2.1), contract.json (2.2)."""
-        _WEB = (".html", ".htm", ".js")
-        try:
-            import os as _osW
-            for b in self.execution_ledger.written_basenames():  # déjà en minuscules
-                if b.endswith(_WEB):
-                    return "page web écrite pendant ce run"
-            if self.task_id and self.task_orchestrator:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
-                if mws:
-                    from src.utils.paths import WORKSPACE_DIR as _wsW
-                    d = str(_wsW / mws)
-                    if _osW.path.isdir(d):
-                        for name in _osW.listdir(d):
-                            if name.lower().endswith(_WEB):
-                                return f"page web dans {mws}"
-                    cj = _osW.path.join(d, "contract.json")
-                    if _osW.path.isfile(cj):
-                        import json as _jW
-                        with open(cj, encoding="utf-8", errors="replace") as fh:
-                            data = _jW.load(fh)
-                        for f in (data.get("files") or []):
-                            if str(f.get("path") or "").lower().endswith(_WEB):
-                                return "page web déclarée au contrat"
-            # M6-colmatage (run MiniQuiz 2026-07-06, mission 1) — fabrication à
-            # l'itération 1 SANS AUCUNE mutation : ledger vide, pas de dossier
-            # mission, pas de contrat → les deux sources ci-dessus rendent "" et
-            # le mensonge « ✅ Navigateur : titre visible » sortait sans bannière.
-            # 3e source : l'OBJECTIF de mission demande explicitement un livrable
-            # web (borné mission). 2.9.A : négation-aware — « pas de navigateur »
-            # / « API sans interface » ne comptent PLUS comme objectif web.
-            if getattr(self, "_is_mission_run", False) and _objective_wants_browser(
-                getattr(self, "_original_query", "")
-            ):
-                return "objectif web explicite"
-        except Exception:
-            return ""
-        return ""
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_web_present_for_gate(_entree_mission(self))
 
     @staticmethod
     def _browser_verify_intent(text: str) -> bool:
-        """LOT D — le texte exprime-t-il une INTENTION de vérifier au navigateur ?
-        Mêmes marqueurs que plan_progress.browser_verify_task_blocks (nom navigateur
-        + verbe de vérif). Pur/testable."""
-        d = (text or "").lower()
-        if not any(m in d for m in ("navigateur", "browser", "naviguer")):
-            return False
-        return any(v in d for v in ("vérif", "verif", "test", "valid", "confirm",
-                                    "s'assur", "assur", "contrôl", "controle"))
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__browser_verify_intent(text)
 
     def _mission_browser_verify_pending(self, answer: str, original_query: str) -> str:
-        """LOT D — faut-il relancer pour la jambe navigateur ? Retourne la justif web
-        (non vide) si : livrable WEB présent ET aucune action browser_* réussie au
-        ledger ET (intention navigateur dans l'objectif OU claim navigateur dans le
-        FINAL). "" sinon. Déclencheur validé revue : objectif OU claim (le lead peut
-        conclure « frontend fonctionnel ✅ » sans que l'objectif ait dit « vérifie »)."""
-        # LOT Z11 (décision utilisateur 2026-08-16) — AVANT les sorties anticipées.
-        # Le gate ci-dessous se satisfait d'UNE navigation : ouvrir une page sur
-        # deux le contentait. Mesuré sur les 3 runs web multi-pages, sans
-        # exception : la page testée est à 100 % de style, la page jamais ouverte
-        # à 4 %, 50 %, 31 %. Z7 nomme pourtant la page fautive — Tanière a
-        # corrigé, Marée a ignoré. Un constat seul ne suffit pas ici.
-        _z11 = self._pages_never_opened_reason()
-        if _z11:
-            return _z11
-        interaction_required = self._truth_lock_interaction_flag()
-        if interaction_required:
-            if self._truth_lock_interaction_proven():
-                return ""  # verdict strict positif → interaction réellement exercée
-        elif self._current_browser_proof():
-            return ""  # simple inspection demandée : preuve browser historique suffisante
-        # LOT D-fix (run CoVoit'Éco 2026-07-04) — la vérif navigateur est le job du
-        # TOP-LEAD (il assemble, SERT l'app, puis navigue), JAMAIS d'un sous-worker
-        # délégué : l'app n'est pas servie pendant son run isolé. Un sous-worker a un
-        # périmètre `allowed_files` ; le lead non. Sans ce garde, le boilerplate
-        # « navigateur PARTAGÉ » + « test » des objectifs workers faisait sur-
-        # déclencher le gate sur w_backend/w_tests (bruit : 1 relance inutile chacun).
-        if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
-            return ""  # sous-worker délégué → pas de vérif navigateur ici
-        web = self._mission_web_present_for_gate()
-        if not web:
-            return ""
-        from src.reasoning.final_guards import claims_browser_verified
-        if (interaction_required or self._browser_verify_intent(original_query)
-                or claims_browser_verified(answer)):
-            return web
-        return ""
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__mission_browser_verify_pending(_entree_navigateur(self), answer, original_query)
 
     def _pages_never_opened_reason(self) -> str:
-        """LOT Z11 — les pages HTML produites que ce run n'a JAMAIS ouvertes.
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
 
-        Sources bornées, patron `_mission_web_present_for_gate` : les basenames
-        écrits au ledger et le `contract.json` de la mission pour le PRODUIT ;
-        l'historique des `browser_navigate` pour le VU. Aucune I/O nouvelle.
-
-        Inerte hors mission, chez un worker délégué, et dès qu'il y a moins de
-        deux pages — le cas mono-page est déjà couvert par la jambe navigateur
-        du LOT D, et ce garde ne parle que du multi-pages, seul cas mesuré.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        try:
-            if self._is_worker_run():
-                return ""
-            produced: list = []
-            for b in self.execution_ledger.written_basenames():
-                if str(b).lower().endswith((".html", ".htm")):
-                    produced.append(str(b))
-            if self.task_id and self.task_orchestrator:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
-                if mws:
-                    import json as _jZ
-                    import os as _osZ
-
-                    from src.utils.paths import WORKSPACE_DIR as _wsZ
-
-                    cj = _osZ.path.join(str(_wsZ / mws), "contract.json")
-                    if _osZ.path.isfile(cj):
-                        with open(cj, encoding="utf-8", errors="replace") as fh:
-                            data = _jZ.load(fh)
-                        for f in (data.get("files") or []):
-                            p = str(f.get("path") or "")
-                            if p.lower().endswith((".html", ".htm")):
-                                produced.append(p)
-            if len(produced) < 2:
-                return ""
-            visited: list = []
-            for item in self.history:
-                act = getattr(item, "action", None)
-                if not act or getattr(act, "tool_name", "") != "browser_navigate":
-                    continue
-                url = (getattr(act, "tool_args", None) or {}).get("url")
-                if url:
-                    visited.append(str(url))
-            from src.reasoning.plan_progress import (
-                pages_never_opened,
-                unseen_pages_reason,
-            )
-
-            manquantes = pages_never_opened(produced, visited)
-            if not manquantes:
-                return ""
-            logger.warning(
-                "[Z11] pages jamais ouvertes: {} (produites={}, naviguées={})",
-                ", ".join(manquantes), len(set(produced)), len(visited),
-            )
-            return unseen_pages_reason(manquantes)
-        except Exception as _exc_z11:
-            logger.debug("[Z11] pages non vues non calculées: {}", _exc_z11)
-            return ""
+        return _rt__pages_never_opened_reason(_entree_navigateur(self))
 
     def _mission_js_present_for_gate(self) -> str:
-        """LOT 2.4 (run MotDuJour) — un livrable JS existe-t-il pour CE run ?
-        Sources bornées (patron _mission_web_present_for_gate, garde-fou P0.2) :
-        fichiers écrits au ledger, contract.json de la mission. "" sinon."""
-        try:
-            import os as _osJ
-            for b in self.execution_ledger.written_basenames():
-                if b.endswith((".js", ".mjs")):
-                    return "JS écrit pendant ce run"
-            if self.task_id and self.task_orchestrator:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                mws = str((rec.get("metadata") or {}).get("mission_workspace") or "").strip()
-                if mws:
-                    from src.utils.paths import WORKSPACE_DIR as _wsJ
-                    cj = _osJ.path.join(str(_wsJ / mws), "contract.json")
-                    if _osJ.path.isfile(cj):
-                        import json as _jJ
-                        with open(cj, encoding="utf-8", errors="replace") as fh:
-                            data = _jJ.load(fh)
-                        for f in (data.get("files") or []):
-                            if str(f.get("path") or "").lower().endswith((".js", ".mjs")):
-                                return "JS déclaré au contrat"
-        except Exception:
-            return ""
-        return ""
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_js_present_for_gate(_entree_mission(self))
 
     def _finalize_browser_gate_pending(self, note: str, original_query: str) -> str:
-        """LOT 2.7 (run Converto 2026-07-06) — le FINALIZE déterministe doit-il être
-        intercepté pour la jambe navigateur ? Retourne la justif web ("" sinon).
-        Converto est sorti par `voie=plan_complet` (étape navigateur créditée à
-        TORT au plan) : le BROWSER GATE ne vivait que sur la voie FINAL LLM —
-        même trou que le PYTEST GATE avant C0.4. Borné : 1 tir partagé avec le
-        gate du FINAL (même compteur `_browser_gate_shots`)."""
-        if getattr(self, "_browser_gate_shots", 0) >= 1:
-            return ""
-        # ── LOT Z15 — une page ouverte ne vaut pas le site vérifié ────────────
-        # Run « Verdure 2 » (2026-08-16) : la mission a ouvert `localhost:8081`
-        # (= index.html), donc `_current_browser_proof()` est devenu vrai, donc
-        # ce garde s'est tu — sans jamais demander à Z11 s'il RESTAIT des pages.
-        # `devis.html`, l'espace client où vit toute la logique, n'a jamais été
-        # regardée, et la mission a conclu proprement.
-        #
-        # Z11 avait pourtant été placé AVANT les sorties anticipées de
-        # `_mission_browser_verify_pending`. Le trou était un cran plus haut :
-        # l'APPELANT a les siennes. Même motif, même erreur, autre étage — et
-        # mon test structurel ne regardait que l'étage du dessous.
-        #
-        # DÉCISION UTILISATEUR (2026-08-16) : « la vérification web du projet
-        # doit se faire par le parent une fois les workers finis ; il doit
-        # vraiment naviguer, scanner, vérifier — c'est le filet de sécurité ».
-        # Les workers ne voient chacun que leur fichier ; le lead est le seul à
-        # pouvoir regarder le résultat comme un utilisateur le verrait.
-        try:
-            _unseen = self._pages_never_opened_reason()
-            if _unseen:
-                return _unseen
-        except Exception:
-            pass
-        # The basic browser gate only owns the first successful page opening.
-        # An explicit form/game interaction has its own bounded gate below.
-        if self._current_browser_proof():
-            return ""
-        try:
-            return self._mission_browser_verify_pending(note or "", original_query or "")
-        except Exception:
-            return ""
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__finalize_browser_gate_pending(_entree_navigateur(self), note, original_query)
 
     def _finalize_interaction_gate_pending(
         self, note: str, original_query: str
     ) -> str:
-        """Return the web reason when an explicit UI interaction still lacks proof.
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
 
-        This is deliberately separate from ``_browser_gate_shots``: opening the
-        page and exercising a requested form/game flow are two distinct proofs.
-        The interaction gate gets a small bounded action budget because a real
-        form flow takes several ReAct iterations (inputs, click, DOM read).
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        if (
-            getattr(self, "_interaction_gate_shots", 0)
-            >= _MAX_INTERACTION_GATE_SHOTS
-        ):
-            return ""
-        try:
-            if not self._truth_lock_interaction_flag():
-                return ""
-            if self._truth_lock_interaction_proven():
-                return ""
-            if not self._current_browser_proof():
-                return ""  # the basic browser gate must open the page first
-            return self._mission_browser_verify_pending(
-                note or "", original_query or ""
-            )
-        except Exception:
-            return ""
+        return _rt__finalize_interaction_gate_pending(_entree_navigateur(self), note, original_query)
 
     def _server_started_proof(self) -> bool:
         """LOT 2.3 (run MotDuJour) — un serveur de preview a-t-il RÉELLEMENT démarré
@@ -3777,47 +2045,18 @@ class ReActLoop:
             return True
 
     def _browser_content_seen(self) -> Optional[str]:
-        """2.7.4 (run MiniPanier) — concaténation des observations qui LISENT la
-        page (browser_navigate + son enrichissement vision, browser_get_content,
-        browser_dom_state, browser_screenshot). EXCLUT les échos d'ACTION
-        (type/click) : « Tape "Pommes" » prouve la saisie, pas l'affichage — c'est
-        exactement la confusion qui a laissé passer le surclaim MiniPanier.
-        None si aucune lecture de page (le verrou reste inerte). Défensif."""
-        _CONTENT_TOOLS = {
-            "browser_navigate", "browser_get_content", "browser_dom_state",
-            "browser_screenshot", "browser_read", "browser_extract",
-        }
-        try:
-            chunks = []
-            for h in self.history:
-                if not (h.action and h.observation):
-                    continue
-                if (h.action.tool_name or "") in _CONTENT_TOOLS:
-                    c = h.observation.content or ""
-                    if c:
-                        chunks.append(c)
-            return "\n".join(chunks) if chunks else None
-        except Exception:
-            return None
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__browser_content_seen(_entree_navigateur(self))
 
     def _truth_lock_web_flag(self) -> bool:
-        """M1 (run RévizIA) — policy navigateur DURE : True si CE run est le TOP-LEAD
-        d'une mission à livrable WEB. Passé au truth-lock (`web_deliverable=`) : sans
-        action browser_* réussie au ledger, TOUT final reçoit la bannière « Navigateur
-        NON vérifié », indépendamment de la formulation (« Test navigateur validé » —
-        forme nominale hors regex — avait livré une fabrication totale : serveur
-        jamais lancé). Scope top-lead (même raison que le BROWSER GATE / D-fix) : un
-        sous-worker isolé ne peut pas vérifier au navigateur — la vérité incombe au
-        lead. Défensif : False sur toute erreur (jamais de fausse rétrogradation)."""
-        try:
-            # H4 — un porteur d'EFFETS purs n'a pas d'`allowed_files` : le test
-            # historique le prenait pour le lead et lui collait cette policy
-            # (run veille_python_313 : bannière navigateur sur une veille).
-            if self._is_worker_run():
-                return False  # sous-worker délégué → pas son job
-            return bool(self._mission_web_present_for_gate())
-        except Exception:
-            return False
+        """Lot RF-8 : corps deplace vers `final_delivery_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _fd__truth_lock_web_flag(_entree_final(self))
 
     def _set_web_runtime_verification_state(
         self,
@@ -3842,38 +2081,18 @@ class ReActLoop:
             logger.debug("[M100.4] persistence verdict runtime web ignoree: {}", exc)
 
     def _browser_runtime_failed_for_truth_lock(self) -> bool:
-        """Latest strict verifier failure, including persisted recovery state."""
-        try:
-            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
-                return False
-            marker = getattr(self, "_web_runtime_failed", None)
-            if marker is not None:
-                return bool(marker)
-            if self.task_id and self.task_orchestrator:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                return bool((rec.get("metadata") or {}).get("web_runtime_failed"))
-        except Exception:
-            pass
-        return False
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__browser_runtime_failed_for_truth_lock(_entree_navigateur(self))
 
     def _browser_runtime_verified_for_truth_lock(self) -> bool:
-        """Latest positive strict runtime verdict, persisted across mission recovery."""
-        try:
-            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
-                return False
-            marker = getattr(self, "_web_runtime_verified", None)
-            if marker is not None:
-                return bool(marker)
-            if self.task_id and self.task_orchestrator:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                meta = (rec.get("metadata") or {})
-                if "web_runtime_verified" in meta:
-                    return bool(meta.get("web_runtime_verified"))
-            return self.execution_ledger.has_successful_action(
-                "browser_verify_local_project"
-            )
-        except Exception:
-            return False
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__browser_runtime_verified_for_truth_lock(_entree_navigateur(self))
 
     def _mission_overwrite_gate(self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None):
         """LOT P2b — GATE LIVRABLE EXISTANT, 1 tir.
@@ -3885,25 +2104,16 @@ class ReActLoop:
         Inerte hors mission, inerte sans dossier de mission, inerte sur un
         fichier neuf. Redirection unique — au second appel, l'écriture passe.
         """
-        if not self._is_mission_run:
-            return None
-        if tool_name not in _P2B_WRITE_TOOLS:
-            return None
-        if getattr(self, "_overwrite_gate_shots", 0) >= 1:
-            return None
-        ws = self._mission_workspace_meta()
-        if not ws:
-            return None
-        args = tool_args or {}
-        target = str(args.get("path") or args.get("file_path") or "").strip()
-        if not target:
-            return None
-        exists = mission_write_path_exists(
-            target,
-            workspace_root=getattr(self.tools, "default_workspace_root", None),
+        # Lot RF-6b : la DECISION sort, la mutation reste (invariant 5).
+        # L'`Observation` est construite ICI, APRES l'increment : la faire
+        # naitre dans le module la daterait d'avant la mutation (invariant 16).
+        decision = _mr_decision_ecrasement(
+            _entree_mission(self), tool_name, tool_args,
+            getattr(self, "_overwrite_gate_shots", 0),
         )
-        if not mission_write_targets_existing_deliverable(target, ws, exists=exists):
+        if decision is None:
             return None
+        target, ws, contenu = decision
         self._overwrite_gate_shots = getattr(self, "_overwrite_gate_shots", 0) + 1
         logger.warning(
             "[P2b] écriture en place sur le livrable existant '{}' (hors {}) → "
@@ -3912,73 +2122,17 @@ class ReActLoop:
         from .react_config import Observation as _ObsP2b
 
         return _ObsP2b(
-            content=(
-                f"⛔ `{target}` existe déjà et se trouve HORS de ton dossier de "
-                f"mission (`{ws}`). L'écrire en place, c'est modifier un livrable "
-                "livré sans filet : si tu échoues ensuite, il reste cassé.\n\n"
-                f"Copie d'abord ce que tu dois modifier dans `{ws}`, travaille "
-                "là-bas, vérifie par une exécution réelle, puis publie avec "
-                "`publish_mission_workspace` quand c'est vert.\n\n"
-                "(Redirection unique : si tu rappelles cet outil, il s'exécutera.)"
-            ),
+            content=contenu,
             success=False,
             origin="mission_overwrite",
         )
 
     def _local_preview_unprovable_gate(self, tool_name: str):
-        """LOT Z23 — l'inspection est close, la mission continue.
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
 
-        Run « jeu 3D monde ouvert » (2026-08-19), au log :
-
-            02:30:18  [LOCAL PREVIEW] escalade browser_evaluate (streak=3)
-            02:30:23  interruption sans preuve interactive (streak=4)
-                      ← DERNIERE LIGNE DU LOG
-
-        5,6 secondes. Le garde reclamait UNE assertion, elle l'a fournie, elle
-        n'a rien demontre — et le code faisait `return` : le run entier mourait
-        a 18 minutes, sans echeance, laissant sur place le README que
-        l'objectif demandait. Le meme degat est deja decrit en en-tete de
-        `_local_preview_loop_decision` pour le run Cadran (« conclu a 7 min 19
-        sur 60 »), ou seul le cas de l'appel mal forme avait ete repare.
-
-        Or ce `return` n'apportait AUCUNE honnetete : le truth-lock bannerise
-        « interaction NON prouvee » sur l'OBJECTIF et le ledger, quel que soit
-        le texte du final (doctrine 2.13.A). Il doublait un mecanisme qui marche
-        en payant la completude.
-
-        Ce gate le remplace : le constat ferme la relecture de CETTE preview
-        (sinon on retombe sur le rebouclage infini du run memo) et rien d'autre.
-        Inerte ailleurs, inerte sur une autre page.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        try:
-            guards = getattr(getattr(self, "exec_state", None), "guards", None)
-            if not getattr(guards, "local_preview_interaction_unprovable", False):
-                return None
-            if (tool_name or "") not in _LP_UNPROVABLE_CLOSED_TOOLS:
-                return None
-            # Borne de portee : le constat vaut pour LA preview jugee, pas pour
-            # toute page que la mission ouvrira ensuite.
-            _url = str(getattr(self, "_last_browser_page_url", "") or "")
-            if _url != str(getattr(self, "_lp_unprovable_url", "") or ""):
-                return None
-        except Exception:
-            return None
-        from .react_config import Observation as _ObsZ23
-
-        return _ObsZ23(
-            content=(
-                "⛔ Constat ACQUIS sur cette preview locale : la validation "
-                "interactive n'y est pas prouvable (assertion deja tentee, sans "
-                "resultat probant). Ce constat est definitif pour ce run — "
-                "l'inspecter a nouveau ne le changera pas.\n\n"
-                "Ce n'est PAS un echec de mission : le reste de ce qui t'a ete "
-                "demande t'attend. Termine-le (fichiers annonces, livrables, "
-                "verifications hors navigateur), puis conclus en enoncant ce "
-                "constat tel quel — sans jamais affirmer l'interactif."
-            ),
-            success=False,
-            origin="local_preview_unprovable",
-        )
+        return _rt__local_preview_unprovable_gate(_entree_navigateur(self), tool_name)
 
     def _chat_mission_intent_gate(self, tool_name: str):
         """LOT O2 (run HuffPack v2, 2026-08-14) — GATE INTENTION MISSION, 1 tir.
@@ -3997,17 +2151,12 @@ class ReActLoop:
 
         Redirection, pas blocage : un seul tir, puis l'outil passe.
         """
-        if self._is_mission_run:
-            return None
-        if tool_name == "create_mission":
-            return None
-        if getattr(self, "_chat_mission_gate_shots", 0) >= 1:
-            return None
-        from .final_guards import chat_requests_background_mission
-
-        if not chat_requests_background_mission(
-            getattr(self, "_original_query", "") or ""
-        ):
+        # Lot RF-6b : la DECISION sort, la mutation reste (invariant 5).
+        contenu = _mr_decision_intention_chat(
+            _entree_mission(self), tool_name,
+            getattr(self, "_chat_mission_gate_shots", 0),
+        )
+        if contenu is None:
             return None
         self._chat_mission_gate_shots = getattr(self, "_chat_mission_gate_shots", 0) + 1
         logger.warning(
@@ -4017,16 +2166,7 @@ class ReActLoop:
         from .react_config import Observation as _ObsO2
 
         return _ObsO2(
-            content=(
-                "⛔ L'utilisateur a demandé une MISSION avec une échéance — donc un "
-                "travail en arrière-plan, avec son propre budget de temps et ses "
-                "sous-agents. Ne le fais PAS ici au fil de la conversation.\n\n"
-                "Appelle `create_mission(objective=..., deadline=...)` en reprenant "
-                "l'objectif et l'échéance tels qu'il les a écrits, puis annonce-lui "
-                "que c'est lancé et TERMINE ton tour.\n\n"
-                "(Redirection unique : si tu rappelles cet outil ensuite, il "
-                "s'exécutera.)"
-            ),
+            content=contenu,
             success=False,
             origin="chat_mission_intent",
         )
@@ -4128,464 +2268,78 @@ class ReActLoop:
         )
 
     def _worker_codeagent_first_gate(self, tool_name: str, tool_args: Optional[dict] = None):
-        """Require one real CodeAgent attempt before a contract worker hand-codes.
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        LOT I already injects ``CODE PAR DÉLÉGATION`` into every contracted code
-        worker, but the RévizIA/AtelierAir runtime runs proved that a model can
-        ignore that prompt and call ``edit_file`` directly.  This narrow gate
-        turns the documented policy into an invariant without removing the
-        fallback: as soon as ``delegate_task`` (or its background variant) has
-        actually been attempted, successfully or not, direct mutation is allowed.
-
-        It is intentionally inert for the chat, the mission lead, non-code
-        workers, legacy workers without the marker, and CodeAgent itself.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        normalized_tool = str(tool_name or "")
-        if normalized_tool in {"delegate_task", "delegate_task_bg"}:
-            return None
-        if normalized_tool not in _LEDGER_MUTATION_TOOLS:
-            return None
-        if not getattr(self, "_is_mission_run", False):
-            return None
-        code_ext = (".py", ".html", ".css", ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte")
-        owned = list(self._mission_allowed_files_meta() or [])
-        is_lead = not owned
-        if is_lead:
-            # LOT Z1b — DÉCISION UTILISATEUR (2026-08-15) : « il faudrait qu'il
-            # utilise le CodeAgent si c'est du dev ». Le garde sortait ici, et
-            # informer le lead n'a rien changé — mesuré deux fois :
-            #   HuffPack  50 read_file · 5 éditions à la main → 12 tests ROUGES
-            #   Cadence   20 read_file · 6 éditions          → 14/15, 1 cas limite
-            # Le lot Z1 lui avait pourtant ajouté « Ne PAS découper ≠ coder à la
-            # main » : consigne reçue (vérifiée au log), zéro delegate_task. C'est
-            # exactement la leçon du LOT I côté workers — un prompt se contourne,
-            # un rail tient.
-            # Le lead n'a pas de fichiers assignés : on juge donc le fichier qu'il
-            # VISE. Un .md, un .json, un .csv passent — seul le CODE est concerné.
-            cible = ""
-            for cle in ("file_path", "path", "filename"):
-                valeur = (tool_args or {}).get(cle)
-                if valeur:
-                    cible = str(valeur)
-                    break
-            if not cible.lower().endswith(code_ext):
-                return None
-        else:
-            if not any(str(path or "").lower().endswith(code_ext) for path in owned):
-                return None
-            objective = str(getattr(self, "_original_query", "") or "")
-            if "CODE PAR DÉLÉGATION" not in objective:
-                return None
-        attempted = any(
-            entry.action in {"delegate_task", "delegate_task_bg"}
-            for entry in self.execution_ledger.recent(max(1, self.execution_ledger.size))
-        )
-        if attempted:
-            return None
-        logger.warning(
-            "[CODEAGENT-FIRST] mutation '{}' refusée avant delegate_task. task={} "
-            "role={} files={}",
-            tool_name, self.task_id, "lead" if is_lead else "worker", owned or cible,
-        )
-        if is_lead:
-            return Observation(
-                content=(
-                    "⛔ CODEAGENT-FIRST — écrire du code passe par le CodeAgent. "
-                    "Appelle d'abord `delegate_task(description='<ce qu'il y a à "
-                    "coder>', agent_type='code')` : il a le harnais (plan, édition "
-                    "ciblée, exécution, réparation) que tu n'as pas en direct. "
-                    "Une mutation directe redevient autorisée APRÈS cette tentative "
-                    "réelle — si le CodeAgent échoue, reprends immédiatement "
-                    "toi-même avec edit_file/apply_patch. Tu restes responsable de "
-                    "VÉRIFIER par une exécution et de conclure."
-                ),
-                success=False,
-            )
-        return Observation(
-            content=(
-                "⛔ CODEAGENT-FIRST — tu es un worker de code contractuel. Appelle "
-                "d'abord `delegate_task(description='remplis tes fichiers selon "
-                "CONTRAT.md', agent_type='code')`. Une mutation directe ne devient "
-                "autorisée qu'APRÈS cette tentative réelle ; si CodeAgent échoue, "
-                "reprends immédiatement toi-même avec edit_file/apply_patch afin de "
-                "livrer toutes les exigences."
-            ),
-            success=False,
-        )
+        return _mr__worker_codeagent_first_gate(_entree_mission(self), tool_name, tool_args)
 
     def _document_route_for_run(self, query: Optional[str] = None) -> DocumentRoute:
-        """Return the single mode-aware document decision for this run.
+        """Lot RF-5b : corps deplace vers `document_runtime.py`.
 
-        AgentService normally injects this immutable route. Direct ReAct
-        callers get one deterministic fallback from their runtime mode, then
-        reuse it for the entire run.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        runtime_ctx = getattr(self, "runtime_ctx", None)
-        mode = getattr(runtime_ctx, "mode", "agent") if runtime_ctx is not None else "agent"
-        is_mission = bool(
-            getattr(self, "_is_mission_run", False)
-            or (
-                getattr(self, "task_id", None)
-                and getattr(self, "task_orchestrator", None)
-            )
-        )
-        route = getattr(self, "_document_route", None)
-        if isinstance(route, DocumentRoute) and not is_mission:
-            return route
-        routing_query = (
-            ReActLoop._mission_routing_objective(self) if is_mission else ""
-        )
-        if not routing_query:
-            routing_query = query if query is not None else (
-                getattr(self, "_original_query", "") or ""
-            )
-        route = resolve_document_route(routing_query, mode=mode)
-        if is_mission and route.owns_run:
-            route = replace(route, owns_run=False)
-        self._document_route = route
-        return route
+        return _rt__document_route_for_run(_entree_document_catalogue(self), query)
 
     def _force_mission_proactive_document_tools(self) -> list[str]:
-        """Keep bounded document creation available to leads and workers."""
-        if not self._is_mission_run or not hasattr(self.tools, "force_allow_tools"):
-            return []
-        return self.tools.force_allow_tools(_MISSION_PROACTIVE_DOCUMENT_TOOLS)
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__force_mission_proactive_document_tools(_entree_porte_document(self))
 
     def _document_tool_events(self):
-        """Yield document calls, including structured parallel sub-results."""
-        for step in getattr(self, "history", []):
-            action = getattr(step, "action", None)
-            if action is None:
-                continue
-            name = getattr(action, "tool_name", "") or ""
-            observation = getattr(step, "observation", None)
-            if name in {"parallel_tools", "generate_studio_documents"}:
-                for sub in getattr(observation, "sub_results", ()) if observation else ():
-                    yield (
-                        getattr(sub, "tool_name", "") or "",
-                        getattr(sub, "args", {}) or {},
-                        bool(getattr(sub, "success", False)),
-                        True,
-                        getattr(sub, "content", "") or "",
-                    )
-                continue
-            yield (
-                name,
-                getattr(action, "tool_args", {}) or {},
-                bool(getattr(observation, "success", False)) if observation is not None else False,
-                observation is not None,
-                getattr(observation, "content", "") or "" if observation is not None else "",
-            )
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_tool_events(...)` sans changement.
+        """
+        yield from _rt__document_tool_events(getattr(self, "history", []))
 
     @staticmethod
     def _document_catalog_evidence_key(args: Optional[Dict[str, Any]]) -> tuple[str, int, str]:
-        values = args or {}
-        try:
-            limit = int(values.get("limit") or 0)
-        except (TypeError, ValueError):
-            limit = 0
-        return (
-            str(values.get("origin") or "").strip().lower(),
-            limit,
-            str(values.get("sort") or "").strip().lower(),
-        )
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_catalog_evidence_key(...)` sans changement.
+        """
+        return _rt__document_catalog_evidence_key(args)
 
     @staticmethod
     def _document_catalog_rows(content: Any) -> tuple[dict, ...]:
-        try:
-            payload = json.loads(content) if isinstance(content, str) else content
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return ()
-        rows = payload.get("models") if isinstance(payload, dict) else None
-        return tuple(row for row in rows if isinstance(row, dict)) if isinstance(rows, list) else ()
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_catalog_rows(...)` sans changement.
+        """
+        return _rt__document_catalog_rows(content)
 
     def _record_document_catalog_evidence(self, action, observation) -> None:
-        """Keep exact successful catalog rows before history compaction."""
-        if observation is None:
-            return
-        evidence = getattr(self, "_document_catalog_evidence", None)
-        if not isinstance(evidence, dict):
-            evidence = {}
-            self._document_catalog_evidence = evidence
+        """Lot RF-5b : corps deplace vers `document_runtime.py`.
 
-        candidates = []
-        name = getattr(action, "tool_name", "") or ""
-        if name == "list_document_models":
-            candidates.append((
-                getattr(action, "tool_args", {}) or {},
-                bool(getattr(observation, "success", False)),
-                getattr(observation, "content", "") or "",
-            ))
-        elif name == "parallel_tools":
-            for sub in getattr(observation, "sub_results", ()):
-                if getattr(sub, "tool_name", "") == "list_document_models":
-                    candidates.append((
-                        getattr(sub, "args", {}) or {},
-                        bool(getattr(sub, "success", False)),
-                        getattr(sub, "content", "") or "",
-                    ))
-
-        for args, success, content in candidates:
-            # Selection-by-count requires the unfiltered compact catalogue.
-            # A kind-specific response with the same origin/limit/sort is not
-            # equivalent and must never populate the exact selection cache.
-            if str((args or {}).get("kind") or "").strip():
-                continue
-            rows = ReActLoop._document_catalog_rows(content)
-            if success and rows:
-                evidence[ReActLoop._document_catalog_evidence_key(args)] = rows
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__record_document_catalog_evidence(_entree_document_catalogue(self), action, observation)
 
     @staticmethod
     def _document_parallel_calls(tool_args: Optional[Dict[str, Any]]) -> tuple[tuple[str, dict], ...]:
-        """Return normalized nested calls without executing or mutating them."""
-        calls = (tool_args or {}).get("tool_calls", [])
-        if isinstance(calls, str):
-            try:
-                calls = json.loads(calls)
-            except (TypeError, ValueError, json.JSONDecodeError):
-                return ()
-        normalized = []
-        name_keys = {"name", "tool_name", "tool", "action"}
-        arg_keys = ("args", "arguments", "tool_args", "parameters", "input", "params")
-        for raw in calls if isinstance(calls, list) else ():
-            if not isinstance(raw, dict):
-                continue
-            name = str(
-                raw.get("name") or raw.get("tool_name")
-                or raw.get("tool") or raw.get("action") or ""
-            ).strip()
-            args = next(
-                (raw.get(key) for key in arg_keys if isinstance(raw.get(key), dict)),
-                None,
-            )
-            if args is None:
-                args = {
-                    key: value for key, value in raw.items()
-                    if key not in name_keys and key not in arg_keys
-                }
-            normalized.append((name, dict(args)))
-        return tuple(normalized)
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_parallel_calls(...)` sans changement.
+        """
+        return _rt__document_parallel_calls(tool_args)
 
     def _record_document_workflow_evidence(self, action, observation) -> None:
-        """Capture proof-bearing workflow results before visible compaction."""
-        if observation is None or not bool(getattr(observation, "success", False)):
-            return
-        store = getattr(self, "_document_workflow_evidence", None)
-        if not isinstance(store, dict):
-            store = {
-                "batch_proofs": {}, "generation_events": [],
-                "open_events": [], "revision_events": [], "revision_records": [],
-                "verification_events": [], "history_events": [],
-                "export_events": [], "library_events": [], "event_counter": 0,
-            }
-            self._document_workflow_evidence = store
-        name = getattr(action, "tool_name", "") or ""
-        args = getattr(action, "tool_args", {}) or {}
-        content = getattr(observation, "content", "") or ""
-        event_index = int(store.get("event_counter", 0) or 0) + 1
-        store["event_counter"] = event_index
+        """Lot RF-5d1 : corps deplace vers `document_runtime.py`.
 
-        from src.documents.delivery_manifest import parse_generation_proof
-
-        if name == "generate_studio_documents":
-            # A new successful generation supersedes any target frozen from a
-            # previous attempt.  Keeping the old target made a later, valid
-            # revision invisible to the workflow proof.
-            self._document_workflow_target_proof = None
-            self._document_delivery_reference_id = ""
-            self._document_delivery_reference_signature = ()
-            # A batch is authoritative over any earlier unitary attempt.  The
-            # Horizon Vert run regenerated one document only to obtain a
-            # receipt; keeping both generations made the opened parent drift.
-            store["generation_events"] = []
-            proofs = store.setdefault("batch_proofs", {})
-            route = ReActLoop._document_route_for_run(self)
-            if route.requested_count == 1:
-                proofs.clear()
-            for sub in getattr(observation, "sub_results", ()):
-                if not bool(getattr(sub, "success", False)):
-                    continue
-                sub_args = getattr(sub, "args", {}) or {}
-                proof = parse_generation_proof(
-                    getattr(sub, "content", "") or "",
-                    fallback_kind=normalize_document_kind(str(sub_args.get("kind", ""))),
-                )
-                if proof is None:
-                    continue
-                identity = proof.template_id or proof.document_id or proof.path
-                if identity:
-                    proofs[identity] = proof
-            store["last_generation_event_index"] = event_index
-            try:
-                payload = json.loads(content) if isinstance(content, str) else content
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = {}
-            receipt_id = str(
-                payload.get("receipt_id") or ""
-                if isinstance(payload, dict)
-                else ""
-            ).strip()
-            if receipt_id:
-                manifest, missing, unverified = (
-                    ReActLoop._structured_document_delivery_manifest(self)
-                )
-                route = ReActLoop._document_route_for_run(self)
-                if (
-                    not missing and not unverified
-                    and len(manifest) == route.requested_count
-                ):
-                    from src.documents.delivery_manifest import (
-                        manifest_progress_signature,
-                    )
-
-                    # The receipt emitted by generate_studio_documents is the
-                    # authoritative reference for this exact manifest.  Do not
-                    # replace it with a synthetic bundle before the open step.
-                    self._document_delivery_reference_id = receipt_id
-                    self._document_delivery_reference_signature = (
-                        manifest_progress_signature(manifest)
-                    )
-            return
-
-        if name == "generate_studio_document":
-            self._document_workflow_target_proof = None
-            self._document_delivery_reference_id = ""
-            self._document_delivery_reference_signature = ()
-            proof = parse_generation_proof(
-                content,
-                fallback_kind=normalize_document_kind(str(args.get("kind", ""))),
-            )
-            if proof is not None:
-                route = ReActLoop._document_route_for_run(self)
-                if route.requested_count == 1:
-                    store.setdefault("batch_proofs", {}).clear()
-                store.setdefault("generation_events", []).append({
-                    "proof": proof,
-                    "_event_index": event_index,
-                })
-                store["last_generation_event_index"] = event_index
-            return
-
-        if name == "open_document_delivery":
-            payload = ReActLoop._document_open_payload(observation)
-            if isinstance(payload, dict):
-                event = dict(payload)
-                event["_event_index"] = event_index
-                event["_receipt_id"] = str(args.get("receipt_id") or "")
-                store.setdefault("open_events", []).append(event)
-            return
-
-        if name == "open_file":
-            route = ReActLoop._document_route_for_run(self)
-            manifest, missing, unverified = (
-                ReActLoop._structured_document_delivery_manifest(self)
-            )
-            path = str(args.get("path") or args.get("file_path") or "")
-            if (
-                route.requested_count == 1
-                and len(manifest) == 1
-                and not missing
-                and not unverified
-                and ReActLoop._document_paths_match(path, manifest[0].path)
-            ):
-                receipt_id = str(
-                    getattr(self, "_document_delivery_reference_id", "") or ""
-                )
-                store.setdefault("open_events", []).append({
-                    "receipt_id": receipt_id,
-                    "_receipt_id": receipt_id,
-                    "requested": 1,
-                    "opened": 1,
-                    "failed": 0,
-                    "files": [{
-                        "filename": manifest[0].filename,
-                        "path": manifest[0].path,
-                    }],
-                    "_event_index": event_index,
-                })
-            return
-
-        if name == "revise_studio_document":
-            target = ReActLoop._document_workflow_target(self)
-            proof = parse_generation_proof(
-                content,
-                fallback_kind=str(getattr(target, "kind", "") or ""),
-            )
-            if proof is not None:
-                try:
-                    payload = json.loads(content) if isinstance(content, str) else content
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    payload = {}
-                changed_fields = (
-                    dict(payload.get("changed_fields") or {})
-                    if isinstance(payload, dict)
-                    else {}
-                )
-                store.setdefault("revision_events", []).append((dict(args), proof))
-                store.setdefault("revision_records", []).append({
-                    "args": dict(args), "proof": proof,
-                    "changed_fields": changed_fields,
-                    "_event_index": event_index,
-                })
-                if str(args.get("output_format") or "").strip():
-                    record = (
-                        dict(payload.get("record") or {})
-                        if isinstance(payload, dict) else {}
-                    )
-                    store.setdefault("export_events", []).append({
-                        "args": dict(args), "record": record, "proof": proof,
-                        "_event_index": event_index,
-                    })
-            return
-
-        if name == "read_document":
-            store.setdefault("verification_events", []).append({
-                "args": dict(args), "content": str(content), "_event_index": event_index,
-            })
-            return
-
-        if name == "get_document_history":
-            try:
-                payload = json.loads(content) if isinstance(content, str) else content
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = {}
-            if isinstance(payload, dict):
-                store.setdefault("history_events", []).append({
-                    "args": dict(args), "payload": dict(payload),
-                    "_event_index": event_index,
-                })
-            return
-
-        if name in {"convert_library_document", "export_library_document"}:
-            try:
-                payload = json.loads(content) if isinstance(content, str) else content
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = {}
-            if isinstance(payload, dict):
-                record = payload.get("record")
-                store.setdefault("export_events", []).append({
-                    "args": dict(args),
-                    "record": dict(record) if isinstance(record, dict) else dict(payload),
-                    "_event_index": event_index,
-                })
-            return
-
-        if name in {"search_document_library", "get_document_record"}:
-            try:
-                payload = json.loads(content) if isinstance(content, str) else content
-            except (TypeError, ValueError, json.JSONDecodeError):
-                payload = {}
-            records = []
-            if name == "search_document_library" and isinstance(payload, dict):
-                records = payload.get("documents") or []
-            elif isinstance(payload, dict):
-                records = [payload]
-            normalized_records = [dict(row) for row in records if isinstance(row, dict)]
-            if normalized_records:
-                store.setdefault("library_events", []).append({
-                    "args": dict(args), "records": normalized_records,
-                    "_event_index": event_index,
-                })
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__record_document_workflow_evidence(_entree_workflow_document(self), action, observation)
 
     @staticmethod
     def _duplicate_document_mutation(
@@ -4594,1296 +2348,259 @@ class ReActLoop:
         queued_name: str,
         queued_args: Optional[Dict[str, Any]],
     ) -> bool:
-        """Reject only byte-for-byte equivalent document mutations in one turn."""
-        document_mutations = {
-            "generate_studio_document",
-            "generate_studio_documents",
-            "revise_studio_document",
-            "apply_document_edit",
-        }
-        if primary_name != queued_name or primary_name not in document_mutations:
-            return False
-        try:
-            primary = json.dumps(
-                primary_args or {}, ensure_ascii=False, sort_keys=True, default=str,
-            )
-            queued = json.dumps(
-                queued_args or {}, ensure_ascii=False, sort_keys=True, default=str,
-            )
-        except (TypeError, ValueError):
-            return False
-        return primary == queued
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._duplicate_document_mutation(...)` sans changement.
+        """
+        return _rt__duplicate_document_mutation(primary_name, primary_args, queued_name, queued_args)
 
     @staticmethod
     def _document_open_payload(observation) -> dict[str, Any] | None:
-        """Parse the authoritative raw open payload before visible compaction."""
-        content = getattr(observation, "content", None)
-        try:
-            payload = json.loads(content) if isinstance(content, str) else content
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return None
-        return dict(payload) if isinstance(payload, dict) else None
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_open_payload(...)` sans changement.
+        """
+        return _rt__document_open_payload(observation)
 
     @staticmethod
     def _document_revision_patch(args: Optional[Dict[str, Any]]) -> dict[str, Any]:
-        raw = (args or {}).get("data", {})
-        if isinstance(raw, dict):
-            return dict(raw)
-        if not isinstance(raw, str) or not raw.strip():
-            return {}
-        try:
-            parsed = json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            try:
-                parsed = ast.literal_eval(raw)
-            except (ValueError, SyntaxError):
-                return {}
-        return dict(parsed) if isinstance(parsed, dict) else {}
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_revision_patch(...)` sans changement.
+        """
+        return _rt__document_revision_patch(args)
 
     @staticmethod
     def _document_revision_changed_fields(record: Any) -> dict[str, Any]:
-        """Return the authoritative parent-child diff, with legacy arg fallback."""
-        if not isinstance(record, dict):
-            return {}
-        changed = record.get("changed_fields")
-        if isinstance(changed, dict) and changed:
-            return dict(changed)
-        return ReActLoop._document_revision_patch(record.get("args", {}))
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_revision_changed_fields(...)` sans changement.
+        """
+        return _rt__document_revision_changed_fields(record)
 
     @staticmethod
     def _document_patch_scalar_values(value: Any) -> tuple[str, ...]:
-        values: list[str] = []
-        if isinstance(value, dict):
-            for child in value.values():
-                values.extend(ReActLoop._document_patch_scalar_values(child))
-        elif isinstance(value, (list, tuple)):
-            for child in value:
-                values.extend(ReActLoop._document_patch_scalar_values(child))
-        elif value is not None and not isinstance(value, (dict, list, tuple)):
-            text = str(value).strip()
-            if text:
-                values.append(text)
-        return tuple(values)
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_patch_scalar_values(...)` sans changement.
+        """
+        return _rt__document_patch_scalar_values(value)
 
     @staticmethod
     def _document_paths_match(left: str, right: str) -> bool:
-        if not left or not right:
-            return False
-        return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(
-            os.path.normpath(str(right))
-        )
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_paths_match(...)` sans changement.
+        """
+        return _rt__document_paths_match(left, right)
 
     @staticmethod
     def _document_verification_text(value: Any) -> str:
-        """Normalize PDF line wrapping without weakening value matching."""
-        text = unicodedata.normalize("NFKC", str(value or ""))
-        text = re.sub(r"(?<=\w)-\s+(?=\w)", "-", text)
-        return re.sub(r"\s+", " ", text).strip().casefold()
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_verification_text(...)` sans changement.
+        """
+        return _rt__document_verification_text(value)
 
     def _document_workflow_proof_state(self) -> dict[str, Any]:
-        """Return causally ordered open, revision and reread evidence."""
-        route = ReActLoop._document_route_for_run(self)
-        store = getattr(self, "_document_workflow_evidence", {})
-        if not isinstance(store, dict):
-            store = {}
+        """Lot RF-5d1 : corps deplace vers `document_runtime.py`.
 
-        open_events = list(store.get("open_events", ()))
-        revision_records = list(store.get("revision_records", ()))
-        verification_events = list(store.get("verification_events", ()))
-        history_events = list(store.get("history_events", ()))
-        export_events = list(store.get("export_events", ()))
-        library_events = list(store.get("library_events", ()))
-
-        # Compatibility for tests and old in-memory runs that only have history.
-        if not open_events or not revision_records or not verification_events:
-            from src.documents.delivery_manifest import parse_generation_proof
-
-            load_history_opens = not open_events
-            load_history_revisions = not revision_records
-            load_history_verifications = not verification_events
-
-            for sequence, (name, args, success, observed, content) in enumerate(
-                ReActLoop._document_tool_events(self), start=1,
-            ):
-                if not (success and observed):
-                    continue
-                if name == "open_document_delivery" and load_history_opens:
-                    try:
-                        payload = json.loads(content) if isinstance(content, str) else content
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        payload = None
-                    if isinstance(payload, dict):
-                        event = dict(payload)
-                        event["_event_index"] = sequence
-                        event["_receipt_id"] = str((args or {}).get("receipt_id") or "")
-                        open_events.append(event)
-                elif name == "revise_studio_document" and load_history_revisions:
-                    target = ReActLoop._document_workflow_target(self)
-                    proof = parse_generation_proof(
-                        content,
-                        fallback_kind=str(getattr(target, "kind", "") or ""),
-                    )
-                    if proof is not None:
-                        try:
-                            payload = json.loads(content) if isinstance(content, str) else content
-                        except (TypeError, ValueError, json.JSONDecodeError):
-                            payload = {}
-                        revision_records.append({
-                            "args": dict(args or {}), "proof": proof,
-                            "changed_fields": (
-                                dict(payload.get("changed_fields") or {})
-                                if isinstance(payload, dict)
-                                else {}
-                            ),
-                            "_event_index": sequence,
-                        })
-                elif name == "read_document" and load_history_verifications:
-                    verification_events.append({
-                        "args": dict(args or {}), "content": str(content),
-                        "_event_index": sequence,
-                    })
-
-        from src.documents.delivery_manifest import summarize_document_open_events
-
-        generation_index = int(store.get("last_generation_event_index", 0) or 0)
-        expected_receipt = str(
-            getattr(self, "_document_delivery_reference_id", "") or ""
-        ).strip()
-        causal_open_events = []
-        for event in open_events:
-            if not isinstance(event, dict):
-                continue
-            event_index = int(event.get("_event_index", 0) or 0)
-            if generation_index and event_index <= generation_index:
-                continue
-            payload_receipt = str(event.get("receipt_id") or "").strip()
-            argument_receipt = str(event.get("_receipt_id") or "").strip()
-            if (
-                payload_receipt
-                and argument_receipt
-                and payload_receipt != argument_receipt
-            ):
-                continue
-            event_receipt = payload_receipt or argument_receipt
-            if expected_receipt and event_receipt != expected_receipt:
-                continue
-            causal_open_events.append(event)
-
-        open_summary = summarize_document_open_events(
-            ReActLoop._structured_document_delivery_manifest(self)[0],
-            causal_open_events,
-            requested_count=route.requested_count,
-        )
-        exact_open = (
-            open_summary
-            if isinstance(open_summary, dict) and bool(open_summary.get("complete"))
-            else None
-        )
-
-        target = ReActLoop._document_workflow_target(self)
-        open_index = int((exact_open or {}).get("_event_index", 0) or 0)
-        exact_revision = None
-        for record in revision_records:
-            args = record.get("args", {}) if isinstance(record, dict) else {}
-            if (
-                target is not None
-                and str(args.get("document_id") or "") == target.document_id
-                and int(record.get("_event_index", 0) or 0) > open_index
-            ):
-                exact_revision = record
-
-        exact_verification = None
-        if exact_revision is not None:
-            revision_index = int(exact_revision.get("_event_index", 0) or 0)
-            proof = exact_revision.get("proof")
-            patch = ReActLoop._document_revision_changed_fields(exact_revision)
-            expected_values = ReActLoop._document_patch_scalar_values(patch)
-            for event in verification_events:
-                args = event.get("args", {}) if isinstance(event, dict) else {}
-                path = str(args.get("path") or args.get("file_path") or "")
-                content = str(event.get("content") or "") if isinstance(event, dict) else ""
-                normalized_content = ReActLoop._document_verification_text(content)
-                if (
-                    int(event.get("_event_index", 0) or 0) > revision_index
-                    and proof is not None
-                    and ReActLoop._document_paths_match(path, proof.path)
-                    and expected_values
-                    and all(
-                        ReActLoop._document_verification_text(value)
-                        in normalized_content
-                        for value in expected_values
-                    )
-                ):
-                    exact_verification = event
-                    break
-
-        actions = tuple(getattr(route, "workflow_actions", ()) or ())
-        requested_operations = {
-            str(getattr(action, "operation", "") or "") for action in actions
-        }
-        revised_proof = (
-            exact_revision.get("proof") if isinstance(exact_revision, dict) else None
-        )
-        verification_index = int(
-            (exact_verification or {}).get("_event_index", 0) or 0
-        )
-
-        exact_history = None
-        if revised_proof is not None:
-            for event in history_events:
-                if not isinstance(event, dict):
-                    continue
-                payload = event.get("payload", {})
-                document = payload.get("document", {}) if isinstance(payload, dict) else {}
-                metadata = document.get("metadata", {}) if isinstance(document, dict) else {}
-                parent_id = str(
-                    (document.get("parent_id") if isinstance(document, dict) else "")
-                    or (metadata.get("parent_id") if isinstance(metadata, dict) else "")
-                    or ""
-                )
-                if (
-                    int(event.get("_event_index", 0) or 0) > verification_index
-                    and str((document or {}).get("id") or "") == revised_proof.document_id
-                    and target is not None
-                    and parent_id == target.document_id
-                ):
-                    exact_history = event
-                    break
-
-        history_floor = int((exact_history or {}).get("_event_index", 0) or 0)
-        export_floor = history_floor if "history" in requested_operations else verification_index
-        export_action = next(
-            (
-                action for action in actions
-                if getattr(action, "operation", "") == "export"
-            ),
-            None,
-        )
-        expected_export_format = str(
-            getattr(export_action, "output_format", "") or ""
-        ).strip().lower()
-        exact_export = None
-        if revised_proof is not None:
-            for event in export_events:
-                if not isinstance(event, dict):
-                    continue
-                args = event.get("args", {})
-                record = event.get("record", {})
-                proof = event.get("proof")
-                record_id = str(
-                    (record.get("id") if isinstance(record, dict) else "")
-                    or getattr(proof, "document_id", "") or ""
-                )
-                record_format = str(
-                    (record.get("format") if isinstance(record, dict) else "")
-                    or getattr(proof, "format", "")
-                    or args.get("output_format") or ""
-                ).strip().lower().lstrip(".")
-                parent_id = str(
-                    (record.get("parent_id") if isinstance(record, dict) else "")
-                    or (
-                        (record.get("metadata") or {}).get("parent_id")
-                        if isinstance(record, dict) and isinstance(record.get("metadata"), dict)
-                        else ""
-                    )
-                    or args.get("document_id") or ""
-                )
-                if (
-                    int(event.get("_event_index", 0) or 0) > export_floor
-                    and record_id
-                    and parent_id == revised_proof.document_id
-                    and (
-                        not expected_export_format
-                        or record_format == expected_export_format
-                    )
-                ):
-                    exact_export = event
-                    break
-
-        expected_library_ids = {
-            value for value in (
-                str(getattr(target, "document_id", "") or ""),
-                str(getattr(revised_proof, "document_id", "") or ""),
-                str(
-                    ((exact_export or {}).get("record") or {}).get("id")
-                    or getattr((exact_export or {}).get("proof"), "document_id", "")
-                    or ""
-                ),
-            ) if value
-        }
-        library_floor = int((exact_export or {}).get("_event_index", 0) or 0)
-        observed_library_ids: set[str] = set()
-        latest_library_index = 0
-        for event in library_events:
-            if not isinstance(event, dict):
-                continue
-            event_index = int(event.get("_event_index", 0) or 0)
-            if event_index <= library_floor:
-                continue
-            latest_library_index = max(latest_library_index, event_index)
-            for record in event.get("records", ()):
-                if isinstance(record, dict) and record.get("id"):
-                    observed_library_ids.add(str(record["id"]))
-        exact_library = None
-        if expected_library_ids and expected_library_ids.issubset(observed_library_ids):
-            exact_library = {
-                "document_ids": tuple(sorted(expected_library_ids)),
-                "_event_index": latest_library_index,
-            }
-
-        return {
-            "open": exact_open,
-            "open_progress": open_summary,
-            "target": target,
-            "revision": exact_revision,
-            "verification": exact_verification,
-            "history": exact_history,
-            "export": exact_export,
-            "library_verify": exact_library,
-        }
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_workflow_proof_state(_entree_workflow_document(self))
 
     def _document_workflow_progress_signature(self) -> tuple:
-        """Return monotone workflow evidence for document-only stagnation checks."""
-        from src.documents.delivery_manifest import workflow_progress_signature
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
 
-        state = ReActLoop._document_workflow_proof_state(self)
-        revision = state.get("revision") or {}
-        revised = revision.get("proof")
-        verification = state.get("verification") or {}
-        verification_args = verification.get("args", {}) if isinstance(verification, dict) else {}
-        history = state.get("history") or {}
-        history_payload = history.get("payload", {}) if isinstance(history, dict) else {}
-        history_document = (
-            history_payload.get("document", {}) if isinstance(history_payload, dict) else {}
-        )
-        export = state.get("export") or {}
-        export_record = export.get("record", {}) if isinstance(export, dict) else {}
-        export_proof = export.get("proof") if isinstance(export, dict) else None
-        library = state.get("library_verify") or {}
-        return workflow_progress_signature(
-            state.get("open_progress"),
-            revised_document_id=str(getattr(revised, "document_id", "") or ""),
-            verification_path=str(
-                verification_args.get("path") or verification_args.get("file_path") or ""
-            ),
-            history_document_id=str(
-                history_document.get("id") if isinstance(history_document, dict) else ""
-            ),
-            export_document_id=str(
-                (export_record.get("id") if isinstance(export_record, dict) else "")
-                or getattr(export_proof, "document_id", "") or ""
-            ),
-            library_document_ids=tuple(library.get("document_ids", ()))
-            if isinstance(library, dict) else (),
-        )
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_workflow_progress_signature(_entree_porte_document(self))
 
     def _document_catalog_selection_groups(self) -> tuple[tuple[dict, ...], ...]:
-        """Return exact catalogue rows grouped in the user's requested order."""
-        route = ReActLoop._document_route_for_run(self)
-        selections = route.selections or (() if not route.is_catalog_selection else (
-            SimpleNamespace(
-                origin=route.selection_origin,
-                limit=route.selection_limit,
-                sort=route.selection_sort,
-            ),
-        ))
-        events = tuple(ReActLoop._document_tool_events(self))
-        groups: list[tuple[dict, ...]] = []
-        for selection in selections:
-            key = ReActLoop._document_catalog_evidence_key({
-                "origin": selection.origin,
-                "limit": selection.limit,
-                "sort": selection.sort,
-            })
-            cache = getattr(self, "_document_catalog_evidence", {})
-            selected: tuple[dict, ...] = tuple(cache.get(key, ())) if isinstance(cache, dict) else ()
-            fallback: tuple[dict, ...] = ()
-            for name, args, success, observed, content in (() if selected else reversed(events)):
-                if name != "list_document_models" or not (success and observed):
-                    continue
-                parsed = ReActLoop._document_catalog_rows(content)
-                if not parsed:
-                    continue
-                if not fallback:
-                    fallback = parsed
-                if ReActLoop._document_catalog_evidence_key(args) == key:
-                    selected = parsed
-                    break
-            # Historical single-selection tests/callers did not always retain
-            # list arguments. Preserve that compatibility only for one group.
-            if not selected and len(selections) == 1:
-                selected = fallback
-            groups.append(selected[:selection.limit])
-        return tuple(groups)
+        """Lot RF-5b : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_catalog_selection_groups(_entree_document_catalogue(self))
 
     def _document_catalog_selection_models(self) -> tuple[dict, ...]:
-        """Compatibility view flattening the exact ordered catalogue groups."""
-        return tuple(
-            row
-            for group in ReActLoop._document_catalog_selection_groups(self)
-            for row in group
-        )
+        """Lot RF-5b : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_catalog_selection_models(_entree_document_catalogue(self))
 
     def _document_expected_template_ids(self) -> tuple[str, ...]:
-        route = ReActLoop._document_route_for_run(self)
-        rows = ReActLoop._document_catalog_selection_models(self)
-        return tuple(
-            str(row.get("id") or "").strip()
-            for row in rows[:route.requested_count]
-            if str(row.get("id") or "").strip()
-        )
+        """Lot RF-5b : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_expected_template_ids(_entree_document_catalogue(self))
 
     def _reconcile_document_catalog_plan(self, iteration: int) -> int:
-        """Credit catalogue plan tasks only from their exact successful listing."""
-        if not getattr(self, "_task_plan", None):
-            return 0
-        route = ReActLoop._document_route_for_run(self)
-        selections = tuple(getattr(route, "selections", ()) or ())
-        if len(selections) <= 1:
-            return 0
-        evidence = getattr(self, "_document_catalog_evidence", {})
-        if not isinstance(evidence, dict):
-            return 0
+        """Lot RF-5b : corps deplace vers `document_runtime.py`.
 
-        changed = 0
-        for selection in selections:
-            key = ReActLoop._document_catalog_evidence_key({
-                "origin": selection.origin,
-                "limit": selection.limit,
-                "sort": selection.sort,
-            })
-            rows = tuple(evidence.get(key, ()))
-            if len(rows) < selection.limit:
-                continue
-            for task in self._task_plan:
-                if task.completed or document_catalog_task_origin(task.description) != selection.origin:
-                    continue
-                task.completed = True
-                task.completed_at_iteration = iteration
-                task.completed_by_tool = "list_document_models"
-                task.completion_status = "verified"
-                task.completion_evidence = (
-                    f"catalogue exact origin={selection.origin}, limit={selection.limit}, "
-                    f"sort={selection.sort}"
-                )
-                task.completion_confidence = "strong"
-                changed += 1
-                logger.info(
-                    "[PLAN DOCUMENT CATALOG] '{}' - {}",
-                    task.description[:70], task.completion_evidence,
-                )
-                break
-        if changed:
-            self._emit_plan_state(context_tool="list_document_models")
-        return changed
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__reconcile_document_catalog_plan(_entree_document_catalogue(self), iteration)
 
     def _latest_document_batch_proofs(self):
-        """Aggregate newest proof per template across bounded batch retries."""
-        from src.documents.delivery_manifest import parse_generation_proof
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
 
-        newest = {}
-        for step in reversed(getattr(self, "history", [])):
-            action = getattr(step, "action", None)
-            if getattr(action, "tool_name", "") != "generate_studio_documents":
-                continue
-            observation = getattr(step, "observation", None)
-            if observation is None:
-                continue
-            for sub in getattr(observation, "sub_results", ()):
-                if not bool(getattr(sub, "success", False)):
-                    continue
-                args = getattr(sub, "args", {}) or {}
-                proof = parse_generation_proof(
-                    getattr(sub, "content", "") or "",
-                    fallback_kind=normalize_document_kind(str(args.get("kind", ""))),
-                )
-                if proof is not None:
-                    identity = proof.template_id or proof.document_id or proof.path
-                    if identity and identity not in newest:
-                        newest[identity] = proof
-        # Run-scoped evidence is captured before compaction and therefore wins
-        # over history-derived records for the same template.
-        store = getattr(self, "_document_workflow_evidence", {})
-        cached = store.get("batch_proofs", {}) if isinstance(store, dict) else {}
-        if isinstance(cached, dict):
-            newest.update(cached)
-        return tuple(newest.values())
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._latest_document_batch_proofs(...)` sans changement.
+        """
+        return _rt__latest_document_batch_proofs(
+            getattr(self, "history", []),
+            getattr(self, "_document_workflow_evidence", {}),
+        )
 
     def _document_web_rights_evidence(self) -> tuple[bool, bool]:
-        """Return (web-document action observed, explicit reuse rights proven)."""
-        relevant = False
-        accepted = {"licensed", "public_domain", "permission_granted"}
-        for name, _args, success, observed, content in ReActLoop._document_tool_events(self):
-            if name not in {"inspect_document_source", "download_document"} \
-                    or not (success and observed):
-                continue
-            relevant = True
-            try:
-                payload = json.loads(content) if isinstance(content, str) else content
-            except (TypeError, ValueError):
-                payload = {}
-            candidates = [payload] if isinstance(payload, dict) else []
-            record = payload.get("record") if isinstance(payload, dict) else None
-            if isinstance(record, dict):
-                candidates.extend([record, record.get("metadata", {})])
-            for candidate in candidates:
-                if not isinstance(candidate, dict):
-                    continue
-                status = str(candidate.get("rights_status", "")).strip().lower()
-                evidence = str(candidate.get("rights_evidence", "")).strip()
-                if status in accepted and evidence:
-                    return True, True
-        return relevant, False
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_web_rights_evidence(...)` sans changement.
+        """
+        return _rt__document_web_rights_evidence(getattr(self, "history", []))
 
     @staticmethod
     def _nested_document_bypass(
         tool_name: str, tool_args: Optional[Dict[str, Any]] = None,
     ) -> str:
-        if tool_name in STUDIO_BYPASS_TOOLS:
-            return tool_name
-        if tool_name != "parallel_tools":
-            return ""
-        calls = (tool_args or {}).get("tool_calls", [])
-        if isinstance(calls, str):
-            try:
-                calls = json.loads(calls)
-            except (TypeError, ValueError):
-                calls = []
-        for call in calls if isinstance(calls, list) else []:
-            if isinstance(call, dict) and str(call.get("name", "")) in STUDIO_BYPASS_TOOLS:
-                return str(call["name"])
-        return ""
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._nested_document_bypass(...)` sans changement.
+        """
+        return _rt__nested_document_bypass(tool_name, tool_args)
 
     def _studio_attempted_kinds(self, studio_tool: str, route: DocumentRoute) -> tuple[str, ...]:
-        attempted: list[str] = []
-        requested = route.requested_kinds
-        for name, args, _success, _observed, _content in ReActLoop._document_tool_events(self):
-            if name != studio_tool:
-                continue
-            kind = normalize_document_kind(str((args or {}).get("kind", "")))
-            if not kind and len(requested) == 1:
-                kind = requested[0]
-            if kind:
-                attempted.append(kind)
-        return tuple(attempted)
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._studio_attempted_kinds(...)` sans changement.
+        """
+        return _rt__studio_attempted_kinds(
+            getattr(self, "history", []), studio_tool, route,
+        )
 
     def _structured_document_delivery_progress(self) -> tuple[int, int, tuple[str, ...]]:
-        """Return the number of requested documents proven as generated."""
-        from collections import Counter
+        """Lot RF-5c : corps deplace vers `document_runtime.py`.
 
-        route = ReActLoop._document_route_for_run(self)
-        if route.is_catalog_selection:
-            manifest, missing, _unverified = (
-                ReActLoop._structured_document_delivery_manifest(self)
-            )
-            return route.requested_count, len(manifest), missing
-        requested = route.requested_kinds
-        if not requested:
-            return 0, 0, ()
-        remaining = Counter(requested)
-        delivered = 0
-        generic_successes = 0
-        delivery_tools = {
-            "create_pdf", "create_invoice_pdf", "create_from_template",
-            "create_docx", "create_xlsx", "create_pptx", "create_csv",
-            "create_html", "create_markdown",
-        }
-        for name, args, success, observed, _content in ReActLoop._document_tool_events(self):
-            if not (success and observed):
-                continue
-            if name == "generate_studio_document":
-                kind = normalize_document_kind(str((args or {}).get("kind", "")))
-                if kind and remaining[kind] > 0:
-                    remaining[kind] -= 1
-                    delivered += 1
-            elif name in delivery_tools:
-                generic_successes += 1
-        missing = [kind for kind in requested for _ in range(remaining[kind])]
-        generic_used = min(generic_successes, len(missing))
-        delivered += generic_used
-        return len(requested), min(delivered, len(requested)), tuple(missing[generic_used:])
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__structured_document_delivery_progress(_entree_livraison_document(self))
 
     def _structured_document_delivery_manifest(self):
-        """Return exact Studio proofs in the order requested by the user."""
-        from collections import Counter, defaultdict, deque
-        from src.documents.delivery_manifest import parse_generation_proof
+        """Lot RF-5c : corps deplace vers `document_runtime.py`.
 
-        route = ReActLoop._document_route_for_run(self)
-        if route.is_catalog_selection:
-            expected_ids = ReActLoop._document_expected_template_ids(self)
-            proofs = ReActLoop._latest_document_batch_proofs(self)
-            by_template = {}
-            for proof in proofs:
-                if proof.template_id and proof.template_id not in by_template:
-                    by_template[proof.template_id] = proof
-            ordered = []
-            missing = []
-            for template_id in expected_ids:
-                if template_id in by_template:
-                    ordered.append(by_template[template_id])
-                else:
-                    missing.append(template_id)
-            if len(expected_ids) < route.requested_count:
-                missing.extend(
-                    f"catalog_selection_{index}"
-                    for index in range(len(expected_ids) + 1, route.requested_count + 1)
-                )
-            unverified = tuple(
-                proof.template_id or proof.kind
-                for proof in ordered
-                if (
-                    not proof.render_verified
-                    or (
-                        route.minimum_pages > 0
-                        and proof.page_count < route.minimum_pages
-                    )
-                )
-            )
-            return tuple(ordered), tuple(missing), unverified
-        buckets = defaultdict(deque)
-
-        def add_proof(proof) -> None:
-            canonical_kind = normalize_document_kind(proof.kind)
-            if not canonical_kind:
-                return
-            buckets[canonical_kind].append(proof)
-
-        store = getattr(self, "_document_workflow_evidence", {})
-        cached_batch = store.get("batch_proofs", {}) if isinstance(store, dict) else {}
-        for proof in cached_batch.values() if isinstance(cached_batch, dict) else ():
-            add_proof(proof)
-        generation_events = (
-            store.get("generation_events", []) if isinstance(store, dict) else []
-        )
-        for event in generation_events if isinstance(generation_events, list) else ():
-            proof = event.get("proof") if isinstance(event, dict) else None
-            if proof is not None:
-                add_proof(proof)
-
-        # Run-scoped evidence is captured before history compaction.  When it
-        # exists, it is the sole source of the initial delivery manifest.
-        # Otherwise retain compatibility with history-only tests/old runs.
-        # Revisions are deliberately excluded: children belong to the lifecycle
-        # proof, never to the immutable generation manifest.
-        have_run_scoped_generation = bool(cached_batch) or bool(generation_events)
-        if not have_run_scoped_generation:
-            allows_revision_as_origin = (
-                route.operation == "revise"
-                and not any(
-                    getattr(action, "operation", "") == "generate"
-                    for action in getattr(route, "workflow_actions", ())
-                )
-            )
-            for name, args, success, observed, content in ReActLoop._document_tool_events(self):
-                if (
-                    name != "generate_studio_document"
-                    and not (allows_revision_as_origin and name == "revise_studio_document")
-                ) or not (success and observed):
-                    continue
-                fallback_kind = normalize_document_kind(str((args or {}).get("kind", "")))
-                if not fallback_kind and len(route.requested_kinds) == 1:
-                    fallback_kind = route.requested_kinds[0]
-                proof = parse_generation_proof(content, fallback_kind=fallback_kind)
-                if proof is not None:
-                    add_proof(proof)
-
-        # A retry supersedes an earlier failed/unverified rendering for the
-        # same requested slot. Keep only the newest N proofs, where N is the
-        # number of times that kind was actually requested.
-        requested_counts = Counter(route.requested_kinds)
-        for kind, bucket in buckets.items():
-            while len(bucket) > requested_counts[kind]:
-                bucket.popleft()
-
-        ordered = []
-        missing = []
-        for kind in route.requested_kinds:
-            if buckets[kind]:
-                ordered.append(buckets[kind].popleft())
-            else:
-                missing.append(kind)
-        unverified = tuple(
-            proof.kind
-            for proof in ordered
-            if (
-                not proof.render_verified
-                or (
-                    route.minimum_pages > 0
-                    and proof.page_count < route.minimum_pages
-                )
-            )
-        )
-        return tuple(ordered), tuple(missing), unverified
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__structured_document_delivery_manifest(_entree_livraison_document(self))
 
     def _ensure_document_delivery_reference(self) -> str:
-        """Persist the exact run manifest as soon as it becomes complete."""
-        route = ReActLoop._document_route_for_run(self)
-        manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
-        if (
-            missing or unverified or route.requested_count < 1
-            or len(manifest) != route.requested_count
-        ):
-            return ""
-        from src.documents.delivery_manifest import manifest_progress_signature
+        """Lot RF-5c : corps deplace vers `document_runtime.py`.
 
-        signature = manifest_progress_signature(manifest)
-        existing = str(getattr(self, "_document_delivery_reference_id", "") or "")
-        if (
-            existing
-            and getattr(self, "_document_delivery_reference_signature", ()) == signature
-        ):
-            return existing
-        try:
-            from src.documents.document_delivery_bundle import save_delivery_reference
-            from src.documents.studio import get_document_studio
-
-            receipt = save_delivery_reference(
-                get_document_studio().root,
-                manifest,
-                requested_count=route.requested_count,
-            )
-            reference_id = str(receipt.get("id") or "")
-            if reference_id:
-                self._document_delivery_reference_id = reference_id
-                self._document_delivery_reference_signature = signature
-            return reference_id
-        except Exception as exc:
-            logger.warning("[DOCUMENT DELIVERY RECEIPT] persistence impossible: {}", exc)
-            return ""
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__ensure_document_delivery_reference(_entree_livraison_document(self))
 
     def _document_workflow_pending_action(self):
-        """Return the first unproved post-generation action for this run."""
-        route = ReActLoop._document_route_for_run(self)
-        actions = tuple(getattr(route, "workflow_actions", ()) or ())
-        if not actions:
-            return None
-        manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
-        proof_state = ReActLoop._document_workflow_proof_state(self)
-        for action in actions:
-            operation = getattr(action, "operation", "")
-            if operation == "generate":
-                if missing or unverified or len(manifest) != route.requested_count:
-                    return action
-                continue
-            if operation == "open":
-                if proof_state["open"] is None:
-                    return action
-                continue
-            if operation == "revise":
-                if proof_state["revision"] is None:
-                    return action
-                continue
-            if operation == "verify":
-                if proof_state["verification"] is None:
-                    return action
-                continue
-            if operation == "history":
-                if proof_state["history"] is None:
-                    return action
-                continue
-            if operation == "export":
-                if proof_state["export"] is None:
-                    return action
-                continue
-            if operation == "library_verify":
-                if proof_state["library_verify"] is None:
-                    return action
-                continue
-        return None
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_workflow_pending_action(_entree_porte_document(self))
 
     def _document_workflow_target(self):
-        """Return the exact manifest proof targeted by the revision ordinal."""
-        cached = getattr(self, "_document_workflow_target_proof", None)
-        if cached is not None:
-            return cached
-        route = ReActLoop._document_route_for_run(self)
-        manifest, missing, _unverified = ReActLoop._structured_document_delivery_manifest(self)
-        revision = next(
-            (
-                action for action in getattr(route, "workflow_actions", ())
-                if getattr(action, "operation", "") == "revise"
-            ),
-            None,
-        )
-        ordinal = int(getattr(revision, "target_ordinal", 0) or 0)
-        target = (
-            manifest[ordinal - 1]
-            if not missing and len(manifest) == route.requested_count
-            and ordinal and ordinal <= len(manifest)
-            else None
-        )
-        if target is not None:
-            self._document_workflow_target_proof = target
-        return target
+        """Lot RF-5c : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_workflow_target(_entree_livraison_document(self))
 
     @staticmethod
     def _document_delivery_truth_required(route: DocumentRoute, requested_count: int) -> bool:
-        """Require exact Studio evidence for every actionable structured request."""
-        return bool(requested_count >= 1 and route.requires_studio)
+        """Lot RF-5c : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_delivery_truth_required(route, requested_count)
 
     @staticmethod
     def _merge_mission_document_evidence(free_answer: str, evidence: str) -> str:
-        """Keep a mission's free report while attaching exact document proof."""
-        answer = str(free_answer or "").strip()
-        proof = str(evidence or "").strip()
-        if not answer:
-            # A document capability never becomes the mission's voice. Keeping
-            # this empty lets the normal FINAL/thought-leak repair obtain a
-            # complete free mission report on the next turn. Returning `proof`
-            # here used to short-circuit that repair and replace mixed mission
-            # results with the canned Document Studio receipt.
-            return ""
-        if not proof or proof in answer:
-            return answer
-        return f"{answer}\n\nPreuves documentaires:\n{proof}"
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._merge_mission_document_evidence(...)` sans changement.
+        """
+        return _rt__merge_mission_document_evidence(free_answer, evidence)
 
     @staticmethod
     def _document_plan_required_kinds(task_desc: str) -> tuple[str, ...]:
-        from src.documents.document_intent import document_kinds_mentioned
+        """Lot RF-5a : corps deplace vers `document_runtime.py`.
 
-        kinds = list(document_kinds_mentioned(task_desc))
-        # Plan-only abbreviation. Ordinary user prose containing lowercase
-        # "bc" must not alter the deterministic document router.
-        if re.search(r"(?<!\w)BC(?!\w)", str(task_desc or "")) and "bon_commande" not in kinds:
-            kinds.append("bon_commande")
-        return tuple(kinds)
+        Reexport de compatibilite (invariants 4 et 19) : les 283 sites
+        d'appel existants, dont 196 dans les tests, continuent d'ecrire
+        `ReActLoop._document_plan_required_kinds(...)` sans changement.
+        """
+        return _rt__document_plan_required_kinds(task_desc)
 
     def _document_final_fulfills_plan_task(self, task_desc: str) -> bool:
-        """Reserve multi-document verification tasks for exact render proofs."""
-        if not final_fulfills_task(task_desc):
-            return False
-        route = ReActLoop._document_route_for_run(self)
-        desc = _normalize_guard_token(task_desc)
-        if "bilan" in desc and route.has_pending_post_actions:
-            return ReActLoop._document_workflow_pending_action(self) is None
-        if route.requested_count < 2:
-            return True
-        is_verification = any(
-            token in desc for token in ("verif", "valid", "control", "relire", "inspect")
-        )
-        if not is_verification:
-            return True
-        _manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
-        return not missing and not unverified
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__document_final_fulfills_plan_task(_entree_porte_document(self), task_desc)
 
     def _reconcile_document_plan_from_manifest(self, iteration: int) -> int:
-        """Complete document batch tasks only from exact generation proofs."""
-        from collections import Counter
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
 
-        if not getattr(self, "_task_plan", None):
-            return 0
-        route = ReActLoop._document_route_for_run(self)
-        if route.requested_count < 2:
-            return 0
-        manifest, missing, unverified = ReActLoop._structured_document_delivery_manifest(self)
-        delivered = Counter(proof.kind for proof in manifest)
-        all_render_verified = not missing and not unverified
-        changed = 0
-        for task in self._task_plan:
-            if task.completed:
-                continue
-            desc = task.description or ""
-            desc_lower = _normalize_guard_token(desc)
-            if (
-                len(getattr(route, "workflow_actions", ()) or ()) > 1
-                and document_workflow_task_operation(desc)
-            ):
-                continue
-            if document_workflow_task_blocks("document_manifest", desc):
-                continue
-            verify_task = any(
-                token in desc_lower
-                for token in ("verif", "valid", "control", "relire", "inspect")
-            )
-            if verify_task:
-                if not all_render_verified:
-                    continue
-                evidence = "tous les rendus documentaires demandes sont certifies"
-                status = "verified"
-            else:
-                explicit_batch = "generate_studio_documents" in desc_lower
-                explicit_fallback = any(
-                    name in desc_lower
-                    for name in ("create_pdf", "create_invoice_pdf", "create_from_template")
-                )
-                if all_render_verified and explicit_batch:
-                    evidence = "manifest complet du batch Document Studio"
-                    status = "created"
-                elif all_render_verified and explicit_fallback:
-                    evidence = "fallback non requis: Document Studio a livre le lot complet"
-                    status = "not_required"
-                elif all_render_verified and route.is_catalog_selection and any(
-                    token in desc_lower
-                    for token in ("gener", "cre", "produ", "redig", "ecri", "livr")
-                ):
-                    evidence = (
-                        f"selection catalogue exacte: {len(manifest)}/"
-                        f"{route.requested_count} rendus certifies"
-                    )
-                    status = "created"
-                else:
-                    required = ReActLoop._document_plan_required_kinds(desc)
-                    if not required or not any(
-                        token in desc_lower
-                        for token in ("gener", "cre", "produ", "redig", "ecri", "livr")
-                    ):
-                        continue
-                    needed = Counter(required)
-                    if any(delivered[kind] < count for kind, count in needed.items()):
-                        continue
-                    evidence = "manifest exact: " + ", ".join(required)
-                    status = "created"
-            task.completed = True
-            task.completed_at_iteration = iteration
-            task.completed_by_tool = "document_manifest"
-            task.completion_status = status
-            task.completion_evidence = evidence
-            task.completion_confidence = "strong"
-            changed += 1
-            logger.info("[PLAN DOCUMENT] '{}' - {}", task.description[:70], evidence)
-        if changed:
-            self._emit_plan_state(context_tool="document_manifest")
-        return changed
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__reconcile_document_plan_from_manifest(_entree_porte_document(self), iteration)
 
     def _reconcile_document_workflow_plan(self, iteration: int) -> int:
-        """Credit compound post-actions only after their exact proof is complete."""
-        if not getattr(self, "_task_plan", None):
-            return 0
-        route = ReActLoop._document_route_for_run(self)
-        actions = tuple(getattr(route, "workflow_actions", ()) or ())
-        if len(actions) <= 1:
-            return 0
-        action_names = [str(getattr(item, "operation", "") or "") for item in actions]
-        pending = ReActLoop._document_workflow_pending_action(self)
-        pending_name = str(getattr(pending, "operation", "") or "")
-        if pending_name and pending_name in action_names:
-            completed_operations = set(action_names[:action_names.index(pending_name)])
-        elif pending_name:
-            completed_operations = set()
-        else:
-            completed_operations = set(action_names)
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
 
-        target = ReActLoop._document_workflow_target(self)
-        proof_state = ReActLoop._document_workflow_proof_state(self)
-        revision_record = proof_state.get("revision") or {}
-        revised_proof = revision_record.get("proof")
-        evidence_by_operation = {
-            "open": (
-                f"ouverture exacte {route.requested_count}/{route.requested_count}, "
-                "aucun echec"
-            ),
-            "revise": (
-                f"revision de la cible exacte {target.document_id} vers "
-                f"{revised_proof.document_id}"
-                if target is not None and revised_proof is not None
-                else "revision cible exacte"
-            ),
-            "verify": "nouvelle version relue apres revision et valeur confirmee",
-            "history": "relation parent/enfant exacte confirmee par l'historique",
-            "export": "export enfant cree depuis la version revisee",
-            "library_verify": "tous les identifiants attendus retrouves dans la bibliotheque",
-        }
-        changed = 0
-        for task in self._task_plan:
-            if task.completed:
-                continue
-            operation = document_workflow_task_operation(task.description)
-            if operation not in completed_operations:
-                continue
-            task.completed = True
-            task.completed_at_iteration = iteration
-            task.completed_by_tool = "document_workflow_proof"
-            task.completion_status = (
-                "verified"
-                if operation in {"open", "verify", "history", "library_verify"}
-                else "updated"
-            )
-            task.completion_evidence = evidence_by_operation[operation]
-            task.completion_confidence = "strong"
-            changed += 1
-            logger.info(
-                "[PLAN DOCUMENT WORKFLOW] '{}' - {}",
-                task.description[:70], task.completion_evidence,
-            )
-        if changed:
-            self._emit_plan_state(context_tool="document_workflow_proof")
-        return changed
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__reconcile_document_workflow_plan(_entree_porte_document(self), iteration)
 
     def _structured_document_tool_gate(
         self, tool_name: str, tool_args: Optional[Dict[str, Any]] = None,
     ):
-        """Require one Studio attempt per requested structured document."""
-        route = ReActLoop._document_route_for_run(self)
-        if not route.requires_studio or not route.owns_run:
-            return None
-        from src.documents.document_settings import get_document_settings
-        from .react_config import Observation as _StudioObservation
+        """Lot RF-5d2 : corps deplace vers `document_runtime.py`.
 
-        workflow_actions = tuple(getattr(route, "workflow_actions", ()) or ())
-        if len(workflow_actions) > 1 and tool_name == "revise_studio_document":
-            pending = ReActLoop._document_workflow_pending_action(self)
-            pending_name = str(getattr(pending, "operation", "") or "")
-            if pending_name in {"generate", "open"}:
-                if pending_name == "open":
-                    guidance = (
-                        f"Ouvre d'abord le bundle exact avec `open_document_delivery`: "
-                        f"la preuve attendue est {route.requested_count}/{route.requested_count}, "
-                        "failed=0."
-                    )
-                else:
-                    guidance = "Termine d'abord la generation certifiee du lot exact."
-                return _StudioObservation(
-                    content=(
-                        "Ordre du workflow documentaire refuse: la revision ne peut pas "
-                        f"preceder l'etape `{pending_name}`. {guidance}"
-                    ),
-                    success=False,
-                    origin="document_policy",
-                )
-
-        document_settings = get_document_settings()
-        if (
-            tool_name == "generate_studio_documents"
-            and route.requested_count > document_settings.workflow_max_documents
-        ):
-            return _StudioObservation(
-                content=(
-                    f"Workflow documentaire refuse: {route.requested_count} documents demandes, "
-                    f"maximum configure {document_settings.workflow_max_documents}. "
-                    "Reduis la selection ou augmente le plafond Documents dans Configuration "
-                    "sans depasser la limite dure de 100."
-                ),
-                success=False,
-                origin="document_policy",
-            )
-
-        bypass_tool = ReActLoop._nested_document_bypass(tool_name, tool_args)
-        if route.operation == "revise" and (
-            bypass_tool
-            or tool_name in {"generate_studio_document", "generate_studio_documents"}
-        ):
-            refused = bypass_tool or tool_name
-            logger.warning(
-                "[DOCUMENT STUDIO GATE] {} refuse: une revision ne recree jamais le document",
-                refused,
-            )
-            return _StudioObservation(
-                content=(
-                    f"`{refused}` refuse: la demande est une revision. Retrouve la reference "
-                    "exacte, puis appelle `revise_studio_document`. Si le nom exact est absent "
-                    "ou ambigu, demande confirmation; ne genere jamais un nouveau document de "
-                    "remplacement."
-                ),
-                success=False,
-                origin="document_policy",
-            )
-
-        if route.is_catalog_selection:
-            selections = route.selections or (
-                SimpleNamespace(
-                    origin=route.selection_origin,
-                    limit=route.selection_limit,
-                    sort=route.selection_sort,
-                ),
-            )
-            expected_catalog_keys = {
-                ReActLoop._document_catalog_evidence_key({
-                    "origin": selection.origin,
-                    "limit": selection.limit,
-                    "sort": selection.sort,
-                })
-                for selection in selections
-            }
-            exact_catalog_calls = ", puis ".join(
-                f"list_document_models(origin='{selection.origin}', "
-                f"limit={selection.limit}, sort='{selection.sort}')"
-                for selection in selections
-            )
-
-            if tool_name == "parallel_tools":
-                nested = ReActLoop._document_parallel_calls(tool_args)
-                invalid = [
-                    name or "<outil sans nom>" for name, args in nested
-                    if name != "list_document_models"
-                    or ReActLoop._document_catalog_evidence_key(args) not in expected_catalog_keys
-                    or bool(str(args.get("kind") or "").strip())
-                ]
-                if invalid:
-                    return _StudioObservation(
-                        content=(
-                            "Workflow catalogue en deux phases: `parallel_tools` peut seulement "
-                            "lister les catalogues exacts. Aucune generation, ouverture ou "
-                            "revision documentaire ne peut y etre imbriquee. Appelle `"
-                            + exact_catalog_calls.replace(", puis ", "`, puis `")
-                            + "`, attends leurs resultats, puis appelle "
-                            "`generate_studio_documents` directement et sequentiellement. "
-                            "Sous-appel refuse: " + ", ".join(invalid)
-                        ),
-                        success=False,
-                        origin="document_policy",
-                    )
-                return None
-
-            if tool_name == "list_document_models":
-                actual_key = ReActLoop._document_catalog_evidence_key(tool_args)
-                if (
-                    actual_key not in expected_catalog_keys
-                    or bool(str((tool_args or {}).get("kind") or "").strip())
-                ):
-                    return _StudioObservation(
-                        content=(
-                            "Parametres catalogue incorrects pour cette requete. Appelle `"
-                            + exact_catalog_calls.replace(", puis ", "`, puis `")
-                            + "` exactement; ne change ni origin, ni limit, ni sort."
-                        ),
-                        success=False,
-                        origin="document_policy",
-                    )
-                return None
-
-            catalog_groups = ReActLoop._document_catalog_selection_groups(self)
-            expected_ids = tuple(
-                str(row.get("id") or "").strip()
-                for group in catalog_groups
-                for row in group
-                if str(row.get("id") or "").strip()
-            )
-            if tool_name == "generate_studio_documents":
-                if (
-                    len(catalog_groups) != len(selections)
-                    or any(len(group) != selection.limit for group, selection in zip(catalog_groups, selections))
-                    or len(expected_ids) != route.requested_count
-                ):
-                    calls = ", puis ".join(
-                        f"list_document_models(origin='{selection.origin}', "
-                        f"limit={selection.limit}, sort='{selection.sort}')"
-                        for selection in selections
-                    ) or (
-                        f"list_document_models(origin='{route.selection_origin}', "
-                        f"limit={route.selection_limit}, sort='{route.selection_sort}')"
-                    )
-                    return _StudioObservation(
-                        content=(
-                            "Selection documentaire non prouvee. Appelle d'abord `"
-                            + calls.replace(", puis ", "`, puis `") + "`, "
-                            "puis reutilise exactement les template_id retournes."
-                        ),
-                        success=False,
-                        origin="document_policy",
-                    )
-                raw_requests = (tool_args or {}).get("requests", [])
-                if isinstance(raw_requests, str):
-                    try:
-                        raw_requests = json.loads(raw_requests)
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        raw_requests = []
-                actual_ids = tuple(
-                    str(item.get("template_id") or "").strip()
-                    for item in raw_requests
-                    if isinstance(item, dict)
-                ) if isinstance(raw_requests, list) else ()
-                proven = {
-                    proof.template_id
-                    for proof in ReActLoop._latest_document_batch_proofs(self)
-                    if proof.template_id
-                }
-                pending_group_index = next((
-                    index for index, group in enumerate(catalog_groups)
-                    if any(str(row.get("id") or "").strip() not in proven for row in group)
-                ), None)
-                remaining_group = () if pending_group_index is None else tuple(
-                    str(row.get("id") or "").strip()
-                    for row in catalog_groups[pending_group_index]
-                    if str(row.get("id") or "").strip()
-                    and str(row.get("id") or "").strip() not in proven
-                )
-                expected_batch = remaining_group[:len(actual_ids)]
-                if (
-                    not actual_ids
-                    or len(actual_ids) > document_settings.batch_size
-                    or actual_ids != expected_batch
-                ):
-                    group_label = (
-                        str(selections[pending_group_index].origin)
-                        if pending_group_index is not None else "termine"
-                    )
-                    return _StudioObservation(
-                        content=(
-                            f"Batch refuse: utilise au maximum {document_settings.batch_size} "
-                            f"template_id encore manquants du groupe {group_label}, "
-                            "dans l'ordre exact de ce groupe sans passer au suivant. "
-                            "Prochain lot attendu: "
-                            + ", ".join(remaining_group[:document_settings.batch_size])
-                        ),
-                        success=False,
-                        origin="document_policy",
-                )
-                return None
-            blocked_selection_tools = {
-                "generate_studio_document", "find_files", "list_directory",
-                "grep_search", "read_file", "read_files_batch",
-                "search_document_library", "list_templates",
-            }
-            if bypass_tool or tool_name in blocked_selection_tools:
-                refused = bypass_tool or tool_name
-                return _StudioObservation(
-                    content=(
-                        f"`{refused}` refuse pour cette selection de catalogue. Utilise "
-                        "`list_document_models`, puis un seul `generate_studio_documents` "
-                        "avec exactement les template_id retournes."
-                    ),
-                    success=False,
-                    origin="document_policy",
-                )
-            return None
-
-        if not bypass_tool:
-            return None
-        studio_tool = (
-            "revise_studio_document"
-            if route.operation == "revise"
-            else "generate_studio_document"
-        )
-        pending = list(route.requested_kinds)
-        for kind in ReActLoop._studio_attempted_kinds(self, studio_tool, route):
-            if kind in pending:
-                pending.remove(kind)
-        if not pending:
-            return None
-        logger.warning(
-            "[DOCUMENT STUDIO GATE] {} refuse; types sans tentative Studio={}",
-            bypass_tool,
-            pending,
-        )
-        return _StudioObservation(
-            content=(
-                f"Fallback `{bypass_tool}` refuse: {len(pending)} type(s) restent sans "
-                f"tentative Studio: {', '.join(pending)}. Appelle "
-                "`list_document_models(kind='<type>')`, puis "
-                "`generate_studio_documents(requests=[...])` une fois pour le lot, ou "
-                "`generate_studio_document(kind='<type>', data={...})` pour chaque type. "
-                "Le modele par defaut, sa mise en page et le logo actif seront appliques. "
-                "Le fallback historique ne sera disponible qu'apres une tentative Studio "
-                "pour chaque type demande."
-            ),
-            success=False,
-            origin="document_policy",
-        )
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__structured_document_tool_gate(_entree_porte_document(self), tool_name, tool_args)
 
     def _truth_lock_game_flag(self) -> bool:
-        """2.13.A (run puissance4) — True si l'OBJECTIF de CE run demande un JEU web.
-        Passé au truth-lock (`objective_is_game=`) : combiné à web_deliverable et
-        interaction_proven=False, la bannière « Interaction NON prouvée » tire QUEL
-        QUE SOIT le texte du final (la course aux regex sur le final est perdue —
-        « jetons tombent / X a gagné » avait échappé à 2.12.D). Même scope top-lead
-        que _truth_lock_web_flag. Défensif : False sur toute erreur."""
-        try:
-            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
-                return False  # sous-worker délégué → pas son job
-            from .final_guards import objective_is_web_game
-            return objective_is_web_game(getattr(self, "_original_query", "") or "")
-        except Exception:
-            return False
+        """Lot RF-8 : corps deplace vers `final_delivery_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _fd__truth_lock_game_flag(_entree_final(self))
 
     def _note_truth_lock_outcome(self, info: Any) -> None:
         """F1.b — mémorise l'issue du truth-lock dans `_run_meta` (CUMULATIF).
@@ -5904,15 +2621,13 @@ class ReActLoop:
 
         Défensif : n'échoue jamais — une preuve manquante ne doit pas casser un run.
         """
+        # Lot RF-8b : la DECISION est deplacee vers `final_delivery_runtime.py` ;
+        # l'ECRITURE reste ici (invariant 5).
         try:
-            if not isinstance(info, dict):
-                return
-            if info.get("overclaim"):
-                self._run_meta["mission_truth_lock_overclaim"] = True
-            elif "mission_truth_lock_overclaim" not in self._run_meta:
-                self._run_meta["mission_truth_lock_overclaim"] = False
-            if info.get("changed"):
-                self._run_meta["mission_truth_lock_applied"] = True
+            for _cle, _val in _fd_verdict_a_memoriser(
+                info, "mission_truth_lock_overclaim" in self._run_meta
+            ).items():
+                self._run_meta[_cle] = _val
         except Exception:
             pass
 
@@ -5938,339 +2653,68 @@ class ReActLoop:
         Défensif : toute erreur retombe sur la formule historique — ce garde-fou ne
         doit jamais transformer une mission réussie en exception.
         """
-        _historical = "Je n'ai pas trouvé de réponse pertinente."
-        try:
-            if not self._is_mission_run:
-                return _historical
-            led = self.execution_ledger
-            written = sorted(led.written_basenames())
-            published = led.has_published()
-            if not (written or published or led.has_any_mutation()):
-                # Aucune preuve d'effet : ce n'est pas une livraison.
-                self._mark_task_failed("empty_final_without_evidence")
-                logger.warning(
-                    "[F1.b] FINAL vide et ledger SANS preuve → échec honnête "
-                    "(pas de clôture `done` sur une phrase de politesse). task={}",
-                    self.task_id,
-                )
-                return ("⚠️ La mission s'est terminée sans produire de réponse finale, "
-                        "et aucune action n'a laissé de trace vérifiable. "
-                        "Rien n'a été livré — il faut relancer le travail.")
-            _note_bits = []
-            if written:
-                _note_bits.append("Fichiers écrits : " + ", ".join(written[:12]))
-            if published:
-                _note_bits.append("Publication effectuée (publish_mission_workspace).")
-            _note = "\n".join(_note_bits)
+        # Lot RF-8b : la DECISION est deplacee vers `final_delivery_runtime.py` ;
+        # le `_mark_task_failed` et les deux logs restent ici, dans l'ordre
+        # d'origine — mutation, puis journal (invariants 5 et 16).
+        message, marquer_echec, written, published = _fd_decision_final_vide(
+            _entree_final(self)
+        )
+        if marquer_echec:
+            self._mark_task_failed("empty_final_without_evidence")
+            logger.warning(
+                "[F1.b] FINAL vide et ledger SANS preuve → échec honnête "
+                "(pas de clôture `done` sur une phrase de politesse). task={}",
+                self.task_id,
+            )
+        elif written or published:
             logger.warning(
                 "[F1.b] FINAL vide MAIS ledger avec preuves → bilan déterministe "
                 "(écrits={} publié={}). task={}",
                 len(written), published, self.task_id,
             )
-            return build_mission_final_message(
-                _note, "",
-                malformed=False,
-                has_green_test=self._current_green_test_proof(),
-                test_ran_not_green=False,
-                tests_expected_not_run=self._tests_present_but_not_run(),
-            )
-        except Exception as _exc:
-            logger.debug("[F1.b] fallback déterministe indisponible: {}", _exc)
-            return _historical
+        return message
 
     def _truth_lock_interaction_flag(self) -> bool:
-        """Whether the top-lead objective requires an observable UI state change."""
-        try:
-            if self._is_worker_run():  # H4 : périmètre OU parent (worker d'effets)
-                return False
-            if not self._mission_web_present_for_gate():
-                return False
-            from .final_guards import objective_requires_web_interaction_proof
-            return objective_requires_web_interaction_proof(
-                getattr(self, "_original_query", "") or ""
-            )
-        except Exception:
-            return False
+        """Lot RF-8 : corps deplace vers `final_delivery_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _fd__truth_lock_interaction_flag(_entree_final(self))
 
     def _truth_lock_interaction_proven(self) -> bool:
-        """Strong proof for games and generic form/interface workflows."""
-        try:
-            if (self._is_mission_run and self.execution_ledger.has_source_mutation()
-                    and not self._current_browser_proof()):
-                return False
-        except Exception:
-            return False
-        _exec_state = getattr(self, "exec_state", None)
-        _guards = getattr(_exec_state, "guards", None)
-        local_assertion = bool(
-            getattr(_guards, "local_preview_interaction_proven", False)
-        )
-        if not local_assertion and self.task_id and self.task_orchestrator:
-            try:
-                rec = self.task_orchestrator.get_task(self.task_id) or {}
-                local_assertion = bool(
-                    (rec.get("metadata") or {}).get("browser_interaction_verified")
-                )
-            except Exception:
-                pass
-        if self._truth_lock_game_flag():
-            return local_assertion
-        if self._truth_lock_interaction_flag():
-            return local_assertion or self._browser_runtime_verified_for_truth_lock()
-        return local_assertion
+        """Lot RF-7a : corps deplace vers `browser_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _rt__truth_lock_interaction_proven(_entree_navigateur(self))
 
     def _mission_completion_evidence(self) -> Dict[str, Any]:
-        """Authoritative complete-only proof snapshot for a mission run."""
-        facts: Dict[str, Any] = {
-            "complete": False,
-            "scope": "",
-            "delivery_proven": False,
-            "delegation_complete": False,
-            "tests_required": False,
-            "tests_green": False,
-            "browser_required": False,
-            "browser_proven": False,
-        }
-        if not self._is_mission_run or not self._orchestrator_enabled():
-            return facts
-        try:
-            rec = self.task_orchestrator.get_task(self.task_id) or {}
-            meta = rec.get("metadata") or {}
-            owned = list(self._mission_allowed_files_meta() or [])
-            if owned:
-                from src.reasoning.test_proof import any_test_file
-                from src.subagents.mission_contract import inspect_worker_deliverables
-                from src.utils.paths import WORKSPACE_DIR
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-                mission_workspace = str(meta.get("mission_workspace") or "").strip()
-                inspected = inspect_worker_deliverables(
-                    WORKSPACE_DIR / mission_workspace,
-                    owned,
-                ) if mission_workspace else {
-                    "ready": False,
-                    "assigned": owned,
-                    "missing": [],
-                    "stubs": [],
-                    "invalid": ["mission_workspace"],
-                }
-                latest_test = self.execution_ledger.last_test_outcome()
-                if not isinstance(latest_test, dict):
-                    latest_test = meta.get("last_test_outcome") or {}
-                tests_green = bool(latest_test.get("green"))
-                if self.execution_ledger.has_source_mutation():
-                    tests_green = self._current_green_test_proof()
-                facts.update({
-                    "scope": "worker",
-                    "delivery_proven": bool(inspected.get("ready")),
-                    "delegation_complete": bool(inspected.get("ready")),
-                    "tests_required": bool(any_test_file(owned)),
-                    "tests_green": tests_green,
-                    "browser_required": False,
-                    "browser_proven": True,
-                    "assigned_files": list(inspected.get("assigned") or []),
-                    "missing_files": list(inspected.get("missing") or []),
-                    "stub_files": list(inspected.get("stubs") or []),
-                    "invalid_files": list(inspected.get("invalid") or []),
-                })
-                facts["complete"] = worker_evidence_finalizable(
-                    self._task_plan,
-                    assigned_files_ready=facts["delivery_proven"],
-                    tests_required=facts["tests_required"],
-                    tests_green=facts["tests_green"],
-                )
-                return facts
-
-            facts["scope"] = "lead"
-            facts["delivery_proven"] = bool(
-                meta.get("mission_published") or self.execution_ledger.has_published()
-            )
-
-            children = list(meta.get("children") or [])
-            if not children:
-                facts["delegation_complete"] = True
-            else:
-                progress = meta.get("last_delegate_progress") or {}
-                facts["delegation_complete"] = bool(
-                    progress.get("total") == len(children)
-                    and progress.get("done") == len(children)
-                    and not progress.get("failed")
-                    and not progress.get("cancelled")
-                    and not progress.get("timed_out")
-                )
-
-            facts["tests_required"] = bool(self._mission_tests_present_for_gate())
-            latest_test = self.execution_ledger.last_test_outcome()
-            if not isinstance(latest_test, dict):
-                latest_test = meta.get("last_test_outcome") or {}
-            facts["tests_green"] = bool(latest_test.get("green"))
-            if self.execution_ledger.has_source_mutation():
-                facts["tests_green"] = self._current_green_test_proof()
-
-            facts["browser_required"] = bool(self._truth_lock_web_flag())
-            if facts["browser_required"]:
-                if self._truth_lock_interaction_flag() or self._truth_lock_game_flag():
-                    facts["browser_proven"] = self._truth_lock_interaction_proven()
-                else:
-                    facts["browser_proven"] = bool(
-                        self._current_browser_proof()
-                        or (
-                            meta.get("web_runtime_verified")
-                            and not self.execution_ledger.has_source_mutation()
-                        )
-                    )
-            else:
-                facts["browser_proven"] = True
-
-            facts["complete"] = mission_evidence_finalizable(
-                self._task_plan,
-                delivery_proven=facts["delivery_proven"],
-                delegation_complete=facts["delegation_complete"],
-                tests_required=facts["tests_required"],
-                tests_green=facts["tests_green"],
-                browser_required=facts["browser_required"],
-                browser_proven=facts["browser_proven"],
-            )
-            return facts
-        except Exception as exc:
-            logger.debug("[M106] completion evidence unavailable: {}", exc)
-            return facts
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_completion_evidence(_entree_mission(self))
 
     def _mission_allowed_files_meta(self) -> list:
-        """LOT 2.3 — liste des fichiers assignés à CE worker (meta `allowed_files`,
-        posée par delegate_and_wait). [] hors mission ou si absent → aucune restriction."""
-        if not self.task_id or not self.task_orchestrator:
-            return []
-        try:
-            rec = self.task_orchestrator.get_task(self.task_id)
-            files = ((rec or {}).get("metadata") or {}).get("allowed_files")
-            return list(files) if isinstance(files, (list, tuple)) else []
-        except Exception:
-            return []
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _mr__mission_allowed_files_meta(_entree_mission(self))
 
     def _mission_worker_delivered(self) -> bool:
-        """I3 — ce worker a-t-il rempli TOUS ses fichiers assignés ? (fait DISQUE)
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        Run « comparatif vectoriel » (2026-08-13) : `w_qdrant` a été marqué
-        `failed` sur `final_answer_potentially_incomplete` — sa phrase de
-        conclusion était tronquée — alors que `rapport_qdrant.md` était **écrit,
-        complet et exact** (ses données se retrouvent intégralement dans le
-        comparatif final). Le verdict jugeait la FORME du final, jamais le
-        TRAVAIL accompli.
-
-        `inspect_worker_deliverables` répond déjà à la question, sur des faits
-        durs : chaque fichier assigné existe, est non vide, et n'est plus le stub
-        du contrat. Il n'y a donc aucune porte ouverte à la fabrication.
-
-        False dès qu'un doute existe (pas un worker, pas de périmètre, pas de
-        workspace) → comportement historique conservé.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        try:
-            if not getattr(self, "_is_mission_run", False):
-                return False
-            owned = list(self._mission_allowed_files_meta() or [])
-            if not owned:
-                return False  # lead, ou porteur d'EFFETS (rien à inspecter ici)
-            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
-                    .get("metadata") or {})
-            mws = str(meta.get("mission_workspace") or "").strip()
-            if not mws:
-                return False
-            from src.subagents.mission_contract import inspect_worker_deliverables
-            from src.utils.paths import WORKSPACE_DIR as _WS_I3
-            return bool(
-                inspect_worker_deliverables(_WS_I3 / mws, owned).get("ready")
-            )
-        except Exception:
-            return False
+        return _mr__mission_worker_delivered(_entree_mission(self))
 
     def _mission_lead_delivered(self) -> list:
-        """LOT Z28 — le LEAD a-t-il produit quelque chose qui existe sur le disque ?
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        I3 sauve un WORKER dont tous les fichiers assignés sont remplis. Mais
-        `_mission_worker_delivered()` sort sur `if not owned: return False` — un
-        lead n'a JAMAIS de fichiers assignés, donc I3 ne le couvre jamais.
-
-        Run « Papier Cousu » (2026-08-19), mesuré :
-
-            17:59  6 fichiers écrits (index/savoir-faire/contact/css/js/README)
-            18:02  serveur lancé, 95 % des classes CSS couvertes
-            18:02→18:03  les 3 pages ouvertes et vues au navigateur
-            18:04  ACTION: final ×4 → « THOUGHT leaké » 1/3, 2/3, 3/3
-            18:04  état = FAILED (final_answer_potentially_incomplete)
-
-        Le site était complet, sombre, avec l'animation et le README. Le verdict
-        jugeait la MISE EN FORME de la conclusion, jamais le travail. Après
-        45 lots à empêcher d'affirmer un succès non prouvé, c'est l'inverse :
-        annoncer un échec qui n'a pas eu lieu.
-
-        Fait DISQUE, aucune inférence : on rassemble les chemins que le run a
-        laissés (cibles de mutations + chemins rangés dans les `proof`, cf. Z28
-        côté ledger + workspace publié/mission), on ne garde que ceux qui
-        EXISTENT et ne sont pas vides.
-
-        ⚠️ Le repérage par cibles seules ne suffisait pas, et c'est mesuré :
-        `create_project` reçoit `description`/`project_name`, jamais un `path` —
-        `_extract_target` renvoie None. Sans le volet ledger de Z28, cette
-        méthode aurait renvoyé [] sur le run même qu'elle doit sauver.
-
-        Liste vide dès qu'un doute existe (pas une mission, un worker, rien sur
-        le disque) → l'état `failed` historique est conservé.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        try:
-            if not getattr(self, "_is_mission_run", False):
-                return []
-            if list(self._mission_allowed_files_meta() or []):
-                return []  # worker : c'est I3 qui décide, pas nous
-            led = self.execution_ledger
-            if not led.successful_mutations():
-                return []  # rien n'a été fait : l'échec est réel
-        except Exception:
-            return []
-
-        from src.utils.paths import WORKSPACE_DIR as _WS_Z28
-
-        candidats: list = []
-
-        def _ajoute(brut) -> None:
-            txt = str(brut or "").strip()
-            if txt:
-                candidats.append(txt)
-
-        try:
-            for e in led.successful_mutations():
-                _ajoute(e.target)
-                if e.proof:
-                    from src.runtime.execution_ledger import _PATH_IN_TEXT_RE
-                    for m in _PATH_IN_TEXT_RE.finditer(str(e.proof)):
-                        _ajoute(next((g for g in m.groups() if g), ""))
-        except Exception:
-            pass
-        try:
-            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
-                    .get("metadata") or {})
-            _ajoute(meta.get("published_workspace"))
-            _ajoute(meta.get("mission_workspace"))
-        except Exception:
-            pass
-
-        vus: list = []
-        for brut in candidats:
-            for base in (Path(brut), _WS_Z28 / brut, Path.cwd() / brut):
-                try:
-                    if not base.exists():
-                        continue
-                    if base.is_dir():
-                        if not any(base.iterdir()):
-                            continue
-                    elif base.stat().st_size <= 0:
-                        continue
-                except Exception:
-                    continue
-                chemin = str(base)
-                if chemin not in vus:
-                    vus.append(chemin)
-                break
-        return vus[:6]
+        return _mr__mission_lead_delivered(_entree_mission(self))
 
     def _truncated_but_delivered_answer(self, artefacts: list) -> str:
         """LOT Z28 — la réponse est faite de FAITS, jamais de la prose du modèle.
@@ -6312,72 +2756,25 @@ class ReActLoop:
         return "\n".join(lignes)
 
     def _mission_expects_file_deliverables(self):
-        """H8 — cette mission attend-elle des livrables FICHIERS ? (None = inconnu)
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        Lu du contrat : `files` non vide ⇒ True ; contrat d'EFFETS purs ⇒ False.
-        `None` quand il n'y a pas de contrat — les gardes gardent alors leur
-        comportement historique, aucune mission existante n'est affectée.
-
-        Sert à éteindre les gardes conçus pour le CODE sur une mission d'actions :
-        au run n°3, un mémo décrivant `pyproject.toml` (« publication sur PyPI »)
-        a déclenché la bannière « Non publié » sur une mission qui n'avait rien à
-        publier.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        try:
-            if not (self.task_id and self.task_orchestrator):
-                return None
-            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
-                    .get("metadata") or {})
-            mws = str(meta.get("mission_workspace") or "").strip()
-            if not mws:
-                return None
-            from src.utils.paths import WORKSPACE_DIR as _WS_H8
-            cj = _WS_H8 / mws / "contract.json"
-            if not cj.exists():
-                return None
-            data = json.loads(cj.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return None
-            return bool(data.get("files"))
-        except Exception:
-            return None
+        return _mr__mission_expects_file_deliverables(_entree_mission(self))
 
     def _is_worker_run(self) -> bool:
-        """H4 — « ce run est-il un worker (pas le lead) ? », la vraie question.
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        Historiquement posée `if self._mission_allowed_files_meta():`, ce qui
-        définissait un worker par ses FICHIERS. Un porteur d'effets purs n'en a
-        aucun : neuf gardes réservés au lead (BROWSER GATE, CONTRACT GATE, verdicts
-        runtime web, gate JS, flags jeu/interaction) se retournaient contre lui.
-
-        Sûr par construction : un worker de code a déjà un périmètre (inchangé), le
-        lead n'a jamais de `parent_id` (inchangé). Seul le cas neuf bascule.
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        return bool(self._mission_allowed_files_meta()) or self._is_delegated_worker()
+        return _mr__is_worker_run(_entree_mission(self))
 
     def _is_delegated_worker(self) -> bool:
-        """H4 — CE run est-il un worker délégué (par opposition au lead) ?
+        """Lot RF-6a : corps deplace vers `mission_runtime.py`.
 
-        La question était jusqu'ici posée sous la forme `if allowed_files:`, ce qui
-        revenait à dire « un worker, c'est quelqu'un qui possède des fichiers ».
-        Un porteur d'EFFETS purs n'en possède aucun (`allowed_files: []`) : il était
-        donc pris pour le lead, et recevait des politiques qui ne le concernent pas.
-        Prouvé au run `veille_python_313` (2026-08-13) : `w_recherche` a reçu la
-        bannière « Navigateur NON vérifié » — policy réservée au TOP-LEAD — sur une
-        mission de veille documentaire.
-
-        Le fait déterministe est `metadata.parent_id`, posé par `delegate_and_wait`
-        pour TOUT enfant, avec ou sans fichiers. Défensif : False sur erreur (on ne
-        transforme jamais un lead en worker par accident).
+        Reexport de compatibilite (invariants 4 et 19).
         """
-        if not self.task_id or not self.task_orchestrator:
-            return False
-        try:
-            meta = ((self.task_orchestrator.get_task(self.task_id) or {})
-                    .get("metadata") or {})
-            return bool(meta.get("parent_id") or meta.get("delegation_owner"))
-        except Exception:
-            return False
+        return _mr__is_delegated_worker(_entree_mission(self))
 
     def _mark_task_running(self) -> None:
         if not self._orchestrator_enabled():
@@ -6938,594 +3335,42 @@ class ReActLoop:
     # autonomy, documents, discord, stripe, ionos directement.
 
     def _build_react_prompt(self, query: str) -> str:
-        """Construit le prompt ReAct (version epure V4 SUPREME).
+        """Assemble le prompt systeme ReAct.
 
-        Garde 12 sections dynamiques contextuelles, supprime les 8 sections
-        de micro-management qui dictaient au LLM quel outil utiliser.
-        Le LLM choisit lui-meme les outils parmi ceux presentes.
+        Le corps a ete extrait vers `src/prompts/react_prompt.py` par le lot
+        RF-3. Cette coquille garde ce qui appartient a `ReActLoop` : son etat,
+        et la SEULE mutation du lot — l'ecriture du cache d'identite.
+
+        `_obtenir_identite` reproduit exactement l'enchainement d'origine : sur
+        modele faible l'appelable n'est jamais invoque, et un cache deja plein
+        n'est jamais recalcule. La recherche ChromaDB reste donc aussi rare
+        qu'avant.
         """
-        # Detection du modele pour format hints
-        _meta_now = self._get_llm_meta()
-        _active_model_id = (
-            _meta_now.get("model_used")
-            or _meta_now.get("model_name")
-            or self._last_llm_meta.get("model_used")
-            or ""
-        )
-        model_specific_hints = _build_model_specific_hints(_active_model_id)
+        from src.prompts.react_prompt import EntreePromptReAct, construire_prompt_react
 
-        # Outils (filtrage contextuel applique ailleurs dans _run_internal)
-        tools_desc = self.tools.get_tools_description()
+        def _obtenir_identite() -> str:
+            if not getattr(self, "_identity_ctx_cache", None):
+                self._identity_ctx_cache = self._build_identity_context(query)
+            return self._identity_ctx_cache
 
-        # ── Protocole browser (See-Think-Act) : injecté quand des outils browser_* sont dispo ──
-        browser_protocol_section = ""
-        if "browser_" in tools_desc:
-            browser_protocol_section = (
-                "\n## 🌐 PROTOCOLE BROWSER (OBLIGATOIRE quand tu pilotes le navigateur) :\n"
-                "Tu contrôles un vrai navigateur. TU NE CLIQUES JAMAIS À L'AVEUGLE.\n"
-                "\n"
-                "Cycle strict :\n"
-                "  1. VOIR  → `browser_screenshot` APRÈS chaque navigate ou changement d'état majeur\n"
-                "  2. LIRE  → `browser_dom_state` pour la liste indexée des éléments cliquables\n"
-                "  2b. CLASSER → identifie la surface réelle : résultats, formulaire public, builder, login wall, anti-bot, iframe, erreur\n"
-                "  3. AGIR  → UNE action (click/type) puis re-screenshot pour vérifier\n"
-                "  4. SCROLL → sur une page liste (Airbnb, Amazon, Google Results, Booking…) :\n"
-                "              `browser_scroll` 3-5 fois AVANT de conclure — lazy-load oblige\n"
-                "\n"
-                "Interdits :\n"
-                "  ❌ 2 clics consécutifs sans `browser_screenshot` entre les deux\n"
-                "  ❌ Le même index cliqué 3× (= preuve que tu n'as pas compris l'état)\n"
-                "  ❌ Conclure « je n'ai pas trouvé X » sans avoir scrollé en bas de page\n"
-                "  ❌ Remplir un formulaire sans avoir screenshot le résultat après chaque champ\n"
-                "\n"
-                "Astuce URL-builder (économise 10 itérations) :\n"
-                "  Pour Airbnb/Booking/Amazon, construis directement l'URL de recherche\n"
-                "  avec les query params (`?checkin=…&adults=…&price_max=…`) au lieu de\n"
-                "  remplir le formulaire à la main.\n"
-                "\n"
-                "⚠️ Règle BUDGET (lire attentivement) :\n"
-                "  « budget X-Y€ » ou « entre X et Y » = **plafond maximum Y**, pas plancher X.\n"
-                "  L'utilisateur dit combien il est prêt à DÉPENSER AU MAX.\n"
-                "  → Utilise UNIQUEMENT `price_max=Y` dans l'URL. N'AJOUTE JAMAIS `price_min=X`.\n"
-                "  → price_min ne s'utilise QUE si l'utilisateur dit explicitement « au minimum X ».\n"
-                "  Exemple : « budget 300-500 » → `price_max=500` (et c'est tout).\n"
-                "\n"
-                "Popups/cookies :\n"
-                "  Si tu vois un popup/modal qui bloque (cookies, newsletter, « dernière minute »),\n"
-                "  appelle `browser_dismiss_popups` AVANT toute autre action.\n"
-            )
-
-        if getattr(self.tools, "_allowed_tools", None) is not None:
-            _total = len(self.tools.tools)
-            _visible = len(self.tools._allowed_tools)
-            _hidden = _total - _visible
-            if _hidden > 0:
-                tools_desc += (
-                    f"\n\n({_hidden} outils supplementaires disponibles. "
-                    f"Si tu as besoin d'un outil non liste, utilise discover_tools(query) "
-                    f"pour en chercher par description semantique.)"
-                )
-
-        mcp_loop_section = ""
-        if "request_mcp_capability" in tools_desc:
-            _run_line = ""
-            _resume_line = ""
-            if "run_mcp_autonomy" in tools_desc:
-                _run_line = (
-                    "- Pour une demande utilisateur simple du type \"trouve/installe/"
-                    "utilise un MCP pour X\", utilise d'abord `run_mcp_autonomy`. "
-                    "En live, la phrase exacte requise est "
-                    "`I-CONFIRM-MCP-AUTONOMY`; sans cette phrase, reste en dry-run "
-                    "ou demande-la explicitement.\n"
-                )
-            if "resume_mcp_task" in tools_desc:
-                _resume_line = (
-                    "- Apres approbation, materialisation locale, installation ou activation MCP, utilise "
-                    "`resume_mcp_task` avec la demande initiale pour verifier si "
-                    "le nouvel outil est disponible, puis appelle l'outil cible. "
-                    "Si l'utilisateur dit \"c'est bon, reprends\" apres un ticket MCP, "
-                    "appelle `resume_mcp_task`; n'utilise jamais `delegate_task`/CodeAgent "
-                    "pour creer le MCP local.\n"
-                )
-            _ticket_line = ""
-            _ticket_followup_line = ""
-            if "request_mcp_ticket" in tools_desc:
-                _ticket_line = (
-                    "- Si `request_mcp_capability` indique qu'une action admin "
-                    "MCP est necessaire, utilise `request_mcp_ticket` uniquement "
-                    "pour creer un ticket pending. La phrase exacte requise est "
-                    "`I-CONFIRM-MCP-TICKET`. Pour creer reellement le ticket "
-                    "pending, passe `live=true`; `live=false` est un dry-run "
-                    "et ne cree pas de ticket.\n"
-                )
-                _ticket_followup_line = (
-                    "- Si la conversation precedente indique qu'un ticket MCP "
-                    "est la prochaine etape et que l'utilisateur dit \"oui\", "
-                    "\"cree le ticket\", \"vas-y\" ou equivalent : utilise "
-                    "`request_mcp_ticket` si la phrase exacte "
-                    "`I-CONFIRM-MCP-TICKET` est presente, avec `live=true`. "
-                    "Si elle n'est pas presente, demande uniquement cette phrase exacte. "
-                    "N'utilise jamais `plan_create`, CodeAgent, un plan manuel "
-                    "ou une creation de fichier pour remplacer un ticket MCP.\n"
-                )
-            mcp_loop_section = f"""
-## AUTONOMIE MCP (capacites/outils externes)
-- Si l'utilisateur demande un outil externe, un serveur MCP, une capacite absente,
-  ou si tu allais repondre "je ne peux pas" faute d'outil, appelle d'abord
-  `request_mcp_capability`.
-{_run_line}{_resume_line}
-{_ticket_line}- `request_mcp_ticket` ne fait qu'une proposition/ticket pending :
-  il ne valide jamais, n'installe jamais, n'active jamais et n'execute jamais.
-- Ne dis jamais qu'un MCP est installe, active ou utilisable tant que tu n'as pas
-  une observation explicite d'un outil/runtime confirmant cet etat.
-- Si un ticket MCP est cree ou deja pending, reponds clairement a l'utilisateur :
-  "Un ticket MCP est en attente dans le panel MCP ; approuve-le puis relance ou
-  demande-moi de reprendre."
-- Attention : une observation `request_mcp_ticket` avec `dry_run: true`,
-  `recommendation_code: blocked` ou sans `proposed_ticket_action_id` ne prouve
-  pas qu'un ticket a ete cree. Ne dis "ticket cree" que si l'observation indique
-  `ticket_proposed` ou `waiting_approval`.
-{_ticket_followup_line}
-- Pour une tache de code, garde la delegation CodeAgent. La boucle MCP sert aux
-  capacites/outils externes manquants, pas a coder directement.
-"""
-
-        query_lower = query.lower()
-
-        # --- Formality (vouvoiement / tutoiement) ---
-        formality_section = ""
-        try:
-            _lum = getattr(self.tools, "lumena", None)
-            _mem = getattr(_lum, "memory", None) if _lum else None
-            _formality = _mem.get_fact("formality") if _mem and hasattr(_mem, "get_fact") else None
-            if _formality == "vouvoiement":
-                formality_section = (
-                    "\n## \u26a0\ufe0f REGLE DE FORMALITY ABSOLUE:\n"
-                    "- Tu DOIS utiliser le VOUVOIEMENT pour t'adresser a l'utilisateur.\n"
-                    "- Utilise TOUJOURS \"vous\", \"votre\", \"vos\". JAMAIS \"tu\", \"ton\", \"ta\", \"tes\", \"toi\".\n"
-                )
-        except Exception as e:
-            logger.debug(f"Vouvoiement injection: {e}")
-
-        # --- Contexte conversationnel ---
-        context_section = ""
-        if self.conversation_context:
-            context_section = f"""
-## Contexte de conversation precedent:
-{self.conversation_context}
-
-IMPORTANT: Si la requete actuelle fait reference a une discussion precedente, combine le contexte avec la nouvelle requete pour repondre.
-"""
-
-        # --- Skills actifs (CRITIQUE : ne pas supprimer) ---
-        active_skills_section = ""
-        if self.active_skills_context and self.active_skills_context.strip():
-            active_skills_section = f"""
-## Skills actifs runtime:
-{self.active_skills_context}
-"""
-
-        # --- Auto-connaissance (qui es-tu, etc.) ---
-        self_awareness_keywords = [
-            "qui suis-je", "qui es-tu", "qui_suis_je", "tes capacites",
-            "tes outils", "explore", "ta version", "decris-toi",
-            "presente-toi", "ton identite", "qu'est-ce que tu peux faire",
-            "qui t'a cree", "qui t'a fait", "ton createur", "creee par",
-            "qui te fait", "comment tu es ne", "tes origines", "tu es qui",
-            "tu est qui", "qui es tu", "qui ta creer", "qui ta creer",
-        ]
-        needs_self_awareness = any(kw in query_lower for kw in self_awareness_keywords)
-        self_awareness_context = ""
-        if needs_self_awareness:
-            self_awareness_context = """
-## AUTO-CONNAISSANCE (runtime, valeurs reelles)
-
-Tu es LUMENA, une IA locale orientee outils et memoire.
-
-REGLES STRICTES:
-- Ne jamais inventer de chiffres figes (outils, memoires, skills).
-- Pour le nombre reel de memoires: utilise `memory_stats`.
-- Pour la liste reelle des skills: utilise `list_skills`.
-- Ne pas lancer de recherche web pour repondre a "qui es-tu".
-- Pour les questions sur ton identite, reponds DIRECTEMENT depuis ton contexte
-  d'identite fourni en debut de prompt. Tu te souviens de qui tu es.
-"""
-
-        # --- Comptes mail (evite les hallucinations SMTP) ---
-        _mail_keywords = ["mail", "email", "e-mail", "envoie", "envoyer", "envoi", "smtp", "gmail", "outlook", "courrier"]
-        mail_accounts_context = ""
-        if any(kw in query_lower for kw in _mail_keywords):
-            try:
-                _hub = self.tools._get_mail_hub()
-                _accts = _hub.list_accounts().get("accounts") or []
-                if _accts:
-                    _lines = []
-                    for a in _accts:
-                        _env = a.get("password_env", "")
-                        _ok = bool(os.environ.get(_env)) if _env else False
-                        _status = "\u2705 pret" if _ok else "\u26a0\ufe0f credentials manquants"
-                        _lines.append(f"  - alias=`{a['alias']}`, email=`{a.get('email','')}` ({_status})")
-                    mail_accounts_context = (
-                        "\n## COMPTES MAIL DEJA CONFIGURES:\n"
-                        + "\n".join(_lines)
-                        + "\n\nRegle : utilise `mail_send` avec `account_alias` parmi ceux ci-dessus. "
-                        "N'appelle JAMAIS `mail_account_upsert` si un compte pret existe deja.\n"
-                    )
-            except Exception as e:
-                logger.debug(f"Mail config injection: {e}")
-
-        # --- Peer Awareness (Lot A Phase 10) ---
-        peer_awareness_section = ""
-        try:
-            from src.runtime.peer_awareness import build_peer_awareness_context
-            _user_id = getattr(self.runtime_ctx, "user_id", None) if self.runtime_ctx else None
-            peer_awareness_section = build_peer_awareness_context(user_id=_user_id)
-        except Exception as _pa_exc:
-            logger.debug(f"Peer awareness injection: {_pa_exc}")
-
-        # --- Contexte IDE (source de verite pour workspace) ---
-        ide_workspace = str((getattr(self.tools, "ide_context", {}) or {}).get("workspace_path") or "").strip()
-        ide_active_file = str((getattr(self.tools, "ide_context", {}) or {}).get("active_file_path") or "").strip()
-        ide_open_files = (getattr(self.tools, "ide_context", {}) or {}).get("open_files") or []
-        ide_runtime_context = ""
-        _rt_channel = ""
-        if self.runtime_ctx is not None:
-            _rt_channel = getattr(self.runtime_ctx, 'channel', '') or ''
-        if ide_workspace:
-            open_preview = ", ".join([str(p) for p in ide_open_files[:12]]) if ide_open_files else "aucun"
-            active_preview = ide_active_file or "aucun"
-            ide_runtime_context = f"""
-## CONTEXTE IDE (SOURCE DE VERITE):
-- Workspace IDE: {ide_workspace}
-- Fichier actif IDE: {active_preview}
-- Fichiers ouverts IDE: {open_preview}
-- Pour les operations fichiers, travaille d'abord dans ce workspace IDE.
-"""
-        if _rt_channel == "ide":
-            ide_runtime_context += """
-## CANAL IDE — MODE DEVELOPPEMENT:
-- Tu es connectee a l'IDE Lumena. L'utilisateur code activement.
-- Concentre-toi UNIQUEMENT sur le developpement, le code, le debug, l'architecture.
-- Reponds de maniere technique et directe. Pas de bavardage.
-- Utilise les outils IDE en priorite: ide_open_file, ide_write_file, ide_terminal, ide_diff.
-- Si un fichier est ouvert dans l'IDE (fichier actif/fichiers ouverts), travaille dessus directement.
-- Pour les modifications de code, prefere edit_file/str_replace pour les petits changements, delegate_task pour les gros.
-"""
-
-        # --- Projet actif récent (continuité multi-tour) ---
-        # Injecté uniquement si la requête ressemble à une continuation et qu'un
-        # projet a été créé/modifié lors d'un tour précédent sur ce canal.
-        recent_project_context = ""
-        if not ide_workspace:  # Ne pas surcharger si l'IDE donne déjà le workspace
-            _rpc_path = ""
-            _rpc_slug = ""
-            # 1.3: Lire established_facts en priorité (zéro lock, déjà posé par _feed_structured_facts)
-            _ss_rpc = self._structured_state
-            if _ss_rpc is not None:
-                _rpc_path = _ss_rpc.established_facts.get("active_project_path", "")
-                _rpc_slug = _ss_rpc.established_facts.get("active_project_slug", "")
-            # Fallback: IdentityService si le fait n'est pas encore posé dans ce run
-            if not _rpc_path:
-                _lum_rpc = getattr(self.tools, "lumena", None)
-                _id_svc = getattr(_lum_rpc, "_identity_svc", None) if _lum_rpc else None
-                if _id_svc is not None and self.runtime_ctx is not None:
-                    try:
-                        from ..core_services.identity_service import IdentityService as _IDS
-                        _chan_key = _IDS.resolve_channel_key(self.runtime_ctx)
-                        _recent_ctx = _id_svc.get_recent_code_context(_chan_key) if _chan_key else None
-                        if _recent_ctx:
-                            _rpc_path = _recent_ctx.get("workspace_path", "")
-                            _rpc_slug = _recent_ctx.get("project_slug", "")
-                    except Exception as _rpc_exc:
-                        logger.debug("[RecentProject] Échec récupération contexte: {}", _rpc_exc)
-            if _rpc_path:
-                # 2.3: Liste élargie pour couvrir le français familier
-                _CONT_KW = (
-                    "corrige", "correct", "fix", "fixe", "bug",
-                    "continue", "suite", "fais la suite",
-                    "améliore", "ameliore", "complète", "complete",
-                    "marche pas", "ça bug", "ça crash", "ça plante",
-                    "refais", "re-fais", "le jeu", "le projet",
-                    "l'appli", "le site", "le code",
-                    "toujours pas", "ça marche toujours pas", "le dernier truc",
-                    "change-le", "relance-le", "encore une fois", "pas encore",
-                    "retente", "le même", "le truc", "c'est encore",
-                    "reessaie", "réessaie", "reprends", "retravaille",
-                )
-                _is_continuation = any(k in query_lower for k in _CONT_KW)
-                if _is_continuation:
-                    _label = _rpc_slug or _rpc_path.replace("\\", "/").rsplit("/", 1)[-1]
-                    recent_project_context = (
-                        f"\n## PROJET ACTIF RÉCENT (priorité continuité) :\n"
-                        f"- Chemin : `{_rpc_path}`\n"
-                        f"- Nom : {_label}\n"
-                        f"- Ce projet a été créé/modifié lors d'un tour récent.\n"
-                        f"- Réutilise ce chemin **en priorité** pour `delegate_task` "
-                        f"ou toute opération sur le projet, sans relancer find_files.\n"
-                    )
-
-        # --- Sandbox Docker (necessaire pour choix d'outil correct) ---
-        sandbox_context = ""
-        try:
-            from ..utils.docker_sandbox import get_sandbox_mode, _docker_available
-            _sb_mode = get_sandbox_mode()
-            if _sb_mode != "never" and _docker_available is True:
-                if _sb_mode == "auto":
-                    sandbox_context = """
-## SANDBOX DOCKER (mode auto)
-- Les commandes systeme Windows (tasklist, ipconfig, powershell...) s'executent LOCALEMENT.
-- Le code Python et les commandes Linux s'executent dans un container Docker isole.
-- Si tu ecris du code Python qui appelle des commandes Windows, CE CODE SERA EXECUTE DANS DOCKER OU CES COMMANDES N'EXISTENT PAS.
-- Pour infos Windows : utilise `run_command` directement.
-"""
-                else:
-                    sandbox_context = """
-## SANDBOX DOCKER (mode always)
-- TOUTES les commandes s'executent dans un container Docker Linux isole.
-- Les commandes Windows NE FONCTIONNERONT PAS. Utilise uniquement des commandes Linux.
-- Le repertoire de travail est monte dans /work.
-"""
-        except Exception as exc:
-            logger.warning(f"Sandbox context injection failed: {exc}")
-
-        # --- Fix A+B : Creation d'artefact → agir sans sur-questionner ---
-        _document_route = ReActLoop._document_route_for_run(self, query)
-        _structured_document = (
-            (_document_route.kind or "type_a_selectionner")
-            if _document_route.requires_studio
-            else None
-        )
-        _CREATION_KW = re.compile(
-            r"\b(cr[ée]+[erz]?|r[ée]dige[rz]?|[ée]cri[s|rez]?|g[ée]n[èe]re[rz]?|"
-            r"fais[\s-]?moi|produis|pr[ée]pare[rz]?|make|write|draft|create|build)\b",
-            re.IGNORECASE,
-        )
-        _ARTIFACT_KW = re.compile(
-            r"\b(rapp?ort|document|doc|pdf|docx|xlsx|pptx|csv|note|lettre|"
-            r"r[ée]sum[ée]|synth[èe]se|compte[\s-]?rendu|brief|m[ée]mo|script|"
-            r"article|post|facture|template|fichier|texte)\b",
-            re.IGNORECASE,
-        )
-        creation_rule_section = ""
-        if (_CREATION_KW.search(query) and _ARTIFACT_KW.search(query)) or _structured_document:
-            creation_rule_section = """
-## REGLE CREATION D'ARTEFACT (PRIORITAIRE) :
-- L'utilisateur veut que tu CREES. Ne pose PAS de liste de questions.
-- Si le sujet manque → choisis un sujet raisonnable et crée immédiatement.
-- Maximum 1 question si vraiment bloquant (ex: destinataire d'un email).
-- Outils de création directs (pas besoin de discover_tools) :
-  * `generate_studio_document` → OBLIGATOIRE pour un seul document structuré.
-  * `generate_studio_documents` → OBLIGATOIRE quand plusieurs documents structurés
-    sont demandés : envoie le lot ordonné en UNE action. Chaque `data` peut être
-    partiel et sera fusionné avec l'exemple professionnel du modèle.
-  * Document Studio couvre facture, devis, bon de commande, contrat, NDA,
-    attestation, bulletin de paie, fiche de poste et les autres modèles du catalogue.
-    N'utilise PAS create_pdf, Python ou CodeAgent tant que Document Studio n'a pas
-    explicitement signalé que le type est indisponible.
-  * `create_pdf`   → rapport libre, document ou note sans modèle Studio adapté
-  * `create_docx`  → document Word .docx
-  * `create_xlsx`  → tableur Excel .xlsx
-  * `create_pptx`  → présentation PowerPoint .pptx
-  * `write_file`   → tout autre fichier texte (script, .txt, .md, .csv…)
-- AGIS D'ABORD. Propose de modifier après.
-"""
-        creation_rule_section += _document_requested_kinds_guidance(_document_route)
-        creation_rule_section += _document_minimum_pages_guidance(_document_route)
-        if _document_route.is_catalog_selection:
-            _selection_calls = _document_route.selections or (
-                SimpleNamespace(
-                    origin=_document_route.selection_origin,
-                    limit=_document_route.selection_limit,
-                    sort=_document_route.selection_sort,
-                ),
-            )
-            _selection_instructions = "\n".join(
-                f"- Appelle `list_document_models(origin='{item.origin}', "
-                f"limit={item.limit}, sort='{item.sort}')`."
-                for item in _selection_calls
-            )
-            creation_rule_section += f"""
-## SELECTION DOCUMENT STUDIO (OBLIGATOIRE) :
-- Cette demande vise exactement {_document_route.requested_count} modele(s) du catalogue.
-{_selection_instructions}
-- Reprends TOUS les `id` retournes dans l'ordre global. Genere-les par lots de 30 maximum ; en cas d'echec, ne relance que les modeles manquants.
-- N'utilise ni recherche de fichiers, ni `create_pdf`, ni resume generique a la place des modeles selectionnes.
-"""
-
-        # --- Video (Remotion) ---
-        video_context = ""
-        try:
-            from ..tools.remotion_engine import VIDEO_TEMPLATES  # noqa: F401
-            video_context = """
-## GENERATION VIDEO (Remotion)
-- Outil `generate_video`. Templates : presentation (16:9), social_short (9:16), explainer, square (1:1).
-- Rendu via Docker (node:20-slim). Videos muettes. Duree recommandee : <=60s.
-"""
-        except ImportError:
-            pass
-
-        # --- Erreurs recentes (contexte factuel) ---
-        _recent_failures_section = ""
-        try:
-            from ..autonomy.ops_handlers import _load_state
-            _ops = _load_state()
-            _reg = _ops.get("_idempotence_registry", {})
-            _recent_failures = [
-                f"- {v['ts'][:16]} | {k.split(':')[0]} -> {v.get('error', 'echec')}"
-                for k, v in _reg.items()
-                if v.get("status") == "FAILURE" and v.get("error")
-                and any(w in query_lower for w in k.split(":")[0].split("_"))
-            ][-3:]
-            if _recent_failures:
-                _recent_failures_section = (
-                    "\n## Erreurs recentes (contexte factuel) :\n"
-                    + "\n".join(_recent_failures) + "\n"
-                )
-        except Exception:
-            pass
-
-        # --- Memoire ChromaDB + identite (modeles cloud seulement) ---
-        agent_memory_section = ""
-        if not self.is_weak_model:
-            try:
-                if not getattr(self, "_identity_ctx_cache", None):
-                    self._identity_ctx_cache = self._build_identity_context(query)
-                identity_ctx = self._identity_ctx_cache
-                if identity_ctx and identity_ctx.strip():
-                    agent_memory_section = f"\n## Memoire & identite:\n{identity_ctx.strip()}\n"
-            except Exception as _mem_exc:
-                logger.warning(f"Agent memory inject failed: {_mem_exc}")
-
-        # --- Few-shot (modeles faibles Ollama seulement) ---
-        few_shot_section = ""
-        if self.is_weak_model:
-            few_shot_section = """
-## Exemples du format attendu :
-
---- Exemple 1 : recherche web ---
-THOUGHT: Je dois chercher la meteo a Paris.
-ACTION: web_search
-ACTION_INPUT: {"query": "meteo Paris aujourd'hui"}
-OBSERVATION: [resultat fourni par le systeme]
-THOUGHT: J'ai les donnees, je peux repondre.
-ACTION: FINAL
-ACTION_INPUT: Voici la meteo a Paris : soleil, 18C.
-
---- Exemple 2 : envoyer un mail ---
-THOUGHT: Je dois envoyer un mail.
-ACTION: mail_send
-ACTION_INPUT: {"to": "user@example.com", "subject": "Bonjour", "body": "Message."}
-OBSERVATION: [resultat fourni par le systeme]
-THOUGHT: Mail confirme envoye par le systeme. Je termine.
-ACTION: FINAL
-ACTION_INPUT: Mail envoye a user@example.com.
-
-REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'OBSERVATION.
-"""
-
-        # --- Mode agent ---
-        agent_mode_notice = (
-            "\n## MODE ACTUEL : AGENT (mode serieux)\n"
-            "Tu es en mode Agent. Tu as acces a tous tes outils (web, mail, fichiers, memoire, ordi...). "
-            "Tu reflechis, tu agis, tu verifies.\n"
-            "Si on te demande juste de causer sans action, reponds avec ACTION: FINAL."
-        )
-
-        read_only_section = ""
-        if False:  # v2: mode lecture seule supprimé
-            _ws = ""
-            read_only_section = (
-                "\n## 🔒 MODE LECTURE SEULE\n"
-                f"Workspace ciblé : {_ws}\n"
-                "• Utilise UNIQUEMENT : read_file, list_files, grep_search, read_files_batch.\n"
-                "• N'utilise PAS : write_file, edit_file, apply_patch, delegate_task, "
-                "shell, run_python, generate_website, edit_website.\n"
-                "• Ta réponse FINALE est une analyse/opinion structurée en français, "
-                "sans modifier aucun fichier.\n"
-                "• 1-3 lectures ciblées suffisent — ne liste pas tout le projet.\n"
-            )
-
-        from datetime import datetime as _dt_now
-        _today = _dt_now.now().strftime("%A %d %B %Y")
-
-        # P7 — Provider-specific hints (opt-OUT via LUMENA_REACT_QUALITY_GATES)
-        _provider_hint_block = ""
-        try:
-            from src.config.codeagent_flags import REACT_QUALITY_GATES
-            if REACT_QUALITY_GATES and _active_model_id:
-                from src.prompts.agents.sub_agent_prompts import _load_provider_prompt
-                _hint = _load_provider_prompt(_active_model_id)
-                if _hint:
-                    # On ne prend que le bloc PERSÉVÉRANCE + ENVIRONNEMENT (court)
-                    # pour ne pas exploser la taille du prompt ReAct.
-                    _lines = _hint.splitlines()
-                    _keep: list[str] = []
-                    _in_useful = False
-                    for _line in _lines:
-                        _upper = _line.upper()
-                        if ("PERSÉVÉRANCE" in _upper or "PERSEVERANCE" in _upper
-                                or "ENVIRONNEMENT" in _upper or "STYLE DIRECT" in _upper):
-                            _in_useful = True
-                        elif _line.startswith("==") and _in_useful:
-                            _in_useful = False
-                        if _in_useful:
-                            _keep.append(_line)
-                    if _keep:
-                        _provider_hint_block = (
-                            "\n## HINTS PROVIDER ("
-                            + _active_model_id[:30] + "):\n"
-                            + "\n".join(_keep[:25]) + "\n"
-                        )
-        except Exception:
-            pass
-
-        return f"""Tu es LUMENA, une IA qui reflechit etape par etape avant d'agir.
-{agent_mode_notice}{_provider_hint_block}
-## Date actuelle: {_today}
-## OS: {OS_NAME}
-{formality_section}
-{creation_rule_section}
-{agent_memory_section}
-{read_only_section}
-{context_section}
-{self_awareness_context}
-{active_skills_section}
-{mail_accounts_context}
-{peer_awareness_section}
-{ide_runtime_context}
-{recent_project_context}
-{sandbox_context}
-{video_context}
-{_recent_failures_section}
-## Outils disponibles :
-{tools_desc}
-{mcp_loop_section}
-{browser_protocol_section}
-{few_shot_section}
-{model_specific_hints}
-
-## Format de reponse (strict) :
-THOUGHT: [raisonnement interne, jamais visible par l'utilisateur]
-ACTION: [nom_outil ou FINAL]
-ACTION_INPUT: [si ACTION est un outil -> JSON des parametres ; si FINAL -> ta reponse en TEXTE LIBRE]
-
-IMPORTANT: Quand tu utilises ACTION: FINAL, ACTION_INPUT DOIT contenir ta reponse en texte libre (pas de JSON {{"response":"..."}}).
-
-PLAN optionnel (1re iteration) :
-PLAN:
-- [ ] Etape 1
-- [ ] Etape 2
-Le systeme coche automatiquement. Ne re-emets PAS le plan apres la 1re iteration.
-
-## Regles essentielles (tu connais deja le reste) :
-1. ANTI-HALLUCINATION : N'affirme JAMAIS avoir fait une action sans OBSERVATION confirmee. Si tu dis "j'ai cree/envoye/ecrit", tu DOIS avoir l'OBSERVATION correspondante dans l'historique.
-2. Nouveau fichier SIMPLE (1 seul, non-code) -> `write_file`. Fichier existant -> `edit_file`/`apply_patch`.
-3. Projet code multi-fichiers (jeu, site, app, script >50 lignes) -> utilise `create_project` en création from scratch, ou `delegate_task(agent_type="code")` en modification/debug. JAMAIS write_file un par un pour du code.
-4. PLAN = ENGAGEMENT : complete toutes les taches avant FINAL. Si impossible : explique-le dans THOUGHT et passe a la suivante.
-5. Apres delegate_task/create_project ✅ → verifie le runtime si c'est un site/app/jeu web, puis FINAL. Ne relance delegate_task que si la verification navigateur echoue.
-6. Tache de code (creation jeu/site/app/script, modification, debug) -> OBLIGATOIREMENT `create_project`, `delegate_task` ou `delegate_task_bg`. N'utilise JAMAIS write_file pour ecrire du code toi-meme. Le CodeAgent est specialise et produit un meilleur resultat.
-7. OTP/CAPTCHA -> `telegram_send_message` ou `send_whatsapp_message`, puis `wait(seconds=30)`.
-8. UNE seule ACTION par reponse. Attends l'OBSERVATION avant d'agir ensuite.
-9. Serveur de preview/test (http.server, serve, vite, flask run, uvicorn, etc.) -> lance-le EN BACKGROUND sur un port entre 8081 et 8099 (JAMAIS 8080/8245 reserves a Lumena). Ex: `python -m flask run --port 8085` ou `python -m http.server 8085`. Lumena l'enregistre alors comme preview loopback atteignable.
-10. Verification de projet web local/workspace -> APRES avoir servi sur un port 8081-8099, `browser_navigate` vers `http://127.0.0.1:<port>` fonctionne (preview enregistree). Sinon `browser_verify_local_project` si disponible.
-
-## Delegation CodeAgent — OBLIGATOIRE pour le code :
-⚠️ REGLE ABSOLUE : Tu ne codes JAMAIS toi-meme. Tu DELEGUES au CodeAgent.
-- "code moi un jeu" / "cree un site" / "fais un script" / "programme une app" neuf → `create_project(...)` ou `delegate_task(agent_type="code", description="...", context="...")`
-- Le CodeAgent ecrit le code, cree les fichiers, execute, teste, et corrige. Toi tu utilises le rail projet/delegation, pas write_file.
-- `delegate_task` : SYNCHRONE — attend le resultat, tu enchaines (deploy, mail, etc.).
-- `delegate_task_bg` : ARRIERE-PLAN — retourne un task_id, la progression s'affiche automatiquement dans le chat.
-- Exception micro-fix borné (typo, import manquant, 1-2 lignes cassées, petit fix CSS/HTML/JS/Python, max 30 lignes, 1 seul fichier) → `str_replace` ou `edit_by_lines` en priorité, `edit_file` si fichier court. Exclus : Dockerfile, package.json, pyproject.toml, requirements.txt, tout fichier de config/build. Incertitude ou chantier plus large → `delegate_task` obligatoire.
-- Apres modification de site → `deploy_to_ionos` pour deployer.
-{self._format_plan_section()}
-## Historique:
-{self._format_history()}
-
-{self._format_budget_notice()}
-## Requete actuelle:
-{query}
-
-Maintenant, reflechis et reponds:"""
+        return construire_prompt_react(EntreePromptReAct(
+            query=query,
+            tools=self.tools,
+            runtime_ctx=self.runtime_ctx,
+            conversation_context=self.conversation_context,
+            active_skills_context=self.active_skills_context,
+            is_weak_model=self.is_weak_model,
+            OS_NAME=OS_NAME,
+            _structured_state=self._structured_state,
+            _last_llm_meta=self._last_llm_meta,
+            _get_llm_meta=self._get_llm_meta,
+            _build_model_specific_hints=_build_model_specific_hints,
+            _format_plan_section=self._format_plan_section,
+            _format_history=self._format_history,
+            _format_budget_notice=self._format_budget_notice,
+            obtenir_identite=_obtenir_identite,
+            obtenir_route_document=lambda: ReActLoop._document_route_for_run(self, query),
+        ))
 
     def _format_plan_section(self) -> str:
         """Retourne le bloc plan TODO a injecter dans le prompt, ou chaine vide."""
@@ -7696,6 +3541,13 @@ Maintenant, reflechis et reponds:"""
         ]
         return remask_secrets(answer, obs_texts)
 
+    def _truth_lock_mission_message(self, message: str, *, origine: str = "") -> str:
+        """Lot RF-8 : corps deplace vers `final_delivery_runtime.py`.
+
+        Reexport de compatibilite (invariants 4 et 19).
+        """
+        return _fd__truth_lock_mission_message(_entree_final(self), message, origine=origine)
+
     def _stream_and_return_final(self, message: str, *,
                                  skip_mission_truth_lock: bool = False) -> str:
         """Diffuse la réponse finale par chunks (SSE « Lumena écrit »), marque la
@@ -7718,49 +3570,8 @@ Maintenant, reflechis et reponds:"""
                 message = strip_dsml_markup(message)
             except Exception:
                 pass
-        if (message
-                and (self._is_mission_run or getattr(self, "_codex_tool_bridge_run", False))
-                and not skip_mission_truth_lock):
-            try:
-                _cp_locked, _cp_info = apply_mission_truth_lock(
-                    message,
-                    has_green_test=self._current_green_test_proof(),
-                    last_test_outcome=self.execution_ledger.last_test_outcome(),
-                    has_browser_proof=self._current_browser_proof(),
-                    # A5 (run FitLog) — preuves au LEDGER, plus au prompt : couvre
-                    # TOUTES les voies de sortie (repair thought-leak/tronqué
-                    # comprises — w_tests avait conclu sans pytest, gate éteint
-                    # par le plafond d'itérations).
-                    tests_present_not_run=self._tests_present_but_not_run(),
-                    has_any_mutation=self.execution_ledger.has_any_mutation(),
-                    # LOT E (run FidéliBar) — « publié » n'est licite qu'avec un
-                    # publish_mission_workspace réussi au ledger de ce run.
-                    has_published=self.execution_ledger.has_published(),
-                    # LOT 2.11.E — disk-grounded : « publié dans workspace/X » où X
-                    # n'existe pas sur disque = fausse publication (run StatsNotes).
-                    project_root=Path(__file__).resolve().parents[2],
-                    # M1 (run RévizIA) — policy navigateur dure (top-lead web).
-                    web_deliverable=self._truth_lock_web_flag(),
-                    file_deliverables_expected=self._mission_expects_file_deliverables(),  # H8
-                    unpublished_writes=self._mission_unpublished_writes(),  # Z24
-                    has_server_started=self._server_started_proof(),  # LOT 2.3
-                    browser_content_seen=self._browser_content_seen(),  # 2.7.4
-                    interaction_proven=self._truth_lock_interaction_proven(),
-                    interaction_required=self._truth_lock_interaction_flag(),
-                    objective_is_game=self._truth_lock_game_flag(),  # 2.13.A
-                    browser_runtime_failed=self._browser_runtime_failed_for_truth_lock(),  # M100.4
-                )
-                self._note_truth_lock_outcome(_cp_info)  # F1.b
-                if _cp_info.get("changed"):
-                    logger.warning(
-                        "[MISSION TRUTH-LOCK] CHOKEPOINT — rétrogradé honnêtement "
-                        "(preuves ledger insuffisantes ; voie non verrouillée en "
-                        "amont). détails={} task={}",
-                        {k: v for k, v in _cp_info.items() if v and k != "changed"},
-                        self.task_id)
-                    message = _cp_locked
-            except Exception as _cp_exc:
-                logger.debug("[MISSION TRUTH-LOCK] chokepoint skip: {}", _cp_exc)
+        if not skip_mission_truth_lock:
+            message = self._truth_lock_mission_message(message, origine="CHOKEPOINT")
         # P3 — Token streaming : 2 mots / chunk, 25ms entre chunks → typing fluide.
         # Voice V2 consumes the already truth-locked canonical result. It must not
         # wait for this purely visual typing animation; every other channel keeps
@@ -7826,855 +3637,46 @@ Maintenant, reflechis et reponds:"""
         désactivés. Utilisé pour propager les sous-outils de parallel_tools sans
         risque de completion fantôme (cf GF-1 du plan de fix).
         """
+        from .react_plan_runtime import (
+            EntreeProgressionPlan,
+            appliquer_progression_plan,
+        )
+
         if not self._task_plan:
             return
 
-        try:
-            _doc_route_for_plan = ReActLoop._document_route_for_run(self)
-            _compound_document_workflow = len(
-                tuple(getattr(_doc_route_for_plan, "workflow_actions", ()) or ())
-            ) > 1
-        except Exception:
-            _compound_document_workflow = False
+        def _definir_derniere_avance(valeur) -> None:
+            # Lot RF-4 : la SEULE mutation de `self` du perimetre reste ici.
+            # `_last_auto_advance_iter` est une `property` avec setter qui
+            # appelle `_ensure_exec_state()` ; la forme du descripteur fait
+            # partie du contrat (invariant 13).
+            self._last_auto_advance_iter = valeur
 
-        # Signaux d'échec : si l'observation contient un marqueur d'erreur, ne rien cocher
-        obs_lower = (observation_content or "").lower()
-        _fail, _overridden = classify_observation(observation_content)
-        # ❌ seul n'est PAS un marqueur d'échec — voir plan_evidence._FAIL_MARKERS.
-        observation_has_failure = _fail and not _overridden
-        observation_has_failure = observation_has_failure or _browser_observation_has_failure(
-            tool_name,
-            observation_content,
-        )
-
-        hints = _TOOL_COMPLETION_HINTS.get(tool_name, [])
-        tool_lower = tool_name.lower()
-        tool_module_category = ""
-        tool_semantic_category = ""
-        try:
-            tool_module_category = self.tools.get_tool_module_category(tool_name)
-            tool_semantic_category = self.tools.get_tool_semantic_category(tool_name)
-        except Exception:
-            pass
-        # Guard 5 pré-calculé : si l'outil est exploratoire, aucune tâche métier
-        # ne peut être marquée par aucune voie (sem, seq, auto).
-        _is_exploration_for_guard5 = tool_name in _EXPLORATION_TOOLS_STRICT
-
-        # #3 (2026-06-30) — RELECTURE D'ARTEFACT : une lecture (read_file/read_document)
-        # qui relit un fichier RÉELLEMENT écrit avant (mutation réussie dans le ledger)
-        # est une preuve de VÉRIFICATION légitime. Lien read→write par basename (le write
-        # cible un chemin relatif « workspace/x.md », le read un chemin absolu → on compare
-        # le nom de fichier). Sinon : le garde-fou « lecture seule ≠ preuve » reste actif.
-        _artifact_reread = False
-        if (tool_name in ("read_file", "read_document")
-                and not observation_has_failure
-                and observation_content and observation_content.strip()
-                and isinstance(tool_args, dict)):
-            _rp = str(tool_args.get("path") or tool_args.get("file_path") or "").strip()
-            _read_base = _rp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if _read_base and len(_read_base) >= 4:
-                _led = getattr(self, "execution_ledger", None)
-                if _led is not None and _led.has_mutation_for_target_hint(_read_base):
-                    _artifact_reread = True
-                # #3b (2026-07-01) — FILET MISSION : l'execution_ledger est in-memory
-                # et clear() à chaque _run_internal ; il ne survit PAS au checkpoint/resume
-                # du worker de mission (run soirée-cinéma : write iter1 absent du ledger à
-                # la relecture → verify SKIP → plan 1/2 → FINALIZE bloqué). Le signal fiable
-                # est deadline_artifact_written, porté par task_orchestrator (SURVIT au
-                # checkpoint, cf. 5.7.4a). Si la mission a CONFIRMÉ l'écriture de son artefact
-                # cible et que la relecture porte sur CE fichier, la vérification est légitime.
-                elif getattr(self, "_is_mission_run", False) and self._orchestrator_enabled():
-                    try:
-                        from src.subagents.mission_budget import extract_target_file as _etf
-                        _rec_rr = self.task_orchestrator.get_task(self.task_id) or {}
-                        _meta_rr = _rec_rr.get("metadata") or {}
-                        if _meta_rr.get("deadline_artifact_written"):
-                            _tgt_rr = _etf(_meta_rr.get("objective")
-                                           or _rec_rr.get("message_preview") or "")
-                            if _tgt_rr:
-                                _tgt_base = _tgt_rr.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                                if _tgt_base and _tgt_base.lower() == _read_base.lower():
-                                    _artifact_reread = True
-                    except Exception:
-                        pass
-
-        _any_matched = False
-        _has_specific_match = False  # True si au moins un arg/tool/obs match (pas juste hint)
-        _completed_this_call = 0  # Limite le nombre de complétion par appel
-        _MAX_COMPLETIONS_PER_CALL = 2  # garde-fou: un outil complète au max 2 tâches
-        _SUBMIT_VERBS = ("soumett", "soumettre", "submit", "envoyer le formulaire",
-                         "envoyer le form", "valider le formulaire", "valider le form",
-                         "cliquer sur soumettre", "cliquer sur envoyer")
-        _FINAL_ONLY_STARTS = (
-            "confirmer à", "confirmer que", "confirmer le", "confirmer les",
-            "rapporter", "informer l'", "informer le", "signaler le", "signaler les",
-            "résumer les résultats", "résumer le résultat",
-            "afficher le résultat", "afficher les résultats",
-            "répondre à l'utilisateur",
-        )
-        _RESULT_CAPTURE_MARKERS = (
-            "screenshot du résultat", "screenshot du resultat",
-            "capture du résultat", "capture du resultat",
-            "screenshot final", "capture finale",
-            "screenshot du résultat final", "capture du résultat final",
-        )
-        _STRICT_SUBMIT_SUCCESS_MARKERS = (
-            "soumis", "soumise", "soumission", "submitted",
-            "envoyé", "envoyee", "envoyée", "envoye",
-            "confirmation", "confirmé", "confirmee", "confirmée", "confirmed",
-            "httpbin.org/post", "merci", "success", "réussi", "reussi",
-            "formulaire envoy", "form submitted", "inscription réussie",
-            "compte créé", "account created",
-        )
-        _STRICT_CAPTURE_SUCCESS_MARKERS = (
-            "screenshot", "capture", "📸", ".png", ".jpg", ".jpeg", ".webp",
-        )
-        _CHAT_INTERACTION_MARKERS = (
-            "interagir avec l'ia", "interagir avec une ia",
-            "échanger avec l'ia", "echanger avec l'ia",
-            "échanger avec une ia", "echanger avec une ia",
-            "parler avec l'ia", "parler avec une ia",
-            "discuter avec l'ia", "discuter avec une ia",
-            "envoyer un message", "obtenir une réponse", "obtenir une reponse",
-        )
-        _CHAT_CONFIRM_MARKERS = (
-            "confirmer l'échange", "confirmer l'echange",
-            "échange réussi", "echange réussi", "echange reussi",
-            "échange avec l'ia réussi", "echange avec l'ia reussi",
-            "confirmer la réponse", "confirmer la reponse",
-        )
-        _STRICT_CHAT_SUCCESS_MARKERS = (
-            "réponse", "reponse", "assistant", "a répondu", "a repondu",
-            "message envoyé", "message envoye", "envoyé", "envoye",
-            "reply", "responded", "conversation", "new message",
-        )
-
-        def _strip_plan_prefix(_desc_lower: str) -> str:
-            return re.sub(
-                r"^\s*(?:étape|etape|step)\s*\d+\s*[:\-]\s*",
-                "",
-                (_desc_lower or "").strip(),
-                flags=re.IGNORECASE,
-            ).strip()
-
-        def _is_chat_interaction_task(_desc_lower: str) -> bool:
-            _desc_guard = _strip_plan_prefix(_desc_lower)
-            return any(marker in _desc_guard for marker in _CHAT_INTERACTION_MARKERS)
-
-        def _is_final_only_task(_desc_lower: str) -> bool:
-            _desc_guard = _strip_plan_prefix(_desc_lower)
-            if any(_desc_guard.startswith(fos) for fos in _FINAL_ONLY_STARTS):
-                return True
-            return any(marker in _desc_guard for marker in _CHAT_CONFIRM_MARKERS)
-
-        def _requires_strict_proof(_desc_lower: str) -> bool:
-            _desc_guard = _strip_plan_prefix(_desc_lower)
-            if any(sv in _desc_guard for sv in _SUBMIT_VERBS):
-                return True
-            if _is_final_only_task(_desc_guard):
-                return True
-            if any(marker in _desc_guard for marker in _RESULT_CAPTURE_MARKERS):
-                return True
-            return _is_chat_interaction_task(_desc_guard)
-
-        def _has_strict_plan_proof(_desc_lower: str, _obs_lower: str) -> bool:
-            _desc_guard = _strip_plan_prefix(_desc_lower)
-            # P2P — une délégation de mission à un pair est prouvée par SON accusé
-            # (« mission lancée / réf. ta- »), même si le nom de tâche contient le
-            # mot « submit » (« via submit_peer_task ») qui sinon la ferait passer
-            # pour une soumission de formulaire → FINAL bloqué → re-soumissions.
-            if _is_peer_delegation_success(tool_name, observation_content or ""):
-                return True
-            if _browser_observation_is_auxiliary_action(tool_name, observation_content or ""):
-                return False
-            if _is_final_only_task(_desc_guard):
-                return False
-            if any(sv in _desc_guard for sv in _SUBMIT_VERBS):
-                return any(marker in _obs_lower for marker in _STRICT_SUBMIT_SUCCESS_MARKERS)
-            if any(marker in _desc_guard for marker in _RESULT_CAPTURE_MARKERS):
-                return any(marker in _obs_lower for marker in _STRICT_CAPTURE_SUCCESS_MARKERS)
-            if _is_chat_interaction_task(_desc_guard):
-                if any(marker in _obs_lower for marker in _STRICT_CHAT_SUCCESS_MARKERS):
-                    return True
-                return _looks_like_chat_transcript(observation_content or "")
-            return True
-
-        for task in self._task_plan:
-            if task.completed:
-                continue
-            desc_lower = task.description.lower()
-            desc_guard = _strip_plan_prefix(desc_lower)
-
-            # Guard 5 : outil exploratoire ne peut jamais cocher une tâche métier
-            if _is_exploration_for_guard5:
-                _task_desc_norm = _normalize_guard_token(desc_lower)
-                if any(
-                    _task_desc_norm == starter or _task_desc_norm.startswith(starter + " ")
-                    for starter in _BUSINESS_ACTION_STARTERS_NORMALIZED
-                ):
-                    logger.debug(
-                        "[PLAN] Guard 5 (sémantique): tâche métier '{}' non marquable par {} (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue  # ignore ce task, passe au suivant
-
-            hint_match = any(h in desc_lower for h in hints)
-            tool_match = tool_lower in desc_lower
-            arg_match = False
-            for key in ("path", "file_path", "url", "query", "code", "filename", "caption"):
-                val = str(tool_args.get(key, ""))
-                if val and len(val) > 3:
-                    short = val.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                    if short.lower() in desc_lower:
-                        arg_match = True
-                        break
-
-            # Si échec détecté, ne pas marquer même avec hint/tool/arg match
-            if observation_has_failure:
-                continue
-
-            # Guard SUBMIT-ONLY : les tâches de soumission ne peuvent être marquées
-            # que par un clic (browser_click_index), pas par une saisie (browser_type_index).
-            # Cause réelle : "formulaire" dans les hints de browser_type_index faisait matcher
-            # "Soumettre le formulaire" alors qu'on était encore en train de remplir des champs.
-            if tool_name == "browser_type_index" and any(sv in desc_guard for sv in _SUBMIT_VERBS):
-                logger.debug(
-                    "[PLAN] Guard SUBMIT-ONLY: '{}' non marquable par browser_type_index (iter {})",
-                    task.description, iteration,
-                )
-                continue
-
-            # Guard FINAL-ONLY : les tâches de rapport/confirmation ne doivent être
-            # marquées qu'au moment du FINAL, pas par un outil browser.
-            # Elles commencent par confirmer/rapporter/informer/signaler.
-            if tool_name.startswith("browser_") and _is_final_only_task(desc_guard):
-                logger.debug(
-                    "[PLAN] Guard FINAL-ONLY: '{}' non marquable par {} — réservé à FINAL (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            # Guard CORRECTION-ONLY : une tâche « corriger / réparer / debug » ne
-            # peut PAS être créditée par un outil de LECTURE (lire = diagnostiquer,
-            # pas corriger). Seule une mutation (edit_file/write_file/apply_patch…)
-            # la marque. Sinon FINALIZE prématuré avec des tests encore rouges.
-            if correction_task_blocks_readonly(tool_name, desc_guard):
-                logger.debug(
-                    "[PLAN] Guard CORRECTION-ONLY: '{}' non marquable par {} "
-                    "(lecture ≠ correction) (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            # LOT 2.7 — Guard TOOL-EXPLICIT : une tâche qui NOMME un outil précis
-            # (« … via write_mission_contract », « lance pytest ») n'est créditée
-            # QUE par cet outil (run NoteFlash : create_mission avait coché
-            # « Poser le contrat via write_mission_contract »).
-            if tool_explicit_task_blocks(tool_name, desc_guard):
-                logger.debug(
-                    "[PLAN] Guard TOOL-EXPLICIT: '{}' non marquable par {} (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            if delegation_task_blocks(tool_name, desc_guard):
-                logger.debug(
-                    "[PLAN] Guard DELEGATION-ONLY: '{}' non marquable par {} (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            # C0.3b — Guard PUBLISH-ONLY : une tâche « publier le livrable » n'est
-            # créditée QUE par publish_mission_workspace (run FrigoZen : cochée par
-            # le write_file de style.css → FINALIZE prématuré).
-            if publish_task_blocks(tool_name, desc_guard):
-                logger.debug(
-                    "[PLAN] Guard PUBLISH-ONLY: '{}' non marquable par {} (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            # LOT E — Guard BROWSER-ONLY : une tâche « vérifier le navigateur » n'est
-            # créditée QUE par une action browser_* réelle (run CéramiShop : cochée
-            # sur une pensée fabriquée avant tout browser_navigate).
-            if browser_verify_task_blocks(tool_name, desc_guard):
-                logger.debug(
-                    "[PLAN] Guard BROWSER-ONLY: '{}' non marquable par {} (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            if browser_interaction_task_blocks(tool_name, desc_guard):
-                logger.debug(
-                    "[PLAN] Guard INTERACTION-PROOF: '{}' non marquable par {} "
-                    "sans verifier strict/evaluate (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-
-            if artifact_target_task_blocks(tool_name, desc_guard, tool_args or {}):
-                logger.debug(
-                    "[PLAN] Guard ARTIFACT-TARGET: '{}' incompatible avec la cible de {} "
-                    "(iter {})", task.description, tool_name, iteration,
-                )
-                continue
-
-            if not document_plan_tool_can_complete_task(
-                tool_name,
-                task.description,
-                tool_kind=str((tool_args or {}).get("kind", "")),
-                required_kinds=ReActLoop._document_plan_required_kinds(task.description),
-                compound_workflow=_compound_document_workflow,
-            ):
-                logger.debug(
-                    "[PLAN] Document batch/verify: '{}' attend le manifest complet (iter {})",
-                    task.description, iteration,
-                )
-                continue
-
-            # Fallback: observation de succes + mot du nom d'outil dans la description
-            # GF-1 : obs_match est une heuristique FAIBLE. Désactivée pour les sous-outils
-            # parallel_tools (allow_fallback=False) : "profile" ⊂ "profiler X" matcherait
-            # TOUTES les tâches "Profiler …" sans discriminer le fichier → cascade.
-            obs_match = False
-            if allow_fallback and not (hint_match or tool_match or arg_match) and observation_content:
-                if "\u2705" in observation_content or "succes" in obs_lower or "créé" in obs_lower or "envoyé" in obs_lower:
-                    tool_words = tool_lower.replace("_", " ").split()
-                    if any(tw in desc_lower for tw in tool_words if len(tw) > 2):
-                        obs_match = True
-
-            is_specific = arg_match or tool_match or obs_match
-            _proof_for_task = has_sufficient_proof(
-                tool_name,
-                observation_content,
-                task.description,
-                tool_module_category,
-                tool_semantic_category,
-            )
-            if pytest_execution_task(task.description):
-                _proof_for_task = _proof_for_task or pytest_plan_task_proven(
-                    task.description,
-                    tool_name,
-                    self.execution_ledger.last_test_outcome(),
-                )
-            if hint_match and not is_specific and tool_name in _HINT_ONLY_PROOF_REQUIRED_TOOLS and not _proof_for_task:
-                logger.debug(
-                    "[PLAN] Hint-only bloqué: '{}' non marquable par {} sans preuve spécifique (iter {})",
-                    task.description, tool_name, iteration,
-                )
-                continue
-            if hint_match or is_specific:
-                if not sourced_web_research_task_proven(
-                    tool_name, task.description, observation_content
-                ):
-                    logger.debug(
-                        "[PLAN] Recherche sourcée sans URL suffisante: '{}' non marquable par {} (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                if (
-                    tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
-                    and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
-                ):
-                    logger.debug(
-                        "[PLAN] Outil découverte hors périmètre: '{}' non marquable par {} (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                if (
-                    tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
-                    and not _browser_passive_tool_can_complete_task(tool_name, task.description)
-                ):
-                    logger.debug(
-                        "[PLAN] Browser passif hors périmètre: '{}' non marquable par {} (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                if (
-                    tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
-                    and not _proof_for_task
-                ):
-                    logger.debug(
-                        "[PLAN] Browser passif sans preuve: '{}' non marquable par {} (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                # Hint-only (pas d'arg/tool/obs spécifique) → max 1 tâche par itération
-                if not is_specific and _any_matched and not _has_specific_match:
-                    continue
-                # Garde-fou: empêcher un seul outil de compléter trop de tâches d'un coup
-                # (évite que edit_website marque 4 tâches "completed" à iter 4)
-                if _completed_this_call >= _MAX_COMPLETIONS_PER_CALL:
-                    logger.debug(
-                        "[PLAN] Limite %d completions atteinte, skip '%s' (iter %d)",
-                        _MAX_COMPLETIONS_PER_CALL, task.description, iteration,
-                    )
-                    break
-                # Verify-gate : une tâche de vérification exige une preuve réelle.
-                # Présence de fichiers, hint de tool, ou ✅ générique ne suffisent pas.
-                # #3 : EXCEPTION — relecture d'un artefact réellement écrit avant.
-                if (
-                    is_verify_task(desc_lower) and not _proof_for_task
-                    and not verify_satisfied_by_artifact_read(
-                        tool_name, task.description, artifact_reread=_artifact_reread,
-                    )
-                ):
-                    logger.debug(
-                        "[PLAN] Verify-gate (sem): '{}' non marquable par {} — preuve insuffisante (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                if _requires_strict_proof(desc_lower) and not _proof_for_task:
-                    logger.debug(
-                        "[PLAN] Strict-proof (sem): '{}' non marquable par {} — preuve insuffisante (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                if _requires_strict_proof(desc_lower) and not _has_strict_plan_proof(desc_lower, obs_lower):
-                    logger.debug(
-                        "[PLAN] Strict-proof content (sem): '{}' non marquable par {} — observation insuffisante (iter {})",
-                        task.description, tool_name, iteration,
-                    )
-                    continue
-                _proof = evaluate_task_proof(task.description, tool_name, observation_content)
-                task.completed = True
-                task.completed_at_iteration = iteration
-                task.completed_by_tool = tool_name
-                task.completion_status = task_completion_status(
-                    tool_name, desc_lower, tool_semantic_category, tool_module_category,
-                )
-                task.completion_evidence = _proof.evidence_summary
-                task.completion_confidence = _proof.confidence
-                logger.info("[PROOF] '{}' — {} ({})", task.description[:50], _proof.evidence_kind, _proof.confidence)
-                _any_matched = True
-                _completed_this_call += 1
-                if is_specific:
-                    _has_specific_match = True
-
-        # ── Fallback séquentiel ────────────────────────────────────────────────────
-        # Si aucun match sémantique n'a été trouvé mais l'outil a réussi (pas d'erreur),
-        # marquer la PREMIÈRE tâche non complétée qui matche par mots-clés de l'outil.
-        # Le break est DANS le if pour ne pas bloquer sur une tâche non-matchante
-        # (ex: étape 2 "Identifier X" ne contient pas "scan" → continuer vers étape 3).
-        _seq_matched = False
-        # Les outils purement info/inspection ne peuvent pas cocher une tâche métier
-        # via le fallback séquentiel : "config" dans get_lumena_config matcherait
-        # faussement "Configurer les rôles" sans que rien n'ait été fait.
-        _seq_fallback_blocked = tool_name in _SEQ_FALLBACK_BLOCKLIST
-        if (
-            allow_fallback  # GF-1 : désactivé pour les sous-outils parallel_tools
-            and not _any_matched
-            and not observation_has_failure
-            and not _seq_fallback_blocked
-            and not _browser_observation_is_auxiliary_action(tool_name, observation_content or "")
-        ):
-            tool_words = {w for w in tool_lower.replace("_", " ").split() if len(w) > 2}
-            for task in self._task_plan:
-                if not task.completed:
-                    desc_lower = task.description.lower()
-                    if tool_words and any(tw in desc_lower for tw in tool_words):
-                        if not sourced_web_research_task_proven(
-                            tool_name, task.description, observation_content
-                        ):
-                            logger.debug(
-                                "[PLAN] Recherche sourcée seq sans URL suffisante: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if not document_plan_tool_can_complete_task(
-                            tool_name,
-                            task.description,
-                            tool_kind=str((tool_args or {}).get("kind", "")),
-                            required_kinds=ReActLoop._document_plan_required_kinds(task.description),
-                            compound_workflow=_compound_document_workflow,
-                        ):
-                            logger.debug(
-                                "[PLAN] Document seq: '{}' attend le manifest complet (iter {})",
-                                task.description, iteration,
-                            )
-                            break
-                        if (
-                            tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
-                            and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
-                        ):
-                            logger.debug(
-                                "[PLAN] Outil découverte seq hors périmètre: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if tool_name.startswith("browser_") and _is_final_only_task(desc_lower):
-                            logger.debug(
-                                "[PLAN] Browser seq FINAL-ONLY: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if (
-                            tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
-                            and not _browser_passive_tool_can_complete_task(tool_name, task.description)
-                        ):
-                            logger.debug(
-                                "[PLAN] Browser seq hors périmètre: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if tool_name.startswith("browser_") and not has_sufficient_proof(
-                            tool_name,
-                            observation_content,
-                            task.description,
-                            tool_module_category,
-                            tool_semantic_category,
-                        ):
-                            logger.debug(
-                                "[PLAN] Browser seq sans preuve: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        # Verify-gate : le fallback séquentiel n'est pas une preuve réelle.
-                        if is_verify_task(desc_lower) and not has_sufficient_proof(
-                            tool_name,
-                            observation_content,
-                            task.description,
-                            tool_module_category,
-                            tool_semantic_category,
-                        ):
-                            logger.debug(
-                                "[PLAN] Verify-gate (seq): '{}' non marquable par {} — preuve insuffisante (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if _requires_strict_proof(desc_lower) and not has_sufficient_proof(
-                            tool_name,
-                            observation_content,
-                            task.description,
-                            tool_module_category,
-                            tool_semantic_category,
-                        ):
-                            logger.debug(
-                                "[PLAN] Strict-proof (seq): '{}' non marquable par {} — preuve insuffisante (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if _requires_strict_proof(desc_lower) and not _has_strict_plan_proof(desc_lower, obs_lower):
-                            logger.debug(
-                                "[PLAN] Strict-proof content (seq): '{}' non marquable par {} — observation insuffisante (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        _proof = evaluate_task_proof(task.description, tool_name, observation_content)
-                        task.completed = True
-                        task.completed_at_iteration = iteration
-                        task.completed_by_tool = f"{tool_name}:seq"
-                        task.completion_status = task_completion_status(
-                            tool_name, desc_lower, tool_semantic_category, tool_module_category,
-                        )
-                        task.completion_evidence = _proof.evidence_summary
-                        task.completion_confidence = _proof.confidence
-                        _seq_matched = True
-                        logger.debug(
-                            "[PLAN] Fallback séquentiel: '%s' marquée via %s (iter %d)",
-                            task.description, tool_name, iteration,
-                        )
-                        break
-
-        # ── Fallback avancement automatique ────────────────────────────────────────
-        # Si AUCUN match (ni sémantique, ni par mots-clés) mais l'outil a réussi,
-        # avancer la première tâche non complétée. Le LLM exécute les tâches en ordre
-        # du plan ; si le tool a réussi sans erreur, il a très probablement avancé le plan.
-        # Condition : obs non vide + outil non trivial (pas juste wait/memory_add).
-        # Exception : un outil "trivial" qui a des hints matchant la tâche du plan
-        # n'est PAS trivial dans ce contexte (ex: memory_search quand le plan dit "rechercher").
-        # CODE_READ : désactivé — en mode analyse, seul le LLM peut marquer les tâches
-        # complétées (via hint/tool/arg match). L'auto-avancement désynchronise le plan
-        # et provoque des blocages PLAN GUARD sur des tâches marquées par erreur.
-        _is_read_only_mode = False  # v2: mode lecture seule supprimé
-        _next_auto_task = next((t for t in self._task_plan if not t.completed), None)
-        _auto_next_is_closure_task = bool(
-            _next_auto_task
-            and _is_post_codeagent_closure_task(_next_auto_task.description)
-        )
-        _TRIVIAL_TOOLS = {
-            # Lecture / navigation fichiers
-            "wait", "memory_add", "read_file", "list_files", "list_dir",
-            "search_files", "search_code", "list_directory", "find_files",
-            "grep_search", "search_in_code", "view_file_outline",
-            # Mail info-only
-            "mail_list_accounts", "mail_inbox", "mail_check", "memory_search",
-            "mail_account_upsert",
-            # Config / inspection système — ne représentent aucune action métier
-            "get_lumena_config", "get_system_info", "health_check",
-            "get_weather", "get_time", "provider_info",
-            # Listing modèles / ressources
-            "list_image_models", "ionos_list_sites", "ionos_list_files",
-        }
-
-        def _trivial_tool_matches_next_task() -> bool:
-            """Return True if a trivial tool's hints match the next uncompleted task."""
-            hints = _TOOL_COMPLETION_HINTS.get(tool_name, [])
-            if not hints:
-                return False
-            for task in self._task_plan:
-                if not task.completed:
-                    desc_lower = task.description.lower()
-                    return any(h in desc_lower for h in hints)
-            return False
-
-        if (
-            allow_fallback  # GF-1 : désactivé pour les sous-outils parallel_tools
-            and not _any_matched
-            and not _seq_matched
-            and not observation_has_failure
-            and not _is_read_only_mode
-            and not _auto_next_is_closure_task
-            and not _browser_observation_is_auxiliary_action(tool_name, observation_content or "")
-        ):
-            # Garde: max 1 auto-avancement par itération (parallel_tools peut appeler
-            # _update_plan_progress N fois dans la même itération → sans garde, N tâches
-            # sont marquées completed d'un coup sans rapport avec le contenu réel)
-            if self._last_auto_advance_iter == iteration:
-                pass  # déjà auto-avancé cette itération
-            # Garde 1b: parallel_tools agrège plusieurs sous-outils et ne doit jamais
-            # auto-avancer à lui seul une tâche métier via ce fallback générique.
-            elif tool_name == "parallel_tools":
-                pass
-            # Garde 2: pas d'auto-avancement trop tôt (itération 0) sauf si
-            # l'observation contient un marqueur de succès explicite (✅)
-            elif iteration < 1 and "\u2705" not in (observation_content or ""):
-                pass
-            # Garde 3: l'observation doit être substantielle (pas juste "OK" ou vide)
-            elif (
-                observation_content
-                and len(observation_content.strip()) >= 10
-                and (
-                    tool_name not in _TRIVIAL_TOOLS
-                    or _trivial_tool_matches_next_task()
-                    # Un outil de vérification (health_check, run_command…) avec preuve
-                    # réelle n'est pas trivial même s'il figure dans _TRIVIAL_TOOLS.
-                    or has_sufficient_proof(
-                        tool_name,
-                        observation_content,
-                        "",
-                        tool_module_category,
-                        tool_semantic_category,
-                    )
-                    # #3 : relecture d'un artefact écrit avant = vérification légitime,
-                    # même si read_file est « trivial » (le verify-gate ci-dessous tranche).
-                    or _artifact_reread
-                )
-            ):
-                # Garde 4: si la tâche mentionne explicitement un nom d'outil différent
-                # du tool actuel, ne PAS auto-avancer (ex: tâche dit "check_web_project"
-                # mais le tool est "run_command" → pas de lien causal)
-                import re as _re_plan
-                for task in self._task_plan:
-                    if not task.completed:
-                        desc_lower = task.description.lower()
-                        if not sourced_web_research_task_proven(
-                            tool_name, task.description, observation_content
-                        ):
-                            logger.debug(
-                                "[PLAN] Recherche sourcée auto sans URL suffisante: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if not document_plan_tool_can_complete_task(
-                            tool_name,
-                            task.description,
-                            tool_kind=str((tool_args or {}).get("kind", "")),
-                            required_kinds=ReActLoop._document_plan_required_kinds(task.description),
-                            compound_workflow=_compound_document_workflow,
-                        ):
-                            logger.debug(
-                                "[PLAN] Document auto: '{}' attend le manifest complet (iter {})",
-                                task.description, iteration,
-                            )
-                            break
-                        if (
-                            tool_name in _READ_ONLY_DISCOVERY_PLAN_TOOLS
-                            and not _read_only_discovery_tool_can_complete_task(tool_name, task.description)
-                        ):
-                            logger.debug(
-                                "[PLAN] Outil découverte auto hors périmètre: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if (
-                            tool_name in _BROWSER_PLAN_PASSIVE_TOOLS
-                            and not _browser_passive_tool_can_complete_task(tool_name, task.description)
-                        ):
-                            logger.debug(
-                                "[PLAN] Browser auto hors périmètre: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if tool_name.startswith("browser_") and not has_sufficient_proof(
-                            tool_name,
-                            observation_content,
-                            task.description,
-                            tool_module_category,
-                            tool_semantic_category,
-                        ):
-                            logger.debug(
-                                "[PLAN] Browser auto sans preuve: '{}' non marquable par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-
-                        # Guard 5 : un outil d'exploration ne peut pas auto-avancer
-                        # une tâche métier (premier mot = verbe d'action).
-                        # Ex : run_command("cd") ne peut pas cocher "Déléguer …".
-                        if (
-                            tool_name in _EXPLORATION_TOOLS_STRICT
-                            and any(
-                                _normalize_guard_token(desc_lower) == starter
-                                or _normalize_guard_token(desc_lower).startswith(starter + " ")
-                                for starter in _BUSINESS_ACTION_STARTERS_NORMALIZED
-                            )
-                        ):
-                            logger.debug(
-                                "[PLAN] Guard 5: tâche métier '{}' non marquable par outil exploratoire {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-
-                        # Guard 4 : la description référence un outil spécifique qui
-                        # n'est pas le tool courant → l'auto-avancement est illégitime
-                        _tool_refs = _re_plan.findall(r'\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b', desc_lower)
-                        if _tool_refs and tool_name.lower() not in _tool_refs:
-                            logger.debug(
-                                "[PLAN] Auto-avancement bloqué: '{}' référence {} mais tool={} (iter {})",
-                                task.description, _tool_refs, tool_name, iteration,
-                            )
-                            break
-                        # Verify-gate : l'auto-avancement générique ne constitue pas
-                        # une preuve pour les étapes de vérification fonctionnelle.
-                        # #3 : EXCEPTION — une relecture d'artefact réellement écrit avant
-                        # (read_file/read_document sur le fichier muté) EST la vérification.
-                        if (
-                            is_verify_task(desc_lower)
-                            and not has_sufficient_proof(
-                                tool_name,
-                                observation_content,
-                                task.description,
-                                tool_module_category,
-                                tool_semantic_category,
-                            )
-                            and not verify_satisfied_by_artifact_read(
-                                tool_name, task.description, artifact_reread=_artifact_reread,
-                            )
-                        ):
-                            logger.debug(
-                                "[PLAN] Verify-gate (auto): '{}' non marquable par {} — preuve insuffisante (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if _requires_strict_proof(desc_lower) and not has_sufficient_proof(
-                            tool_name,
-                            observation_content,
-                            task.description,
-                            tool_module_category,
-                            tool_semantic_category,
-                        ):
-                            logger.debug(
-                                "[PLAN] Strict-proof (auto): '{}' non marquable par {} — preuve insuffisante (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if _requires_strict_proof(desc_lower) and not _has_strict_plan_proof(desc_lower, obs_lower):
-                            logger.debug(
-                                "[PLAN] Strict-proof content (auto): '{}' non marquable par {} — observation insuffisante (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        # Guard SUBMIT-ONLY (fallback) : même restriction que le
-                        # chemin principal — browser_type_index ne peut jamais marquer
-                        # une tâche de soumission.
-                        if tool_name == "browser_type_index" and any(
-                            sv in desc_lower for sv in _SUBMIT_VERBS
-                        ):
-                            logger.debug(
-                                "[PLAN] Guard SUBMIT-ONLY (auto): '{}' non marquable par browser_type_index (iter {})",
-                                task.description, iteration,
-                            )
-                            break
-                        # Guard FINAL-ONLY (fallback) : les tâches de rapport/confirmation
-                        # ne sont pas marquables par des outils browser.
-                        if tool_name.startswith("browser_") and _is_final_only_task(desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard FINAL-ONLY (auto): '{}' non marquable par {} — réservé à FINAL (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        # Guard CORRECTION-ONLY (fallback) : idem chemin principal —
-                        # une lecture ne crédite jamais une tâche de correction.
-                        if correction_task_blocks_readonly(tool_name, desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard CORRECTION-ONLY (auto): '{}' non marquable par {} "
-                                "(lecture ≠ correction) (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        # LOT 2.7 — Guard TOOL-EXPLICIT (fallback auto) : idem chemin
-                        # principal — un autre outil ne coche jamais une tâche qui
-                        # nomme explicitement write_mission_contract/pytest/etc.
-                        if tool_explicit_task_blocks(tool_name, desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard TOOL-EXPLICIT (auto): '{}' non marquable par {} "
-                                "(iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if delegation_task_blocks(tool_name, desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard DELEGATION-ONLY (auto): '{}' non marquable "
-                                "par {} (iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        # C0.3b — Guard PUBLISH-ONLY (fallback) : idem chemin principal.
-                        if publish_task_blocks(tool_name, desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard PUBLISH-ONLY (auto): '{}' non marquable par {} "
-                                "(iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        # LOT E — Guard BROWSER-ONLY (fallback) : idem chemin principal.
-                        if browser_verify_task_blocks(tool_name, desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard BROWSER-ONLY (auto): '{}' non marquable par {} "
-                                "(iter {})",
-                                task.description, tool_name, iteration,
-                            )
-                            break
-                        if browser_interaction_task_blocks(tool_name, desc_lower):
-                            logger.debug(
-                                "[PLAN] Guard INTERACTION-PROOF (auto): '{}' non marquable "
-                                "par {} (iter {})", task.description, tool_name, iteration,
-                            )
-                            break
-                        if artifact_target_task_blocks(
-                            tool_name, desc_lower, tool_args or {}
-                        ):
-                            logger.debug(
-                                "[PLAN] Guard ARTIFACT-TARGET (auto): '{}' incompatible avec "
-                                "la cible de {} (iter {})", task.description, tool_name, iteration,
-                            )
-                            break
-                        _proof = evaluate_task_proof(task.description, tool_name, observation_content)
-                        task.completed = True
-                        task.completed_at_iteration = iteration
-                        task.completed_by_tool = f"{tool_name}:auto"
-                        task.completion_status = task_completion_status(
-                            tool_name, desc_lower, tool_semantic_category, tool_module_category,
-                        )
-                        task.completion_evidence = _proof.evidence_summary
-                        task.completion_confidence = _proof.confidence
-                        self._last_auto_advance_iter = iteration
-                        logger.debug(
-                            "[PLAN] Fallback auto-avancement: '{}' marquée via {} (iter {})",
-                            task.description, tool_name, iteration,
-                        )
-                        break
+        # Toutes les lectures d'instance sont PARESSEUSES et gardent la forme
+        # exacte du site d'origine. Une vingtaine de tests construisent la
+        # boucle par `object.__new__(ReActLoop)` : `tools`, `task_id`,
+        # `execution_ledger` et `task_orchestrator` y sont absents, et le corps
+        # ne les atteint jamais sur ces scenarios. Les lire ici les rendrait
+        # obligatoires.
+        appliquer_progression_plan(EntreeProgressionPlan(
+            tool_name=tool_name,
+            tool_args=tool_args,
+            observation_content=observation_content,
+            iteration=iteration,
+            allow_fallback=allow_fallback,
+            task_plan=self._task_plan,
+            obtenir_outils=lambda: self.tools,
+            obtenir_task_id=lambda: self.task_id,
+            obtenir_ledger=lambda: self.execution_ledger,
+            obtenir_ledger_optionnel=lambda: getattr(self, "execution_ledger", None),
+            obtenir_orchestrateur=lambda: self.task_orchestrator,
+            est_run_mission=lambda: getattr(self, "_is_mission_run", False),
+            orchestrateur_actif=lambda: self._orchestrator_enabled(),
+            lire_derniere_avance=lambda: self._last_auto_advance_iter,
+            definir_derniere_avance=_definir_derniere_avance,
+            obtenir_route_document=lambda: ReActLoop._document_route_for_run(self),
+            types_documents_requis=ReActLoop._document_plan_required_kinds,
+        ))
 
         # Émettre l'état du plan (dédupliqué)
         self._emit_plan_state(context_tool=tool_name)
@@ -9510,7 +4512,7 @@ Maintenant, reflechis et reponds:"""
             _trunc_fr = str(self._last_llm_meta.get("finish_reason") or "").strip().lower()
             if self._is_length_finish_reason(_trunc_fr) and response and len(response.strip()) > 100:
                 logger.warning(
-                    "✂️ Réponse tronquée détectée (finish_reason=%s, %d chars) - sauvegarde du partiel",
+                    "✂️ Réponse tronquée détectée (finish_reason={}, {} chars) - sauvegarde du partiel",
                     _trunc_fr, len(response),
                 )
                 # Essayer d'extraire path + contenu partiel d'un éventuel write_file
@@ -9554,9 +4556,9 @@ Maintenant, reflechis et reponds:"""
                                 _pf.write("\n\n# [TRONCATURE: suite à compléter]")
                             _saved_partial_path = _wf_path
                             _partial_content_for_ctx = _wf_content[-1500:]  # Garder la fin pour le contexte
-                            logger.info("💾 Contenu partiel sauvegardé dans: %s (%d chars)", _wf_path, len(_wf_content))
+                            logger.info("💾 Contenu partiel sauvegardé dans: {} ({} chars)", _wf_path, len(_wf_content))
                     except Exception as _trunc_ex:
-                        logger.warning("⚠️ Impossible d'extraire le write_file tronqué: %s", _trunc_ex)
+                        logger.warning("⚠️ Impossible d'extraire le write_file tronqué: {}", _trunc_ex)
                         _partial_content_for_ctx = response[-2000:]
                 else:
                     # Pas de write_file détecté, prendre la fin de la réponse comme contexte
@@ -9632,8 +4634,22 @@ Maintenant, reflechis et reponds:"""
                 self._pre_repair_answer = None
                 # PAS de return : fall-through vers l'exécution normale de l'action.
             elif _pre_repair and action.action_type == ActionType.FINAL_ANSWER:
-                # Repair réussi (FINAL produit) → on nettoie le marqueur.
-                self._pre_repair_answer = None
+                # Un FINAL VIDE est, lui aussi, un FINAL_ANSWER. Le compter comme
+                # « repair réussi » DÉTRUISAIT la réponse d'origine — celle qu'on
+                # venait de sauvegarder neuf lignes plus haut POUR ce cas précis.
+                # Run 2026-08-29 : un bilan de mission de 1312 chars jeté ici, puis
+                # trois FINAL vides d'affilée, et l'utilisateur a reçu la formule
+                # de 41 caractères. Le marqueur ne se nettoie que si le repair a
+                # réellement produit du contenu.
+                _repare = (getattr(action, "answer", "") or "").strip()
+                if _repare:
+                    self._pre_repair_answer = None
+                else:
+                    logger.warning(
+                        "🔧 Repair FINAL → FINAL VIDE : on CONSERVE la réponse "
+                        "d'origine ({} chars) au lieu de la détruire.",
+                        len(_pre_repair),
+                    )
 
             # 2.0a Tracking hallucinations consécutives (Kimi simule des OBSERVATION)
             _halluc_warning = ""
@@ -9682,35 +4698,12 @@ Maintenant, reflechis et reponds:"""
             # 2.1 Détection de stagnation de pensée (thoughts quasi-identiques)
             _stagnation_warning = ""
             if thought.content:
-                _current_words = set(thought.content.lower().split())
-                _is_stagnant = False
-                if len(_previous_thoughts) >= 2:
-                    _last_words = set(_previous_thoughts[-1].lower().split())
-                    if _current_words and _last_words:
-                        _overlap = len(_current_words & _last_words) / max(len(_current_words | _last_words), 1)
-                        _prev_words = set(_previous_thoughts[-2].lower().split())
-                        _overlap2 = len(_current_words & _prev_words) / max(len(_current_words | _prev_words), 1)
-                        # Seuil adaptatif : 65% si requête courte (≤5 mots), 80% sinon
-                        # P5 — modèles à loop_risk élevé : seuil abaissé pour détection plus tôt
-                        _q_words = len(original_query.split())
-                        _base_thresh = 0.65 if _q_words <= 5 else 0.80
-                        _thresh = (
-                            _base_thresh - 0.10 if _loop_risk == "high" else
-                            _base_thresh - 0.05 if _loop_risk == "medium" else
-                            _base_thresh
-                        )
-                        if _overlap > _thresh and _overlap2 > _thresh:
-                            _is_stagnant = True
-                # Détection secondaire : 3+ actions read-only consécutives sur même sujet
-                if not _is_stagnant and len(_previous_thoughts) >= 3:
-                    _recent_3 = _previous_thoughts[-3:] + [thought.content]
-                    _common_prefix = set(_recent_3[0].lower().split()[:15])
-                    _all_share = all(
-                        len(_common_prefix & set(t.lower().split()[:15])) / max(len(_common_prefix), 1) > 0.60
-                        for t in _recent_3[1:]
-                    )
-                    if _all_share:
-                        _is_stagnant = True
+                # Lot RF-9b : la DECISION est deplacee vers
+                # `observation_synthesis.py` (feuille « detection de stagnation
+                # de pensee », §15). Restent ici les MUTATIONS de l'historique.
+                _is_stagnant = thought_is_stagnant(
+                    thought.content, _previous_thoughts, original_query, _loop_risk,
+                )
                 _previous_thoughts.append(thought.content)
                 if len(_previous_thoughts) > 5:
                     _previous_thoughts = _previous_thoughts[-5:]
@@ -9720,27 +4713,12 @@ Maintenant, reflechis et reponds:"""
                     # P4: Injecter les outils pertinents dans le warning de stagnation
                     _stag_tool_hint = ""
                     if hasattr(self.tools, "_tool_modules"):
-                        _q_low = original_query.lower()
-                        _stag_relevant: list = []
-                        _STAG_KW_MAP = [
-                            (("pdf", "rapport", "document", "facture", "devis"),
-                             ["generate_studio_document", "generate_studio_documents", "list_document_models", "create_pdf", "create_docx", "create_invoice_pdf", "create_from_template"]),
-                            (("site", "web", "html", "page"),
-                             ["create_project", "generate_website", "write_file"]),
-                            (("image", "photo", "capture"),
-                             ["generate_image", "screenshot", "screenshot_analyze"]),
-                            (("mail", "email", "courriel"),
-                             ["send_email", "mail_send"]),
-                        ]
-                        for _kws, _tools in _STAG_KW_MAP:
-                            if any(k in _q_low for k in _kws):
-                                _stag_relevant.extend(t for t in _tools if t in self.tools.tools)
-                        if _stag_relevant:
-                            _stag_tool_hint = (
-                                " Outils disponibles pour cette tâche : "
-                                + ", ".join(f"`{t}`" for t in _stag_relevant[:5])
-                                + ". Utilise-les directement."
-                            )
+                        # Lot RF-9c : la DECISION est deplacee vers
+                        # `observation_synthesis.py`. Seule la concatenation
+                        # reste ici.
+                        _stag_tool_hint = stagnation_tool_hint(
+                            original_query, self.tools.tools,
+                        ) or _stag_tool_hint
                     _stagnation_warning = (
                         "\n\n⚠️ STAGNATION: Tu répètes le même raisonnement. "
                         "Après cette action, AGIS ou donne ta réponse FINAL."
@@ -10185,17 +5163,11 @@ Maintenant, reflechis et reponds:"""
                                     pass
                             # 1. Chemin explicite dans la query
                             if not _esc_project_path:
-                                _esc_qm = re.search(
-                                    r'([A-Za-z]:\\[^\s]+?[\\/]workspace[\\/][\w\-]+)', query,
-                                )
-                                if not _esc_qm:
-                                    _esc_qm = re.search(r'(workspace[\\/][\w\-]+)', query)
-                                if _esc_qm:
-                                    _cand = _esc_qm.group(1)
-                                    if not os.path.isabs(_cand) and _root:
-                                        _cand = os.path.join(str(_root), _cand)
-                                    if os.path.isdir(_cand):
-                                        _esc_project_path = _cand
+                                # Lot RF-9d : la DECISION sort ; l'affectation
+                                # reste ici.
+                                _esc_project_path = workspace_path_from_query(
+                                    query, _root,
+                                ) or _esc_project_path
                             # 2. Extraire depuis les file_path des actions récentes
                             if not _esc_project_path:
                                 for _h in reversed(self.history[-10:]):
@@ -11300,8 +6272,8 @@ Maintenant, reflechis et reponds:"""
                             _needs_block = True
                             _mismatch_info = f"FINAL prétend {_claim_count} envois mais seulement {_send_success_count} ont réussi"
                         elif _claim_channels and _actual_channels:
-                            _claimed_set = {c.lower().strip("#").strip() for c in _claim_channels}
-                            _phantom = _claimed_set - _actual_channels
+                            # Lot RF-9d : la DECISION sort ; le blocage reste ici.
+                            _phantom = phantom_channels(_claim_channels, _actual_channels)
                             if _phantom:
                                 _needs_block = True
                                 _mismatch_info = f"salons inventés: {_phantom} (réels: {_actual_channels})"
@@ -11907,7 +6879,11 @@ Maintenant, reflechis et reponds:"""
                         f"final_answer_potentially_incomplete (finish_reason={finish_reason})"
                     )
                     self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
-                    message = answer if answer else "Je n'ai pas trouvé de réponse pertinente."
+                    # La réponse d'origine, gardée au repair, vaut infiniment
+                    # mieux qu'un aveu d'échec : on ne sert la formule que si on
+                    # n'a VRAIMENT rien.
+                    _garde = (getattr(self, "_pre_repair_answer", None) or "").strip()
+                    message = answer or _garde or "Je n'ai pas trouvé de réponse pertinente."
                     # I3 (run comparatif vectoriel) — un worker dont TOUS les
                     # fichiers assignés sont remplis a fait son travail : sa
                     # conclusion tronquée ne rend pas son livrable inexistant.
@@ -11922,7 +6898,10 @@ Maintenant, reflechis et reponds:"""
                         )
                         self._run_meta["agent_output_delivered_anyway"] = True
                         _finish_iteration(status="ok", summary="final_truncated_but_delivered")
-                        return message
+                        # RF-8-FIX-1 — cette voie ne passe PAS par le goulot :
+                        # sans ce verrou, la conclusion du worker est livree
+                        # telle quelle, revendications comprises.
+                        return self._truth_lock_mission_message(message, origine="I3")
                     # LOT Z28 — le LEAD aussi. I3 s'arrête aux workers (il exige
                     # des `allowed_files`, qu'un lead n'a jamais) ; run « Papier
                     # Cousu » : 6 fichiers livrés, 3 pages vues au navigateur,
@@ -11943,7 +6922,11 @@ Maintenant, reflechis et reponds:"""
                         return self._truncated_but_delivered_answer(_z28_artefacts)
                     _finish_iteration(status="error", error=self._run_meta["agent_output_warning"])
                     self._mark_task_failed(self._run_meta["agent_output_warning"])
-                    return message
+                    # RF-8-FIX-1 — meme voie hors goulot. On ajoute le verrou et
+                    # RIEN d'autre : rerouter par `_stream_and_return_final`
+                    # poserait `_mark_task_done` juste apres ce
+                    # `_mark_task_failed`, et contredirait l'etat.
+                    return self._truth_lock_mission_message(message, origine="Z28")
 
                 self._run_meta["agent_repair_attempts"] = self._final_repair_attempts
                 # ── LOT 2.10 — GATE PYTEST À RELANCE BORNÉE (run StockPilot) ───
@@ -12230,7 +7213,8 @@ Maintenant, reflechis et reponds:"""
                 _finish_iteration(status="ok", summary="final_answer_ready")
                 # F1.b — hors mission : formule historique. En mission : jamais une
                 # politesse à la place d'un livrable (cf. _empty_final_fallback).
-                message = answer if answer else self._empty_final_fallback()
+                _garde = (getattr(self, "_pre_repair_answer", None) or "").strip()
+                message = answer or _garde or self._empty_final_fallback()
                 return self._stream_and_return_final(message)
             
             # 5. Sinon, exécuter l'outil
@@ -13477,35 +8461,12 @@ Maintenant, reflechis et reponds:"""
                             and h.observation and h.observation.success
                             for h in self.history
                         )
-                        if _already_created:
-                            # Création déjà faite — list_directory est de la navigation légitime
-                            observation.content += (
-                                "\n\n⚠️ RAPPEL: tu as déjà exploré ce chemin. "
-                                "Avance vers l'étape suivante."
-                            )
-                        else:
-                            # Détecter si la requête demande de CRÉER des fichiers (pas de les chercher)
-                            _creation_keywords = (
-                                "créer", "creer", "cree", "crée", "créé", "génère", "genere", "rédige", "redige",
-                                "écris", "ecris", "prépare", "prepare", "fais", "produis", "structure",
-                                "create", "write", "generate", "make", "build",
-                            )
-                            query_lower = original_query.lower()
-                            user_wants_creation = any(kw in query_lower for kw in _creation_keywords)
-                            if user_wants_creation:
-                                observation.content += (
-                                    "\n\n⚠️ STOP EXPLORATION: tu as DEJA explore ce chemin et l'utilisateur "
-                                    "te demande de CREER des fichiers. Arrete list_directory MAINTENANT.\n"
-                                    "ACTION OBLIGATOIRE: utilise write_file pour creer chaque fichier demandé "
-                                    "(un par un, PAS parallel_tools). Puis utilise telegram_send_document ou send_whatsapp_document si "
-                                    "l'utilisateur veut les recevoir."
-                                )
-                            else:
-                                observation.content += (
-                                    "\n\n⚠️ RAPPEL: tu as DEJA explore ce chemin. "
-                                    "Si le fichier cherche n'est PAS la, DIS-LE HONNETEMENT a l'utilisateur avec ACTION: FINAL. "
-                                    "NE CREE PAS de fichier invente. Ne refais PAS list_directory sur un chemin deja vu."
-                                )
+                        # Lot RF-9c : la DECISION (quel rappel poser) est
+                        # deplacee vers `observation_synthesis.py` ; la
+                        # concatenation et le journal restent ici.
+                        observation.content += repeated_listing_reminder(
+                            _already_created, original_query,
+                        )
                         logger.warning(f"Repeated list_directory on: {listed_path}")
                     _listed_dirs.add(listed_path)
 
@@ -13680,94 +8641,20 @@ Maintenant, reflechis et reponds:"""
             # RÈGLE : read_file/grep ont un seuil élevé (8000) — le contenu fichier est précieux.
             #         delegate_task/run_command ont un seuil bas (3000) — ce sont des résumés.
             if step.observation and step.observation.content:
-                _raw_obs_len = len(step.observation.content)
-                _tool_name_compact = action.tool_name or ""
-                # Seuils adaptatifs par type d'outil
-                if _tool_name_compact == "delegate_and_wait":
-                    # Les LIVRABLES des workers doivent rester INTACTS pour que le lead
-                    # fusionne sans re-fouiller le disque (sinon le fix excerpt est gâché).
-                    _OBS_COMPACT_LIMIT = 20000
-                elif _tool_name_compact in _OBS_FILE_READ_TOOLS:
-                    # B0.3 (run PlantCare) : read_files_batch et parallel_tools étaient
-                    # ABSENTS de cette liste → compactés à ~830 chars → les workers
-                    # relisaient les mêmes fichiers en boucle (w_tests mort sans écrire).
-                    # C0.1 (run FrigoZen) : l'observation de write_mission_contract PORTE
-                    # les objectifs contractuels (allowed_files) — compactée à 830 chars,
-                    # le lead re-rédigeait ses propres objectifs divergents du contrat.
-                    # LOT Z12 : la liste est devenue `_OBS_FILE_READ_TOOLS`, PARTAGÉE avec
-                    # la stratégie de compaction plus bas — les deux copies avaient divergé.
-                    _OBS_COMPACT_LIMIT = 8000   # seuil élevé : ne pas tronquer le contenu fichier
-                elif _tool_name_compact in ("browser_get_content", "browser_evaluate"):
-                    # Fix A: Pour les surfaces chat, augmenter la limite pour ne pas tronquer la conversation
-                    _is_chat_surface = getattr(self, "_last_browser_surface", "") in ("chat_composer", "chat_transcript", "chat_response")
-                    _OBS_COMPACT_LIMIT = 4000 if _is_chat_surface else 1800
-                else:
-                    _OBS_COMPACT_LIMIT = 3000   # seuil bas pour les outils qui retournent des rapports
-                if _raw_obs_len > _OBS_COMPACT_LIMIT:
-                    _anchor = _extract_anchor_facts(step.observation.content)
-                    _is_chat_surface_compact = getattr(self, "_last_browser_surface", "") in (
+                # Lot RF-9a : la DECISION de compaction est deplacee vers
+                # `observation_synthesis.py` (feuille « ingestion d'observation »,
+                # §15). Restent ici les EFFETS : la reconstruction du `ReActStep`
+                # et le journal.
+                _c_body = compact_observation_body(
+                    action.tool_name or "",
+                    step.observation.content,
+                    getattr(self, "_last_browser_surface", "") in (
                         "chat_composer", "chat_transcript", "chat_response"
-                    )
-                    _browser_compacted = _compact_browser_observation_payload(
-                        _tool_name_compact,
-                        step.observation.content,
-                        is_chat_surface=_is_chat_surface_compact,
-                    )
-                    if _browser_compacted is not None:
-                        _c_body = _browser_compacted
-                    elif _tool_name_compact == "generate_studio_documents":
-                        from src.documents.delivery_manifest import (
-                            compact_batch_observation,
-                        )
-
-                        _c_body = compact_batch_observation(
-                            step.observation.content,
-                        )
-                        if _c_body is None:
-                            _c_head = step.observation.content[:500]
-                            _c_tail = step.observation.content[-300:]
-                            _c_body = (
-                                f"{_anchor}{_c_head}\n"
-                                f"[...{_raw_obs_len - 800} chars compactes...]\n"
-                                f"{_c_tail}"
-                            )
-                    elif _tool_name_compact in (
-                        "delegate_task", "create_project", "generate_website",
-                        "write_website_files", "website_build",
-                    ):
-                        # Résultats de délégation : garder début (statut) + fin (conclusion)
-                        _c_head = step.observation.content[:600]
-                        _c_tail = step.observation.content[-200:]
-                        _c_body = (
-                            f"{_anchor}{_c_head}\n[...{_raw_obs_len - 800} chars compactés — "
-                            f"contenu disponible sur demande...]\n{_c_tail}"
-                        )
-                    elif _tool_name_compact in ("run_command", "execute_code", "dev_run_fix"):
-                        # Sorties de commandes : garder début (env) + fin (résultat/erreur)
-                        _c_head = step.observation.content[:400]
-                        _c_tail = step.observation.content[-400:]
-                        _c_body = (
-                            f"{_anchor}{_c_head}\n[...sortie tronquée ({_raw_obs_len} chars)...]\n{_c_tail}"
-                        )
-                    elif _tool_name_compact in _OBS_FILE_READ_TOOLS:
-                        # Lectures fichiers : seuil élevé atteint → garder 3000 chars (début)
-                        # Pas d'ancre ici : le contenu brut est déjà préservé intégralement
-                        #
-                        # LOT Z12 — cette liste était écrite EN DUR et ne connaissait que
-                        # `read_file`/`search_in_code`/`grep_search`/`find_files`. Elle
-                        # partage désormais `_OBS_FILE_READ_TOOLS` avec le seuil ci-dessus :
-                        # un outil protégé jusqu'à 8000 chars ne peut plus se retrouver
-                        # réduit à 800 dès qu'il les dépasse.
-                        _c_body = (
-                            step.observation.content[:3000]
-                            + f"\n[...{_raw_obs_len - 3000} chars omis — relire avec plage de lignes si nécessaire...]"
-                        )
-                    else:
-                        _c_head = step.observation.content[:500]
-                        _c_tail = step.observation.content[-300:]
-                        _c_body = (
-                            f"{_anchor}{_c_head}\n[...{_raw_obs_len - 800} chars compactés...]\n{_c_tail}"
-                        )
+                    ),
+                    compact_browser=_compact_browser_observation_payload,
+                )
+                if _c_body is not None:
+                    _raw_obs_len = len(step.observation.content)
                     step = ReActStep(
                         thought=step.thought,
                         action=step.action,
@@ -13780,7 +8667,7 @@ Maintenant, reflechis et reponds:"""
                     )
                     logger.debug(
                         f"🗜️ Observation compactée: {_raw_obs_len} → {len(_c_body)} chars "
-                        f"({_tool_name_compact})"
+                        f"({action.tool_name or ''})"
                     )
             # 6. Ajouter à l'historique
             # Accumuler le nom de l'outil dans le set session (survit aux compactions)
@@ -14007,13 +8894,9 @@ Maintenant, reflechis et reponds:"""
                     return message
 
                 if self._iterations_without_progress >= _warn_limit:
-                    next_task = next((t for t in self._task_plan if not t.completed), None)
-                    plan_stag_msg = (
-                        "\n\n[SYSTEME] ATTENTION: Aucune progression sur ton plan depuis plusieurs iterations. "
-                        "Passe a l'action suivante ou termine avec FINAL si la tache est impossible."
-                    )
-                    if next_task:
-                        plan_stag_msg += f"\nPROCHAINE TACHE A FAIRE: {next_task.description}"
+                    # Lot RF-9d : la DECISION sort ; la reconstruction de
+                    # l'Observation reste ici (invariant 5).
+                    plan_stag_msg = plan_stagnation_message(self._task_plan)
                     if step.observation:
                         step.observation = Observation(
                             content=(step.observation.content or "") + plan_stag_msg,
@@ -14075,15 +8958,15 @@ Maintenant, reflechis et reponds:"""
                 is_web_request = bool(ReActLoop._is_web_request(original_query))
 
             if is_web_request:
-                created_files = [h.action.tool_args.get("path", "") for h in self.history if h.action.tool_name == "write_file"]
-                has_html = any(".html" in f for f in created_files)
-                has_css = any(".css" in f for f in created_files)
-                has_js = any(".js" in f for f in created_files)
-                
-                files_reminder = f"""
-Fichiers web créés: {', '.join(created_files) if created_files else 'Aucun'}
-Fichiers web potentiellement manquants: {'index.html ' if not has_html else ''}{'style.css ' if not has_css else ''}{'script.js' if not has_js else ''}
-"""
+                # Lot RF-9d : la DECISION sort. `has_html/css/js` sont RENDUS et
+                # non absorbes : ils sont relus ~700 lignes plus bas pour
+                # adapter le hint de conclusion.
+                _web_written = [
+                    h.action.tool_args.get("path", "")
+                    for h in self.history if h.action.tool_name == "write_file"
+                ]
+                has_html, has_css, has_js = web_files_present(_web_written)
+                files_reminder = web_files_reminder(_web_written)
             
             # ── Post-succès create_project web : vérification runtime autonome ──
             _tool_args_for_project = action.tool_args if isinstance(action.tool_args, dict) else {}

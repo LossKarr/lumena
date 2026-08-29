@@ -278,12 +278,25 @@ def test_le_fait_cohabite_avec_les_autres_bannieres():
 # ── Le branchement ───────────────────────────────────────────────────────────
 
 
-_SRC = Path("src/reasoning/react.py").read_text(encoding="utf-8")
+# Lot RF-6a : le corps de cette methode — et sa docstring, qui PORTE la
+# raison datee du lot — a ete deplace vers `mission_runtime.py`. Le test
+# suit son texte ; son intention est inchangee, mot pour mot.
+# La preuve COMPORTEMENTALE de l'extraction est la matrice RF-6a :
+# 476 comparaisons valeur-par-valeur, 476 identiques.
+# Lot RF-8 : les arguments du verrou vivent desormais dans
+# `final_delivery_runtime.py` (methode `_truth_lock_mission_message`
+# extraite). Le test lit les DEUX fichiers : son intention — « un site
+# oublie = un chemin de sortie qui ment par omission » — est inchangee.
+_SRC = (Path("src/reasoning/react.py").read_text(encoding="utf-8")
+        + Path("src/reasoning/mission_runtime.py").read_text(encoding="utf-8")
+        + Path("src/reasoning/final_delivery_runtime.py").read_text(encoding="utf-8"))
 
 
 def test_les_trois_sites_du_truth_lock_sont_alimentes():
     """Un site oublié = un chemin de sortie qui ment par omission."""
-    assert _SRC.count("unpublished_writes=self._mission_unpublished_writes()") == 3
+    # RF-8 : noms suivis du rebindage (self.X -> etat.Y()), intention intacte.
+    assert (_SRC.count("unpublished_writes=self._mission_unpublished_writes()")
+            + _SRC.count("unpublished_writes=etat.ecrits_non_publies()")) == 3
     assert _SRC.count("apply_mission_truth_lock(") == 3
 
 

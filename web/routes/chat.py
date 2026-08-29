@@ -885,6 +885,39 @@ def _apply_workspace_policy(
         open_files=open_files,
     )
 
+    # Run 2026-08-29 — l'utilisateur avait ecrit « dans workspace/relevebank » et
+    # le chat a resolu sur `workspace/2026-08-29`
+    # (reason=default_fallback_default_workspace). `resolve_workspace_for_request`
+    # ne regarde JAMAIS le message : elle lit `requested_workspace`, le fichier
+    # actif et les onglets ouverts. Or le message est ICI — le bloc
+    # d'observabilite juste en dessous le LISAIT deja, pour un simple warning.
+    #
+    # C'est la classe de defaut fermee par Z41 dans `project_registry`, sur un
+    # SECOND chemin. On reutilise le meme extracteur, et on n'accepte QUE si le
+    # dossier existe reellement : le chat pointe un workspace reel, il n'en cree
+    # jamais par inference. Strictement limite au fallback par defaut — les
+    # politiques `explicit` et `strict_default` gardent leur comportement.
+    if getattr(resolved, "resolution_reason", "") == "default_fallback_default_workspace":
+        try:
+            import dataclasses as _dc
+            from src.utils.project_registry import named_workspace_target as _nwt
+            _nomme = _nwt(request.message or "")
+            if _nomme is not None:
+                _cible = Path(resolved.resolved_workspace).parent.parent / _nomme
+                if _cible.is_dir():
+                    resolved = _dc.replace(
+                        resolved,
+                        resolved_workspace=str(_cible.resolve()),
+                        resolution_reason="named_in_message",
+                        used_fallback=False,
+                    )
+                    logger.info(
+                        "[workspace] nomme dans le message -> {}",
+                        resolved.resolved_workspace,
+                    )
+        except Exception:
+            pass
+
     logger.debug(
         "[workspace] V2 -> {} (reason={}, fallback={})",
         resolved.resolved_workspace, resolved.resolution_reason, resolved.used_fallback,

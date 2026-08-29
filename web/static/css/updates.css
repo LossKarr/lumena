@@ -15,7 +15,9 @@
 .update-center-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:650;color:var(--text-strong)}
 .update-center-meta{font-size:10px;color:var(--muted);margin-top:4px}
 .update-state-pill{font-size:10px;padding:3px 7px;border:1px solid var(--border);border-radius:var(--radius-full);color:var(--muted)}
-.update-state-pill.available,.update-state-pill.verified{border-color:color-mix(in srgb,var(--ok) 45%,var(--border));color:var(--ok)}
+.update-state-pill.up_to_date,.update-state-pill.healthy,.update-state-pill.verified{border-color:color-mix(in srgb,var(--ok) 45%,var(--border));color:var(--ok)}
+.update-state-pill.available{border-color:color-mix(in srgb,var(--accent) 55%,var(--border));color:var(--accent)}
+.update-state-pill.failed,.update-state-pill.rolling_back{border-color:color-mix(in srgb,var(--danger) 48%,var(--border));color:var(--danger)}
 .update-version-row{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px;align-items:center}
 .update-version-detail{margin-top:10px;padding:10px;border-left:2px solid var(--border-strong);background:var(--bg-elevated);font-size:11px;line-height:1.55;color:var(--muted)}
 .update-version-detail strong{color:var(--text)}

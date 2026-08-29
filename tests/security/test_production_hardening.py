@@ -174,32 +174,51 @@ class TestS2DeadCodeFixed:
         )
 
 
+def _sources_de_la_boucle_react() -> str:
+    """Le texte des fichiers qui portent les except critiques de la boucle.
+
+    Lot RF-3 du refactor ReAct (2026-08-27) : le corps de `_build_react_prompt`
+    a quitte `react.py` pour `src/prompts/react_prompt.py`. Deux des quatre
+    except surveilles ici sont partis avec lui — le contexte sandbox et
+    l'injection de memoire agent. Les quatre existent toujours et loguent
+    toujours ; seul leur fichier a change.
+
+    On lit donc la PAIRE. Le test garde exactement son affirmation d'origine
+    (« ces quatre except loguent en warning ») sans dependre du fichier ou le
+    code habite, ce qui est precisement ce qui l'a casse.
+
+    Le plan de refactor n'autorise ce repointage qu'adosse a une preuve
+    COMPORTEMENTALE equivalente. Elle existe, et elle est plus forte que la
+    recherche de sous-chaine ci-dessous : dans
+    `tests/reasoning/test_rf3_react_prompt_extraction.py`,
+      - test_comportement_un_echec_du_contexte_sandbox_logue_un_warning
+      - test_comportement_un_echec_de_la_memoire_agent_logue_un_warning
+    font REELLEMENT echouer chaque branche et verifient que le warning part,
+    qu'il porte la cause, et que le prompt survit quand meme.
+    """
+    from src.reasoning import react
+    from src.prompts import react_prompt
+
+    return "\n".join(
+        Path(inspect.getfile(m)).read_text(encoding="utf-8")
+        for m in (react, react_prompt)
+    )
+
+
 class TestS2ReactWarnings:
     """Vérifie que les 4 except critiques loguent en warning."""
 
     def test_sandbox_except_logs_warning(self):
-        from src.reasoning import react
-        src_file = Path(inspect.getfile(react))
-        source = src_file.read_text(encoding="utf-8")
-        assert "Sandbox context injection failed" in source
+        assert "Sandbox context injection failed" in _sources_de_la_boucle_react()
 
     def test_chromadb_except_logs_warning(self):
-        from src.reasoning import react
-        src_file = Path(inspect.getfile(react))
-        source = src_file.read_text(encoding="utf-8")
-        assert "ChromaDB memory unavailable" in source
+        assert "ChromaDB memory unavailable" in _sources_de_la_boucle_react()
 
     def test_permanent_memory_except_logs_warning(self):
-        from src.reasoning import react
-        src_file = Path(inspect.getfile(react))
-        source = src_file.read_text(encoding="utf-8")
-        assert "Permanent memory inject failed" in source
+        assert "Permanent memory inject failed" in _sources_de_la_boucle_react()
 
     def test_agent_memory_except_logs_warning(self):
-        from src.reasoning import react
-        src_file = Path(inspect.getfile(react))
-        source = src_file.read_text(encoding="utf-8")
-        assert "Agent memory inject failed" in source
+        assert "Agent memory inject failed" in _sources_de_la_boucle_react()
 
 
 class TestS2LoguruFix:

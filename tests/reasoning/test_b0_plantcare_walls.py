@@ -134,15 +134,22 @@ def test_resolve_cwd_mission_first(tmp_path):
 # ── B0.3 : compaction — les lecteurs batch au seuil élevé ────────────────────────
 
 def test_compaction_high_threshold_includes_batch_readers():
-    import src.reasoning.react as react_mod
-    src = inspect.getsource(react_mod)
-    i = src.find("_OBS_COMPACT_LIMIT = 8000")
-    assert i > 0
-    # Fenêtre élargie (C0.1 a inséré write_mission_contract + sa doc entre le tuple
-    # et le seuil) — l'invariante reste : ces lecteurs mènent bien au seuil 8000.
-    block = src[max(0, i - 900):i]
-    assert "read_files_batch" in block, "read_files_batch compacté à 830 chars = mort de w_tests"
-    assert "parallel_tools" in block
+    # Lot RF-9a : le seuil vit dans `observation_synthesis.py` (feuille
+    # « ingestion d'observation », §15) et n'est plus une variable mais un
+    # retour. L'assertion devient COMPORTEMENTALE — l'invariante est
+    # inchangée : ces lecteurs mènent bien au seuil 8000.
+    from src.reasoning.observation_synthesis import (
+        observation_compact_limit, _OBS_FILE_READ_TOOLS,
+    )
+
+    assert observation_compact_limit(
+        "read_files_batch", is_chat_surface=False
+    ) == 8000, "read_files_batch compacté à 830 chars = mort de w_tests"
+    assert observation_compact_limit(
+        "parallel_tools", is_chat_surface=False
+    ) == 8000
+    assert "read_files_batch" in _OBS_FILE_READ_TOOLS
+    assert "parallel_tools" in _OBS_FILE_READ_TOOLS
 
 
 # ── B0.4a : sanitizer — chemins Windows quotés ───────────────────────────────────

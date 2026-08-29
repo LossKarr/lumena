@@ -52,6 +52,22 @@ function fullInstallerAction(entry){
   if(!entry?.requires_full_installer||!entry?.installer_asset_url)return '';
   return `<a class="btn primary" href="${escHtml(entry.installer_asset_url)}" target="_blank" rel="noopener"><i data-lucide="download"></i> Télécharger l'installateur complet</a>`;
 }
+function updateStateLabel(state){
+  return ({
+    idle:'En attente',
+    checking:'Vérification…',
+    up_to_date:'À jour',
+    available:'Mise à jour disponible',
+    downloading:'Téléchargement…',
+    verified:'Prête à installer',
+    waiting_idle:'En attente de disponibilité',
+    applying:'Installation…',
+    restarting:'Redémarrage…',
+    healthy:'Mise à jour réussie',
+    rolling_back:'Restauration…',
+    failed:'Échec de la mise à jour',
+  })[state]||state;
+}
 function renderCenter(target=document.getElementById('update-center')){
   if(!target)return;
   const state=updater.status?.state||'idle';
@@ -60,7 +76,7 @@ function renderCenter(target=document.getElementById('update-center')){
   const options=updater.releases.map(entry=>`<option value="${escHtml(entry.version)}" ${entry.version===selected?.version?'selected':''}>${escHtml(entry.version)} · ${entry.certified?'certifiée':'historique'}${entry.direction==='current'?' · actuelle':''}</option>`).join('');
   const percent=updater.status?.total_bytes?Math.min(100,Math.round((updater.status.progress_bytes||0)*100/updater.status.total_bytes)):0;
   const verified=state==='verified'&&updater.status?.staged_version===selected?.version;
-  target.innerHTML=`<section class="update-center-card" aria-label="Centre de mises à jour"><div class="update-center-head"><div><div class="update-center-title"><i data-lucide="shield-check"></i>Version et intégrité</div><div class="update-center-meta">Installée ${escHtml(current)} · mode ${escHtml(updater.status?.installation_type||'—')}</div></div><span class="update-state-pill ${escHtml(state)}">${escHtml(state)}</span></div>${updater.error?`<div class="update-version-detail" style="border-color:var(--danger);color:var(--danger)">${escHtml(updater.error)}</div>`:''}<div class="update-version-row"><select class="input" id="update-version-select" aria-label="Version de Lumena">${options||'<option>Aucune release détectée</option>'}</select><button class="btn" id="update-check" ${updater.busy?'disabled':''}><i data-lucide="refresh-cw"></i> Vérifier</button></div><div class="update-version-detail" id="update-version-detail"><strong>${selected?`Lumena ${escHtml(selected.version)}`:'Catalogue indisponible'}</strong><br>${escHtml(reason(selected))}${selected?.requires_full_installer?'<br>Les mises à jour de dépendances restent hors du paquet léger.':''}</div><div class="update-actions"><button class="btn primary" id="update-download" ${!selected?.installable||updater.busy||verified?'disabled':''}><i data-lucide="download"></i> ${verified?'Paquet vérifié':'Télécharger et vérifier'}</button>${fullInstallerAction(selected)}${verified?'<button class="btn primary" id="update-apply"><i data-lucide="refresh-ccw"></i> Installer et redémarrer</button>':''}${updater.status?.rollback_available?'<button class="btn danger" id="update-rollback"><i data-lucide="undo-2"></i> Restaurer la précédente</button>':''}${selected?.notes_url?`<a class="btn" href="${escHtml(selected.notes_url)}" target="_blank" rel="noopener"><i data-lucide="external-link"></i> Notes</a>`:''}</div>${state==='downloading'?`<div class="update-progress"><span style="width:${percent}%"></span></div>`:''}</section>`;
+  target.innerHTML=`<section class="update-center-card" aria-label="Centre de mises à jour"><div class="update-center-head"><div><div class="update-center-title"><i data-lucide="shield-check"></i>Version et intégrité</div><div class="update-center-meta">Installée ${escHtml(current)} · mode ${escHtml(updater.status?.installation_type||'—')}</div></div><span class="update-state-pill ${escHtml(state)}">${escHtml(updateStateLabel(state))}</span></div>${updater.error?`<div class="update-version-detail" style="border-color:var(--danger);color:var(--danger)">${escHtml(updater.error)}</div>`:''}<div class="update-version-row"><select class="input" id="update-version-select" aria-label="Version de Lumena">${options||'<option>Aucune release détectée</option>'}</select><button class="btn" id="update-check" ${updater.busy?'disabled':''}><i data-lucide="refresh-cw"></i> Vérifier</button></div><div class="update-version-detail" id="update-version-detail"><strong>${selected?`Lumena ${escHtml(selected.version)}`:'Catalogue indisponible'}</strong><br>${escHtml(reason(selected))}${selected?.requires_full_installer?'<br>Les mises à jour de dépendances restent hors du paquet léger.':''}</div><div class="update-actions"><button class="btn primary" id="update-download" ${!selected?.installable||updater.busy||verified?'disabled':''}><i data-lucide="download"></i> ${verified?'Paquet vérifié':'Télécharger et vérifier'}</button>${fullInstallerAction(selected)}${verified?'<button class="btn primary" id="update-apply"><i data-lucide="refresh-ccw"></i> Installer et redémarrer</button>':''}${updater.status?.rollback_available?'<button class="btn danger" id="update-rollback"><i data-lucide="undo-2"></i> Restaurer la précédente</button>':''}${selected?.notes_url?`<a class="btn" href="${escHtml(selected.notes_url)}" target="_blank" rel="noopener"><i data-lucide="external-link"></i> Notes</a>`:''}</div>${state==='downloading'?`<div class="update-progress"><span style="width:${percent}%"></span></div>`:''}</section>`;
   target.querySelector('#update-version-select')?.addEventListener('change',()=>renderCenter(target));
   target.querySelector('#update-check')?.addEventListener('click',()=>refreshUpdates(true));
   target.querySelector('#update-download')?.addEventListener('click',downloadSelected);

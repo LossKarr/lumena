@@ -59,7 +59,20 @@ def test_react_prompt_adds_cursor_ide_rule_for_project_requests():
 
     # Verify the new ide_runtime_context key exists in the prompt builder
     # (it appears only when tools.ide_context["workspace_path"] is set)
-    from src.reasoning.react import ReActLoop as _RL
+    #
+    # Lot RF-3 du refactor ReAct (2026-08-27) : le corps de
+    # `_build_react_prompt` a quitte `react.py` pour
+    # `src/prompts/react_prompt.py`. `ide_runtime_context` y vit desormais ;
+    # `inspect.getsource` sur la methode ne voit plus que la coquille.
+    #
+    # Preuve COMPORTEMENTALE equivalente exigee par le plan avant ce
+    # repointage — elle existe et elle est plus forte, car elle construit le
+    # prompt au lieu de chercher un nom de variable locale :
+    #   tests/reasoning/test_rf3_react_prompt_extraction.py
+    #     - test_comportement_la_section_ide_apparait_quand_le_workspace_est_connu
+    #     - test_comportement_le_canal_ide_ajoute_le_mode_developpement
     import inspect
-    src = inspect.getsource(_RL._build_react_prompt)
-    assert "ide_runtime_context" in src, "ide_runtime_context must be in _build_react_prompt"
+    from src.prompts import react_prompt
+
+    src = inspect.getsource(react_prompt.construire_prompt_react)
+    assert "ide_runtime_context" in src, "ide_runtime_context must be in the prompt builder"

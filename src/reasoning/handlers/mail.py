@@ -675,7 +675,7 @@ async def telegram_send_document_handler(
                     if _mem and hasattr(_mem, "get_fact"):
                         chat_id = _mem.get_fact("telegram_owner_id") or ""
                 except Exception as e:
-                    logger.debug("[mail] chat_id lookup skipped: %s", e)
+                    logger.debug("[mail] chat_id lookup skipped: {}", e)
         if not chat_id:
             return HandlerResult.fail(
                 "❌ telegram_send_document: chat_id Telegram inconnu (fournir target_chat_id)",

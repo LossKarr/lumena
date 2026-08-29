@@ -163,7 +163,7 @@ class NotionHub:
                     db_title_prop = prop_name
                     break
         except Exception as e:
-            logger.debug("[notion] schema lookup: %s", e)
+            logger.debug("[notion] schema lookup: {}", e)
 
         blocks = self._markdown_to_blocks(content)
 

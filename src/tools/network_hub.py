@@ -566,10 +566,10 @@ async def handle_network_port_scan(**kwargs) -> str:
                 try:
                     await writer.wait_closed()
                 except Exception as e:
-                    logger.debug("[network] wait_closed port %s: %s", port, e)
+                    logger.debug("[network] wait_closed port {}: {}", port, e)
                 open_ports.append(port)
             except Exception as e:
-                logger.debug("[network] probe port %s: %s", port, e)
+                logger.debug("[network] probe port {}: {}", port, e)
 
     progress_every = max(50, len(ports) // 10)
     tasks = []

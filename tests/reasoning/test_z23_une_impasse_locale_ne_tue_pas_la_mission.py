@@ -210,7 +210,24 @@ def test_le_gate_est_branche_avant_l_execution():
 
 
 def test_la_raison_du_lot_est_datee_dans_le_code():
-    entete = _SRC[_SRC.index("LOT Z23 — l'inspection est close"):][:2200]
+    """Lot RF-7a du refactor ReAct (2026-08-28) : le corps de
+    `_local_preview_unprovable_gate` a quitte `react.py` pour
+    `src/reasoning/browser_runtime.py`. La docstring datee y a suivi,
+    intacte — seul son fichier a change.
+
+    Preuve COMPORTEMENTALE equivalente exigee par le plan avant ce
+    repointage — elle existe et elle est plus forte, car elle verifie
+    l'affirmation de fond de Z23 au lieu de chercher un texte :
+      tests/reasoning/test_rf7a_browser_runtime_extraction.py
+        - test_comportement_le_constat_de_preview_ferme_la_relecture_de_CETTE_page
+    Elle prouve que le constat FERME la relecture de la page jugee et reste
+    INERTE sur une autre page, sur un autre outil, et sans le drapeau.
+
+    Les autres tests de ce fichier visent le SITE D'APPEL, qui reste dans
+    `_run_internal` : ils ne bougent pas.
+    """
+    _GATE = Path("src/reasoning/browser_runtime.py").read_text(encoding="utf-8")
+    entete = _GATE[_GATE.index("LOT Z23 — l'inspection est close"):][:2200]
     assert "jeu 3D monde ouvert" in entete
     assert "5,6 secondes" in entete
     assert "2.13.A" in entete

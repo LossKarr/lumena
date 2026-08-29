@@ -550,6 +550,36 @@ _WEB_GAME_NEG_RE = re.compile(
 )
 
 
+#: « jeu de <donnée> » — en français technique, UN JEU EST AUSSI UN ENSEMBLE.
+#:
+#: Run LogTriage (2026-08-29). L'objectif d'une application de TRI DE LOGS
+#: contenait « exige une exactitude >= 0.85 sur le **jeu de test** ». Le mot
+#: « jeu » a suffi : `objective_is_web_game` a rendu True, `objective_is_game`
+#: est passé au truth-lock, et 2.13.A bannérise alors QUEL QUE SOIT le texte du
+#: final. L'utilisateur a reçu, sur un classifieur bayésien :
+#:
+#:     ⚠️ Interaction NON prouvée — le rapport affirme une dynamique DE JEU
+#:     (« démarré / déplacé / score augmente »)
+#:
+#: Le modèle n'avait jamais parlé de jeu.
+#:
+#: Le commentaire de 2.13.A avait vu l'ambiguïté — mais sur l'autre mot :
+#: « "partie" seul est ambigu ("une partie des données") ». « jeu » a exactement
+#: la même, et c'est la forme la plus courante du vocabulaire ML français : jeu
+#: de données, jeu de test, jeu d'entraînement, jeu de validation.
+#:
+#: Mesuré sur le corpus réel (661 objectifs) AVANT correction : 51 classés jeu
+#: web, dont **5 uniquement à cause de cette tournure** — et les 51 autres
+#: restent détectés une fois le masque posé.
+_WEB_GAME_DATASET_RE = re.compile(
+    r"\bjeux?\s+d[e'’]\s*"
+    r"(?:tests?|donn[ée]es?|essais?|caract[èe]res?|valeurs?|param[èe]tres?|"
+    r"instructions?|cl[ée]s?|couleurs?|entra[îi]nement|validation|variables?|"
+    r"fichiers?|mots?|r[ée]sultats?|[ée]chantillons?)\b",
+    re.IGNORECASE,
+)
+
+
 def objective_is_web_game(objective: str) -> bool:
     """2.13.A — l'OBJECTIF de mission demande-t-il un JEU (web) ? Pur.
 
@@ -559,9 +589,14 @@ def objective_is_web_game(objective: str) -> bool:
     """
     if not objective:
         return False
-    if _WEB_GAME_NEG_RE.search(objective):
+    # On MASQUE les « jeu de <donnée> » avant de chercher le vocabulaire de jeu.
+    # Masquer plutôt qu'ajouter une négation : « un jeu de morpion » garde son
+    # `morpion` et reste détecté, alors qu'une exclusion sur « jeu de … »
+    # l'aurait tué. Le garde ne perd donc aucune force.
+    masque = _WEB_GAME_DATASET_RE.sub(" ", objective)
+    if _WEB_GAME_NEG_RE.search(masque):
         return False
-    return bool(_WEB_GAME_OBJECTIVE_RE.search(objective))
+    return bool(_WEB_GAME_OBJECTIVE_RE.search(masque))
 
 
 # LOT Z16 — l'utilisateur décrit un MÉTIER, pas des gestes.
@@ -1115,6 +1150,13 @@ def apply_mission_truth_lock(
             or "Interaction NON prouvée** —" in final_text
             or "Interaction de l'interface NON prouvée** —" in final_text
             or "Non publié** —" in final_text
+            # 2026-08-29 — cette liste est tenue À LA MAIN et avait DÉRIVÉ : la
+            # bannière des droits de réutilisation, posée plus tôt sur le même
+            # `action.answer` (react.py:5887), n'y figurait pas. Le verrou ne
+            # sortait donc pas tôt et relisait un texte écrit par un garde.
+            # Trou LATENT : 0 occurrence sur 592 finals réels. Ajouté quand même,
+            # et un test structurel interdit désormais toute nouvelle dérive.
+            or "Droits de réutilisation NON établis" in final_text
             or "Fichier(s) hors du livrable** —" in final_text):
         return final_text, {"changed": False, "overclaim": False, "already_locked": True}
 

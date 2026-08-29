@@ -706,11 +706,26 @@ class TestFixABAddMcpBlocksHallucinated:
 
 REACT_PATH = REPO / "src" / "reasoning" / "react.py"
 
+# Lot RF-2 du refactor ReAct (2026-08-27) : `_phase27_mcp_observation_guidance`
+# a quitte `react.py` pour `observation_synthesis.py`. Les trois tests de
+# `TestFixADGuidanceNeverAsksUser` lisent le TEXTE SOURCE de cette guidance ;
+# ils pointent donc desormais son nouveau proprietaire.
+#
+# Le plan de refactor n'autorise ce repointage qu'accompagne d'une preuve
+# COMPORTEMENTALE equivalente. Elle existe :
+#   tests/reasoning/test_rf2_observation_synthesis_extraction.py
+#     - test_guidance_approbation_pointe_vers_un_outil_que_le_llm_possede
+#     - test_guidance_approbation_ne_demande_jamais_la_phrase_a_l_utilisateur
+#     - test_guidance_ticket_pending_reprend_avec_le_meme_intent
+# Ces trois-la APPELLENT la fonction au lieu de chercher une chaine : elles
+# survivraient a un prochain deplacement, contrairement a celles ci-dessous.
+GUIDANCE_MCP_PATH = REPO / "src" / "reasoning" / "observation_synthesis.py"
+
 
 class TestFixADGuidanceNeverAsksUser:
 
     def test_needs_approval_guidance_self_generates(self):
-        content = REACT_PATH.read_text(encoding="utf-8")
+        content = GUIDANCE_MCP_PATH.read_text(encoding="utf-8")
         idx = content.find("Une action MCP est necessaire")
         assert idx > 0
         section = content[idx:idx + 900]
@@ -725,7 +740,7 @@ class TestFixADGuidanceNeverAsksUser:
         TICKET → DeepSeek transposait la mauvaise phrase sur
         run_mcp_autonomy et bouclait sur confirmation_phrase_invalid.
         La guidance doit pointer run_mcp_autonomy avec SA phrase."""
-        content = REACT_PATH.read_text(encoding="utf-8")
+        content = GUIDANCE_MCP_PATH.read_text(encoding="utf-8")
         idx = content.find("Une action MCP est necessaire")
         section = content[idx:idx + 900]
         assert "run_mcp_autonomy" in section
@@ -736,7 +751,7 @@ class TestFixADGuidanceNeverAsksUser:
         """Après approbation panel, la guidance doit pointer vers
         run_mcp_autonomy avec le MÊME intent (pas resume avec un intent
         court qui re-déclenche le churn)."""
-        content = REACT_PATH.read_text(encoding="utf-8")
+        content = GUIDANCE_MCP_PATH.read_text(encoding="utf-8")
         idx = content.find("Ticket MCP pending")
         assert idx > 0
         section = content[idx:idx + 900]

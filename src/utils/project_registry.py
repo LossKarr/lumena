@@ -53,6 +53,52 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, _norm(a), _norm(b)).ratio()
 
 
+# ── LOT Z41 — le chemin que l'utilisateur NOMME ───────────────────────────────
+# Motif unique, partagé par `find_project` (étape 1) et `resolve_workspace`
+# (étape 4). Dupliquer la regex laisserait les deux moitiés du lot diverger.
+_NAMED_TARGET_RE = re.compile(
+    r"workspace[/\\](?:\d{4}-\d{2}-\d{2}[/\\])?[\w][\w\-]*",
+    re.IGNORECASE,
+)
+_DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def named_workspace_target(query: str) -> Optional[Path]:
+    """Chemin relatif que la requête DÉSIGNE explicitement, ou None.
+
+    C'est le signal le plus fort disponible : l'utilisateur a écrit le chemin.
+    Avant Z41 il était extrait puis jeté dès que le dossier n'existait pas
+    encore.
+    """
+    m = _NAMED_TARGET_RE.search(query or "")
+    return Path(m.group(0).replace("\\", "/")) if m else None
+
+
+def _find_in_dated_dirs(name: str) -> Optional[Path]:
+    """Cherche un projet `name` dans les dossiers datés de `workspace/`.
+
+    Appelé AVANT de refuser un chemin nommé : `workspace/X` peut être absent
+    alors que `workspace/2026-04-26/X` existe. Sans ce repli, refuser la
+    devinette créerait un DOUBLON.
+    """
+    if not name or not WORKSPACE_DIR.is_dir():
+        return None
+    try:
+        dated = sorted(
+            (d for d in WORKSPACE_DIR.iterdir()
+             if d.is_dir() and _DATE_DIR_RE.match(d.name)),
+            key=lambda d: d.name,
+            reverse=True,  # le plus récent d'abord
+        )
+    except OSError:
+        return None
+    for d in dated:
+        candidate = d / name
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
 # ── API publique ─────────────────────────────────────────────────────────────
 
 def load_registry() -> list[dict]:
@@ -155,10 +201,7 @@ def find_project(query: str) -> Optional[Path]:
 
     # ── 1. Chemin relatif dans la query ──
     # Pattern A: "workspace/2026-04-10/projet-lumena-website"
-    _rel_m = re.search(
-        r"workspace[/\\](?:\d{4}-\d{2}-\d{2}[/\\])?[\w][\w\-]*",
-        query, re.IGNORECASE,
-    )
+    _rel_m = _NAMED_TARGET_RE.search(query)
     if _rel_m:
         _rel_path = Path(_rel_m.group(0).replace("\\", "/"))
         _abs = ROOT_DIR / _rel_path
@@ -169,6 +212,36 @@ def find_project(query: str) -> Optional[Path]:
         if _abs2.is_dir():
             logger.info("[registry] Chemin relatif (alt) trouvé: {}", _abs2)
             return _abs2
+
+        # ── LOT Z41 — le chemin nommé ne se devine pas ────────────────────
+        # Avant : le chemin extrait était JETÉ parce que le dossier n'existe pas
+        # ENCORE, et la cascade continuait jusqu'au match flou. Mesuré sur
+        # 906 requêtes réelles : 79 nomment un `workspace/X` inexistant, et
+        # **79 sur 79 étaient détournées** vers un dossier sans rapport
+        # (`projet-demo` 31×, `lumena-projet` 24×, `tests` 19×). C'est la cause
+        # racine du run Z40a, où le CodeAgent a perdu 5 itérations sur 9.
+        #
+        # Le mot qui décrit le TRAVAIL battait le dossier DÉSIGNÉ : le slug
+        # `tests` fait un seul mot, donc un seul mot de la requête lui donne le
+        # score maximum 1.00.
+        #
+        # ⚠️ Le repli en dossier daté vient AVANT le refus : `workspace/X` peut
+        # être absent alors que `workspace/2026-04-26/X` existe. Refuser sans
+        # chercher créerait un DOUBLON — défaut déjà vu dans ce dépôt.
+        _named = _rel_path.name
+        _dated = _find_in_dated_dirs(_named)
+        if _dated is not None:
+            logger.info("[registry] Chemin nommé retrouvé en dossier daté: {}", _dated)
+            return _dated
+
+        # Rien à trouver : l'utilisateur nomme un projet NEUF. On ne devine pas
+        # à sa place — `resolve_workspace` créera `_named` (étape 4).
+        logger.info(
+            "[registry] Chemin nommé '{}' inexistant — aucune devinette, "
+            "création laissée à l'appelant",
+            _rel_m.group(0),
+        )
+        return None
 
     # Pattern B: "2026-04-10/projet-lumena-website" (sans préfixe workspace/)
     _bare_m = re.search(
@@ -706,8 +779,25 @@ def resolve_workspace(
 
     # ── 4. Création si intention détectée et aucun projet existant ──
     if allow_create and intent in ("create", "unknown"):
-        slug = _generate_slug(query)
-        project_dir = WORKSPACE_DIR / str(date.today()) / slug
+        # ── LOT Z41, deuxième moitié ──────────────────────────────────────
+        # Refuser la devinette ne suffit pas : `_generate_slug` fabrique un
+        # slug à partir de la GRAMMAIRE de la requête, pas du nom donné.
+        # Mesuré sur les 79 requêtes nommant un dossier neuf : **79 sur 79**
+        # différaient du nom voulu —
+        #     'starquest3d'    -> 'projet-faudrais-corriger-erreur'
+        #     'lumena-landing' -> 'projet-reprends-existant-users'
+        # La première moitié seule aurait remplacé un détournement par un
+        # dossier au nom absurde. Les deux vont ensemble.
+        _named_rel = named_workspace_target(query)
+        if _named_rel is not None:
+            slug = _named_rel.name
+            # Le chemin est reproduit tel qu'il a été écrit : s'il portait un
+            # dossier daté, on le respecte ; sinon il naît sous la racine du
+            # workspace, exactement là où l'utilisateur l'a désigné.
+            project_dir = WORKSPACE_DIR.parent / _named_rel
+        else:
+            slug = _generate_slug(query)
+            project_dir = WORKSPACE_DIR / str(date.today()) / slug
         project_dir.mkdir(parents=True, exist_ok=True)
         register_project(project_dir, description=query[:200], slug=slug)
         logger.info("[resolve_workspace] Projet créé: {} (slug={})", project_dir, slug)

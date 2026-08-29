@@ -35,12 +35,20 @@ from src.subagents.mission_contract import derive_project_name
 # ── C0.1 : compaction — write_mission_contract au seuil élevé ────────────────────
 
 def test_compaction_high_threshold_includes_mission_contract():
-    import src.reasoning.react as react_mod
-    src = inspect.getsource(react_mod)
-    i = src.find("_OBS_COMPACT_LIMIT = 8000")
-    assert i > 0
-    block = src[max(0, i - 700):i]
-    assert "write_mission_contract" in block, (
+    # Lot RF-9a : le seuil vit dans `observation_synthesis.py` (feuille
+    # « ingestion d'observation », §15) et n'est plus une variable mais un
+    # retour. L'assertion devient COMPORTEMENTALE — intention identique,
+    # preuve plus forte : elle survivra au prochain deplacement.
+    from src.reasoning.observation_synthesis import (
+        observation_compact_limit, _OBS_FILE_READ_TOOLS,
+    )
+
+    assert observation_compact_limit(
+        "write_mission_contract", is_chat_surface=False
+    ) == 8000, (
+        "l'observation de write_mission_contract PORTE les objectifs contractuels "
+        "(allowed_files) — compactée, le lead délègue des objectifs divergents")
+    assert "write_mission_contract" in _OBS_FILE_READ_TOOLS, (
         "l'observation de write_mission_contract PORTE les objectifs contractuels "
         "(allowed_files) — compactée, le lead délègue des objectifs divergents")
 

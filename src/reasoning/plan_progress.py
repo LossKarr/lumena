@@ -99,11 +99,98 @@ _PYTEST_EXECUTION_MARKERS: tuple = (
     "pytest vert", "pytest jusqu", "relancer pytest",
 )
 
+# ── LOT Z40b (run du 2026-08-28) — « Verifier que les tests passent » ────────────
+# Le bilan affichait `[OK] Verifier que les tests passent` : la case avait ete
+# cochee par le FINAL, jamais par une execution. Mesure : `final_fulfills_task`
+# rend True (le mot « verifi » est dans `_SYNTH_KW`) et les CINQ bloqueurs de
+# `final_requires_operational_proof` rendent False.
+#
+# L'intitule n'avait NI le mot « pytest » NI un marqueur d'execution. Il etait
+# donc au pire des deux mondes : impossible a crediter par un vrai run vert
+# (non reconnu), et auto-credite par la prose (rien ne le bloquait).
+#
+# ⚠️ LECON Z3b, respectee ici. La premiere version de `browser_verify_task_blocks`
+# allongeait une liste de mots (« filtre », « tri », « bouton ») et bloquait a
+# tort « trier les resultats du benchmark ». Sa docstring en tire la regle :
+# **on ne devine pas l'intention avec du vocabulaire.**
+#
+# Z40b ne porte donc AUCUN verbe. Il s'ancre sur l'OBJET — le mot « test » suivi,
+# dans la MEME proposition, de son ISSUE. « Ecrire les tests unitaires » ne
+# matche pas : aucune issue n'est nommee. « Trier les resultats du benchmark »
+# non plus : aucun test n'est nomme.
+_PYTEST_OUTCOME_WORDS: tuple = (
+    "passent", "passe", "passer", "vert", "verts",
+    "reussissent", "reussi", "reussis", "sans erreur", "sans echec",
+)
+#: Fenetre, en caracteres, entre le mot « test » et son issue. Au-dela, les deux
+#: mots appartiennent en pratique a deux idees differentes.
+_PYTEST_OUTCOME_WINDOW: int = 60
+
+
+def _mot_present(folded: str, mot: str, debut: int, fin: int) -> bool:
+    """True si `mot` apparait comme MOT ENTIER dans `folded[debut:fin]`.
+
+    Ecrit sans `re` : ce module n'importe volontairement aucune regex, et une
+    dependance nouvelle pour un seul predicat serait un elargissement gratuit
+    du perimetre (invariant 11).
+    """
+    fenetre = folded[max(0, debut):fin]
+    pos = fenetre.find(mot)
+    while pos != -1:
+        avant = fenetre[pos - 1] if pos > 0 else " "
+        apres_i = pos + len(mot)
+        apres = fenetre[apres_i] if apres_i < len(fenetre) else " "
+        if not avant.isalnum() and not apres.isalnum():
+            return True
+        pos = fenetre.find(mot, pos + 1)
+    return False
+
+
+def _test_outcome_task(folded: str) -> bool:
+    """True quand l'intitule nomme des TESTS *et* leur ISSUE."""
+    depart = 0
+    while True:
+        pos = folded.find("test", depart)
+        if pos == -1:
+            return False
+        depart = pos + 4
+        avant = folded[pos - 1] if pos > 0 else " "
+        if avant.isalnum():  # « pytest » est un mot a lui seul, traite plus haut
+            continue
+        # La fenetre s'arrete a la fin de la proposition : une issue citee dans
+        # la phrase SUIVANTE ne parle pas de ces tests-la.
+        fin = pos + _PYTEST_OUTCOME_WINDOW
+        for coupure in (".", ";", "\n"):
+            c = folded.find(coupure, pos)
+            if c != -1:
+                fin = min(fin, c)
+        if any(_mot_present(folded, m, pos, fin) for m in _PYTEST_OUTCOME_WORDS):
+            return True
+
 
 def pytest_execution_task(description: str) -> bool:
     """True only when a plan task asks to RUN pytest, not to write its tests."""
     folded = _fold_plan_text(description)
-    return "pytest" in folded and any(marker in folded for marker in _PYTEST_EXECUTION_MARKERS)
+    if "pytest" in folded and any(marker in folded for marker in _PYTEST_EXECUTION_MARKERS):
+        return True
+    # Run 2026-08-29 — l'ANGLE MORT SYMETRIQUE de Z40b. L'intitule
+    # « Verifier le resultat avec pytest (run_command) » a ete refuse QUATRE
+    # fois (« preuve insuffisante ») alors que pytest avait tourne et rendu
+    # 10 passed : le marqueur « run » exige une espace, et « run_command »
+    # n'en a pas. La tache est restee in-progress sur une mission cloturee.
+    #
+    # Z40b a ferme le sens « la prose coche sans preuve » ; il laissait ouvert
+    # le sens inverse — une preuve REELLE qui ne coche pas.
+    #
+    # Ancrage sur un FAIT, pas sur du vocabulaire (lecon Z3b) : l'intitule
+    # nomme pytest ET nomme l'outil qui execute des commandes. On ne devine
+    # aucune intention, on lit deux noms propres.
+    if "pytest" in folded and any(
+            _contains_explicit_tool_name(folded, t) for t in _PYTEST_ALLOWED_TOOLS):
+        return True
+    # Z40b — l'issue des tests est elle-meme une demande d'execution : on ne
+    # constate pas qu'un test « passe » sans l'avoir fait tourner.
+    return _test_outcome_task(folded)
 
 
 def pytest_plan_task_proven(task_desc: str, tool_name: str, test_outcome) -> bool:
@@ -116,7 +203,15 @@ def pytest_plan_task_proven(task_desc: str, tool_name: str, test_outcome) -> boo
     if not outcome.get("is_test_cmd") or not outcome.get("ran_something"):
         return False
     folded = _fold_plan_text(task_desc)
-    requires_green = "vert" in folded or "jusqu" in folded
+    # Z40b — LE PIEGE DU LOT. Elargir la reconnaissance sans elargir cette
+    # exigence rendrait le garde PLUS FAIBLE qu'avant : un run ROUGE
+    # crediterait « les tests passent ». Les deux moities vont ensemble.
+    #
+    # « passer pytest » est exclu : dans le vocabulaire d'origine du module,
+    # c'est un marqueur d'EXECUTION (« faire passer pytest »), pas une exigence
+    # d'issue. L'inclure durcirait un intitule historique.
+    _issue_exigee = _test_outcome_task(folded) and "passer pytest" not in folded
+    requires_green = "vert" in folded or "jusqu" in folded or _issue_exigee
     return bool(outcome.get("green")) if requires_green else True
 
 

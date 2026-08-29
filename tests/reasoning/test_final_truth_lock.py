@@ -234,10 +234,15 @@ def test_pytest_gate_wired_before_truth_lock():
 
 # ── LOT 2.7 : couverture structurelle des sorties finales de mission ──────────
 
+# Lot RF-8 : les arguments du verrou vivent desormais dans
+# `final_delivery_runtime.py` (methode `_truth_lock_mission_message`
+# extraite). Le test lit les DEUX fichiers : son intention — « un site
+# oublie = un chemin de sortie qui ment par omission » — est inchangee.
 def _react_source():
     import inspect
     import src.reasoning.react as react_mod
-    return inspect.getsource(react_mod)
+    import src.reasoning.final_delivery_runtime as fd_mod
+    return inspect.getsource(react_mod) + inspect.getsource(fd_mod)
 
 
 def test_chokepoint_locks_all_final_emissions():
@@ -245,9 +250,18 @@ def test_chokepoint_locks_all_final_emissions():
     # défaut pour toute mission → une NOUVELLE voie de sortie est verrouillée d'office.
     import inspect
     from src.reasoning.react import ReActLoop
+    # Lot RF-8-FIX-1 : le goulot delegue au verrou canonique
+    # `_truth_lock_mission_message`. Il RESTE le goulot — l'exemption
+    # `skip_mission_truth_lock` est toujours la sienne.
     src = inspect.getsource(ReActLoop._stream_and_return_final)
-    assert "apply_mission_truth_lock" in src
+    assert "_truth_lock_mission_message" in src
     assert "skip_mission_truth_lock" in src
+    # ... et le verrou canonique appelle bien la fonction historique.
+    # Lot RF-8 : le corps du verrou canonique vit dans
+    # `final_delivery_runtime.py` ; la coquille y delegue.
+    import src.reasoning.final_delivery_runtime as _fd
+    assert "apply_mission_truth_lock" in inspect.getsource(
+        _fd.rf8_truth_lock_mission_message)
 
 
 def test_delivery_is_the_only_chokepoint_exemption():
