@@ -84,28 +84,40 @@ def empreinte(texte: str) -> tuple[int, str]:
 # soit la cause — verifie par l'experience : la matrice echouait AUSSI sur le
 # `react.py` d'avant RF-5b. Les trois sources sont desormais epinglees (voir
 # `construire`), donc cette reference ne peut plus deriver.
+#
+# RECAPTUREE A NOUVEAU le 2026-08-29. Motif : les 20 comparaisons echouaient sur
+# GitHub Actions, du MEME ecart de -3146 caracteres partout, alors qu'elles
+# passaient en local. `loaded: 588 handlers` en CI contre 596 ici : le catalogue
+# d'outils depend des dependances installees sur la machine.
+#
+# Le baseline n'etait pas faux, il etait NON PORTABLE — un defaut du test, pas
+# du code. Le catalogue est desormais epingle (`CATALOGUE_FIGE`), donc les
+# empreintes sont beaucoup plus courtes : elles mesurent le GABARIT du prompt,
+# qui est ce que RF-3 a deplace, et plus l'inventaire d'outils, qui ne l'est pas.
+#
+# `test_l_empreinte_ne_depend_PAS_du_nombre_d_outils` verrouille cette propriete.
 
 BASELINE: dict[str, dict] = {
-    "01_chat_simple__gatesOFF": {"taille": 120519, "sha": "f9588076d41b", "appels": 1},
-    "01_chat_simple__gatesON": {"taille": 120519, "sha": "f9588076d41b", "appels": 1},
-    "02_agent_outils__gatesOFF": {"taille": 120015, "sha": "58ee5281056e", "appels": 1},
-    "02_agent_outils__gatesON": {"taille": 120015, "sha": "58ee5281056e", "appels": 1},
-    "03_modele_faible__gatesOFF": {"taille": 120689, "sha": "c088982a8444", "appels": 0},
-    "03_modele_faible__gatesON": {"taille": 120689, "sha": "c088982a8444", "appels": 0},
-    "04_avec_skills__gatesOFF": {"taille": 121314, "sha": "a2982ecf2ca8", "appels": 1},
-    "04_avec_skills__gatesON": {"taille": 121314, "sha": "a2982ecf2ca8", "appels": 1},
-    "05_runtime_ide__gatesOFF": {"taille": 120381, "sha": "1a5c21fb4bc6", "appels": 1},
-    "05_runtime_ide__gatesON": {"taille": 120381, "sha": "1a5c21fb4bc6", "appels": 1},
-    "06_runtime_web__gatesOFF": {"taille": 119834, "sha": "8da273d9d64b", "appels": 1},
-    "06_runtime_web__gatesON": {"taille": 119834, "sha": "8da273d9d64b", "appels": 1},
-    "07_tache_id__gatesOFF": {"taille": 120022, "sha": "297784e1de22", "appels": 1},
-    "07_tache_id__gatesON": {"taille": 120022, "sha": "297784e1de22", "appels": 1},
-    "08_contexte_long__gatesOFF": {"taille": 124052, "sha": "194b3daf4c33", "appels": 1},
-    "08_contexte_long__gatesON": {"taille": 124052, "sha": "194b3daf4c33", "appels": 1},
-    "09_provider_api__gatesOFF": {"taille": 120021, "sha": "2632dda1f192", "appels": 1},
-    "09_provider_api__gatesON": {"taille": 120818, "sha": "3802b55d730b", "appels": 1},
-    "10_abonnement_codex__gatesOFF": {"taille": 120367, "sha": "5121bd03bbbd", "appels": 1},
-    "10_abonnement_codex__gatesON": {"taille": 121126, "sha": "740259372cc1", "appels": 1},
+    "01_chat_simple__gatesOFF": {"taille": 9467, "sha": "c663fc51d78a", "appels": 1},
+    "01_chat_simple__gatesON": {"taille": 9467, "sha": "c663fc51d78a", "appels": 1},
+    "02_agent_outils__gatesOFF": {"taille": 8963, "sha": "7073058964cd", "appels": 1},
+    "02_agent_outils__gatesON": {"taille": 8963, "sha": "7073058964cd", "appels": 1},
+    "03_modele_faible__gatesOFF": {"taille": 9637, "sha": "d6136391dc76", "appels": 0},
+    "03_modele_faible__gatesON": {"taille": 9637, "sha": "d6136391dc76", "appels": 0},
+    "04_avec_skills__gatesOFF": {"taille": 10262, "sha": "ea1197749fed", "appels": 1},
+    "04_avec_skills__gatesON": {"taille": 10262, "sha": "ea1197749fed", "appels": 1},
+    "05_runtime_ide__gatesOFF": {"taille": 9329, "sha": "38e6b927e05d", "appels": 1},
+    "05_runtime_ide__gatesON": {"taille": 9329, "sha": "38e6b927e05d", "appels": 1},
+    "06_runtime_web__gatesOFF": {"taille": 8782, "sha": "cd1bd28707c1", "appels": 1},
+    "06_runtime_web__gatesON": {"taille": 8782, "sha": "cd1bd28707c1", "appels": 1},
+    "07_tache_id__gatesOFF": {"taille": 8970, "sha": "444fe9e06593", "appels": 1},
+    "07_tache_id__gatesON": {"taille": 8970, "sha": "444fe9e06593", "appels": 1},
+    "08_contexte_long__gatesOFF": {"taille": 13000, "sha": "ad4c896bb4bf", "appels": 1},
+    "08_contexte_long__gatesON": {"taille": 13000, "sha": "ad4c896bb4bf", "appels": 1},
+    "09_provider_api__gatesOFF": {"taille": 8969, "sha": "666b9ed0eb58", "appels": 1},
+    "09_provider_api__gatesON": {"taille": 9766, "sha": "c1685040ff10", "appels": 1},
+    "10_abonnement_codex__gatesOFF": {"taille": 9315, "sha": "2be2bd8dd704", "appels": 1},
+    "10_abonnement_codex__gatesON": {"taille": 10074, "sha": "dc8dccba6c86", "appels": 1},
 }
 
 
@@ -200,6 +212,33 @@ IDENTITE_FIGEE = "Identite epinglee pour la matrice RF-3."
 ETAT_OPS_FIGE = {"_idempotence_registry": {}}
 RESEAU_FIGE = ""
 
+# ── 4e source volatile, trouvee le 2026-08-29 sur GitHub Actions ────────────
+#
+# Les 20 comparaisons echouaient de -3146 caracteres, le MEME ecart partout.
+# Cause : `loaded: 588 handlers` en CI contre 596 en local. Les handlers se
+# chargent CONDITIONNELLEMENT selon les dependances presentes (graceful
+# degradation), donc `get_tools_description()` rend un catalogue de taille
+# VARIABLE selon la machine.
+#
+# Une empreinte absolue ne pouvait donc passer que sur UNE machine. Le baseline
+# n'etait pas faux : il etait NON PORTABLE.
+#
+# On epingle le catalogue comme on epingle deja l'identite et les trois magasins.
+# Ce que RF-3 a deplace, c'est le GABARIT du prompt — pas l'inventaire d'outils.
+# Le gabarit reste compare a l'octet pres ; l'inventaire cesse de faire deriver.
+#
+# Les cinq marqueurs ci-dessous sont ceux que le gabarit teste (`in tools_desc`,
+# react_prompt.py:145,193,196,204,215) : les garder ACTIVE les branches
+# navigateur et MCP, qui resteraient sinon jamais parcourues par la matrice.
+CATALOGUE_FIGE = """- read_file: lit un fichier
+- write_file: ecrit un fichier
+- browser_navigate: ouvre une page
+- request_mcp_capability: demande une capacite MCP
+- run_mcp_autonomy: execute une tache MCP
+- resume_mcp_task: reprend une tache MCP
+- request_mcp_ticket: ouvre un ticket MCP
+"""
+
 
 def construire(kw: dict, requete: str) -> tuple[str, int]:
     """Construit le prompt et compte les appels a `_build_identity_context`.
@@ -239,6 +278,9 @@ def _construire_sans_derive(kw: dict, requete: str) -> tuple[str, int]:
         return IDENTITE_FIGEE      # mais son CONTENU ne fait pas deriver le hash
 
     boucle._build_identity_context = espion
+    # Le catalogue depend de la machine (588 handlers en CI, 596 en local) : on
+    # l'epingle pour que l'empreinte mesure le GABARIT, jamais l'inventaire.
+    boucle.tools.get_tools_description = lambda *a, **k: CATALOGUE_FIGE
     texte = boucle._build_react_prompt(requete)
     assert isinstance(texte, str) and texte, "le prompt est vide"
     return texte, appels["n"]
@@ -746,3 +788,60 @@ def test_le_contenu_de_l_identite_ne_fait_pas_deriver_l_empreinte(registre):
     texte, appels = construire(kw, requete)
     assert appels == 1, "le vrai chemin d'identite n'est plus parcouru"
     assert IDENTITE_FIGEE in texte, "l'identite epinglee n'atteint pas le prompt"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  PORTABILITE — l'empreinte ne doit dependre d'AUCUNE machine
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Ajoute le 2026-08-29 apres l'echec CI. Sans ce test, la matrice pouvait
+# redevenir non portable au premier oubli d'epinglage, et l'echec ne serait
+# apparu qu'apres un push — jamais en local.
+
+
+def test_l_empreinte_ne_depend_PAS_du_nombre_d_outils(monkeypatch):
+    """588 handlers en CI, 596 en local : l'empreinte doit etre la MEME.
+
+    On construit le meme scenario avec deux registres dont les catalogues n'ont
+    rien a voir. Si les empreintes divergent, c'est que l'inventaire d'outils
+    fuit a nouveau dans la reference — et le test redevient intestable ailleurs.
+    """
+    import src.config.codeagent_flags as flags
+    from src.reasoning.tool_registry import ToolRegistry
+
+    monkeypatch.setattr(flags, "REACT_QUALITY_GATES", True, raising=False)
+
+    complet = ToolRegistry()
+    ampute = ToolRegistry()
+    ampute.get_tools_description = lambda *a, **k: "- un_seul_outil: rien\n"
+
+    kw_a, req = scenarios(complet)["02_agent_outils"]
+    kw_b, _ = scenarios(ampute)["02_agent_outils"]
+
+    a, _ = construire(kw_a, req)
+    b, _ = construire(kw_b, req)
+
+    assert empreinte(a) == empreinte(b), (
+        "l'empreinte depend encore du catalogue d'outils : la matrice ne "
+        "passera pas sur une machine ou toutes les dependances optionnelles ne "
+        "sont pas installees (cas GitHub Actions du 2026-08-29)."
+    )
+
+
+def test_le_catalogue_epingle_active_bien_les_branches_conditionnelles():
+    """`CATALOGUE_FIGE` doit porter les cinq marqueurs testes par le gabarit.
+
+    Sans eux, les sections navigateur et MCP du prompt ne seraient JAMAIS
+    parcourues par la matrice : on figerait un prompt ampute sans le savoir.
+    """
+    for marqueur in ("browser_", "request_mcp_capability", "run_mcp_autonomy",
+                     "resume_mcp_task", "request_mcp_ticket"):
+        assert marqueur in CATALOGUE_FIGE, marqueur
+
+    gabarit = NOUVEAU.read_text(encoding="utf-8")
+    attendus = set(re.findall(r'"([^"]+)" in tools_desc', gabarit))
+    manquants = sorted(m for m in attendus if m not in CATALOGUE_FIGE)
+    assert not manquants, (
+        f"le gabarit teste des marqueurs absents du catalogue epingle : "
+        f"{manquants} — ces branches ne sont plus couvertes par la matrice."
+    )
