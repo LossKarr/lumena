@@ -7,6 +7,19 @@
    ============================================================ */
 import { mountCodexSubscriptionCard } from './codex-subscription.js?v=3';
 
+/* Panel Missions — chargement des trois modules du chantier.
+ *
+ * Imports d'EFFET DE BORD : ces fichiers sont des scripts classiques (UMD) qui
+ * s'enregistrent sur `globalThis`, comme `mission_tree.js`. On passe par ESM
+ * ici parce que `index.html` fait partie d'un chantier en cours et ne doit pas
+ * etre touche — aucune balise <script> n'y est ajoutee.
+ *
+ * L'ordre compte : le modele et les vues avant le chassis, qui les appelle. */
+import './mission_model.js?v=3';
+import './mission_views.js?v=4';
+import './mission_scene.js?v=13';
+import './mission_panel.js?v=5';
+
 let _journalData=null;
 export async function loadJournal(){
   const list=document.getElementById('journal-list');
@@ -7142,6 +7155,8 @@ async function _mcpDiagLoadCoherence(){
 let _missionAbort = null;
 let _missionStreamOn = false;
 let _missionRefreshT = null;
+let _mpSale = false;      // le tampon du panneau v2 a recu du neuf
+let _mpRedrawT = null;    // etranglement du re-rendu (voir le flux SSE)
 const _missionLog = {};   // mission_id → fonction d'append (carte active)
 const _MISSION_ACTIVE = ['running', 'queued', 'checkpointed', 'waiting_io'];
 const _missionOpen = {};  // task_id → bool : choix d'expansion utilisateur (persistant entre refreshs)
@@ -7233,6 +7248,183 @@ function _registerMissionLog(taskId) {
 }
 
 // Rendu depuis le cache (utilisé par loadMissions ET par toggle, sans refetch).
+/* Ecouteurs DELEGUES du panneau v2, installes UNE SEULE fois.
+ *
+ * Delegues parce que `rendre()` remplace tout l'innerHTML a chaque tour : des
+ * ecouteurs poses sur les boutons eux-memes mourraient au premier re-rendu.
+ * Chaque interaction ecrit la preference PUIS re-rend — c'est la preference
+ * qui est la source de verite, jamais le DOM. */
+let _mpBranche = false;
+let _mpSearchT = null;
+/* Journal archive d'une mission — charge une seule fois, jamais bloquant.
+ *
+ * Un echec reseau ne doit PAS empecher de deplier la mission : on marque le
+ * journal comme charge (a vide) pour ne pas rejouer la requete en boucle, et
+ * le panneau montre ce qu'il a — les cartes restent, sans pensee archivee.
+ */
+async function _chargerJournalMission(missionId) {
+  const mp = window.missionPanel;
+  if (!mp || !missionId) return;
+  mp.poserJournal(missionId, []);          // verrou : une seule tentative
+  try {
+    const r = await fetch(
+      `${API_BASE}/api/missions/${encodeURIComponent(missionId)}/journal?limit=400`,
+      { headers: { 'Authorization': `Bearer ${ADMIN_TOKEN}` } });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d && Array.isArray(d.events) && d.events.length) {
+      mp.poserJournal(missionId, d.events);
+      _renderMissionsFromCache();
+    }
+  } catch (_) {
+    // Silencieux : le journal est un confort, le panneau est le produit.
+  }
+}
+
+function _brancherPanelMissions(el) {
+  if (_mpBranche || !el) return;
+  _mpBranche = true;
+
+  el.addEventListener('click', (ev) => {
+    const mp = window.missionPanel;
+    if (!mp) return;
+    const cible = ev.target.closest(
+      '[data-mp-view],[data-mp-density],[data-mp-reset],[data-mp-fold],'
+      + '[data-mp-foldall],[data-mp-cancel],[data-mp-mission],[data-mp-worker]');
+    if (!cible) return;
+    const resetUsine = () => mp.ecrirePrefs({});
+    const rerendre = () => _renderMissionsFromCache();
+
+    // Reutilise le handler d'arret historique.
+    if (cible.dataset.mpCancel) {
+      cancelMissionUi(cible.dataset.mpCancel);
+      return;
+    }
+
+    // Un vrai controle imbrique ne change pas la selection du worker.
+    if (cible.dataset.mpWorker && cible !== ev.target) {
+      const controleImbrique = ev.target.closest('button,a,input,select,summary');
+      if (controleImbrique && controleImbrique !== cible) return;
+    }
+
+    if (cible.dataset.mpReset !== undefined) {
+      resetUsine();                             // normalise({}) = valeurs d'usine
+    } else if (cible.dataset.mpMission) {
+      const p = mp.lirePrefs();
+      p.selectedMission = cible.dataset.mpMission;
+      p.selectedWorker = '';
+      p.folded[p.selectedMission] = false;
+      mp.ecrirePrefs(p);
+    } else if (cible.dataset.mpWorker) {
+      const p = mp.lirePrefs();
+      p.selectedWorker = cible.dataset.mpWorker;
+      mp.ecrirePrefs(p);
+    } else if (cible.dataset.mpFold) {
+      // Le choix explicite gagne sur le repli automatique des missions closes.
+      const p = mp.lirePrefs();
+      const id = cible.dataset.mpFold;
+      const sec = cible.closest('.mp-mission');
+      const replieMaintenant = !!(sec && sec.hasAttribute('data-folded'));
+      p.folded[id] = !replieMaintenant;
+      mp.ecrirePrefs(p);
+      // DEPLIER UNE MISSION FINIE = aller chercher son journal.
+      //
+      // Le flux SSE ne porte que le present : une mission terminee n'a plus
+      // ni pensee ni battement apres un rechargement. Le serveur en grave
+      // desormais un journal ; on le charge ICI, au moment ou l'utilisateur
+      // dit « je veux regarder celle-ci ».
+      //
+      // 188 des 199 missions du corpus sont terminales : les charger au
+      // rendu ferait 188 requetes pour rien.
+      if (replieMaintenant && sec && sec.hasAttribute('data-terminal')
+          && !mp.journalCharge(id)) {
+        _chargerJournalMission(id);
+      }
+    } else if (cible.dataset.mpFoldall !== undefined) {
+      // Tout replier, ou tout deplier si tout est deja replie.
+      const p = mp.lirePrefs();
+      const secs = Array.from(el.querySelectorAll('.mp-mission'));
+      const toutReplie = secs.length > 0 && secs.every(x => x.hasAttribute('data-folded'));
+      secs.forEach((x) => {
+        const b = x.querySelector('[data-mp-fold]');
+        if (b) p.folded[b.dataset.mpFold] = !toutReplie;
+      });
+      mp.ecrirePrefs(p);
+    } else {
+      const p = mp.lirePrefs();
+      if (cible.dataset.mpView) p.view = cible.dataset.mpView;
+      else p.density = (p.density === 'compact') ? 'standard' : 'compact';
+      mp.ecrirePrefs(p);
+    }
+    rerendre();
+  });
+
+  el.addEventListener('change', (ev) => {
+    const mp = window.missionPanel;
+    if (!mp) return;
+    const filtre = ev.target.closest('[data-mp-filter]');
+    if (filtre) {
+      const p = mp.lirePrefs();
+      p.filter = filtre.value;
+      p.selectedMission = '';
+      p.selectedWorker = '';
+      mp.ecrirePrefs(p);
+      _renderMissionsFromCache();
+      return;
+    }
+    const cb = ev.target.closest('[data-mp-block]');
+    if (!cb) return;
+    const p = mp.lirePrefs();
+    p.blocks[cb.dataset.mpBlock] = !!cb.checked;
+    mp.ecrirePrefs(p);
+    _renderMissionsFromCache();
+    // Le re-rendu referme le <details> : on le rouvre, sinon cocher deux cases
+    // d'affilee demande de rouvrir le menu a chaque fois.
+    const d = el.querySelector('.mp-custo');
+    if (d) d.open = true;
+  });
+
+  el.addEventListener('input', (ev) => {
+    const champ = ev.target.closest('[data-mp-query]');
+    const mp = window.missionPanel;
+    if (!champ || !mp) return;
+    const valeur = champ.value;
+    const debut = champ.selectionStart;
+    const fin = champ.selectionEnd;
+    clearTimeout(_mpSearchT);
+    _mpSearchT = setTimeout(() => {
+      const p = mp.lirePrefs();
+      p.query = valeur;
+      p.selectedMission = '';
+      p.selectedWorker = '';
+      mp.ecrirePrefs(p);
+      _renderMissionsFromCache();
+      const nouveau = el.querySelector('[data-mp-query]');
+      if (nouveau) {
+        nouveau.focus();
+        try { nouveau.setSelectionRange(debut, fin); } catch (_) {}
+      }
+    }, 180);
+  });
+
+  el.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Enter' && ev.key !== ' ') return;
+    const cible = ev.target.closest('[data-mp-worker]');
+    if (!cible || cible.tagName === 'BUTTON') return;
+    ev.preventDefault();
+    cible.click();
+  });
+
+  el.addEventListener('mission:worker-select', (ev) => {
+    const mp = window.missionPanel;
+    if (!mp || !ev.detail || !ev.detail.workerId) return;
+    const p = mp.lirePrefs();
+    p.selectedWorker = ev.detail.workerId;
+    mp.ecrirePrefs(p);
+    _renderMissionsFromCache();
+  });
+}
+
 function _renderMissionsFromCache() {
   const el = document.getElementById('missions-list');
   if (!el) return;
@@ -7241,6 +7433,25 @@ function _renderMissionsFromCache() {
     ? buildMissionTree(missions) : missions.map(m => ({ mission: m, children: [] }));
   const badge = document.getElementById('badge-missions');
   if (badge) badge.textContent = roots.filter(n => _MISSION_ACTIVE.includes(n.mission.state)).length;
+
+  // ── Panel Missions v2 — rendu par le chassis quand il est disponible ──────
+  //
+  // Le REPLI sur l'ancien rendu est delibere : si un des trois modules n'a pas
+  // charge, l'utilisateur doit retrouver le panneau qu'il avait avant, pas un
+  // ecran vide. L'ancien code reste donc entier, jamais supprime.
+  const _mp = (typeof window !== 'undefined') ? window.missionPanel : null;
+  if (_mp && typeof buildMissionModel === 'function') {
+    try {
+      _mp.lierFeuille();
+      _mp.rendre(el, roots, _mp.lirePrefs(), Date.now());
+      _brancherPanelMissions(el);
+      if (window.lucide) { try { lucide.createIcons(); } catch (_) {} }
+      return;
+    } catch (e) {
+      console.warn('[missions] panneau v2 indisponible — repli sur l\'ancien rendu', e);
+    }
+  }
+
   if (!missions.length) {
     el.innerHTML = `<div class="mission-empty">Aucune mission. Demande à Lumena d'enregistrer une mission pour faire quelque chose en arrière-plan.</div>`;
     return;
@@ -7283,8 +7494,24 @@ export async function loadMissions() {
   if (!el) return;
   const h = { 'Authorization': `Bearer ${ADMIN_TOKEN}` };
   try {
-    const r = await fetch(`${API_BASE}/api/missions?limit=200`, { headers: h });
+    const _mp = (typeof window !== 'undefined') ? window.missionPanel : null;
+    const doitAmorcer = !!(_mp && _mp.evenements().length === 0);
+    const [r, traces] = await Promise.all([
+      fetch(`${API_BASE}/api/missions?limit=200`, { headers: h }),
+      doitAmorcer
+        ? fetch(`${API_BASE}/api/trace/recent?limit=1000`, { headers: h })
+            .then(x => x.ok ? x.json() : { events: [] })
+            .catch(() => ({ events: [] }))
+        : Promise.resolve({ events: [] })
+    ]);
     const d = await r.json();
+    if (doitAmorcer && _mp) {
+      (traces.events || []).forEach((ev) => {
+        if (ev && ev.task_id != null) {
+          try { _mp.pousserEvenement(ev); } catch (_) {}
+        }
+      });
+    }
     _missionsCache = d.missions || [];
     _renderMissionsFromCache();   // arbre lead→workers (Lot 5.4)
     _initMissionStream();
@@ -7316,11 +7543,26 @@ function _initMissionStream() {
             if (!line.startsWith('data:')) continue;
             try {
               const ev = JSON.parse(line.slice(5).trim());
+              // Panel v2 : le tampon du chassis recoit TOUS les evenements
+              // keyes par tache, pas seulement ceux d'un noeud affiche. C'est
+              // lui qui porte la pensee et l'attente du CodeAgent.
+              if (window.missionPanel) {
+                try { window.missionPanel.pousserEvenement(ev); _mpSale = true; } catch (_) {}
+              }
               const fn = (ev && ev.task_id) ? _missionLog[ev.task_id] : null;
               if (fn) { fn(ev); touched = true; }
             } catch (_) {}
           }
           if (touched) { clearTimeout(_missionRefreshT); _missionRefreshT = setTimeout(_refreshMissionStates, 2500); }
+          // Re-rendu du panneau v2, ETRANGLE a 700 ms : une mission a cinq
+          // workers produit des rafales d'evenements, et re-peindre a chacun
+          // ferait clignoter la pensee qu'on cherche justement a lire.
+          if (_mpSale && !_mpRedrawT) {
+            _mpRedrawT = setTimeout(() => {
+              _mpRedrawT = null; _mpSale = false;
+              try { _renderMissionsFromCache(); } catch (_) {}
+            }, 700);
+          }
           pump();
         }).catch(() => { _missionStreamOn = false; });
       })();
@@ -7344,8 +7586,16 @@ async function _refreshMissionStates() {
 
 export function closeMissionStream() {
   if (_missionAbort) _missionAbort.abort();
+  if (_mpRedrawT) clearTimeout(_mpRedrawT);
+  if (_missionRefreshT) clearTimeout(_missionRefreshT);
   _missionAbort = null;
+  _mpRedrawT = null;
+  _missionRefreshT = null;
+  _mpSale = false;
   _missionStreamOn = false;
+  if (window.missionScene) {
+    try { window.missionScene.dispose(document.getElementById('missions-list')); } catch (_) {}
+  }
 }
 
 export async function cancelMissionUi(missionId) {

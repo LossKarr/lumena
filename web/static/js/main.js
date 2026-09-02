@@ -74,7 +74,7 @@ import {
   setPeerAlias, setPeerScopesBulk, revokePeerToken, probePeer,
   loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive,
   loadMissions, cancelMissionUi, closeMissionStream, toggleMissionCard
-} from './panels.js?v=13';
+} from './panels.js?v=28';
 
 // ── Overview ──
 import { loadOverview, stopOverview } from './overview.js?v=2';

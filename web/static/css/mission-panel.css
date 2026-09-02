@@ -1,0 +1,1190 @@
+/* Panel Missions — feuille dediee.
+ *
+ * Chargee par `mission_panel.js`, pas par index.html : ce fichier fait partie
+ * d'un chantier en cours et ne doit pas etre touche. La version est donc
+ * pilotee cote JS, ce qui garde le cache correct sans dependre de lui.
+ *
+ * IDENTITE — regle absolue : AUCUNE couleur en dur ici. Tout vient de
+ * `tokens.css`. C'est ce qui fait que le panneau suit le theme clair et le
+ * theme sombre de Lumena sans une seule ligne de plus, et un test structurel
+ * fait rougir la suite si une valeur litterale reapparait.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ *  LES TROIS REGLES DE COMPOSITION
+ * ══════════════════════════════════════════════════════════════════════════
+ *
+ * 1. LA COULEUR D'ETAT PORTE TOUT LE SENS — parce que rien d'autre ne la
+ *    concurrence. La premiere version peignait `--accent` dans SEIZE regles
+ *    (compte a rebours, file, pensee, jauge, segments, liens, portes, noeuds,
+ *    onglets, legendes — 21 occurrences) : a force d'etre partout il ne
+ *    signalait plus rien, et l'ecran etait uni. On est passe a 7.
+ *    Desormais un SEUL canal porte l'etat, la variable `--et`. L'accent reste
+ *    rare et signale uniquement ce qui est vivant : une tache en cours.
+ *
+ *      --et = --accent  la tache est en cours      (et elle PULSE)
+ *      --et = --warn    elle attend le CodeAgent  (c'est l'etat interessant :
+ *                                                  il etait peint en gris)
+ *      --et = --danger  elle a echoue
+ *      --et = --ok      elle est terminee et validee
+ *      --et = --muted   elle a ete annulee
+ *
+ * 2. TROIS NIVEAUX DE PROFONDEUR. La mission est un sol en creux, la carte de
+ *    worker une surface posee dessus avec son ombre, la pensee un renfoncement
+ *    dans la carte. La premiere version posait tout a plat sur `--card` avec
+ *    une grille de 1 px : un tableau de rectangles identiques.
+ *
+ * 3. UNE VRAIE ECHELLE TYPOGRAPHIQUE. 24 / 15 / 13 / 12.5 / 10.5 / 9.5, et
+ *    tous les chiffres en `tabular-nums` pour qu'un compte a rebours ne
+ *    tressaute pas a chaque seconde. La premiere version tenait entre 9,5 et
+ *    13,5 px : rien n'etait grand, donc rien n'etait premier.
+ */
+
+/* ── Le canal d'etat ─────────────────────────────────────────────────────── */
+/* Pose sur la carte (elle en herite pour le lisere, la pastille et la pensee)
+   ET sur la pastille seule, car les vues Controle et Ruban l'emploient hors
+   d'une carte. */
+.mp-post[data-state="running"], .mp-dot-on   { --et: var(--accent); }
+.mp-post[data-state="waiting"], .mp-dot-wait { --et: var(--warn); }
+.mp-post[data-state="done"],    .mp-dot-done { --et: var(--ok); }
+.mp-post[data-state="failed"],  .mp-dot-fail { --et: var(--danger); }
+/* Annulee : elle recule comme une tache finie — c'est une fin, pas une faute.
+   Interrompue : elle attend une DECISION, donc elle appelle l'oeil. */
+.mp-post[data-state="cancelled"], .mp-dot-stop  { --et: var(--muted); }
+.mp-post[data-state="stalled"],   .mp-dot-stall { --et: var(--warn); }
+
+/* Le MEME canal au niveau de la mission. Deux missions cote a cote se
+   ressemblaient trait pour trait ; leur en-tete porte maintenant leur etat
+   agrege, et `late` — l'echeance depassee — n'existe qu'a ce niveau : une
+   mission peut avoir cinq workers verts et etre quand meme perdue. */
+[data-agg="running"] { --et: var(--accent); }
+[data-agg="waiting"] { --et: var(--warn); }
+[data-agg="failed"], [data-agg="late"] { --et: var(--danger); }
+[data-agg="stalled"] { --et: var(--warn); }
+[data-agg="done"] { --et: var(--ok); }
+[data-agg="cancelled"] { --et: var(--muted); }
+
+/* ── Mission : le sol en creux ───────────────────────────────────────────── */
+.mp-mission {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--bg-accent);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.mp-head {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 18px;
+  padding: 15px 18px 14px;
+  background: var(--panel-strong);
+  border-bottom: 1px solid var(--border);
+}
+/* Le filet d'etat de la mission, sur toute la largeur de son en-tete : c'est
+   ce qui distingue deux missions empilees sans qu'on lise un seul chiffre. */
+.mp-head::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+  background: var(--et, var(--border-strong));
+}
+.mp-head-main { flex: 1; min-width: 0; }
+
+/* L'etat agrege, annonce en toutes lettres au-dessus de l'objectif. */
+.mp-agg {
+  display: inline-flex; align-items: center; gap: 7px; margin-bottom: 7px;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--et, var(--muted));
+}
+.mp-agg-dot {
+  width: 7px; height: 7px; border-radius: var(--radius-full); flex-shrink: 0;
+  background: var(--et, var(--muted));
+}
+[data-agg="running"] .mp-agg-dot, .mp-sum-bad[data-agg="running"] .mp-agg-dot {
+  animation: mp-pulse 2s var(--ease-out) infinite;
+}
+
+/* ── Bandeau de synthese : n'apparait qu'a partir de DEUX missions ───────── */
+.mp-sum {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 11px 16px;
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  background: var(--panel-strong);
+}
+.mp-sum-n { font-size: 11.5px; color: var(--muted); }
+.mp-sum-n b {
+  font-size: 17px; font-weight: 600; color: var(--text-strong);
+  margin-right: 5px; letter-spacing: -0.02em;
+}
+.mp-sum-bads { display: flex; gap: 7px; flex-wrap: wrap; margin-left: auto; }
+.mp-sum-bad {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 10.5px; font-weight: 600; padding: 4px 10px;
+  border-radius: var(--radius-full);
+  color: var(--et, var(--muted));
+  background: color-mix(in srgb, var(--et, var(--muted)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--et, var(--muted)) 30%, transparent);
+}
+.mp-sum-ok { margin-left: auto; font-size: 11.5px; color: var(--ok); }
+
+.mp-obj {
+  margin: 0; flex: 1; min-width: 0;
+  font-size: 15px; font-weight: 650; line-height: 1.45;
+  letter-spacing: -0.01em; text-wrap: balance;
+  color: var(--text-strong);
+}
+.mp-head-meta { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+
+/* Le compte a rebours est la reponse a la question qu'on se pose en premier.
+   Il a donc le droit d'etre le plus gros element de l'ecran, et il garde
+   `--accent` : c'est le seul endroit ou l'identite de Lumena parle. */
+.mp-countdown {
+  display: flex; flex-direction: column; align-items: flex-end;
+  line-height: 1; min-width: 92px;
+}
+.mp-countdown b {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+  font-size: 24px; font-weight: 600; letter-spacing: -0.02em;
+  color: var(--accent);
+}
+.mp-countdown em {
+  font-style: normal; font-size: 9.5px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--muted); margin-top: 4px;
+}
+.mp-countdown.is-late b { color: var(--danger); }
+.mp-countdown.is-late em { color: var(--danger); }
+
+/* ── Trois marques qui se lisent sans se lire ────────────────────────────── */
+/* Un tableau de bord se BALAIE. La pastille « 1/5 » demandait une lecture ;
+   l'anneau donne la meme chose d'un coup d'oeil. Les trois prennent `--et`,
+   le canal d'etat deja en place — aucune couleur nouvelle, et l'accent de
+   Lumena reste reserve a ce qui est vraiment Lumena. */
+
+.mp-ring { display: inline-flex; align-items: center; gap: 8px; }
+.mp-ring svg { width: 26px; height: 26px; display: block; flex-shrink: 0; }
+.mp-ring-b { fill: none; stroke: var(--bg-muted); stroke-width: 3; }
+.mp-ring-f {
+  fill: none; stroke: var(--et, var(--muted)); stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dasharray 420ms var(--ease-out);
+}
+.mp-ring b {
+  font-size: 12px; font-weight: 600; color: var(--text);
+  font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+}
+.mp-ring b i { font-style: normal; color: var(--muted-strong); margin: 0 1px; }
+
+/* Le rail repond a ce que le compte a rebours ne dit pas : « 12 minutes »,
+   est-ce la fin d'une heure ou le debut d'une journee ? */
+.mp-rail-b {
+  width: 100%; height: 3px; margin-top: 7px;
+  border-radius: var(--radius-full);
+  background: var(--bg-muted); overflow: hidden;
+}
+.mp-rail-b i {
+  display: block; height: 100%;
+  background: var(--et, var(--muted));
+  border-radius: var(--radius-full);
+  transition: width 420ms var(--ease-out);
+}
+
+/* Le battement : douze encoches, une par trace. Muet par conception — c'est
+   de la texture, pas un graphique. Il repond a la seule question que ni la
+   pensee ni les compteurs ne posent : est-ce que ca avance, ou ca repete ? */
+.mp-foot-sp { flex: 1 1 auto; min-width: 8px; }
+.mp-beat { display: inline-flex; align-items: flex-end; gap: 1px; height: 9px; }
+.mp-beat i { display: block; width: 2px; border-radius: 1px; }
+.mp-beat-o { height: 9px; background: var(--ok); }
+.mp-beat-w { height: 5px; background: var(--warn); }
+.mp-beat-k { height: 9px; background: var(--danger); }
+.mp-beat-n { height: 3px; background: var(--muted-strong); }
+
+/* ── Bandeau de file du CodeAgent ────────────────────────────────────────── */
+/* Le verrou de serialisation (LOT 2.12.A) cesse d'etre invisible : on voit qui
+   code et qui attend. */
+.mp-queue-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-muted);
+}
+.mp-queue-label {
+  font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700; flex-shrink: 0;
+}
+.mp-queue-list { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.mp-token {
+  font-family: var(--mono); font-size: 11px; padding: 3px 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-full);
+  color: var(--muted); background: var(--bg-elevated);
+}
+/* Celui qui tient le verrou : c'est lui qui travaille, donc il est vert et il
+   respire. Les autres attendent, en jaune, immobiles. */
+.mp-token.is-active {
+  color: var(--ok); border-color: var(--ok);
+  background: var(--ok-subtle); font-weight: 600;
+  animation: mp-breathe 2.6s var(--ease-in-out) infinite;
+}
+.mp-arrow { font-style: normal; color: var(--muted-strong); font-size: 11px; }
+
+/* ── Grille d'etablis : des surfaces POSEES, plus une grille de 1 px ─────── */
+.mp-grid {
+  display: grid; gap: 10px; padding: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(282px, 1fr));
+}
+.mp-post {
+  position: relative; display: flex; flex-direction: column;
+  padding: 13px 15px 13px 17px; min-height: 138px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: transform 160ms var(--ease-out), box-shadow 160ms var(--ease-out),
+              border-color 160ms var(--ease-out);
+}
+/* Le lisere d'etat : la seule chose qui se lit d'un metre de distance, et le
+   remplacant du point de 7 px qui ne se voyait pas. */
+.mp-post::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+  background: var(--et, var(--border-strong));
+}
+.mp-post:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+  border-color: color-mix(in srgb, var(--et, var(--border-hover)) 40%, var(--border));
+}
+/* Ce qui est fini recule : l'oeil doit aller vers ce qui est vivant. */
+.mp-post[data-state="cancelled"] { opacity: 0.62; box-shadow: none; }
+.mp-post[data-state="cancelled"]:hover { opacity: 1; }
+
+.mp-post-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+.mp-post-name {
+  font-size: 13px; font-weight: 650; color: var(--text-strong);
+  letter-spacing: -0.005em; min-width: 0; overflow-wrap: anywhere;
+}
+/* L'etat cesse d'etre un mot gris en 10 px : c'est une pastille teintee. */
+.mp-post-state {
+  margin-left: auto; flex-shrink: 0;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--et, var(--muted));
+  background: color-mix(in srgb, var(--et, var(--muted)) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--et, var(--muted)) 34%, transparent);
+  border-radius: var(--radius-full);
+  padding: 3px 9px;
+}
+
+.mp-dot {
+  width: 8px; height: 8px; border-radius: var(--radius-full); flex-shrink: 0;
+  background: var(--et, var(--muted));
+}
+/* Ce qui travaille PULSE. Un panneau temps reel qui ne bouge pas ne se lit pas
+   comme du temps reel. */
+.mp-dot-on { animation: mp-pulse 2s var(--ease-out) infinite; }
+
+@keyframes mp-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--et, var(--accent)) 55%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--et, var(--accent)) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--et, var(--accent)) 0%, transparent); }
+}
+@keyframes mp-breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.62; }
+}
+
+/* ── Perimetre ───────────────────────────────────────────────────────────── */
+.mp-chips { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 10px; }
+.mp-chip {
+  font-family: var(--mono); font-size: 10px; padding: 2px 7px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-muted); color: var(--muted);
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── LA PENSEE — l'element principal ─────────────────────────────────────── */
+/* Composee pour etre LUE, pas balayee : c'est tout l'objet du chantier. Elle
+   est en creux DANS la carte (troisieme niveau de profondeur) et son filet
+   reprend la couleur d'etat, pas l'accent. */
+.mp-thought {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: 12.5px; line-height: 1.6;
+  color: var(--text);
+  background: var(--bg-accent);
+  border-left: 2px solid var(--et, var(--border-strong));
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.mp-thought::before {
+  content: "pensée";
+  display: block; margin-bottom: 5px;
+  font-family: var(--mono); font-size: 8.5px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--et, var(--muted)); opacity: 0.85;
+}
+/* Une ligne, jamais un pave : le vide ne doit pas peser autant que le plein. */
+.mp-thought-empty {
+  flex: 0 0 auto;
+  color: var(--muted-strong); font-style: italic;
+  font-size: 11px; padding: 5px 10px;
+  border-left-color: var(--border);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mp-thought-empty::before { content: none; }
+
+/* ── Pied de carte ───────────────────────────────────────────────────────── */
+.mp-foot {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 10.5px; color: var(--muted); margin-top: auto;
+}
+.mp-sep { font-style: normal; color: var(--muted-strong); }
+.mp-mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.mp-queue { color: var(--warn); font-weight: 600; }
+
+.mp-empty { color: var(--muted); font-size: 12.5px; padding: 18px 2px; }
+
+/* ── Densite compacte (preference utilisateur, patron overview.js) ───────── */
+.mp-compact .mp-post { min-height: 0; padding: 10px 12px 10px 14px; }
+.mp-compact .mp-thought { font-size: 11.5px; padding: 7px 10px; -webkit-line-clamp: 3; }
+.mp-compact .mp-grid { grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 8px; padding: 10px; }
+.mp-compact .mp-chips { margin-bottom: 7px; }
+.mp-compact .mp-head { padding: 11px 14px; }
+.mp-compact .mp-countdown b { font-size: 18px; }
+.mp-compact .mp-obj { font-size: 13.5px; }
+
+/* ── Ecrans etroits ──────────────────────────────────────────────────────── */
+@media (max-width: 720px) {
+  .mp-grid { grid-template-columns: 1fr; }
+  .mp-head { flex-wrap: wrap; gap: 10px; }
+  .mp-head-meta { width: 100%; justify-content: space-between; }
+  .mp-sum { gap: 12px; }
+  .mp-sum-bads, .mp-sum-ok { margin-left: 0; width: 100%; }
+  .mp-countdown { align-items: flex-start; }
+}
+
+/* ── Mouvement reduit ────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .mp-mission, .mp-post, .mp-token, .mp-dot, .mp-seg, .mp-agg-dot,
+  .mp-ring-f, .mp-rail-b i, .mp-fold, .mp-fold-ic {
+    transition: none !important; animation: none !important;
+  }
+  .mp-fold:active { transform: none; }
+  .mp-post:hover { transform: none; }
+}
+
+/* ── Barre du chassis : vues, densite, blocs amovibles ───────────────────── */
+/* Reprend l'esprit des controles d'`overview.js`, deja en place cote produit. */
+.mp-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.mp-tabs {
+  display: flex; gap: 2px; padding: 3px;
+  background: var(--bg-muted); border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+}
+.mp-tab {
+  font: inherit; font-size: 11.5px;
+  padding: 5px 13px; cursor: pointer;
+  border: 1px solid transparent; border-radius: var(--radius-full);
+  background: transparent; color: var(--muted);
+  transition: background 140ms var(--ease-out), color 140ms var(--ease-out),
+              border-color 140ms var(--ease-out);
+}
+.mp-tab:hover { color: var(--text); }
+.mp-tab.is-on {
+  background: var(--card); color: var(--text-strong);
+  border-color: var(--border-strong); font-weight: 600;
+  box-shadow: var(--shadow-sm);
+}
+.mp-tab:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mp-density {
+  margin-left: auto;
+  border: 1px solid var(--border); background: var(--bg-elevated);
+}
+.mp-density:hover { border-color: var(--border-hover); }
+
+.mp-custo { position: relative; }
+.mp-custo > summary {
+  list-style: none; cursor: pointer;
+  font-size: 11.5px; padding: 5px 13px;
+  border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-elevated); color: var(--muted);
+}
+.mp-custo > summary::-webkit-details-marker { display: none; }
+.mp-custo > summary:hover { color: var(--text); border-color: var(--border-hover); }
+.mp-custo[open] > summary { color: var(--accent); border-color: var(--accent-muted); }
+
+.mp-toggles {
+  position: absolute; right: 0; z-index: 20; margin-top: 6px;
+  display: flex; flex-direction: column; gap: 8px;
+  min-width: 206px; padding: 12px 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  background: var(--popover); box-shadow: var(--shadow-lg);
+}
+.mp-toggle { display: flex; align-items: center; gap: 9px; font-size: 12px; color: var(--text); cursor: pointer; }
+.mp-toggle input { accent-color: var(--accent); cursor: pointer; }
+
+/* Dans le flux du panneau, plus en absolu : la version precedente le calait
+   avec un translateY en dur qui se decalait des qu'on ajoutait un bloc. */
+.mp-reset {
+  align-self: flex-start; margin-top: 4px;
+  font: inherit; font-size: 11px; cursor: pointer;
+  padding: 4px 10px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated); color: var(--muted);
+}
+.mp-reset:hover { color: var(--danger); border-color: var(--danger-muted); }
+.mp-reset:focus-visible,
+.mp-toggle input:focus-visible,
+.mp-custo > summary:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 2px;
+}
+
+/* ── Journal brut ────────────────────────────────────────────────────────── */
+/* La case du menu Affichage qui ne pilotait rien : elle se cochait, se
+   persistait, et aucune vue ne la lisait. Repliee par defaut — c'est un outil
+   de diagnostic, pas une lecture. */
+.mp-log { margin-bottom: 9px; }
+.mp-log > summary {
+  list-style: none; cursor: pointer;
+  font-family: var(--mono); font-size: 9.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted); padding: 3px 0;
+}
+.mp-log > summary::-webkit-details-marker { display: none; }
+.mp-log > summary::before { content: "▸ "; }
+.mp-log[open] > summary::before { content: "▾ "; }
+.mp-log > summary:hover { color: var(--text); }
+.mp-log > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mp-log-list {
+  list-style: none; margin: 6px 0 0; padding: 7px 9px;
+  max-height: 168px; overflow-y: auto;
+  border-radius: var(--radius-sm);
+  background: var(--bg-accent); border: 1px solid var(--border);
+}
+.mp-log-l {
+  font-family: var(--mono); font-size: 10px; line-height: 1.5;
+  padding: 2px 0; color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.mp-log-l.is-ko { color: var(--danger); }
+.mp-log-vide {
+  margin: 6px 0 0; padding: 7px 9px;
+  font-size: 10.5px; font-style: italic; color: var(--muted-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-accent); border: 1px solid var(--border);
+}
+
+/* Lecture courte, toujours visible, du fil structure. Le journal brut reste
+   disponible juste dessous pour le diagnostic complet. */
+.mp-live {
+  margin: 0 0 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.mp-live-title {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.mp-live ol { display: grid; gap: 3px; list-style: none; margin: 0; padding: 0; }
+.mp-live-line {
+  display: grid;
+  grid-template-columns: 48px minmax(82px, auto) minmax(0, 1fr);
+  gap: 7px;
+  align-items: baseline;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.mp-live-line time { color: var(--muted); font-family: var(--mono); }
+.mp-live-stage {
+  color: var(--text);
+  font-family: var(--mono);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.mp-live-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-live-line.is-ko .mp-live-stage,
+.mp-live-line.is-ko .mp-live-summary { color: var(--danger); }
+.mp-live-empty { font-size: 10.5px; color: var(--muted-strong); font-style: italic; }
+
+/* ── Repli d'une mission ─────────────────────────────────────────────────── */
+/* Demande devant l'ecran : deux missions font onze cartes. Une mission close
+   se replie seule ; un choix explicite gagne toujours contre la regle. */
+/* Ce qui est interactif doit AVOIR L'AIR interactif. La premiere version
+   posait un carre de 22 px sans etat de survol lisible : on ne savait pas
+   qu'on pouvait cliquer. */
+.mp-fold {
+  font: inherit; cursor: pointer; flex-shrink: 0;
+  width: 26px; height: 26px; padding: 0; margin-top: 1px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-elevated); color: var(--muted);
+  transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out);
+}
+.mp-fold:hover {
+  color: var(--text-strong); border-color: var(--border-hover);
+  background: var(--bg-hover);
+}
+.mp-fold:active { transform: scale(0.94); }
+.mp-fold:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mp-fold-ic {
+  font-size: 10px; line-height: 1;
+  transition: transform 180ms var(--ease-out);
+}
+.mp-mission[data-folded] .mp-fold-ic { transform: none; }
+
+/* Repliee, l'en-tete se serre et l'objectif tient sur deux lignes : sur le
+   panneau reel, un brief entier s'affichait en gras sur huit lignes et
+   noyait tout le reste de l'ecran. */
+.mp-mission[data-folded] .mp-head { padding: 11px 14px; }
+.mp-mission[data-folded] .mp-obj {
+  font-size: 13px; font-weight: 600;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mp-mission[data-folded] .mp-countdown b { font-size: 18px; }
+
+.mp-fold-sum {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 16px 9px 42px;
+  font-size: 11px; color: var(--muted);
+}
+.mp-fold-sum b { color: var(--text); font-weight: 600; }
+
+/* Le marqueur d'archive. Discret par construction : il repond a « y a-t-il
+   quelque chose a voir ici ? », pas a « regarde-moi ». */
+.mp-arch {
+  font-family: var(--mono); font-size: 10px;
+  padding: 2px 8px; border-radius: var(--radius-full);
+  color: var(--muted); background: var(--bg-muted);
+  border: 1px solid var(--border);
+}
+
+/* ── Arreter une mission ─────────────────────────────────────────────────── */
+/* Le handler existait toujours ; c'est le bouton qui avait disparu du rendu. */
+.mp-stop {
+  font: inherit; font-size: 11px; cursor: pointer;
+  padding: 4px 11px;
+  border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-elevated); color: var(--muted);
+  transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out),
+              background 140ms var(--ease-out);
+}
+.mp-stop:hover {
+  color: var(--danger); border-color: var(--danger-muted);
+  background: var(--danger-subtle);
+}
+.mp-stop:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* ── Vue B : Ruban ───────────────────────────────────────────────────────── */
+/* La seule vue qui rend la serialisation du CodeAgent visible : la part
+   hachuree est du temps d'attente, pas du travail. */
+.mp-ribbon-lead {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
+}
+.mp-ribbon-lead-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.mp-ribbon-lead-head .mp-foot { margin: 0; }
+.mp-lanes { padding: 16px 18px; }
+.mp-lane { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.mp-lane-lead { padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.mp-lane-name {
+  width: 88px; flex-shrink: 0; font-size: 11px; font-weight: 600;
+  color: var(--text); text-align: right;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mp-lane-meta { width: 66px; flex-shrink: 0; font-size: 10.5px; color: var(--muted); }
+.mp-rail {
+  flex: 1; display: flex; gap: 2px; height: 22px; padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-accent); border: 1px solid var(--border);
+  overflow: hidden;
+}
+.mp-seg { border-radius: 2px; height: 100%; display: block; }
+.mp-seg-on { background: var(--accent); }
+.mp-seg-done { background: var(--ok); }
+.mp-seg-fail { background: var(--danger); }
+/* L'attente est HACHUREE, pas grise : on doit voir que c'est du temps subi. */
+.mp-seg-wait {
+  background: repeating-linear-gradient(45deg,
+    var(--warn-subtle), var(--warn-subtle) 4px,
+    var(--bg-muted) 4px, var(--bg-muted) 8px);
+  border: 1px solid var(--warn-subtle);
+}
+.mp-legend {
+  display: flex; gap: 18px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 11px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px; color: var(--muted);
+}
+.mp-legend span { display: flex; align-items: center; gap: 7px; }
+.mp-key { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.mp-lane-note { margin: 11px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.mp-lane-note b { color: var(--warn); font-weight: 600; }
+
+/* ── Vue A : Controle ────────────────────────────────────────────────────── */
+.mp-ctrl { display: grid; grid-template-columns: minmax(0, 216px) minmax(0, 1fr) minmax(0, 216px); gap: 1px; background: var(--border); }
+.mp-col { background: var(--bg-accent); padding: 14px 16px; min-width: 0; }
+.mp-col-wide { min-width: 0; background: var(--card); }
+.mp-col-title {
+  display: block; margin-bottom: 12px;
+  font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); font-weight: 700;
+}
+.mp-col-none { margin: 0; font-size: 11.5px; color: var(--muted-strong); line-height: 1.6; }
+.mp-row { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.mp-row:last-child { border-bottom: 0; }
+.mp-lead-row {
+  margin-bottom: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+.mp-row-head { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+.mp-row-name { font-size: 12.5px; font-weight: 650; color: var(--text-strong); }
+.mp-row-iter { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 10.5px; color: var(--muted); }
+.mp-gauge { flex: 1; height: 4px; border-radius: var(--radius-full); background: var(--bg-muted); overflow: hidden; }
+.mp-gauge i { display: block; height: 100%; background: var(--accent); border-radius: var(--radius-full); }
+.mp-row-foot { margin-top: 6px; font-size: 10.5px; color: var(--muted); line-height: 1.5; }
+.mp-row-foot b { color: var(--warn); font-weight: 600; }
+/* En BLOC, pas en flex : le badge « non prouvé » ne pouvait pas passer a la
+   ligne, il poussait la colonne, qui poussait la grille — 1177 px dans 1164.
+   Trouve en ouvrant la page dans un vrai navigateur ; aucun test textuel ne
+   pouvait le voir. */
+.mp-proof {
+  font-size: 11.5px; padding: 5px 0; color: var(--text); line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.mp-proof-ic { margin-right: 7px; }
+.mp-proof-ic { color: var(--ok); font-size: 9px; }
+
+/* ── Sparkline de la tuile Progression ───────────────────────────────────── */
+/* Le contrat d'une tuile de statistique est `libelle · valeur · delta ·
+   tendance`. On complete la tuile, on n'ajoute pas un cadre.
+
+   UNE teinte, DEUX intensites. Contraste mesure sur `--card` : `--muted-strong`
+   tombe a 2,13:1, sous le seuil de 3:1 — inutilisable pour un trait de 1,5 px.
+   `--et` va de 4,6 a 11:1 selon l'etat, et la courbe appartient alors
+   visuellement a sa mission. */
+.mp-spark { display: block; margin: 0 0 12px; }
+.mp-spark svg { display: block; width: 100%; height: 22px; overflow: visible; }
+.mp-spark-l {
+  fill: none;
+  stroke: var(--et, var(--muted));
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.55;
+}
+.mp-spark-a {
+  fill: var(--et, var(--muted));
+  stroke: none;
+  opacity: 0.09;
+}
+/* Le dernier point porte l'accent, et son anneau de surface l'isole du trace
+   — la regle des marques qui se chevauchent. */
+.mp-spark-p {
+  fill: var(--et, var(--muted));
+  stroke: var(--bg-accent);
+  stroke-width: 2;
+}
+
+/* ── Vue A : progression et preuves ──────────────────────────────────────── */
+/* Ces deux colonnes annoncaient « non expose par l'API » et restaient vides.
+   Le ledger etait pourtant sur le disque et deja transmis : elles montrent
+   desormais des faits. */
+
+.mp-kpis { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.mp-kpi { display: flex; flex-direction: column; font-size: 9.5px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.mp-kpi b {
+  font-size: 19px; font-weight: 600; letter-spacing: 0;
+  color: var(--text-strong); text-transform: none;
+  margin-bottom: 2px;
+  /* Chiffres PROPORTIONNELS : la chasse fixe fait paraitre « 121 » lache en
+     grande taille. Elle ne se justifie que la ou des chiffres s'alignent
+     verticalement — ou changent en place, comme le compte a rebours. */
+  font-variant-numeric: proportional-nums;
+}
+
+.mp-acts { display: flex; flex-direction: column; gap: 1px; }
+.mp-act {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11px; padding: 4px 0; color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.mp-act:last-child { border-bottom: 0; }
+.mp-act-ic { color: var(--ok); font-size: 8px; flex-shrink: 0; }
+.mp-act.is-ko .mp-act-ic { color: var(--danger); }
+.mp-act-n { font-family: var(--mono); overflow-wrap: anywhere; }
+.mp-act-t {
+  margin-left: auto; color: var(--muted); font-size: 10px;
+  max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* L'aveu : il vit HORS des deux branches du rendu, donc il est toujours la. */
+.mp-col-note {
+  margin: 12px 0 0; padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px; line-height: 1.55; color: var(--muted-strong);
+  font-style: italic;
+}
+
+/* Une preuve NON etablie ne disparait pas : elle se voit. */
+.mp-proof.is-ko { color: var(--muted); }
+.mp-proof.is-ko .mp-proof-ic { color: var(--danger); }
+.mp-proof.is-ko em {
+  font-style: normal; font-size: 9.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--danger);
+}
+
+.mp-deliv { margin-top: 14px; padding-top: 11px; border-top: 1px solid var(--border); }
+.mp-deliv .mp-chip { display: block; margin-bottom: 4px; }
+
+/* Le perimetre passe SOUS les trois colonnes : il se disputait la place avec
+   les preuves, et l'un chassait l'autre — on n'avait jamais les deux. */
+.mp-ctrl-foot {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-accent);
+}
+.mp-ctrl-foot .mp-chips { margin-bottom: 0; margin-top: 8px; }
+
+@media (max-width: 860px) {
+  .mp-ctrl { grid-template-columns: 1fr; }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Cockpit Missions — navigation commune aux quatre vues.
+ *
+ * La liste des missions n'est plus une pile de panneaux complets. Elle devient
+ * un navigateur compact ; la vue choisie occupe le reste de l'espace et garde
+ * les memes donnees, les memes actions et les memes etats.
+ * ══════════════════════════════════════════════════════════════════════════ */
+#panel-missions > .card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+#panel-missions > .card > .card-title {
+  margin: 0;
+  padding: 2px 2px 14px;
+  border-bottom: 1px solid var(--border);
+}
+#panel-missions > .card > .card-content { padding: 14px 0 0; }
+
+.mp-shell, .mp-shell * { letter-spacing: 0; }
+.mp-shell { min-width: 0; }
+
+.mp-command {
+  display: grid;
+  grid-template-columns: minmax(250px, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.mp-search {
+  min-width: 0;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--muted);
+}
+.mp-search:focus-within { border-color: var(--focus); }
+.mp-search svg { width: 15px; height: 15px; flex: 0 0 15px; }
+.mp-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+.mp-search input::placeholder { color: var(--muted-strong); }
+
+.mp-filter {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-left: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+.mp-filter select {
+  height: 100%;
+  border: 0;
+  padding: 0 28px 0 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  outline: 0;
+}
+.mp-filter:focus-within { border-color: var(--focus); }
+
+.mp-fleet {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+.mp-fleet b { color: var(--text-strong); font-size: 12px; }
+.mp-fleet .is-attention b { color: var(--danger); }
+
+.mp-shell .mp-bar {
+  min-height: 40px;
+  margin-bottom: 10px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-accent);
+}
+.mp-shell .mp-tabs { border-radius: var(--radius-sm); }
+.mp-shell .mp-tab,
+.mp-shell .mp-custo > summary,
+.mp-shell .mp-stop { border-radius: var(--radius-sm); }
+
+.mp-workspace {
+  display: grid;
+  grid-template-columns: minmax(220px, 264px) minmax(0, 1fr);
+  min-height: 580px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-accent);
+}
+.mp-nav {
+  min-width: 0;
+  border-right: 1px solid var(--border);
+  background: var(--panel-strong);
+}
+.mp-nav-head {
+  height: 39px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.mp-nav-head b { color: var(--text); }
+.mp-nav-list {
+  max-height: calc(100vh - 292px);
+  min-height: 540px;
+  overflow: auto;
+}
+.mp-nav-item {
+  position: relative;
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.mp-nav-item:hover { background: var(--bg-hover); }
+.mp-nav-item.is-selected {
+  background: var(--bg-elevated);
+  box-shadow: inset 2px 0 0 var(--et, var(--border-strong));
+}
+.mp-nav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.mp-nav-item .mp-agg-dot { width: 7px; height: 7px; }
+.mp-nav-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.mp-nav-copy b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-strong);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.mp-nav-copy small { color: var(--muted); font-size: 9.5px; }
+.mp-nav-time { color: var(--muted); font-size: 9.5px; }
+.mp-nav-empty { padding: 18px 12px; color: var(--muted); font-size: 11.5px; }
+
+.mp-stage { min-width: 0; padding: 12px; background: var(--bg-accent); }
+.mp-stage > .mp-mission { margin: 0; border-radius: var(--radius-md); }
+.mp-stage > .mp-empty { padding: 34px; text-align: center; }
+.mp-stage .mp-sum { display: none; }
+.mp-stage .mp-obj {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+.mp-objective-full { margin-top: 7px; }
+.mp-objective-full > summary {
+  width: max-content;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.mp-objective-full > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mp-objective-full p {
+  max-height: 180px;
+  margin: 8px 0 0;
+  padding: 9px 11px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-accent);
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.mp-stage .mp-post { border-radius: var(--radius-md); }
+.mp-post[data-mp-worker], .mp-row[data-mp-worker] { cursor: pointer; }
+.mp-post.is-selected {
+  border-color: var(--et, var(--border-strong));
+  box-shadow: inset 0 0 0 1px var(--et, var(--border-strong)), var(--shadow-sm);
+}
+.mp-row.is-selected { background: var(--bg-hover); }
+.mp-post[data-mp-worker]:focus-visible,
+.mp-row[data-mp-worker]:focus-visible,
+.mp-node-pick:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Constellation 3D progressive. Le SVG reste monte dessous et reapparait si
+   WebGL est indisponible, si le renderer echoue ou si le script ne charge pas. */
+.mp-const { grid-template-columns: minmax(0, 1fr) minmax(238px, 286px); min-height: 500px; }
+.mp-scene {
+  position: relative;
+  align-self: start;
+  height: clamp(500px, 66vh, 680px);
+  min-width: 0;
+  min-height: 500px;
+  overflow: hidden;
+  background: var(--bg-accent);
+  cursor: grab;
+  touch-action: none;
+}
+.mp-scene.is-dragging { cursor: grabbing; }
+.mp-scene-canvas,
+.mp-scene-fallback {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.mp-scene-canvas { display: block; opacity: 0; transition: opacity 180ms var(--ease-out); }
+.mp-scene-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 180ms var(--ease-out);
+}
+.mp-scene-fallback .mp-sky { width: 100%; height: 100%; }
+.mp-scene.is-ready .mp-scene-canvas { opacity: 1; }
+.mp-scene.is-ready .mp-scene-fallback { opacity: 0; pointer-events: none; }
+.mp-scene-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  box-shadow: var(--shadow-sm);
+}
+.mp-scene-tools button {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+}
+.mp-scene-tools button:hover { border-color: var(--border-hover); background: var(--bg-hover); }
+.mp-scene-tools button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mp-scene-tools svg { width: 14px; height: 14px; }
+.mp-scene-state { padding-right: 5px; color: var(--muted); font-size: 9.5px; }
+.mp-scene-readout {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  width: min(420px, calc(100% - 24px));
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+.mp-scene-readout-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 700;
+}
+.mp-scene-readout-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.mp-scene-readout-facts b { color: var(--text); font-weight: 600; }
+.mp-scene-readout p {
+  margin: 7px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mp-scene-readout p b { color: var(--text); font-weight: 600; }
+.mp-node.is-selected circle { stroke-width: 4; }
+.mp-aside { min-width: 0; overflow: auto; }
+.mp-aside-note {
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.mp-node-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.mp-node-pick {
+  width: 100%;
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.mp-node-pick:hover { background: var(--bg-hover); }
+.mp-node-pick.is-selected { border-color: var(--border-strong); background: var(--bg-elevated); }
+.mp-node-pick small { color: var(--warn); }
+
+/* Sous 1400 px, la navigation Lumena et la liste des missions reduisent le
+   canvas a moins de 400 px. Le detail reste complet, mais passe sous la carte
+   afin que la topologie et ses libelles conservent une largeur exploitable. */
+@media (max-width: 1400px) {
+  .mp-const { grid-template-columns: 1fr; }
+  .mp-aside {
+    max-height: 420px;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+
+@media (max-width: 1080px) {
+  .mp-command { grid-template-columns: minmax(220px, 1fr) auto; }
+  .mp-fleet { grid-column: 1 / -1; border-left: 0; padding-left: 0; height: auto; }
+  .mp-workspace { grid-template-columns: minmax(196px, 226px) minmax(0, 1fr); }
+}
+
+@media (max-width: 760px) {
+  .mp-command { grid-template-columns: 1fr; }
+  .mp-filter { padding-left: 10px; }
+  .mp-fleet { flex-wrap: wrap; }
+  .mp-shell .mp-bar { align-items: stretch; }
+  .mp-shell .mp-tabs { width: 100%; overflow-x: auto; }
+  .mp-shell .mp-tab { flex: 1 0 auto; }
+  .mp-shell .mp-density { margin-left: 0; }
+  .mp-workspace { grid-template-columns: 1fr; min-height: 0; overflow: visible; }
+  .mp-nav { border-right: 0; border-bottom: 1px solid var(--border); }
+  .mp-nav-list {
+    min-height: 0;
+    max-height: 190px;
+    display: flex;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .mp-nav-item { min-width: 238px; border-right: 1px solid var(--border); }
+  .mp-stage { padding: 8px; }
+  .mp-const { grid-template-columns: 1fr; min-height: 0; }
+  .mp-scene { height: 360px; min-height: 360px; }
+  .mp-live-line { grid-template-columns: 44px minmax(0, 1fr); }
+  .mp-live-summary { grid-column: 2; white-space: normal; }
+  .mp-scene-readout { bottom: 8px; left: 8px; width: calc(100% - 16px); }
+  .mp-aside { max-height: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mp-scene-canvas, .mp-scene-fallback { transition: none; }
+}

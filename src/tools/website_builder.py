@@ -769,6 +769,50 @@ def _flask_entry(directory: Path) -> bool:
         return False
 
 
+#: Marqueurs de backend, par extension. Des NOMS DE SYMBOLES, pas du vocabulaire :
+#: on ne devine aucune intention, on lit une declaration d'API.
+_MARQUEURS_BACKEND: dict = {
+    ".py": ("FastAPI(", "Flask(", "create_app", "APIRouter(", "Django"),
+    ".js": ("express()", "require('express')", 'require("express")', "createServer("),
+    ".ts": ("express()", "NestFactory", "createServer("),
+}
+
+
+def unserved_backend(directory, mode: str) -> str:
+    """Nom du fichier backend PRESENT mais NON execute, ou "" s'il n'y en a pas.
+
+    Run LogTriage (2026-08-29) — le contrat demandait une API FastAPI dans
+    `api.py`. `serve_website` a servi le dossier en mode STATIQUE, l'agent a
+    navigue, clique « Analyser », et l'app a repondu « aucune anomalie » sur un
+    log qui en contenait deux : le `fetch` tombait sur un 404, faute de backend.
+
+    La tache de plan « servir le site et verifier au navigateur » etait donc
+    STRUCTURELLEMENT improuvable, et rien ne le disait. Le fait etait pourtant
+    affiche — « Mode: statique (fichiers seuls) » — mais personne ne le reliait
+    a « ce projet a une API ».
+
+    `_flask_entry` ne regardait que `app.py` avec `Flask(` : FastAPI, Express et
+    les backends nommes autrement passaient au travers. Pur, borne, testable.
+    """
+    if mode != "static":
+        return ""  # le backend tourne : rien a signaler
+    try:
+        base = Path(directory)
+        for ext, marqueurs in _MARQUEURS_BACKEND.items():
+            for fp in sorted(base.glob(f"*{ext}")):
+                if not fp.is_file():
+                    continue
+                try:
+                    tete = fp.read_text(encoding="utf-8", errors="replace")[:50_000]
+                except Exception:
+                    continue
+                if any(m in tete for m in marqueurs):
+                    return fp.name
+    except Exception:
+        pass
+    return ""
+
+
 def _wait_port_ready(port: int, proc: subprocess.Popen, timeout_s: float = 6.0) -> bool:
     """2.5 — attend que le serveur ÉCOUTE réellement (avant : « success » aveugle
     dès le spawn). False si le process meurt ou si rien n'écoute à l'échéance."""
@@ -1240,6 +1284,18 @@ async def serve_website_handler(
         _mode = result.get("mode", "static")
         _mode_line = ("⚙️ Mode: app FLASK (les routes /api/* tournent)" if _mode == "flask"
                       else "⚙️ Mode: statique (fichiers seuls)")
+        # Le fait « ce projet a une API » et le fait « ce serveur ne l'execute
+        # pas » existaient tous les deux — jamais rapproches. On les rapproche.
+        _backend = unserved_backend(target, _mode)
+        if _backend:
+            _mode_line += (
+                f"\n\n⚠️ BACKEND NON LANCÉ — `{_backend}` déclare une API, et ce "
+                f"serveur ne sert que des fichiers. Les appels réseau de la page "
+                f"répondront 404 : ouvrir le navigateur ici NE PROUVE PAS que "
+                f"l'application fonctionne, seulement que le front s'affiche. "
+                f"Pour vérifier l'API, lance `{_backend}` toi-même "
+                f"(`run_command`) et navigue sur SON port."
+            )
         # 2.7.1 — la page se charge-t-elle en ENTIER ? (CSS/JS référencés)
         _broken = result.get("broken_assets") or []
         _asset_block = ""

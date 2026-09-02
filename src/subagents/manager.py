@@ -132,11 +132,34 @@ class MissionManager:
         return mission_id
 
     # ── lecture / contrôle ─────────────────────────────────────────────────────
+    def _runtime_projection(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Ajoute l'activité mémoire sans modifier l'état persistant.
+
+        Un run actif peut être momentanément ``checkpointed`` entre deux
+        itérations. Le stockage garde ce checkpoint pour la reprise, tandis que
+        le panneau doit savoir que le coroutine tourne encore.
+        """
+        row = dict(record or {})
+        task_id = str(row.get("task_id") or "")
+        active = task_id in self._inflight
+        if task_id and not active:
+            try:
+                from src.agents.sub_agent import is_bg_agent_active, is_delegate_active
+                active = is_delegate_active(task_id) or is_bg_agent_active(task_id)
+            except Exception:
+                active = False
+        row["runtime_active"] = bool(active)
+        return row
+
     def list_missions(self, limit: int = 100) -> List[Dict[str, Any]]:
-        return self._orch.get_conversation_tasks(_MISSIONS_CONV, limit=limit)
+        return [
+            self._runtime_projection(item)
+            for item in self._orch.get_conversation_tasks(_MISSIONS_CONV, limit=limit)
+        ]
 
     def get_mission(self, mission_id: str) -> Optional[Dict[str, Any]]:
-        return self._orch.get_task(mission_id)
+        item = self._orch.get_task(mission_id)
+        return self._runtime_projection(item) if item else None
 
     def cancel_mission(self, mission_id: str) -> Dict[str, Any]:
         """Annulation coopérative : la mission s'arrête au prochain checkpoint."""

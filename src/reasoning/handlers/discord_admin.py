@@ -42,9 +42,12 @@ _auto_guild_id: str | None = None
 
 # Chemin du fichier de persistance (chargé au démarrage, mis à jour à chaque auto-detect)
 def _discord_state_path() -> Path:
-    import os
-    base = os.getenv("LUMENA_DATA_DIR", "") or str(Path(__file__).resolve().parents[3] / "data")
-    return Path(base) / "memory" / "discord_state.json"
+    # `DATA_DIR` fait EXACTEMENT ceci : `LUMENA_DATA_DIR` sinon `ROOT_DIR/data`.
+    # La reconstruction a la main comptait les `parents[3]`, ce qui casse au
+    # premier deplacement du fichier — et c'est le seul site du depot que le
+    # garde des chemins visait vraiment.
+    from src.utils.paths import DATA_DIR
+    return DATA_DIR / "memory" / "discord_state.json"
 
 
 def _load_discord_state() -> None:

@@ -116,6 +116,17 @@ def _payload(path: str) -> dict:
         return {"success":True,"datasets":[],"total_conversations":42}
     if path == "/api/finetuning/status":
         return {"active_job":None,"gpu":{"available":True}}
+    # 2026-08-29 — l'Overview appelle desormais cette route (chantier « mise a
+    # jour auto »). Le mock ne la connaissait pas, donc ces deux tests etaient
+    # ROUGES — sans que personne le voie, `tests/web/` n'etant plus collecte
+    # (voir `norecursedirs` dans pytest.ini). Forme prise sur la vraie route,
+    # `web/routes/updates.py:67`, pas devinee.
+    if path.startswith("/api/updates/releases"):
+        return {"releases":[]}
+    if path.startswith("/api/updates/status"):
+        # Forme prise sur `UpdateService.status()`, src/runtime/update_service.py:124.
+        return {"state":"idle","current_version":"1.0.54","installation_type":"git",
+                "rollback_available":False,"settings":{}}
     raise AssertionError(f"Overview requested an unmocked API route: {path}")
 
 

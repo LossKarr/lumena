@@ -66,6 +66,46 @@ def extract_action_input(response: str, action_start: int, action_name: str) -> 
     if not input_match:
         input_match = re.search(r"(?i)ACTION_INPUT:\s*", tail)
     if not input_match:
+        # ── UN FINAL SANS ÉTIQUETTE RESTE UN FINAL ──────────────────────────
+        #
+        # Quand le modèle écrit sa réponse JUSTE APRÈS `ACTION: FINAL` au lieu
+        # de la préfixer par `ACTION_INPUT:`, ce `return ""` jetait un texte
+        # complet. Le garde Z29 voyait alors `final_sans_contenu len=0`,
+        # demandait une reformulation — et le modèle reformulait DANS LE MÊME
+        # FORMAT. Mesuré sur un run réel : quatre FINAL d'affilée à 1123, 1001,
+        # 990 et 1346 caractères, tous extraits à ZÉRO, puis un repli de
+        # 41 caractères servi à l'utilisateur.
+        #
+        # La réparation ne pouvait pas marcher : elle demandait de réécrire le
+        # CONTENU alors que le défaut était l'ÉTIQUETTE.
+        #
+        # Le correctif est INCONDITIONNEL, pas un profil de plus. Les 41
+        # profils modèle du dépôt ne touchent jamais à l'extraction — leur
+        # `parser_severity` ne règle QUE le budget de réparation. Et l'omission
+        # d'étiquette est documentée sur tout l'écosystème (LangChain,
+        # LlamaIndex, CrewAI ont le même ticket ouvert), varie d'un modèle à
+        # l'autre ET d'une version à l'autre : une rustine par modèle est une
+        # course perdue d'avance.
+        #
+        # Sûreté : on prend ce qui suit la LIGNE `ACTION:`, jamais avant. La
+        # pensée est écrite au-dessus, donc elle ne peut pas devenir la
+        # réponse — l'invariant « ne jamais recycler le THOUGHT » tient par
+        # construction. Et on s'arrête au prochain libellé pour ne pas avaler
+        # un bloc suivant.
+        if action_name.upper() == "FINAL":
+            saut = response.find('\n', action_start)
+            if saut == -1:
+                return ""
+            debut = saut + 1
+            while debut < len(response) and response[debut].isspace():
+                debut += 1
+            reste = response[debut:]
+            suivant = re.search(
+                r"(?im)^\s*(THOUGHT|ACTION|ACTION_INPUT|OBSERVATION)\s*:", reste
+            )
+            if suivant:
+                reste = reste[:suivant.start()]
+            return reste.strip()
         return ""
 
     start = action_start + input_match.end()

@@ -49,7 +49,17 @@ def test_module_auto_contenu_pas_de_cycle():
     assert not [m for m in imported if "react" in m], f"cycle: {imported}"
     # LOT 2.11.E : `pathlib` (stdlib, auto-contenu, aucun cycle) rejoint le set
     # autorisé — published_target_missing_on_disk vérifie l'existence disque.
-    assert imported <= {"re", "typing", "__future__", "pathlib"}, f"imports inattendus: {imported}"
+    #
+    # `unicodedata` (stdlib, aucun cycle) rejoint le set pour la même raison :
+    # `strip_thought_leak_prefix` refuse une coupe qui atterrit au milieu d'un
+    # mot, et distinguer une VRAIE lettre minuscule d'un emoji ou d'une
+    # ponctuation demande la catégorie Unicode. Mesuré : le critère « minuscule
+    # ou symbole » donnait 15 % de faux positifs sur 1707 réponses réelles, la
+    # catégorie `Ll` en donne 0,23 % — et ses 4 déclenchements sont 4 vraies
+    # fuites. Le but de ce garde reste le cycle avec `react` (assert au-dessus).
+    assert imported <= {
+        "re", "typing", "__future__", "pathlib", "unicodedata"
+    }, f"imports inattendus: {imported}"
 
 
 def test_react_reexporte_les_memes_objets():

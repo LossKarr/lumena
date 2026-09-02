@@ -11,6 +11,7 @@ react ré-importe ces noms (point d'import historique des tests).
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -185,43 +186,60 @@ def strip_thought_leak_prefix(text: str) -> Optional[str]:
     """
     # Patterns de phrases internes à retirer du début.
     # On retire phrase par phrase jusqu'à trouver du contenu utilisateur.
+    #
+    # ── LA FRONTIERE DE PHRASE NE COUPE PAS DANS UN NOM DE FICHIER ─────────
+    #
+    # La borne etait un point NU : n'importe quel point terminait la phrase.
+    # Or un nom de fichier en contient un. `video.mp4`, `script.js`,
+    # `main.py` etaient coupes en deux, et le reste — servi a l'utilisateur —
+    # commencait par `mp4/`, `js`, `py.`.
+    #
+    # MESURE sur le corpus reel (`data/training_pool/`, 1707 reponses
+    # d'assistant) : quatre commencent par une lettre minuscule, et les quatre
+    # sont ce defaut. Il durait depuis des mois sans etre vu — le test
+    # `test_strips_french_user_prefix` passait meme dessus, parce que son
+    # fixture contient `main.py` et que ses assertions ne regardaient pas le
+    # debut du resultat.
+    #
+    # Desormais : un `.` COLLE a un caractere non-blanc est du CONTENU ; seule
+    # une ponctuation suivie d'un blanc (ou de la fin) ferme la phrase.
     _STRIP_PATTERNS = [
         # FR
         re.compile(
-            r"^(?:l['‘’]utilisateur\s+(?:demande|veut|souhaite|a\s+demandé)[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:l['‘’]utilisateur\s+(?:demande|veut|souhaite|a\s+demandé)(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:je\s+(?:dois|vais|peux)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:je\s+(?:dois|vais|peux)\s+(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:il\s+faut\s+que\s+je\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:il\s+faut\s+que\s+je\s+(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:(?:maintenant\s+que\s+j['‘’]ai|après\s+avoir|sur\s+la\s+base\s+de|d['‘’]après\s+les)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:(?:maintenant\s+que\s+j['‘’]ai|après\s+avoir|sur\s+la\s+base\s+de|d['‘’]après\s+les)\s+(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:(?:j['‘’]ai\s+(?:déjà|maintenant|exécuté|effectué|analysé))[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:(?:j['‘’]ai\s+(?:déjà|maintenant|exécuté|effectué|analysé))(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:(?:rien\s+à\s+faire)[^.!?\n]{0,80}[.!?\n]\s*)",
+            r"^(?:(?:rien\s+à\s+faire)(?:[^.!?\n]|\.(?=\S)){0,80}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         # EN
         re.compile(
-            r"^(?:the\s+user\s+(?:is\s+asking|wants|asked|requested)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:the\s+user\s+(?:is\s+asking|wants|asked|requested)\s+(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:(?:i\s+(?:need\s+to|should|will)|i['‘’](?:ll|ve)|let\s+me)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:(?:i\s+(?:need\s+to|should|will)|i['‘’](?:ll|ve)|let\s+me)\s+(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
         re.compile(
-            r"^(?:(?:based\s+on|now\s+that\s+i\s+have|i\s+have\s+(?:already|now)|having\s+gathered)\s+[^.!?\n]{0,200}[.!?\n]\s*)",
+            r"^(?:(?:based\s+on|now\s+that\s+i\s+have|i\s+have\s+(?:already|now)|having\s+gathered)\s+(?:[^.!?\n]|\.(?=\S)){0,200}(?:[.!?](?=\s|$)|\n)\s*)",
             re.IGNORECASE,
         ),
     ]
@@ -250,6 +268,39 @@ def strip_thought_leak_prefix(text: str) -> Optional[str]:
     )
     if any(_cl.startswith(p) for p in _STILL_INTERNAL):
         return None
+
+    # ── Securite : une coupe qui atterrit AU MILIEU D'UN MOT n'est pas une
+    #    reponse ────────────────────────────────────────────────────────────
+    #
+    # Les motifs ci-dessus cherchent la fin d'une phrase sur `[.!?]`. Un nom de
+    # fichier en contient un : `video.mp4`, `script.js`, `parser.py`. La coupe
+    # tombe alors dans l'extension et le reste commence par `mp4/`, `js`, `py.`
+    # — du raisonnement interne servi a l'utilisateur, ampute de sa premiere
+    # moitie.
+    #
+    # MESURE sur le corpus reel (`data/training_pool/`, 1707 reponses
+    # d'assistant) : QUATRE commencent par une lettre minuscule, et les quatre
+    # sont exactement ce defaut —
+    #
+    #     mp4/` pour trouver le fichier video reel...      (video.mp4)
+    #     js`   pour voir l'etat actuel du code...         (script.js)
+    #     js    pour comment canCraft est appele...        (*.js)
+    #     py.   Le probleme est la fonction...             (*.py)
+    #
+    # Soit 0,23 % de declenchement et QUATRE vrais positifs sur quatre. Deux
+    # criteres plus larges ont ete mesures puis ECARTES : « contient un motif
+    # de reflexion n'importe ou » donnait 21,8 % de faux positifs, et
+    # « commence par une minuscule OU un symbole » 15,0 % — les emoji et la
+    # ponctuation ouvrent legitimement une reponse. La categorie Unicode `Ll`
+    # (vraie lettre minuscule) est la seule qui separe proprement.
+    #
+    # Le cout d'une erreur est asymetrique, et c'est ce qui justifie la garde :
+    # rendre `None` ne perd RIEN — la reformulation habituelle reprend la main.
+    # Servir le texte, lui, met le raisonnement interne sous les yeux de
+    # l'utilisateur.
+    if unicodedata.category(cleaned[0]) == "Ll":
+        return None
+
     return cleaned
 
 

@@ -85,8 +85,26 @@ async def run_gate(
         )
 
     try:
+        # 2026-08-29 — LA VALIDATION STATIQUE NE DOIT PLUS MOURIR AVEC LES TESTS.
+        #
+        # `_do_validate` fait DEUX choses : la validation statique, puis
+        # l'execution des tests auto-detectes. Les deux etaient sous UN SEUL
+        # `wait_for` : quand les tests debordaient, le verdict statique DEJA
+        # CALCULE partait a la poubelle avec eux, et la gate rendait
+        # « rien n'a ete verifie ».
+        #
+        # Mesure (run RelevéBank, 2026-08-29) : 3 timeouts sur 3, alors que
+        # pyright s'initialisait en 0,48 s — le budget ne partait donc pas au
+        # demarrage du serveur de langage, mais bien dans la phase d'apres.
+        #
+        # On donne desormais un budget PROPRE aux tests. S'ils debordent, on rend
+        # le verdict statique, honnêtement marque « tests non termines ». Le
+        # `wait_for` exterieur reste, en plafond dur.
         result = await asyncio.wait_for(
-            _do_validate(workspace, modified_files, task_id=task_id),
+            _do_validate(
+                workspace, modified_files, task_id=task_id,
+                tests_budget=max(1.0, timeout * _TESTS_BUDGET_RATIO),
+            ),
             timeout=timeout,
         )
         if result.passed:
@@ -112,10 +130,16 @@ async def run_gate(
         )
 
 
+#: Part du budget total laissee aux tests auto-detectes. Le reste va a la
+#: validation statique, qui est la seule des deux a etre rapide et sure.
+_TESTS_BUDGET_RATIO: float = 0.4
+
+
 async def _do_validate(
     workspace: Path,
     modified_files: Sequence[str],
     task_id: str = "",
+    tests_budget: Optional[float] = None,
 ) -> GateResult:
     """Validation réelle : statique + tests auto-détectés."""
     from src.tools.code_validator import validate_project_async
@@ -164,7 +188,31 @@ async def _do_validate(
         return GateResult(passed=False, errors=errors, warnings=warnings)
 
     # ── 2. Exécution des tests auto-détectés (P3) ─────────────────────────────
-    test_errors = await _run_detected_tests(workspace, modified_files)
+    # La statique est FINIE et sans erreur a ce stade : ce verdict est acquis.
+    # S'il faut le perdre parce que les tests trainent, autant ne pas valider du
+    # tout. On borne donc les tests separement et on rend l'acquis.
+    if tests_budget is not None:
+        try:
+            test_errors = await asyncio.wait_for(
+                _run_detected_tests(workspace, modified_files),
+                timeout=tests_budget,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[gate] tests auto-detectes non termines en {}s — verdict statique conserve",
+                tests_budget,
+            )
+            return GateResult(
+                passed=True,
+                warnings=warnings,
+                indetermine=True,
+                raison_indetermination=(
+                    f"validation statique OK, tests auto-detectes non termines "
+                    f"en {tests_budget:.0f}s"
+                ),
+            )
+    else:
+        test_errors = await _run_detected_tests(workspace, modified_files)
     errors.extend(test_errors)
 
     return GateResult(

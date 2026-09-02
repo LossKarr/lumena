@@ -3,7 +3,7 @@
 **Assistant IA personnel autonome, local-first, doté d'une mémoire persistante et capable d'agir réellement.**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.0.54-F28C28)](#état-des-composants)
+[![Version](https://img.shields.io/badge/version-v1.0.55-F28C28)](#état-des-composants)
 [![Tests](https://img.shields.io/badge/tests-20K%2B_passed-22C55E)](#tests)
 [![License](https://img.shields.io/badge/license-AGPL--3.0_%2F_Commercial-2563EB)](#licence)
 [![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#état-des-composants)
@@ -19,7 +19,7 @@ Elle ne se contente pas de proposer une procédure : en **mode Agent**, elle peu
 planifier une demande, appeler ses outils, produire des fichiers, contrôler les
 résultats obtenus et rendre compte des preuves réellement observées.
 
-> **Version bêta v1.0.54**
+> **Version bêta v1.0.55**
 >
 > Lumena est utilisable au quotidien, mais reste un projet solo en évolution.
 > Certaines fonctions dépendent d'API, de logiciels locaux, d'identifiants ou
@@ -247,10 +247,18 @@ Lumena agit sur une machine réelle. Ses garde-fous font donc partie du produit 
 - confirmations pour les opérations sensibles ;
 - secrets et identifiants séparés du code ;
 - preuves d'exécution conservées dans un ledger ;
-- annulation coopérative des tâches et sous-agents.
+- annulation coopérative des tâches et sous-agents ;
+- mises à jour vérifiées auprès des releases GitHub, jamais installées
+  sans accord explicite.
 
 Lumena doit être utilisée avec un périmètre de fichiers adapté et des droits
 minimaux. Les actions externes importantes doivent rester supervisées.
+
+![La notification de mise à jour de Lumena](assets/MISE%20A%20JOUR%20AUTO.PNG)
+
+Lumena surveille elle-même les releases publiées et signale une nouvelle
+version dans son interface. Elle ne l'installe pas : la notification attend
+une décision, et rien ne change sur la machine tant qu'elle n'est pas prise.
 
 ---
 
@@ -508,4 +516,4 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
 
 ---
 
-**Lumena v1.0.54 — projet solo, architecture ouverte, actions contrôlées.**
+**Lumena v1.0.55 — projet solo, architecture ouverte, actions contrôlées.**

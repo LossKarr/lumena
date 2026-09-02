@@ -32,6 +32,14 @@ TRACE_EVENT_FIELDS = {
     "tool_name",
     "summary",
     "error",
+    # ── Lot panel missions 0.a (2026-08-29) ──────────────────────────────────
+    # L'allowlist est EXPLICITE : tout champ absent d'ici est jete par
+    # `_sanitize_event`. Ces trois-la portent ce que le panneau Missions n'a
+    # jamais pu montrer — la PENSEE de l'agent et son avancement — alors que le
+    # fichier de log, lui, l'ecrivait a chaque iteration (`[CodeAgent] 💭 ...`).
+    "thought",
+    "iteration",
+    "max_iter",
 }
 
 
@@ -144,11 +152,15 @@ class TraceBus:
             "tool_name": payload.get("tool_name"),
             "summary": _safe_text(payload.get("summary"), self.summary_max_len),
             "error": _safe_text(payload.get("error"), 400),
+            # La pensee est du TEXTE LIBRE ecrit par le modele : elle passe par
+            # le meme assainissement borne que `summary` et `error`, jamais par
+            # la recopie brute de la boucle ci-dessous.
+            "thought": _safe_text(payload.get("thought"), 400),
         }
 
         # Preserve any explicit known field overrides.
         for key in TRACE_EVENT_FIELDS:
-            if key in payload and key not in {"summary", "error"}:
+            if key in payload and key not in {"summary", "error", "thought"}:
                 clean[key] = payload[key]
 
         if clean.get("duration_ms") is not None:
@@ -211,6 +223,27 @@ class TraceBus:
                 with self._lock:
                     for stale_id in stale_ids:
                         self._subscribers.pop(stale_id, None)
+
+            # ── Journal de mission — ce qui reste quand la mission est finie ──
+            #
+            # Ici et NULLE PART AILLEURS. `publish` est le point par lequel
+            # passe chaque evenement de trace, y compris ceux dont le
+            # `task_id` vient du contexte : l'accrocher ici capte la mission
+            # entiere sans toucher a `react.py` ni a `sub_agent.py`.
+            #
+            # Mesure qui a motive ce module : sur 670 taches persistees, ZERO
+            # ne gardait la moindre trace du raisonnement. Il ne vivait que
+            # dans cet anneau de 500 evenements, perdu au redemarrage.
+            #
+            # Apres le fan-out, jamais avant : un abonne vivant ne doit pas
+            # attendre le disque. Et jamais fatal — le journal est un confort,
+            # la boucle de l'agent est le produit.
+            if event.get("task_id"):
+                try:
+                    from .mission_journal import grave as _grave_mission
+                    _grave_mission(event)
+                except Exception:
+                    pass
 
             return event
         except Exception as exc:
@@ -392,6 +425,9 @@ def publish_trace(
     request_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     task_id: Optional[str] = None,
+    thought: Optional[str] = None,
+    iteration: Optional[int] = None,
+    max_iter: Optional[int] = None,
 ) -> Dict[str, Any]:
     context = current_trace_context()
     payload = {
@@ -411,6 +447,9 @@ def publish_trace(
         "tool_name": tool_name,
         "summary": summary,
         "error": error,
+        "thought": thought,
+        "iteration": iteration,
+        "max_iter": max_iter,
     }
     return get_trace_bus().publish(payload)
 # ──────────────────────────────────────────────────────────────────────────────

@@ -872,6 +872,13 @@ class SubAgent:
         if isinstance(_mem, dict):
             _mem["edits_done"] = []
             _mem["errors_seen"] = []
+        # 2026-08-29 — MEME invariant, sur le drapeau pose par Z40c. Le constat
+        # « la gate n'a pas pu valider » etait ecrit sur l'instance et JAMAIS
+        # efface. Sur ce singleton partage par tous les workers, une gate expiree
+        # chez l'un collait sa banniere a TOUS les resumes suivants — y compris
+        # pour du travail reellement verifie. Le defaut etait dans mon propre
+        # correctif : j'avais ajoute l'ecriture sans l'expiration.
+        self._gate_indetermine = ""
 
     async def execute(self, task: AgentTask) -> AgentResult:
         """Exécute une tâche — SÉRIALISÉE par instance (LOT 2.12.A).
@@ -883,7 +890,43 @@ class SubAgent:
         « une tâche à la fois » : l'état est réarmé proprement (2.10) pour chacune.
         Pas de ré-entrance possible (le CodeAgent ne se délègue jamais à lui-même).
         """
+        # ── Lot panel missions 0.c — RENDRE LA FILE VISIBLE ──────────────────
+        #
+        # Ce verrou est la contrainte la plus mal comprise de Lumena : les
+        # workers reflechissent en parallele, mais ils codent CHACUN LEUR TOUR.
+        # Rien ne le disait. A l'ecran, « en attente du CodeAgent » et « en train
+        # de reflechir » etaient indistincts — d'ou l'impression que la
+        # delegation ne sert a rien.
+        #
+        # Mesure (run LogTriage) : `parse.py` a passe l'essentiel de sa vie a
+        # attendre. On borne donc l'attente par deux evenements de trace : la vue
+        # « Ruban » peut alors dessiner les hachures, et le panneau afficher le
+        # rang dans la file.
+        #
+        # Defensif de bout en bout : aucune de ces emissions ne peut empecher la
+        # tache de s'executer.
+        import time as _t_mod
+        _t_attente = _t_mod.perf_counter()
+        _en_file = self._exec_lock.locked()
+        if _en_file:
+            try:
+                publish_trace(
+                    stage="codeagent_wait_start", status="start", mode="codeagent",
+                    task_id=getattr(task, "task_id", None),
+                    summary=str(getattr(task, "description", ""))[:120],
+                )
+            except Exception:
+                pass
         async with self._exec_lock:
+            if _en_file:
+                try:
+                    publish_trace(
+                        stage="codeagent_wait_end", status="ok", mode="codeagent",
+                        task_id=getattr(task, "task_id", None),
+                        duration_ms=(_t_mod.perf_counter() - _t_attente) * 1000,
+                    )
+                except Exception:
+                    pass
             return await self._execute_locked(task)
 
     async def _execute_locked(self, task: AgentTask) -> AgentResult:
@@ -4555,6 +4598,29 @@ class CodeAgent(SubAgent):
                 logger.info("[CodeAgent] 💭 {}", _iter_thought[:800])
             logger.info("[CodeAgent] iter={}/{} {} (attempt {})", iteration, max_iter, _action_detail, attempt)
 
+            # ── Lot panel missions 0.b — la pensee part sur le FLUX, pas que au log ──
+            #
+            # `_progress_data` (plus bas) alimente `pending_tasks`, que lit
+            # `bg_status`. Le panneau Missions, lui, ecoute `/api/trace/stream`.
+            # Sans cette emission, la pensee reste invisible a l'ecran quoi qu'on
+            # mette dans le payload de progression.
+            #
+            # Defensif : le bus de trace ne doit JAMAIS faire tomber le CodeAgent.
+            try:
+                publish_trace(
+                    stage="codeagent_iteration",
+                    status="ok",
+                    mode="codeagent",
+                    task_id=getattr(task, "task_id", None),
+                    tool_name=action_type,
+                    summary=_action_detail[:120],
+                    thought=(_iter_thought or "")[:400],
+                    iteration=iteration,
+                    max_iter=max_iter,
+                )
+            except Exception:
+                pass
+
             # ── Progression temps réel (v2) ──
             _progress_cb = task.context.get("_progress_callback")
             try:
@@ -4565,6 +4631,20 @@ class CodeAgent(SubAgent):
                     "pct": _pct,
                     "last_action": action_type,
                     "last_path": _action_path[:120] if _action_path else "",
+                    # 2026-08-29 — la PENSEE manquait ici, et c'est tout.
+                    #
+                    # `_iter_thought` est extrait onze lignes plus haut, envoye au
+                    # `logger`, puis ce dictionnaire etait construit sans lui. Le
+                    # panneau Missions n'avait donc jamais rien d'autre a montrer
+                    # que des compteurs : l'utilisateur voyait `read_file ✓` et
+                    # `agent_iteration_done · 17646ms`, jamais ce que l'agent
+                    # cherchait a faire — alors que le fichier de log, lui,
+                    # portait `[CodeAgent] 💭 ...` a chaque iteration.
+                    #
+                    # Meme motif que le reste : le fait existait, il etait
+                    # calcule, il etait meme affiche — et jete avant d'atteindre
+                    # celui qui regarde.
+                    "thought": (_iter_thought or "")[:400],
                 }
                 # Stocker dans pending_tasks pour bg_status
                 _orch = getattr(self, "_orchestrator_ref", None)

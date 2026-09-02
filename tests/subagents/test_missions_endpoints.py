@@ -39,9 +39,11 @@ async def test_list_get_cancel(tmp_path, monkeypatch):
     res = await EP.list_missions()
     assert res["success"] and res["count"] == 1
     assert res["missions"][0]["task_id"] == mid
+    assert res["missions"][0]["runtime_active"] is False
 
     g = await EP.get_mission(mid)
     assert g["success"] and g["mission"]["state"] == "queued"
+    assert g["mission"]["runtime_active"] is False
 
     c = await EP.cancel_mission(mid)
     assert c["success"]

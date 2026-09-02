@@ -59,7 +59,12 @@ MOTIFS_SYSTEMEXIT = {
 RAISES_SYSTEMEXIT = 5          # 5 `raise` pour 3 motifs distincts
 EXCEPT_SYSTEMEXIT = 4          # 4 handlers ; le 5e raise s'echappe volontairement
 SYSTEMEXIT_QUI_S_ECHAPPE = "user_cancelled_react"
-HANDLERS_MUETS = 25            # `except Exception: pass` dans _run_internal
+# 25 -> 26 : lot panel missions 14. L'emission de la pensee du LEAD sur le
+# bus de trace est muette par conception — le panneau Missions est un
+# confort, la boucle ReAct est le produit, et une trace qui echoue ne doit
+# pas emporter la mission avec elle. Handler etroit sur `Exception`, comme
+# les 25 autres.
+HANDLERS_MUETS = 26            # `except Exception: pass` dans _run_internal
 FICHIERS_INTROSPECTION_MIN = 53
 
 # Modules deja extraits de react.py. Aucun ne doit le reimporter : le cycle

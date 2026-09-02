@@ -248,7 +248,13 @@ def test_le_squelette_de_la_boucle_est_INTACT():
                if isinstance(x, (ast.Import, ast.ImportFrom)))
     assert conts == 48, f"les `continue` ont bouge : {conts} au lieu de 48"
     assert rets == 33, f"les retours ont bouge : {rets} au lieu de 33"
-    assert trys == 77, f"les `try` ont bouge : {trys} au lieu de 77"
+    # 77 -> 78 : lot panel missions 14. La pensee du LEAD est parsee dans
+    # cette boucle depuis toujours et n'etait ecrite qu'au log `debug` : la
+    # carte « Lead » du panneau Missions restait vide sur TOUTES les
+    # missions. L'emission ajoutee est defensive (le bus de trace ne doit
+    # jamais faire tomber la boucle), d'ou un `try` de plus. Elle n'ajoute
+    # ni `continue`, ni `return`, ni import local.
+    assert trys == 78, f"les `try` ont bouge : {trys} au lieu de 78"
     # 48 -> 47 : la feuille a emporte SON PROPRE import local
     # (`compact_batch_observation`, utilise uniquement par la compaction des
     # documents). L'invariant 15 presume les imports locaux intentionnels ; il

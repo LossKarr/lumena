@@ -204,7 +204,13 @@ def test_le_squelette_de_la_boucle_est_INTACT():
     conts = sum(1 for x in ast.walk(ri) if isinstance(x, ast.Continue))
     rets = sum(1 for x in ast.walk(ri) if isinstance(x, ast.Return))
     trys = sum(1 for x in ast.walk(ri) if isinstance(x, ast.Try))
-    assert (conts, rets, trys) == (48, 33, 77), (
+    # 77 -> 78 : lot panel missions 14. La pensee du LEAD est parsee dans
+    # cette boucle depuis toujours et n'etait ecrite qu'au log `debug` : la
+    # carte « Lead » du panneau Missions restait vide sur TOUTES les
+    # missions. L'emission ajoutee est defensive (le bus de trace ne doit
+    # jamais faire tomber la boucle), d'ou un `try` de plus. Elle n'ajoute
+    # ni `continue`, ni `return`, ni import local.
+    assert (conts, rets, trys) == (48, 33, 78), (
         f"le squelette a bouge : continue={conts} return={rets} try={trys}"
     )
 

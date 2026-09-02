@@ -343,6 +343,23 @@ def _neutralize_peer_master(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_mission_journal(monkeypatch):
+    """La suite n'ECRIT JAMAIS dans les donnees reelles.
+
+    Le journal de mission est accroche a `TraceBus.publish` : tout evenement
+    portant un `task_id` grave une ligne dans `data/missions/<id>.jsonl`. Douze
+    fichiers de tests publient des traces — sans ce garde, une simple
+    regression sement des dizaines de journaux fantomes dans les donnees du
+    developpeur, et les fait grossir a chaque execution.
+
+    Meme raison que les deux garde-fous ci-dessus : un test ne doit pas laisser
+    de trace hors de son `tmp_path`. Les fichiers qui testent le journal
+    lui-meme le rallument explicitement ET redirigent sa racine.
+    """
+    monkeypatch.setenv("LUMENA_MISSION_JOURNAL", "0")
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_codex_subscription(monkeypatch):
     """LOT Z33 — la suite est ÉTANCHE à l'abonnement Codex.
 

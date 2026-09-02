@@ -4617,6 +4617,35 @@ class ReActLoop:
             logger.debug(f"Thought: {thought.content}")
             logger.debug(f"Action: {action.action_type.value}")
 
+            # ── Lot panel missions 14 — la pensee du LEAD part sur le FLUX ──
+            #
+            # Elle etait parsee ici depuis toujours, ecrite au log en `debug`,
+            # et jamais publiee. La carte « Lead » du panneau Missions etait
+            # donc vide sur TOUTES les missions : pas faute de donnee, faute
+            # d'un chemin entre la donnee et l'ecran.
+            #
+            # Meme forme que l'emission du CodeAgent (lot 0.b) pour que le
+            # modele du panneau n'ait rien de special a faire : meme `stage`,
+            # meme `task_id`, meme plafond de 400 caracteres.
+            #
+            # Garde sur `task_id` : hors mission il n'y a personne pour ecouter,
+            # et le panneau jette de toute facon les evenements sans task_id.
+            # Defensif : le bus de trace ne doit JAMAIS faire tomber la boucle.
+            if TELEMETRY_AVAILABLE and self.task_id:
+                try:
+                    publish_trace(
+                        stage="codeagent_iteration",
+                        status="ok",
+                        mode="agent",
+                        task_id=self.task_id,
+                        tool_name=getattr(action.action_type, "value", "") or "",
+                        thought=(thought.content or "")[:400],
+                        iteration=i + 1,
+                        max_iter=self.max_iterations,
+                    )
+                except Exception:
+                    pass
+
             # F4: après un FINAL jugé incomplet, le repair re-interroge le modèle.
             # S'il se rattrape en AGISSANT (tool_call), on NE rollback PLUS vers la
             # réponse incomplète : c'était auto-contradictoire (on répare PARCE QUE

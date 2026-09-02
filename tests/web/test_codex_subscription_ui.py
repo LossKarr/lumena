@@ -77,7 +77,7 @@ def test_codex_card_assets_are_loaded_and_responsive():
         encoding="utf-8"
     )
     assert "/static/css/codex-subscription.css?v=2" in index
-    assert "/static/js/main.js?v=37" in index
+    assert "/static/js/main.js?v=52" in index
     assert "@media(max-width:820px)" in css
     assert "@media(max-width:560px)" in css
     assert ".codex-access-segment" in css

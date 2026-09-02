@@ -141,9 +141,23 @@ def test_list_and_cancel(tmp_path):
     mgr.create_mission("b")
     items = mgr.list_missions()
     assert len(items) == 2
+    assert all(item["runtime_active"] is False for item in items)
     out = mgr.cancel_mission(mid)
     assert out["success"] is True
     assert mgr.get_mission(mid)["state"] == "cancelled"
+
+
+def test_runtime_active_est_projete_sans_modifier_le_checkpoint(tmp_path):
+    core, orch = _core(tmp_path)
+    mgr = MissionManager(core)
+    mid = mgr.create_mission("active")
+    orch.mark_checkpoint(mid, {"step": "llm"})
+    mgr._inflight.add(mid)
+
+    item = mgr.get_mission(mid)
+    assert item["state"] == "checkpointed"
+    assert item["runtime_active"] is True
+    assert orch.get_task(mid).get("runtime_active") is None
 
 
 def test_guard_when_no_orchestrator():

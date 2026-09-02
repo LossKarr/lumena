@@ -87,7 +87,7 @@ def test_palette_markup_is_accessible_and_has_no_inline_search_handler():
     assert 'aria-controls="cmd-results"' in index
     assert 'oninput="filterCommands()"' not in index
     assert "/static/css/components.css?v=7" in index
-    assert "/static/js/main.js?v=37" in index
+    assert "/static/js/main.js?v=52" in index
 
 
 def test_palette_only_targets_panels_that_exist():
