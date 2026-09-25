@@ -187,6 +187,12 @@ async def read_files_batch_handler(
     async def _one(p: str) -> Tuple[str, str, bool]:
         try:
             resolved = ctx.resolve_path(p)
+            # L1d-3 : secrets de Lumena et zones secretes du PC (meme garde que read_file).
+            from .files import PathSecurityError as _SecErr, assert_read_allowed
+            try:
+                assert_read_allowed(resolved, ctx)
+            except _SecErr as sec_err:
+                return (p, f"❌ {sec_err}", False)
         except Exception as exc:
             return (p, f"❌ Résolution chemin échouée: {exc}", False)
         if not resolved.exists() or not resolved.is_file():
@@ -419,6 +425,16 @@ async def apply_patches_handler(
         except Exception as exc:
             return HandlerResult.fail(
                 f"apply_patches: résolution `{p['file']}` échouée: {exc}",
+                handler_name="apply_patches",
+            )
+        # L1c-1 (N11) : meme garde d'ecriture que les autres portes, AVANT toute
+        # ecriture -> un seul fichier refuse annule tout le lot.
+        from .files import PathSecurityError, assert_write_allowed
+        try:
+            assert_write_allowed(resolved, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(
+                f"apply_patches: `{p['file']}` — {sec_err}",
                 handler_name="apply_patches",
             )
         key = str(resolved)

@@ -64,9 +64,14 @@ def ledger_text_claims_action(final_text_normalized: str) -> bool:
     return any(p in final_text_normalized for p in _LEDGER_CLAIM_PATTERNS)
 
 
-def compute_effective_successful_tools(history: Iterable[Any]) -> List[str]:
+def compute_effective_successful_tools(history: Iterable[Any], *, execution_success=None) -> List[str]:
     """Liste des outils RÉELLEMENT réussis, en dépliant `parallel_tools` sur ses
     sous-outils. Pur : ne lit que la structure des steps (action/observation)."""
+    def successful(observation, name):
+        if name.startswith("ide_"):
+            return bool(execution_success and execution_success(observation, name))
+        return bool(getattr(observation, "success", False))
+
     eff: List[str] = []
     for _h in history:
         if not (_h.action and _h.observation and _h.observation.success):
@@ -75,13 +80,13 @@ def compute_effective_successful_tools(history: Iterable[Any]) -> List[str]:
         if _tn == "parallel_tools":
             _subs = getattr(_h.observation, "sub_results", ()) or ()
             for _sub in _subs:
-                if not getattr(_sub, "success", False):
+                if not successful(_sub, getattr(_sub, "tool_name", "")):
                     continue
                 _sn = getattr(_sub, "tool_name", "") or ""
                 if _sn:
                     eff.append(_sn)
             # pas de sub_results -> agrégateur ignoré (pas ajouté)
-        elif _tn:
+        elif _tn and successful(_h.observation, _tn):
             eff.append(_tn)
     return eff
 

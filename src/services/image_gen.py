@@ -22,7 +22,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -183,6 +183,18 @@ _MODEL_PROVIDER: Dict[str, str] = {
     "huggingface-sdxl": "huggingface",
 }
 
+_MODEL_PROVIDER.update({
+    "gpt-image-2.5-sunburst": "openai",
+    "gpt-image-2.5-flare": "openai",
+    "recraftv4_1": "recraft",
+    "recraftv4_1_vector": "recraft",
+    "recraftv4_1_pro": "recraft",
+    "recraftv4_1_pro_vector": "recraft",
+    "recraftv4_1_utility": "recraft",
+    "recraftv4_1_utility_pro": "recraft",
+    "seedream-5-pro": "replicate",
+})
+
 # ── Model catalog — métadonnées complètes pour chaque modèle ──────────────
 
 @dataclass(frozen=True)
@@ -200,6 +212,12 @@ class ModelInfo:
     weaknesses: str     # phrase courte: ses limites
     capabilities: List[str]  # ["text-to-image", "image-edit", "inpaint", "svg", "upscale", ...]
     best_for: str       # cas d'usage idéal en 1 phrase
+    lifecycle: str = "stable"
+    selectable: bool = True
+    auto_eligible: bool = True
+    variant_costs: Dict[str, float] = field(default_factory=dict)
+    source_url: str = ""
+    verified_on: str = ""
 
 
 _MODEL_CATALOG: Dict[str, ModelInfo] = {
@@ -417,7 +435,7 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
     ),
     "sd3.5-flash": ModelInfo(
         name="SD 3.5 Flash", provider="stability", quality=5, speed=9,
-        cost_per_image=0.02, free=False, max_resolution="1024x1024",
+        cost_per_image=0.025, free=False, max_resolution="1024x1024",
         styles=["photoréaliste", "illustration"],
         strengths="Le plus rapide de la gamme SD 3.5",
         weaknesses="Qualité la plus basse Stability",
@@ -622,6 +640,72 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
     ),
 }
 
+_MODEL_CATALOG.update({
+    "gpt-image-2.5-sunburst": ModelInfo(
+        "GPT Image 2.5 Sunburst", "openai", 10, 5, 0.12, False, "4096x4096",
+        ["photoréaliste", "édition précise", "typographie"],
+        "Modèle OpenAI image le plus capable, avec édition précise.",
+        "Tarification réelle dépend de la qualité et du nombre de tokens image.",
+        ["text-to-image", "image-edit", "multi-reference"], "Rendus finaux et retouches exigeantes",
+        auto_eligible=False, source_url="https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst", verified_on="2026-09-20",
+    ),
+    "gpt-image-2.5-flare": ModelInfo(
+        "GPT Image 2.5 Flare", "openai", 9, 8, 0.06, False, "4096x4096",
+        ["photoréaliste", "illustration", "édition"],
+        "Variante OpenAI rapide et de haute qualité.",
+        "Tarification réelle dépend de la qualité et du nombre de tokens image.",
+        ["text-to-image", "image-edit", "multi-reference"], "Création courante rapide",
+        auto_eligible=False, source_url="https://developers.openai.com/api/docs/models/gpt-image-2.5-flare", verified_on="2026-09-20",
+    ),
+    "seedream-5-pro": ModelInfo(
+        "Seedream 5 Pro", "replicate", 9, 6, 0.045, False, "2048x2048",
+        ["photoréaliste", "illustration", "composition"],
+        "Seedream actuel avec plusieurs images de référence.",
+        "Coût dépend de la résolution.",
+        ["text-to-image", "image-edit", "multi-reference"], "Compositions guidées par références",
+        auto_eligible=False, variant_costs={"1k": 0.045, "2k": 0.09},
+        source_url="https://replicate.com/bytedance/seedream-5-pro/readme", verified_on="2026-09-20",
+    ),
+    "grok-imagine-image-pro": ModelInfo(
+        "Grok Imagine Image Pro", "xai", 9, 5, 0.10, False, "2048x2048",
+        ["photoréaliste"], "Ancienne variante Pro xAI.", "Endpoint retiré.",
+        ["text-to-image"], "Lecture de configurations historiques",
+        lifecycle="retired", selectable=False, auto_eligible=False, verified_on="2026-09-20",
+    ),
+})
+
+_RECRAFT_V41_PRICES = {
+    "recraftv4_1": 0.035,
+    "recraftv4_1_vector": 0.08,
+    "recraftv4_1_pro": 0.21,
+    "recraftv4_1_pro_vector": 0.30,
+    "recraftv4_1_utility": 0.035,
+    "recraftv4_1_utility_pro": 0.21,
+}
+for _recraft_id, _price in _RECRAFT_V41_PRICES.items():
+    _is_vector = _recraft_id.endswith("_vector")
+    _is_pro = "_pro" in _recraft_id
+    _MODEL_CATALOG[_recraft_id] = ModelInfo(
+        name=_recraft_id, provider="recraft", quality=10 if _is_pro else 9,
+        speed=6 if _is_pro else 7, cost_per_image=_price, free=False,
+        max_resolution="4096x4096" if _is_pro else "2048x2048",
+        styles=["vectoriel", "illustration", "branding"],
+        strengths="Recraft V4.1 avec sortie vectorielle native." if _is_vector else "Recraft V4.1 raster.",
+        weaknesses="Tarif et latence varient selon la variante.",
+        capabilities=["text-to-image", "svg"] if _is_vector else ["text-to-image"],
+        best_for="Assets vectoriels" if _is_vector else "Illustrations et branding",
+        auto_eligible=False, source_url="https://www.recraft.ai/pricing?tab=api",
+        verified_on="2026-09-20",
+    )
+
+for _retired_image in (
+    "gpt-image-1.5", "gpt-image-1-mini",
+    "imagen-4-ultra", "imagen-4", "imagen-4-fast",
+):
+    _MODEL_CATALOG[_retired_image] = replace(
+        _MODEL_CATALOG[_retired_image], lifecycle="retired", selectable=False, auto_eligible=False
+    )
+
 
 def get_model_info(model: str) -> Optional[ModelInfo]:
     """Retourne la fiche technique d'un modèle, ou None."""
@@ -660,11 +744,11 @@ _PROVIDER_FALLBACK_ORDER: List[str] = [
     "flux-2-klein-9b",
     "gpt-image-1-mini",
     "ideogram-v3-turbo",
-    "sd3.5-flash",
     "minimax-image-01",
     "imagen-4-fast",
     "grok-imagine-image-2.0",
     "grok-imagine-image",
+    "sd3.5-flash",
     "ideogram-v4-turbo",
     "stable-image-core",
     "seedream-5-lite",
@@ -693,6 +777,11 @@ _PROVIDER_FALLBACK_ORDER: List[str] = [
     "flux-kontext-max",
     "flux-2-max",
     "gpt-image-2",
+]
+
+_PROVIDER_FALLBACK_ORDER = [
+    name for name in _PROVIDER_FALLBACK_ORDER
+    if _MODEL_CATALOG[name].selectable and _MODEL_CATALOG[name].auto_eligible
 ]
 
 # Provider → env var clé API
@@ -753,6 +842,7 @@ _FLUX_API_PATHS: Dict[str, str] = {
 # Replicate model → version mapping
 _REPLICATE_VERSIONS: Dict[str, str] = {
     "seedream-5-lite": "bytedance/seedream-5-lite",
+    "seedream-5-pro": "bytedance/seedream-5-pro",
     "seedream-4.5": "bytedance/seedream-4.5",
     "wan-2.7-image-pro": "alibaba/wan-2.7-image-pro",
     "qwen-image": "qwen/qwen-image",
@@ -1337,8 +1427,10 @@ class ImageGenService:
         """Retourne la liste des modèles avec métadonnées complètes."""
         models = []
         for model_name, provider in _MODEL_PROVIDER.items():
-            available = self._has_api_key(provider)
             info = _MODEL_CATALOG.get(model_name)
+            if info and not info.selectable:
+                continue
+            available = self._has_api_key(provider)
             entry: Dict[str, Any] = {
                 "name": model_name,
                 "provider": provider,
@@ -1433,11 +1525,13 @@ class ImageGenService:
         """OpenAI Images API."""
         key = self._get_api_key("openai")
         model_id_map = {
+            "gpt-image-2.5-sunburst": "gpt-image-2.5-sunburst",
+            "gpt-image-2.5-flare": "gpt-image-2.5-flare",
             "gpt-image-2": "gpt-image-2",
             "gpt-image-1.5": "gpt-image-1.5",
             "gpt-image-1-mini": "gpt-image-1-mini",
         }
-        model_id = model_id_map.get(model, "gpt-image-1.5")
+        model_id = model_id_map.get(model, "gpt-image-2")
 
         # OpenAI gpt-image-1 accepte: low/medium/high/auto
         _quality_map = {"hd": "high", "standard": "medium", "sd": "low"}
@@ -1475,7 +1569,7 @@ class ImageGenService:
             raise ImageGenError("OpenAI: ni b64_json ni url dans la réponse")
 
         w, h = _parse_size(size)
-        cost = 0.12 if model == "gpt-image-2" else 0.08 if model == "gpt-image-1.5" else 0.02
+        cost = _MODEL_CATALOG[model].cost_per_image
         return img_bytes, "png", w, h, cost, None
 
     async def _generate_flux(
@@ -1544,8 +1638,7 @@ class ImageGenService:
         resp.raise_for_status()
 
         w, h = _parse_size(size)
-        cost_map = {"stable-image-ultra": 0.08, "stable-image-core": 0.03}
-        cost = cost_map.get(model, 0.04)
+        cost = _MODEL_CATALOG[model].cost_per_image
         seed_val = int(resp.headers.get("x-seed", "0")) or None
         return resp.content, "png", w, h, cost, seed_val
 
@@ -1633,11 +1726,12 @@ class ImageGenService:
     ) -> tuple[bytes, str, int, int, float, Optional[int]]:
         """Recraft V4 API (y compris SVG natif)."""
         key = self._get_api_key("recraft")
-        is_svg = "svg" in model
+        is_svg = "svg" in model or model.endswith("_vector")
+        api_model = model if model.startswith("recraftv4_1") else "recraftv4"
 
         body: Dict[str, Any] = {
             "prompt": prompt,
-            "model": "recraftv4" if not is_svg else "recraftv4",
+            "model": api_model,
             "response_format": "url",
         }
         if is_svg:
@@ -1663,7 +1757,7 @@ class ImageGenService:
 
         fmt = "svg" if is_svg else "png"
         w, h = (0, 0) if is_svg else _parse_size(size)
-        return img_resp.content, fmt, w, h, 0.04, None
+        return img_resp.content, fmt, w, h, _MODEL_CATALOG[model].cost_per_image, None
 
     async def _generate_replicate(
         self, prompt: str, *, model: str, size: str, quality: str, style: str,
@@ -1711,7 +1805,9 @@ class ImageGenService:
                 img_resp = await client.get(img_url)
                 img_resp.raise_for_status()
                 w, h = _parse_size(size)
-                return img_resp.content, "png", w, h, 0.03, None
+                info = _MODEL_CATALOG[model]
+                cost = info.variant_costs.get("2k" if max(w, h) > 1024 else "1k", info.cost_per_image)
+                return img_resp.content, "png", w, h, cost, None
             if status == "failed":
                 raise ImageGenError(f"Replicate prediction failed: {result.get('error')}")
 

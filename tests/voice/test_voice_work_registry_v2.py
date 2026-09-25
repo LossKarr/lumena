@@ -62,7 +62,8 @@ def test_text_steering_is_persistent_and_consumed_once():
     assert ids == [command["command_id"]]
     assert consume_text_steering(orch, task_id) == ("", [])
     persisted = orch.get_task(task_id)["metadata"]["steering_commands"][0]
-    assert persisted["status"] == "applied" and persisted["applied_at"]
+    assert persisted["status"] == "delivered"
+    assert persisted["delivery"]["delivered_at"]
 
 
 def test_pause_resume_protocol_uses_metadata_not_fake_state():

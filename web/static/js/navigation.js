@@ -66,6 +66,7 @@ export function loadPanelData(p){
     case'journal':loadJournal();break;
     case'facts':loadFacts();break;
     case'providers':loadProviders();break;
+    case'local-models':if(window.loadLocalModels)window.loadLocalModels();break;
     case'alerts':loadAlerts();break;
     case'training':loadTraining();break;
     case'finetuning':loadFinetuning();break;

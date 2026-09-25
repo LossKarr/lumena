@@ -57,7 +57,12 @@ class MissionManager:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Crée une mission persistante (`queued`) et retourne son `mission_id`."""
-        meta: Dict[str, Any] = {"kind": "mission", "objective": str(objective)[:2000]}
+        meta: Dict[str, Any] = {
+            "kind": "mission",
+            "objective": str(objective)[:2000],
+            "initial_objective": str(objective)[:8000],
+            "objective_revision": 0,
+        }
         if deadline:
             meta["deadline"] = str(deadline)
             # Lot 5.7.1 — point central : toute création de mission normalise l'échéance.

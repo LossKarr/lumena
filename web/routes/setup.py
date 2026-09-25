@@ -12,6 +12,7 @@ Preview mode (?preview=1) lets the dev test the wizard UI without writing.
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import re
 import secrets
@@ -177,6 +178,30 @@ async def setup_status(preview: str = "0"):
 async def setup_schema():
     """Returns the config schema grouped by setup step, with rich help content."""
     steps = []
+
+    def _recommendations(field_key: str, *, free_only: bool = False, limit: int = 16) -> list[str]:
+        """Build setup suggestions from the same catalog-backed field options."""
+        field = next((item for item in _CONFIG_SCHEMA if item["key"] == field_key), {})
+        options = [name for name in field.get("options", []) if name != "auto"]
+        if field_key == "LUMENA_BRAIN_IMAGE_GEN":
+            from src.services.image_gen import _MODEL_CATALOG
+            if free_only:
+                options = [name for name in options if _MODEL_CATALOG[name].free]
+            options.sort(key=lambda name: (-_MODEL_CATALOG[name].quality, -_MODEL_CATALOG[name].speed, name))
+        else:
+            from src.llm.providers import MODEL_SKILLS, get_model_config
+            if free_only:
+                options = [
+                    name for name in options
+                    if (model := get_model_config(name)) is not None and model.is_free()
+                ]
+            skill = {
+                "LUMENA_BRAIN_VISION": "vision",
+                "LUMENA_BRAIN_CODE": "code",
+                "LUMENA_BRAIN_WEB": "web",
+            }.get(field_key, "reasoning")
+            options.sort(key=lambda name: (-MODEL_SKILLS.get(name, {}).get(skill, 0), name))
+        return options[:limit]
 
     # Step 1: LLM model selection
     model_entry = next((s for s in _CONFIG_SCHEMA if s["key"] == "LUMENA_DEFAULT_MODEL"), None)
@@ -465,26 +490,26 @@ async def setup_schema():
             "LUMENA_BRAIN_VISION": {
                 "icon": "eye",
                 "desc": "Analyse d'images, photos, captures d'écran, PDF visuels",
-                "top": ["claude-opus-5", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "claude-sonnet-5", "claude-opus-4.7", "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning"],
-                "top_free": ["nvidia-step-3.7-flash", "nvidia-kimi-k2.6"],
+                "top": _recommendations("LUMENA_BRAIN_VISION"),
+                "top_free": _recommendations("LUMENA_BRAIN_VISION", free_only=True),
             },
             "LUMENA_BRAIN_CODE": {
                 "icon": "code-2",
                 "desc": "Génération de code, debug, analyse de projets, refactoring",
-                "top": ["claude-opus-5", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "grok-4.6", "grok-4.5", "grok-build-0.1", "grok-4.3", "gemini-3.6-flash", "claude-sonnet-5", "claude-sonnet-4.6"],
-                "top_free": ["nvidia-deepseek-v4-flash", "nvidia-gpt-oss-120b", "nvidia-kimi-k2.6"],
+                "top": _recommendations("LUMENA_BRAIN_CODE"),
+                "top_free": _recommendations("LUMENA_BRAIN_CODE", free_only=True),
             },
             "LUMENA_BRAIN_WEB": {
                 "icon": "globe",
                 "desc": "Recherche web, analyse de pages, veille d'actualités",
-                "top": ["claude-opus-5", "kimi-k3", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "kimi-k2.5"],
-                "top_free": ["nvidia-gpt-oss-120b", "nvidia-step-3.7-flash"],
+                "top": _recommendations("LUMENA_BRAIN_WEB"),
+                "top_free": _recommendations("LUMENA_BRAIN_WEB", free_only=True),
             },
             "LUMENA_BRAIN_IMAGE_GEN": {
                 "icon": "image",
                 "desc": "Génération d'images à partir de descriptions textuelles",
-                "top": ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image", "grok-imagine-image-2.0", "huggingface-sdxl", "gpt-image-1-mini", "ideogram-v4-turbo", "flux-2-pro"],
-                "top_free": ["gemini-3.1-flash-image", "gemini-2.5-flash-image", "gemini-3.1-flash-lite-image", "huggingface-sdxl"],
+                "top": _recommendations("LUMENA_BRAIN_IMAGE_GEN"),
+                "top_free": _recommendations("LUMENA_BRAIN_IMAGE_GEN", free_only=True),
             },
         },
     })
@@ -1109,27 +1134,23 @@ async def get_ollama_models(request: Request):
 
     from src.llm.providers import OLLAMA_CATALOG
 
-    # P0.4: Use configured Ollama host
-    _ollama_host = os.environ.get(
-        "LUMENA_OLLAMA_HOST",
-        os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-    ).rstrip("/")
     installed = {}  # name -> {size, modified}
     ollama_available = False
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"{_ollama_host}/api/tags")
-            if r.status_code == 200:
-                ollama_available = True
-                for m in r.json().get("models", []):
-                    base_name = m["name"]
-                    size_bytes = m.get("size", 0)
-                    size_gb = f"{size_bytes / (1024**3):.1f} GB" if size_bytes else ""
-                    installed[base_name] = {"size": size_gb}
-                    # Also match without tag (e.g. "qwen3:8b" matches "qwen3:8b-...")
-                    short = base_name.split(":")[0]
-                    installed[short] = {"size": size_gb}
+        from src.local_models.ollama_client import OllamaClient
+        # Nouvelle instance légère : le setup doit refléter immédiatement une
+        # valeur LUMENA_OLLAMA_HOST modifiée pendant la configuration.
+        # Cette route est localhost-only et LUMENA_OLLAMA_HOST est une valeur
+        # explicitement configurée par l'administrateur pendant l'onboarding.
+        _models = await OllamaClient(allow_remote=True).list_installed()
+        ollama_available = True
+        for m in _models:
+            base_name = m.reference.pull_reference
+            size_bytes = m.size_bytes or 0
+            size_gb = f"{size_bytes / (1024**3):.1f} GB" if size_bytes else ""
+            installed[base_name] = {"size": size_gb}
+            short = base_name.split(":")[0]
+            installed[short] = {"size": size_gb}
     except Exception:
         pass
 
@@ -1187,47 +1208,35 @@ async def pull_ollama_model(request: Request, _: None = Depends(deps.verify_admi
         from fastapi import HTTPException as _HTTPExc
         raise _HTTPExc(status_code=400, detail=f"Modèle non autorisé: {model_id}")
 
-    import httpx
     from starlette.responses import StreamingResponse
 
-    # P0.4: Use configured Ollama host
-    _ollama_host = os.environ.get(
-        "LUMENA_OLLAMA_HOST",
-        os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
-    ).rstrip("/")
+    from src.local_models.contracts import JobState
+    from src.local_models.manager import LocalModelManagerError, get_local_model_manager
+    _manager = get_local_model_manager()
+    try:
+        _job = _manager.install(model_id, source="ollama", enable_after_install=True, caller_kind="setup")
+    except LocalModelManagerError as exc:
+        from fastapi import HTTPException as _HTTPExc
+        raise _HTTPExc(status_code=409, detail=str(exc)) from None
 
     async def stream_pull():
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=10, read=600, write=10, pool=10)
-        ) as client:
-            try:
-                async with client.stream(
-                    "POST",
-                    f"{_ollama_host}/api/pull",
-                    json={"name": model_id, "stream": True},
-                ) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            obj = json.loads(line)
-                        except Exception:
-                            continue
-                        pct = 0
-                        if obj.get("total") and obj.get("completed"):
-                            pct = round(obj["completed"] / obj["total"] * 100, 1)
-                        status_text = obj.get("status", "")
-                        done = status_text == "success"
-                        yield f"data: {json.dumps({'percent': pct, 'status': status_text, 'done': done})}\n\n"
-                        if done:
-                            # Enregistrer le modèle fraîchement pullé dans AVAILABLE_MODELS
-                            try:
-                                from src.llm.providers import register_ollama_models
-                                register_ollama_models([model_id])
-                            except Exception:
-                                pass
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e), 'percent': 0, 'status': 'error', 'done': False})}\n\n"
+        previous = None
+        while True:
+            job = _manager.job_store.get(_job.job_id)
+            if job is None:
+                yield f"data: {json.dumps({'error': 'job_not_found', 'percent': 0, 'status': 'error', 'done': False})}\n\n"
+                return
+            current = (job.progress_percent, job.status_code, job.state.value)
+            if current != previous:
+                done = job.state is JobState.SUCCEEDED and job.verified
+                payload = {"percent": job.progress_percent, "status": job.status_code, "done": done}
+                if job.state in {JobState.FAILED, JobState.CANCELLED, JobState.UNKNOWN_INTERRUPTED}:
+                    payload["error"] = job.error_code or job.state.value
+                yield f"data: {json.dumps(payload)}\n\n"
+                previous = current
+            if job.state in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED, JobState.UNKNOWN_INTERRUPTED}:
+                return
+            await asyncio.sleep(0.4)
 
     return StreamingResponse(stream_pull(), media_type="text/event-stream")
 

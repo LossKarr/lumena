@@ -1151,6 +1151,41 @@ def _neutralize_verified_claims(text: str) -> str:
     return out
 
 
+def apply_ide_execution_truth_lock(
+    final_text: str, *, action_unproven: bool, has_fresh_green_test: bool,
+    last_test_outcome: Optional[dict], server_verified: bool, published: bool,
+) -> tuple[str, dict]:
+    """Ordinary IDE conversations also require evidence for claimed effects.
+
+    On a contradiction, return a factual message instead of keeping the false
+    claim under a warning banner. Native-only conversations are unchanged.
+    """
+    normalized = unicodedata.normalize("NFKD", final_text).encode("ascii", "ignore").decode().lower()
+    explicit_tests = bool(re.search(
+        r"\btests?\s+(?:(?:sont|are)\s+)?(?:verts?|green|passed|passent|reussis)\b", normalized,
+    ))
+    tests_unproven = (claims_tests_pass(final_text) or explicit_tests) and not has_fresh_green_test
+    server_unproven = claims_server_started(final_text) and not server_verified
+    published_unproven = claims_published(final_text) and not published
+    if not (action_unproven or tests_unproven or server_unproven or published_unproven):
+        return final_text, {"changed": False, "overclaim": False}
+    facts = []
+    if tests_unproven:
+        facts.append("Les tests ne sont pas confirmés verts pour l’état actuel des fichiers.")
+        if last_test_outcome:
+            counts = [last_test_outcome.get(key) for key in ("passed", "failed")]
+            if all(type(value) is int and 0 <= value <= 1000000 for value in counts):
+                facts.append(f"Dernier résultat observé : {counts[0]} réussite(s), {counts[1]} échec(s).")
+    if server_unproven:
+        facts.append("Le fonctionnement du serveur n’a pas été vérifié.")
+    if published_unproven:
+        facts.append("Aucune publication n’a été prouvée.")
+    if action_unproven:
+        facts.append("La preuve de l’action annoncée est insuffisante.")
+    return ("Je ne peux pas confirmer cette conclusion. " + " ".join(facts),
+            {"changed": True, "overclaim": True, "ide_execution_unproven": True})
+
+
 def apply_mission_truth_lock(
     final_text: str,
     *,

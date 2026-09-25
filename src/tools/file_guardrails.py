@@ -25,23 +25,39 @@ class PathSecurityError(Exception):
 class OutsideAccessGrant:
     """Per-turn bounded grant for accessing paths outside workspace.
 
-    Only read/list/search is grantable via this mechanism. Write and delete
-    outside workspace remain forbidden regardless of any grant.
+    `for_paths` : lecture seule. `for_chat` (lot L1c-3, decision de Charles du
+    15/09/2026) : en CHAT, l'endroit designe par l'utilisateur est aussi inscriptible
+    et supprimable, avec sauvegarde avant (garde commune `assert_write_allowed`). Les
+    missions et l'autonomie n'en recoivent jamais. Le code de Lumena et la liste noire
+    restent refuses quel que soit le grant.
 
     Usage: built by _detect_outside_access_grant(query) in agent_service.py
     and attached to HandlerContext for the duration of one turn.
     """
 
-    # Roots/paths the agent may read from outside workspace this turn.
+    # Roots/paths the agent may access outside workspace this turn.
     allowed_roots: List[Path] = field(default_factory=list)
     allow_read: bool = False
-    # Write and delete are never granted here — kept explicit as False.
+    # Accordes uniquement par `for_chat` (chat) ; jamais par `for_paths`.
     allow_write: bool = False
     allow_delete: bool = False
+    # Lot L1d-3 : en CONVERSATION seulement, la lecture est libre partout sur le PC
+    # (les zones secretes restent refusees par `check_secret_zone`). Jamais en mission
+    # ni en autonomie. N'ouvre JAMAIS l'ecriture.
+    read_anywhere: bool = False
 
     def permits_read(self, resolved: Path) -> bool:
-        """Return True if *resolved* falls under a granted root."""
-        if not self.allow_read or not self.allowed_roots:
+        """Return True if *resolved* falls under a granted root (ou lecture libre)."""
+        if self.read_anywhere:
+            return True
+        return bool(self.allow_read) and self._covers(resolved)
+
+    def permits_write(self, resolved: Path) -> bool:
+        """Lot L1c-3 — True si l'ecriture est accordee ET couverte par une racine."""
+        return bool(self.allow_write) and self._covers(resolved)
+
+    def _covers(self, resolved: Path) -> bool:
+        if not self.allowed_roots:
             return False
         try:
             rp = resolved.resolve()
@@ -65,6 +81,40 @@ class OutsideAccessGrant:
     def for_paths(cls, *paths: Path) -> "OutsideAccessGrant":
         """Grant read access to specific paths or directory roots."""
         return cls(allowed_roots=list(paths), allow_read=True)
+
+    @classmethod
+    def for_chat(cls, *paths: Path) -> "OutsideAccessGrant":
+        """Lot L1c-3 — chat : lecture, ecriture et suppression sur ces racines seulement."""
+        return cls(allowed_roots=list(paths), allow_read=True, allow_write=True, allow_delete=True)
+
+
+def backup_before_outside_change(target: Path) -> Optional[Path]:
+    """Lot L1c-3/4 — copie un fichier EXISTANT hors depot avant modification/suppression.
+
+    Destination : `BACKUPS_DIR/hors_depot/<horodatage>/<chemin absolu nettoye>`.
+    Rien a sauvegarder (fichier absent, dossier) -> None. Sauvegarde impossible ->
+    PathSecurityError : on ne modifie jamais sans filet (echec ferme).
+    """
+    import re
+    import shutil
+
+    from ..utils import paths as _paths
+
+    rp = _resolve_safe(Path(target))
+    if not rp.is_file():
+        return None
+    parts = [re.sub(r"[^A-Za-z0-9_.\-]", "", part) or "racine" for part in rp.parts]
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    dest = Path(_paths.BACKUPS_DIR) / "hors_depot" / stamp / Path(*parts)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(rp, dest)
+    except OSError as exc:
+        raise PathSecurityError(
+            f"Écriture refusée: sauvegarde impossible avant modification de {rp} ({exc})."
+        ) from exc
+    logger.info("[guardrails] Sauvegarde avant modification hors dépôt: {} -> {}", rp, dest)
+    return dest
 
 
 def _resolve_safe(path: Path) -> Path:
@@ -188,6 +238,56 @@ def check_write_blacklist(resolved: Path, lumena_root: Path) -> None:
             )
 
 
+# Lot L1d-3 — zones secretes : interdites en LECTURE partout sur le PC, quelle que
+# soit l'autorisation du tour. Decision de Charles du 15/09/2026 : la lecture est libre
+# partout SAUF ces zones. Le `.env` d'un projet de l'utilisateur n'en fait PAS partie
+# (sinon Lumena ne pourrait plus l'aider dessus) ; celui de Lumena reste couvert par la
+# liste noire de lecture.
+_SECRET_HOME_DIRS: Tuple[str, ...] = (
+    ".ssh", ".aws", ".gnupg", ".docker", ".kube", ".mozilla",
+    ".config/gcloud", ".config/google-chrome", ".config/chromium",
+    "AppData/Local/Google/Chrome/User Data",
+    "AppData/Local/Microsoft/Edge/User Data",
+    "AppData/Local/BraveSoftware",
+    "AppData/Roaming/Mozilla/Firefox/Profiles",
+    "AppData/Roaming/Microsoft/Credentials",
+    "AppData/Local/Microsoft/Credentials",
+    "AppData/Local/Microsoft/Vault",
+    "Library/Keychains",
+)
+_SECRET_FILE_NAMES: frozenset = frozenset({
+    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "login data", "key4.db",
+    "logins.json", "signons.sqlite", "credentials",
+})
+_SECRET_SUFFIXES: Tuple[str, ...] = (".pem", ".ppk", ".kdbx", ".key", ".p12", ".pfx", ".jks")
+
+
+def check_secret_zone(resolved: Path) -> None:
+    """Bloque la LECTURE d'une zone secrete, ou qu'elle soit sur le PC (lot L1d-3).
+
+    Cles SSH/cloud, profils de navigateurs (mots de passe, cookies), coffres et cles
+    privees. Raises PathSecurityError. Ne juge que le chemin : ne touche pas au disque.
+    """
+    rp = _resolve_safe(Path(resolved))
+    name = rp.name.lower()
+    if name in _SECRET_FILE_NAMES or name.endswith(_SECRET_SUFFIXES):
+        raise PathSecurityError(
+            f"Lecture refusée: {rp.name} est un secret (clé privée, coffre ou identifiants). "
+            "Lumena lit partout sur le PC, sauf les secrets."
+        )
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return
+    for relative in _SECRET_HOME_DIRS:
+        zone = home / Path(relative)
+        if rp == zone or _is_within(rp, zone):
+            raise PathSecurityError(
+                f"Lecture refusée: {relative} est une zone secrète (clés, mots de passe, "
+                "profils de navigateur). Lumena lit partout sur le PC, sauf les secrets."
+            )
+
+
 def check_delete_allowed(resolved: Path, lumena_root: Path, workspace_root: Path) -> None:
     """Only allow deletions inside workspace_root by default.
 
@@ -200,6 +300,28 @@ def check_delete_allowed(resolved: Path, lumena_root: Path, workspace_root: Path
             f"Suppression refusée: seuls les fichiers dans workspace/ peuvent être supprimés. "
             f"({rp} n'est pas dans {wr})"
         )
+
+
+def check_lumena_code_write(resolved: Path, lumena_root: Path, workspace_root: Path) -> None:
+    """Lot L1c-2 — refuse une ecriture generique dans le code de Lumena.
+
+    Decision de Charles du 15/09/2026 : « code de Lumena » = tout le depot SAUF la
+    racine d'espace de travail. Seul `edit_own_code` y ecrit (sauvegarde, preuve,
+    jamais en mission). Si l'espace de travail EST la racine (configuration legere),
+    rien n'est protege. Raises PathSecurityError.
+    """
+    lr = _resolve_safe(Path(lumena_root))
+    wr = _resolve_safe(Path(workspace_root))
+    rp = _resolve_safe(Path(resolved))
+    if lr == wr or not _is_within(rp, lr) or _is_within(rp, wr):
+        return
+    rel = rp.relative_to(lr).as_posix() or "."
+    raise PathSecurityError(
+        f"Écriture refusée: {rel} fait partie du code de Lumena (tout le dépôt sauf workspace/). "
+        "Les outils génériques ne le modifient pas : si l'utilisateur le demande explicitement "
+        "en conversation, utilise edit_own_code (sauvegarde automatique, jamais en mission). "
+        "Pour créer un fichier, écris-le dans le workspace."
+    )
 
 
 def strip_mission_workspace_prefix(path_str: str, subdir: str) -> str:
@@ -597,21 +719,43 @@ class WorkspaceFileGuardrails:
         relative_original = self.sanitize_workspace_relative_path(original)
         return workspace_dir / relative_original
 
+    def _display_relative(self, target: Path) -> str:
+        """Chemin d'affichage : relatif a la racine Lumena, sinon a la racine d'espace
+        de travail, sinon absolu. Ne leve jamais (lot L1)."""
+        bases = (self.lumena_root, self._workspace_root())
+        for base in bases:
+            for candidate in (base, _resolve_safe(Path(base))):
+                try:
+                    return str(target.relative_to(candidate)).replace("\\", "/")
+                except ValueError:
+                    continue
+        return str(target).replace("\\", "/")
+
     def resolve_write_target(
         self,
         path: str,
         project_name: Optional[str] = None,
         mission_workspace_subdir: Optional[str] = None,
+        outside_grant: Optional[OutsideAccessGrant] = None,
     ) -> Tuple[Path, bool, str]:
-        """Resolve a write target path and workspace metadata."""
+        """Resolve a write target path and workspace metadata.
+
+        ``outside_grant`` (lot L1c-3) : autorisation d'ECRITURE du chat ; un chemin
+        absolu hors limites qu'elle couvre est admis (la garde commune sauvegarde).
+        """
         original = Path(path)
         if self.should_use_workspace(path) and not original.is_absolute():
             target = self.get_workspace_path(
                 path, project_name=project_name,
                 mission_workspace_subdir=mission_workspace_subdir,
             )
-            rel = str(target.relative_to(self.lumena_root)).replace("\\", "/")
-            return target, True, rel
+            # Lot L1 (N8) : `LUMENA_WORKSPACE_DIR=./workspace` donne un chemin relatif.
+            if not target.is_absolute():
+                target = target.resolve()
+            # Lot L1 (N1) : le chemin relatif ne sert qu'a l'affichage et a l'historique
+            # des editions ; un espace de travail hors de la racine Lumena le faisait
+            # lever `ValueError` et cassait toute ecriture de mission.
+            return target, True, self._display_relative(target)
 
         if original.is_absolute():
             target = original
@@ -620,10 +764,13 @@ class WorkspaceFileGuardrails:
             rp = _resolve_safe(target)
             lr = self.lumena_root.resolve()
             wr = self._workspace_root().resolve()
-            if not (_is_within(rp, lr) or _is_within(rp, wr)):
+            if not (_is_within(rp, lr) or _is_within(rp, wr)) and not (
+                outside_grant is not None and outside_grant.permits_write(rp)
+            ):
                 raise PathSecurityError(
                     f"Écriture refusée: {rp} est hors des limites autorisées. "
-                    "Les écritures hors workspace ne sont jamais permises."
+                    "Hors workspace, seul le chat écrit, et seulement à l'endroit que "
+                    "l'utilisateur désigne ou dans le projet en cours."
                 )
         else:
             target = self.lumena_root / original
@@ -675,11 +822,18 @@ class WorkspaceFileGuardrails:
         project_name: Optional[str] = None,
         require_non_empty: bool = True,
         mission_workspace_subdir: Optional[str] = None,
+        outside_grant: Optional[OutsideAccessGrant] = None,
     ) -> FileWriteResult:
-        """Write and validate immediately."""
+        """Write and validate immediately.
+
+        ``outside_grant`` (lot L1c-3) : meme autorisation d'ecriture du chat que celle
+        donnee a `resolve_write_target` juste avant, sinon la 2e resolution refuserait.
+        """
+        extra = {"outside_grant": outside_grant} if outside_grant is not None else {}
         target, redirected, workspace_relative = self.resolve_write_target(
             path, project_name=project_name,
             mission_workspace_subdir=mission_workspace_subdir,
+            **extra,
         )
         # LOT Z25 — un dossier qui NAIT ici doit se voir. Le message disait deja
         # le chemin complet, mais rien ne signalait qu'il venait d'etre INVENTE :

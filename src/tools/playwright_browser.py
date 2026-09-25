@@ -1909,25 +1909,6 @@ class PlaywrightBrowser:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def keyboard_press(self, key: str) -> Dict[str, Any]:
-        """Presse une touche clavier (ex: Enter, Tab, Escape, ArrowDown, Control+a)."""
-        if not self._page:
-            return {"success": False, "error": "Page non chargée"}
-        try:
-            await self._page.keyboard.press(key)
-            if str(key or "").lower() == "enter":
-                submit_result = await self._submit_active_composer()
-                if submit_result.get("success"):
-                    return {
-                        "success": True,
-                        "key_pressed": key,
-                        "submit_strategy": submit_result.get("strategy", ""),
-                        "submit_button_label": submit_result.get("button_label", ""),
-                    }
-            return {"success": True, "key_pressed": key}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
     async def _submit_active_composer(self) -> Dict[str, Any]:
         """Soumission adaptative du composeur selon le provider courant."""
         if not self._page:

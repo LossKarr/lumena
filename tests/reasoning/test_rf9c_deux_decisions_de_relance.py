@@ -210,7 +210,17 @@ def test_le_squelette_de_la_boucle_est_INTACT():
     # missions. L'emission ajoutee est defensive (le bus de trace ne doit
     # jamais faire tomber la boucle), d'ou un `try` de plus. Elle n'ajoute
     # ni `continue`, ni `return`, ni import local.
-    assert (conts, rets, trys) == (48, 33, 78), (
+    # 48 -> 49 (`continue`) et 78 -> 79 (`try`) : LOT 13, PUBLISH GATE.
+    # Mesure : 72 missions sur 95 (76 %) produisent des fichiers et ne les
+    # publient JAMAIS — dont 61 terminees `done`. Ce n'est pas l'outil (24
+    # publications reussies pour 1 echec au ledger) : le lead n'essaie pas,
+    # parce que rien ne le lui demande tant qu'il peut encore agir.
+    # La porte copie la mecanique du BROWSER GATE : un `try` defensif (un
+    # garde ne doit jamais faire tomber la boucle) et un `continue` pour
+    # relancer une fois. Aucun `return` ajoute, aucun import local.
+    # CONN-4D : parsing ledger extrait avec parite tracee, un try/import en moins.
+    # ORI-3/4 ajoute deux reprises bornees, sans nouvelle sortie ni try local.
+    assert (conts, rets, trys) == (51, 33, 78), (
         f"le squelette a bouge : continue={conts} return={rets} try={trys}"
     )
 

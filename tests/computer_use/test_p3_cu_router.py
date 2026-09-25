@@ -294,6 +294,19 @@ class TestRouteCuVision:
         assert "failed" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_provider_error_redacts_secret_query_parameter(self):
+        from src.computer_use.cu_router import route_cu_vision
+        secret = "AIza-secret-value-that-must-never-leak"
+        error = RuntimeError(f"failed url=https://example.test/generate?key={secret}")
+        v = self._make_vision(call_analyze_side_effect=error)
+
+        result = await route_cu_vision(v, "/tmp/img.png", "prompt", cascade=["google"])
+
+        assert result["success"] is False
+        assert secret not in result["error"]
+        assert "key=<redacted>" in result["error"]
+
+    @pytest.mark.asyncio
     async def test_skip_unavailable_provider(self):
         from src.computer_use.cu_router import route_cu_vision
         v = self._make_vision(call_analyze_return="ok")

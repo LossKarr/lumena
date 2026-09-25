@@ -207,6 +207,19 @@ _PROVIDER_DEFAULTS: Dict[str, ModelBehaviorProfile] = {
         timeout_multiplier=1.0,
         compact_ctx_threshold=0.75,
     ),
+    "mistral": ModelBehaviorProfile(
+        parser_severity="strict",
+        thought_leak_risk="low",
+        action_inline_risk="low",
+        loop_risk="low",
+        tool_call_quality="excellent",
+        react_stability="stable",
+        sub_agent_stability="stable",
+        empty_response_risk="rare",
+        retry_on_empty=True,
+        timeout_multiplier=1.0,
+        compact_ctx_threshold=0.76,
+    ),
     "ollama": ModelBehaviorProfile(
         # Modèles locaux — très variables selon la taille et le quantization
         parser_severity="forgiving",
@@ -230,6 +243,36 @@ _PROVIDER_DEFAULTS: Dict[str, ModelBehaviorProfile] = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
+    "claude-opus-5.5": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,
+        timeout_multiplier=1.0, compact_ctx_threshold=0.82,
+    ),
+    "claude-mythos-5.1": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,
+        timeout_multiplier=1.1, compact_ctx_threshold=0.82,
+    ),
+    "gpt-6-sol": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,
+        timeout_multiplier=1.0, compact_ctx_threshold=0.82,
+    ),
+    "gpt-6-luna": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,
+        timeout_multiplier=0.9, compact_ctx_threshold=0.80,
+    ),
+    "grok-4.7": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=True,
+        timeout_multiplier=1.0, compact_ctx_threshold=0.80,
+    ),
     "claude-opus-5": ModelBehaviorProfile(
         parser_severity="strict",
         thought_leak_risk="low",
@@ -323,7 +366,7 @@ _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
         timeout_multiplier=1.0,
         compact_ctx_threshold=0.75,
     ),
-    "deepseek-v4-flash": ModelBehaviorProfile(
+    "deepseek-flash": ModelBehaviorProfile(
         parser_severity="lenient",
         thought_leak_risk="medium",
         action_inline_risk="low",
@@ -656,6 +699,11 @@ _PARTIAL_PROVIDER_MAP: list[tuple[str, str]] = [
     ("minimax", "minimax"),
     ("glm", "zai"),
     ("cogview", "zai"),
+    ("mistral", "mistral"),
+    ("codestral", "mistral"),
+    ("devstral", "mistral"),
+    ("ministral", "mistral"),
+    ("magistral", "mistral"),
     ("ollama", "ollama"),
     ("lumena", "ollama"),
     ("qwen", "ollama"),
@@ -678,13 +726,60 @@ def get_model_profile(model_name: str) -> ModelBehaviorProfile:
     if name in _MODEL_OVERRIDES:
         return _MODEL_OVERRIDES[name]
 
-    # 2. Partial match sur overrides (ex: "deepseek-v4-pro-xl" → "deepseek-v4-pro")
-    for key, profile in _MODEL_OVERRIDES.items():
-        if key in name or name.startswith(key.split("-")[0]):
-            if len(key) > 4:  # éviter faux positifs sur clés courtes
-                return profile
+    # 2. Provider résolu par le catalogue, avant toute heuristique de nom.
+    try:
+        from .providers import get_model_config
 
-    # 3. Provider par partial match sur le nom
+        config = get_model_config(name)
+        if config is not None:
+            return _PROVIDER_DEFAULTS.get(config.provider.value, ModelBehaviorProfile())
+    except Exception:
+        pass
+
+    # 3. Taille locale explicite. Un 3B ne reçoit pas le même budget d'agent
+    # qu'un 32B simplement parce qu'ils partagent le nom de famille Qwen.
+    import re
+
+    size_match = re.search(r"(?:[:_\-]|^)(\d+(?:\.\d+)?)b(?:\b|$)", name)
+    is_local_name = any(token in name for token in ("ollama", "qwen", "llama", "gemma", "local"))
+    if size_match and is_local_name:
+        size_b = float(size_match.group(1))
+        if size_b < 7:
+            return ModelBehaviorProfile(
+                parser_severity="forgiving", thought_leak_risk="high",
+                action_inline_risk="high", loop_risk="high", tool_call_quality="poor",
+                react_stability="unstable", sub_agent_stability="unstable",
+                empty_response_risk="frequent", retry_on_empty=True,
+                timeout_multiplier=1.35, compact_ctx_threshold=0.58,
+                file_section_threshold=20_000, sub_agent_iter_cap=12,
+            )
+        if size_b < 20:
+            return ModelBehaviorProfile(
+                parser_severity="forgiving", thought_leak_risk="medium",
+                action_inline_risk="medium", loop_risk="medium", tool_call_quality="moderate",
+                react_stability="moderate", sub_agent_stability="moderate",
+                empty_response_risk="occasional", retry_on_empty=True,
+                timeout_multiplier=1.4, compact_ctx_threshold=0.64,
+                file_section_threshold=35_000, sub_agent_iter_cap=18,
+            )
+        return ModelBehaviorProfile(
+            parser_severity="lenient", thought_leak_risk="medium",
+            action_inline_risk="low", loop_risk="low", tool_call_quality="moderate",
+            react_stability="stable", sub_agent_stability="stable",
+            empty_response_risk="rare", retry_on_empty=True,
+            timeout_multiplier=1.5, compact_ctx_threshold=0.70,
+            file_section_threshold=70_000, sub_agent_iter_cap=28,
+        )
+
+    # 4. Match de famille déterministe : préfixe complet, clé la plus longue.
+    matches = [
+        (key, profile) for key, profile in _MODEL_OVERRIDES.items()
+        if name.startswith((f"{key}-", f"{key}:", f"{key}/"))
+    ]
+    if matches:
+        return max(matches, key=lambda item: len(item[0]))[1]
+
+    # 5. Provider par partial match sur le nom (dernier recours).
     for fragment, provider in _PARTIAL_PROVIDER_MAP:
         if fragment in name:
             return _PROVIDER_DEFAULTS.get(provider, ModelBehaviorProfile())

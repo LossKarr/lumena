@@ -65,6 +65,29 @@ def _make_handler_def(
     )
 
 
+def _natif_visible(registry) -> str:
+    """Un natif DETERMINISTE et VISIBLE dans `tools` / `get_tools_description()`.
+
+    REG-1 (24/09/2026) : ces tests tiraient leur natif dans
+    `registry._native_handler_names` sans le trier. C'est un **frozenset** : son
+    ordre d'iteration depend du hash seed, donc du processus. Or 33 des 612
+    natifs (5,4 %) appartiennent au namespace `ide_*`, et ceux-la sont projetes
+    HORS de `tools` par `ExternalToolView` (CONN-8a) : ils sont proteges contre
+    le reenregistrement, mais invisibles dans la description des outils.
+
+    Resultat mesure : trois tests tombaient une fois sur dix-huit, en regression
+    complete seulement, en ayant l'air d'un flake. Douze tirages de ce genre
+    existaient dans ce fichier - les neuf autres passaient par chance.
+
+    On trie, et on exige la visibilite : le meme natif est choisi sous n'importe
+    quel seed.
+    """
+    for nom in sorted(registry._native_handler_names):
+        if nom in registry.tools:
+            return nom
+    raise AssertionError("aucun natif visible dans tools")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Snapshot natif
 # ──────────────────────────────────────────────────────────────────────────────
@@ -112,7 +135,7 @@ def test_register_dynamic_handler_rejects_non_string_name(registry):
 def test_register_dynamic_handler_rejects_native_collision(registry):
     """Refus collision avec un handler natif (ex: read_file)."""
     # Trouver n'importe quel handler natif
-    native_name = next(iter(registry._native_handler_names))
+    native_name = _natif_visible(registry)
     hdef = _make_handler_def(name=native_name)
     with pytest.raises(DynamicRegistryError, match="native"):
         registry.register_dynamic_handler(hdef, policy=MCPPolicy.READ_ONLY)
@@ -188,7 +211,7 @@ def test_is_dynamic_handler_discrimination(registry):
     registry.register_dynamic_handler(hdef, policy=MCPPolicy.READ_ONLY)
     try:
         assert registry.is_dynamic_handler("mcp__test__discrim") is True
-        native_name = next(iter(registry._native_handler_names))
+        native_name = _natif_visible(registry)
         assert registry.is_dynamic_handler(native_name) is False
         assert registry.is_dynamic_handler("nonexistent_xyz") is False
     finally:
@@ -323,7 +346,7 @@ def test_unregister_unknown_returns_false_no_raise(registry):
 
 def test_unregister_native_refused_returns_false(registry):
     """Refus silencieux de désenregistrer un natif (protection)."""
-    native_name = next(iter(registry._native_handler_names))
+    native_name = _natif_visible(registry)
     assert registry.unregister_dynamic_handler(native_name) is False
     # Le natif reste dans tools
     assert native_name in registry.tools
@@ -492,7 +515,7 @@ def test_get_tools_description_still_contains_native(registry):
 
 def test_tool_modules_native_unchanged(registry):
     """_tool_modules pour les natifs reste inchangé après register dynamique."""
-    sample_native = next(iter(registry._native_handler_names))
+    sample_native = _natif_visible(registry)
     cat_before = registry._tool_modules.get(sample_native)
 
     hdef = _make_handler_def(name="mcp__test__modules_check")
@@ -545,7 +568,7 @@ class TestSetMcpOverlapValidation:
     ):
         reg, mcp_name = registry_with_dynamic_mcp
         # `not_a_real_native` n'est pas dans _native_handler_names → filtre.
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native, "not_a_real_native", ""])
         assert reg.get_mcp_overlap(mcp_name) == frozenset({sample_native})
 
@@ -553,14 +576,14 @@ class TestSetMcpOverlapValidation:
 class TestSetMcpOverlapStorage:
     def test_overlap_and_prefer_persisted(self, registry_with_dynamic_mcp):
         reg, mcp_name = registry_with_dynamic_mcp
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native], prefer_over_native=True)
         assert reg.get_mcp_overlap(mcp_name) == frozenset({sample_native})
         assert reg.get_mcp_prefer_over_native(mcp_name) is True
 
     def test_default_prefer_is_false(self, registry_with_dynamic_mcp):
         reg, mcp_name = registry_with_dynamic_mcp
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native])
         assert reg.get_mcp_prefer_over_native(mcp_name) is False
 
@@ -579,7 +602,7 @@ class TestSetMcpOverlapStorage:
         # Pre-warm cache.
         _ = reg.get_tools_description()
         assert reg._tools_desc_cache is not None
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native])
         assert reg._tools_desc_cache is None
 
@@ -595,7 +618,7 @@ class TestGetToolsDescriptionPhaseEFilter:
         self, registry_with_dynamic_mcp
     ):
         reg, mcp_name = registry_with_dynamic_mcp
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native], prefer_over_native=False)
         desc = reg.get_tools_description()
         # MCP cache (natif prioritaire par defaut)
@@ -607,7 +630,7 @@ class TestGetToolsDescriptionPhaseEFilter:
         self, registry_with_dynamic_mcp
     ):
         reg, mcp_name = registry_with_dynamic_mcp
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native], prefer_over_native=True)
         desc = reg.get_tools_description()
         # MCP visible (prefer=True)
@@ -631,7 +654,7 @@ class TestGetToolsDescriptionPhaseEFilter:
 class TestUnregisterCleanupPhaseE:
     def test_unregister_clears_overlap_maps(self, registry_with_dynamic_mcp):
         reg, mcp_name = registry_with_dynamic_mcp
-        sample_native = next(iter(reg._native_handler_names))
+        sample_native = _natif_visible(reg)
         reg.set_mcp_overlap(mcp_name, [sample_native], prefer_over_native=True)
         assert mcp_name in reg._mcp_overlaps
         reg.unregister_dynamic_handler(mcp_name)
@@ -647,7 +670,7 @@ class TestPhaseEAccessors:
         assert len(names) > 0
 
     def test_get_tool_description_returns_string(self, registry):
-        sample = next(iter(registry._native_handler_names))
+        sample = _natif_visible(registry)
         desc = registry.get_tool_description(sample)
         assert isinstance(desc, str)
 

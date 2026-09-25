@@ -32,7 +32,8 @@ import {
   handleFileSelect, addAttachment, removeAttachment, clearAttachments,
   renderAttachments, loadChatHistory, clearChatHistory, exportChatMarkdown,
   resumeSessionInChat
-} from './chat.js?v=1';
+} from './chat.js?v=5';
+import { initChatSteering } from './chat-steering.js?v=7';
 
 // ── API ──
 import {
@@ -94,6 +95,7 @@ import {
 
 import { loadDocumentStudio } from './document-studio.js?v=14';
 import { initOnboarding, replayOnboarding } from './onboarding.js?v=8';
+import { initLocalModelsPanel, loadLocalModels, recommendLocalModels } from './local-models.js?v=3';
 
 // ── Tasks ──
 import {
@@ -120,6 +122,7 @@ Object.assign(window, {
   toggleMobileNav, toggleFocus, toggleTheme, applyTheme,
   loadPanelData, openCommandPalette, closeCommandPalette, filterCommands,
   loadDocumentStudio,
+  initLocalModelsPanel, loadLocalModels, recommendLocalModels,
   // activity
   openSidebar, closeSidebar, toggleSidebar, startActivityFeed, pushActivity,
   updateActivityStats, stopActivityFeed,
@@ -208,6 +211,9 @@ window._shutdownLumena = async function() {
 
 // ── Init (module scripts are deferred so DOM is ready) ──
 (function _init() {
+  initLocalModelsPanel();
+  initChatSteering();
+  setupTextarea();
   loadStartupModels();
   const agentBtn = document.getElementById('agent-toggle');
   if (agentBtn) {
@@ -228,7 +234,8 @@ window._shutdownLumena = async function() {
   q('btn-attach-file', () => document.getElementById('file-upload-input').click());
   q('btn-chat-dictation', () => toggleChatDictation());
   q('btn-toggle-focus', () => toggleFocus());
-  q('send-btn', () => { if(isLoading) cancelStream(); else sendMessage(); });
+  q('send-btn', () => sendMessage());
+  q('stop-btn', () => cancelStream());
   q('replay-onboarding-btn', () => replayOnboarding());
   const fileInput = document.getElementById('file-upload-input');
   if (fileInput) fileInput.addEventListener('change', e => handleFileSelect(e));

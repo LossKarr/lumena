@@ -14,9 +14,11 @@ Supporte plusieurs providers LLM :
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, FrozenSet
+from typing import Optional, List, Dict, Any, FrozenSet, Mapping, Sequence
 from enum import Enum
 from loguru import logger
+
+MODEL_CATALOG_REVISION = "2026-09-25"
 
 # Charger le fichier .env automatiquement
 try:
@@ -58,6 +60,106 @@ class ProviderType(Enum):
     HUGGINGFACE = "huggingface"
 
 
+class ModelLifecycle(str, Enum):
+    """État éditorial d'un modèle dans le catalogue Lumena."""
+
+    STABLE = "stable"
+    PREVIEW = "preview"
+    LIMITED = "limited"
+    LEGACY = "legacy"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+
+
+@dataclass(frozen=True)
+class ModelPricing:
+    """Tarification datée en dollars par million de tokens.
+
+    Les champs laissés à ``None`` signifient « non publié/non vérifié » et ne
+    sont jamais transformés silencieusement en zéro.
+    """
+
+    input_per_million: Optional[float] = None
+    output_per_million: Optional[float] = None
+    cached_input_per_million: Optional[float] = None
+    cache_write_per_million: Optional[float] = None
+    source_url: str = ""
+    verified_on: str = ""
+    currency: str = "USD"
+    long_context_threshold: Optional[int] = None
+    long_context_input_multiplier: float = 1.0
+    long_context_output_multiplier: float = 1.0
+
+    def __post_init__(self) -> None:
+        values = (
+            self.input_per_million,
+            self.output_per_million,
+            self.cached_input_per_million,
+            self.cache_write_per_million,
+        )
+        if any(value is not None and value < 0 for value in values):
+            raise ValueError("Model pricing values must be non-negative")
+        if self.long_context_threshold is not None and self.long_context_threshold <= 0:
+            raise ValueError("Long-context threshold must be positive")
+        if self.long_context_input_multiplier <= 0 or self.long_context_output_multiplier <= 0:
+            raise ValueError("Long-context multipliers must be positive")
+
+    def estimate_cost(
+        self,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        cache_write_tokens: int = 0,
+    ) -> Optional[float]:
+        """Estime le coût connu ; retourne ``None`` si un tarif requis manque."""
+        requested = (
+            (input_tokens, self.input_per_million),
+            (output_tokens, self.output_per_million),
+            (cached_input_tokens, self.cached_input_per_million),
+            (cache_write_tokens, self.cache_write_per_million),
+        )
+        if any(tokens and rate is None for tokens, rate in requested):
+            return None
+        long_context = bool(
+            self.long_context_threshold is not None
+            and input_tokens > self.long_context_threshold
+        )
+        input_multiplier = self.long_context_input_multiplier if long_context else 1.0
+        output_multiplier = self.long_context_output_multiplier if long_context else 1.0
+        total = (
+            input_tokens * float(self.input_per_million or 0) * input_multiplier
+            + output_tokens * float(self.output_per_million or 0) * output_multiplier
+            + cached_input_tokens * float(self.cached_input_per_million or 0) * input_multiplier
+            + cache_write_tokens * float(self.cache_write_per_million or 0) * input_multiplier
+        ) / 1_000_000
+        return round(total, 12)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "input_per_million": self.input_per_million,
+            "output_per_million": self.output_per_million,
+            "cached_input_per_million": self.cached_input_per_million,
+            "cache_write_per_million": self.cache_write_per_million,
+            "currency": self.currency,
+            "source_url": self.source_url,
+            "verified_on": self.verified_on,
+            "long_context_threshold": self.long_context_threshold,
+            "long_context_input_multiplier": self.long_context_input_multiplier,
+            "long_context_output_multiplier": self.long_context_output_multiplier,
+        }
+
+
+@dataclass(frozen=True)
+class ModelAlias:
+    """Migration explicite d'un ancien nom vers une entrée canonique."""
+
+    target: str
+    reason: str = "renamed"
+    source_url: str = ""
+    verified_on: str = ""
+
+
 @dataclass
 class ModelConfig:
     """Configuration d'un modèle LLM."""
@@ -75,6 +177,14 @@ class ModelConfig:
     description: str = ""
     badge: str = ""  # ex: "Recommandé", "Gratuit", "Nouveau"
     capabilities: FrozenSet[str] = field(default_factory=frozenset)
+    lifecycle: ModelLifecycle = ModelLifecycle.STABLE
+    pricing: Optional[ModelPricing] = None
+    aliases: tuple[str, ...] = ()
+    successor: Optional[str] = None
+    selectable: Optional[bool] = None
+    fallback_eligible: Optional[bool] = None
+    source_url: str = ""
+    verified_on: str = ""
     
     def is_local(self) -> bool:
         """Retourne True si le modèle tourne localement."""
@@ -83,6 +193,23 @@ class ModelConfig:
     def is_free(self) -> bool:
         """Retourne True si le modèle est gratuit."""
         return self.cost_per_million_tokens == 0.0
+
+    @property
+    def input_cost_per_million(self) -> float:
+        """Coût d'entrée compatible avec l'ancien champ scalaire."""
+        if self.pricing and self.pricing.input_per_million is not None:
+            return self.pricing.input_per_million
+        return self.cost_per_million_tokens
+
+    def is_selectable(self) -> bool:
+        if self.selectable is not None:
+            return self.selectable
+        return self.lifecycle != ModelLifecycle.RETIRED
+
+    def is_fallback_eligible(self) -> bool:
+        if self.fallback_eligible is not None:
+            return self.fallback_eligible
+        return self.lifecycle in {ModelLifecycle.STABLE, ModelLifecycle.LEGACY}
 
 
 # Configuration des modèles disponibles
@@ -124,8 +251,9 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         max_output_tokens=128000,
         supports_vision=True,
         supports_tools=True,
-        cost_per_million_tokens=5.0,
-        description="GPT-5.6 Sol — frontier OpenAI pour le raisonnement, le code et les travaux professionnels complexes (sortie $30/M)",
+        cost_per_million_tokens=4.0,
+        pricing=ModelPricing(input_per_million=4.0, output_per_million=20.0, cached_input_per_million=0.4, source_url="https://developers.openai.com/api/docs/models", verified_on="2026-09-20"),
+        description="GPT-5.6 Sol — frontier OpenAI pour le raisonnement, le code et les travaux professionnels complexes (sortie $20/M)",
         badge="Frontier",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation"}),
     ),
@@ -138,8 +266,9 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         max_output_tokens=128000,
         supports_vision=True,
         supports_tools=True,
-        cost_per_million_tokens=2.5,
-        description="GPT-5.6 Terra — équilibre intelligence/coût pour le raisonnement, le code et les agents (sortie $15/M)",
+        cost_per_million_tokens=2.0,
+        pricing=ModelPricing(input_per_million=2.0, output_per_million=12.0, cached_input_per_million=0.2, source_url="https://developers.openai.com/api/docs/models", verified_on="2026-09-20"),
+        description="GPT-5.6 Terra — équilibre intelligence/coût pour le raisonnement, le code et les agents (sortie $12/M)",
         badge="Balanced",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation"}),
     ),
@@ -152,8 +281,9 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         max_output_tokens=128000,
         supports_vision=True,
         supports_tools=True,
-        cost_per_million_tokens=1.0,
-        description="GPT-5.6 Luna — modèle économique pour les charges volumineuses avec vision et outils (sortie $6/M)",
+        cost_per_million_tokens=0.20,
+        pricing=ModelPricing(input_per_million=0.20, output_per_million=1.20, source_url="https://developers.openai.com/api/docs/models", verified_on="2026-09-20"),
+        description="GPT-5.6 Luna — modèle économique pour les charges volumineuses avec vision et outils (sortie $1.20/M)",
         badge="Efficient",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation"}),
     ),
@@ -295,6 +425,30 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="Claude Opus 4.8 — modèle le plus capable (raisonnement, code agentique, haute autonomie), 1M context, 128K output, adaptive thinking",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist"}),
     ),
+    "claude-opus-5.5": ModelConfig(
+        name="claude-opus-5.5",
+        display_name="Claude Opus 5.5 (Anthropic)",
+        provider=ProviderType.ANTHROPIC,
+        model_id="claude-opus-5-5",
+        context_window=1_000_000,
+        max_output_tokens=128_000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=4.0,
+        pricing=ModelPricing(
+            input_per_million=4.0,
+            output_per_million=20.0,
+            cached_input_per_million=0.40,
+            cache_write_per_million=5.0,
+            source_url="https://platform.claude.com/docs/en/models/opus-5-5/overview",
+            verified_on="2026-09-25",
+        ),
+        description="Claude Opus 5.5 — modèle Anthropic actuel pour le code agentique et les travaux complexes, avec adaptive thinking et Computer Use toolset.",
+        badge="Frontier",
+        source_url="https://platform.claude.com/docs/en/models/opus-5-5/overview",
+        verified_on="2026-09-25",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "computer_toolset_20260801", "dom_assist", "reasoning", "long_context", "code_generation"}),
+    ),
     "claude-opus-5": ModelConfig(
         name="claude-opus-5",
         display_name="Claude Opus 5 (Anthropic)",
@@ -311,11 +465,11 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         badge="New",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist", "reasoning", "long_context", "code_generation"}),
     ),
-    "claude-fable-5": ModelConfig(
-        name="claude-fable-5",
-        display_name="Claude Fable 5 (Anthropic)",
+    "claude-fable-5.1": ModelConfig(
+        name="claude-fable-5.1",
+        display_name="Claude Fable 5.1 (Anthropic)",
         provider=ProviderType.ANTHROPIC,
-        model_id="claude-fable-5",
+        model_id="claude-fable-5-1",
         context_window=1000000,
         max_output_tokens=128000,
         supports_vision=True,
@@ -325,18 +479,31 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         badge="Frontier",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist", "reasoning", "long_context"}),
     ),
-    "claude-mythos-5": ModelConfig(
-        name="claude-mythos-5",
-        display_name="Claude Mythos 5 (Anthropic — accès limité)",
+    "claude-mythos-5.1": ModelConfig(
+        name="claude-mythos-5.1",
+        display_name="Claude Mythos 5.1 (Anthropic — accès limité)",
         provider=ProviderType.ANTHROPIC,
-        model_id="claude-mythos-5",
+        model_id="claude-mythos-5-1",
         context_window=1000000,
         max_output_tokens=128000,
         supports_vision=True,
         supports_tools=True,
         cost_per_million_tokens=10.0,
-        description="Claude Mythos 5 — modèle Anthropic à accès limité (Project Glasswing / comptes approuvés), à sélectionner explicitement uniquement",
+        pricing=ModelPricing(
+            input_per_million=10.0,
+            output_per_million=50.0,
+            cached_input_per_million=0.25,
+            cache_write_per_million=12.5,
+            source_url="https://platform.claude.com/docs/en/models/mythos-5-1/overview",
+            verified_on="2026-09-25",
+        ),
+        description="Claude Mythos 5.1 — modèle Anthropic sur invitation (Project Glasswing), à sélectionner uniquement si le compte y a accès.",
         badge="Limited",
+        lifecycle=ModelLifecycle.LIMITED,
+        selectable=False,
+        fallback_eligible=False,
+        source_url="https://platform.claude.com/docs/en/models/mythos-5-1/overview",
+        verified_on="2026-09-25",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "dom_assist", "reasoning", "long_context"}),
     ),
     "claude-sonnet-5": ModelConfig(
@@ -409,7 +576,7 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         name="claude-sonnet-4.5",
         display_name="Claude Sonnet 4.5 (Anthropic)",
         provider=ProviderType.ANTHROPIC,
-        model_id="claude-sonnet-4-5-20250514",
+        model_id="claude-sonnet-4-5-20250929",
         context_window=1000000,  # 1M tokens
         max_output_tokens=64000,
         supports_vision=True,
@@ -559,6 +726,21 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         badge="Code",
         capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context", "code_generation"}),
     ),
+    "kimi-k2.7-code-highspeed": ModelConfig(
+        name="kimi-k2.7-code-highspeed",
+        display_name="Kimi K2.7 Code Highspeed (Moonshot)",
+        provider=ProviderType.MOONSHOT,
+        model_id="kimi-k2.7-code-highspeed",
+        context_window=262_144,
+        max_output_tokens=32_768,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=-1.0,
+        description="Kimi K2.7 Code Highspeed — endpoint Moonshot à faible latence pour code et agents.",
+        badge="Rapide",
+        verified_on="2026-09-20",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context", "code_generation"}),
+    ),
     "kimi-k3": ModelConfig(
         name="kimi-k3",
         display_name="Kimi K3 (Moonshot)",
@@ -586,6 +768,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_tools=True,
         cost_per_million_tokens=0.6,   # $0.60/M input, $3/M output, cache $0.10/M
         description="Kimi K2.5 — multimodal, agent swarm, 1M context, output 262K",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="kimi-k2.6",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     "kimi-k2.6": ModelConfig(
@@ -612,6 +796,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_tools=True,
         cost_per_million_tokens=0.6,
         description="Kimi K2 0905 Preview — long context + reasoning, Moonshot direct",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="kimi-k2.6",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     "kimi-k2-turbo-preview": ModelConfig(
@@ -625,6 +811,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_tools=True,
         cost_per_million_tokens=0.6,
         description="Kimi K2 Turbo Preview — variante rapide, 256K contexte, Moonshot direct",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="kimi-k2.7-code",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     "kimi-k2-thinking": ModelConfig(
@@ -638,6 +826,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_tools=True,
         cost_per_million_tokens=0.6,
         description="Kimi K2 Thinking — mode raisonnement explicite, multi-step tool calling, Moonshot direct",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="kimi-k2.6",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     "kimi-k2-thinking-turbo": ModelConfig(
@@ -651,6 +841,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_tools=True,
         cost_per_million_tokens=0.6,
         description="Kimi K2 Thinking Turbo — thinking rapide, 256K contexte, Moonshot direct",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="kimi-k2.7-code",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     
@@ -668,6 +860,34 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="Grok 4.3 — modèle xAI équilibré, 1M contexte, vision, tool calling",
         badge="Nouveau",
         capabilities=frozenset({"vision_describe", "tool_calling", "long_context"}),
+    ),
+    "grok-4.7": ModelConfig(
+        name="grok-4.7",
+        display_name="Grok 4.7 (xAI)",
+        provider=ProviderType.XAI,
+        model_id="grok-4.7",
+        context_window=500_000,
+        # xAI ne publie pas de plafond de sortie ; Lumena conserve une borne
+        # produit défensive cohérente avec les autres modèles Grok 4.x.
+        max_output_tokens=131_072,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=2.0,
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=6.0,
+            cached_input_per_million=0.5,
+            source_url="https://docs.x.ai/developers/grok-4-7",
+            verified_on="2026-09-25",
+            long_context_threshold=200_000,
+            long_context_input_multiplier=2.0,
+            long_context_output_multiplier=2.0,
+        ),
+        description="Grok 4.7 — modèle xAI pour le code, les agents, le raisonnement et le travail de connaissance, avec entrée image et outils.",
+        badge="Frontier",
+        source_url="https://docs.x.ai/developers/grok-4-7",
+        verified_on="2026-09-25",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context", "code_generation", "responses_api", "structured_output"}),
     ),
     "grok-4.6": ModelConfig(
         name="grok-4.6",
@@ -723,6 +943,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=2.0,
         description="Grok 4.1 Fast — slug déprécié, redirigé par xAI vers Grok 4.3 (low reasoning)",
         badge="Déprécié",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="grok-4.3",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     "grok-4-1-fast-non-reasoning": ModelConfig(
@@ -737,6 +959,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=1.0,
         description="Grok 4.1 Fast — slug déprécié, redirigé par xAI vers Grok 4.3 (sans raisonnement)",
         badge="Déprécié",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="grok-4.3",
         capabilities=frozenset({"vision_describe", "tool_calling"}),
     ),
     "grok-4.20-0309-reasoning": ModelConfig(
@@ -784,14 +1008,18 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         name="nvidia-deepseek-v4-flash",
         display_name="DeepSeek V4-Flash (NVIDIA NIM)",
         provider=ProviderType.NVIDIA,
-        model_id="deepseek-ai/deepseek-v4-flash",
+        model_id="deepseek-ai/deepseek-v4-flash-0731",
         context_window=1_000_000,
         max_output_tokens=16384,
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="DeepSeek V4 Flash via NVIDIA NIM - free endpoint, fast coding and agent fallback, 1M context.",
-        badge="Gratuit NIM",
+        description="DeepSeek V4 Flash 0731 via NVIDIA NIM — endpoint retiré le 21 septembre 2026.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        selectable=False,
+        fallback_eligible=False,
+        successor="nvidia-gpt-oss-20b",
         capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
     ),
     "nvidia-deepseek-v4-pro": ModelConfig(
@@ -804,8 +1032,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="DeepSeek V4 Pro via NVIDIA NIM - free endpoint, long-context coding, agentic reasoning and tool use.",
-        badge="Gratuit NIM",
+        description="Ancienne route DeepSeek V4 Pro absente de l'inventaire NVIDIA authentifié.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="deepseek-v4-pro",
         capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
     ),
     "nvidia-gpt-oss-120b": ModelConfig(
@@ -818,8 +1048,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="GPT-OSS 120B via NVIDIA NIM - free text-only reasoning fallback.",
-        badge="Gratuit NIM",
+        description="Ancienne route GPT-OSS 120B absente de l'inventaire NVIDIA authentifié.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="nvidia-gpt-oss-20b",
         capabilities=frozenset({"tool_calling", "cheap_text", "reasoning"}),
     ),
     "nvidia-step-3.7-flash": ModelConfig(
@@ -832,8 +1064,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_vision=True,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="Step 3.7 Flash via NVIDIA NIM - free multimodal model for agentic coding and vision analysis.",
-        badge="Gratuit NIM",
+        description="Ancienne route Step 3.7 Flash absente de l'inventaire NVIDIA authentifié.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="gemini-3.7-flash",
         capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "reasoning"}),
     ),
     "nvidia-kimi-k2.6": ModelConfig(
@@ -861,8 +1095,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="GLM-5.1 via NVIDIA NIM - free agentic engineering fallback for Z.AI workflows.",
-        badge="Gratuit NIM",
+        description="Ancienne route GLM-5.1 absente de l'inventaire NVIDIA authentifié.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="nvidia-glm-5.3",
         capabilities=frozenset({"tool_calling", "cheap_text", "reasoning", "code_generation"}),
     ),
     "nvidia-nemotron-3-ultra-550b-a55b": ModelConfig(
@@ -889,8 +1125,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="MiniMax M2.7 via NVIDIA NIM — préférer MiniMax natif si MINIMAX_API_KEY configuré. ⚠️ Serveurs souvent saturés : latence élevée possible.",
-        badge="Gratuit",
+        description="Ancienne route MiniMax M2.7 absente de l'inventaire NVIDIA authentifié.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="minimax-m2.7",
         capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
     "nvidia-minimax-m3": ModelConfig(
@@ -904,8 +1142,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_image_generation=False,
         supports_tools=True,
         cost_per_million_tokens=0.0,
-        description="MiniMax M3 via NVIDIA NIM - free multimodal endpoint for reasoning, coding, tool use and image understanding.",
-        badge="Gratuit NIM",
+        description="Ancienne route MiniMax M3 absente de l'inventaire NVIDIA authentifié.",
+        badge="Retiré",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="minimax-m3",
         capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
     ),
     "nvidia-gemma-4-31b-it": ModelConfig(
@@ -922,6 +1162,43 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         description="Gemma 4 31B IT via NVIDIA NIM - free multimodal instruction model for text, image understanding, coding and agents.",
         badge="Gratuit NIM",
         capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "reasoning", "long_context", "code_generation"}),
+    ),
+
+    "nvidia-kimi-k3": ModelConfig(
+        "nvidia-kimi-k3", "Kimi K3 (NVIDIA NIM)", ProviderType.NVIDIA, "moonshotai/kimi-k3",
+        1_000_000, 65_536, True, supports_tools=True, cost_per_million_tokens=0.0,
+        description="Kimi K3 via NVIDIA NIM, route distincte et observable.", badge="Gratuit NIM",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context", "code_generation"}),
+    ),
+    "nvidia-nemotron-3.5-lightning": ModelConfig(
+        "nvidia-nemotron-3.5-lightning", "Nemotron 3.5 Lightning (NVIDIA NIM)", ProviderType.NVIDIA, "nvidia/nemotron-3.5-lightning-30b-a3b",
+        262_144, 32_768, supports_tools=True, cost_per_million_tokens=0.0,
+        description="Nemotron 3.5 Lightning 30B A3B via NVIDIA NIM.", badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "reasoning", "cheap_text", "code_generation"}),
+    ),
+    "nvidia-gpt-oss-20b": ModelConfig(
+        "nvidia-gpt-oss-20b", "GPT-OSS 20B (NVIDIA NIM)", ProviderType.NVIDIA, "openai/gpt-oss-20b",
+        131_072, 16_384, supports_tools=True, cost_per_million_tokens=0.0,
+        description="GPT-OSS 20B via NVIDIA NIM.", badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "reasoning", "cheap_text"}),
+    ),
+    "nvidia-glm-5.3": ModelConfig(
+        "nvidia-glm-5.3", "GLM-5.3 (NVIDIA NIM)", ProviderType.NVIDIA, "z-ai/glm-5.3",
+        1_000_000, 65_536, supports_tools=True, cost_per_million_tokens=0.0,
+        description="GLM-5.3 via NVIDIA NIM, distinct de la route Z.AI directe.", badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "reasoning", "long_context", "code_generation"}),
+    ),
+    "nvidia-glm-5.3-flash": ModelConfig(
+        "nvidia-glm-5.3-flash", "GLM-5.3 Flash (NVIDIA NIM)", ProviderType.NVIDIA, "z-ai/glm-5.3-flash",
+        200_000, 65_536, True, supports_tools=True, cost_per_million_tokens=0.0,
+        description="GLM-5.3 Flash multimodal via NVIDIA NIM.", badge="Gratuit NIM",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "cheap_text"}),
+    ),
+    "nvidia-muse-glimmer-30b": ModelConfig(
+        "nvidia-muse-glimmer-30b", "Muse Glimmer 30B (NVIDIA NIM)", ProviderType.NVIDIA, "meta/muse-glimmer-30b",
+        131_072, 16_384, supports_tools=True, cost_per_million_tokens=0.0,
+        description="Muse Glimmer 30B via NVIDIA NIM.", badge="Gratuit NIM",
+        capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
 
     # === MINIMAX (natif — API OpenAI-compatible) ===
@@ -1006,10 +1283,52 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
 
+    "minimax-m2.7-highspeed": ModelConfig(
+        name="minimax-m2.7-highspeed",
+        display_name="MiniMax M2.7 HighSpeed",
+        provider=ProviderType.MINIMAX,
+        model_id="MiniMax-M2.7-highspeed",
+        context_window=204_800,
+        max_output_tokens=32_768,
+        supports_tools=True,
+        cost_per_million_tokens=-1.0,
+        description="MiniMax M2.7 HighSpeed — variante officielle à faible latence.",
+        badge="Rapide",
+        verified_on="2026-09-20",
+        capabilities=frozenset({"tool_calling", "reasoning", "cheap_text"}),
+    ),
+
     # === Z.AI (GLM — API OpenAI-compatible) ===
     # Prices follow Z.AI's published input-token rate. "Limited-time Free"
     # remains paid in the catalogue so auto-routing never assumes a temporary
     # promotion is a permanent free tier.
+    "glm-5.3": ModelConfig(
+        name="glm-5.3", display_name="GLM-5.3 (Z.AI)",
+        provider=ProviderType.ZAI, model_id="glm-5.3",
+        context_window=1_000_000, max_output_tokens=128_000,
+        supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GLM-5.3 — modèle Z.AI actuel avec raisonnement activé explicitement.",
+        badge="Nouveau", verified_on="2026-09-20",
+        capabilities=frozenset({"tool_calling", "reasoning", "long_context", "code_generation"}),
+    ),
+    "glm-5.3-flash": ModelConfig(
+        name="glm-5.3-flash", display_name="GLM-5.3 Flash (Z.AI)",
+        provider=ProviderType.ZAI, model_id="glm-5.3-flash",
+        context_window=200_000, max_output_tokens=128_000,
+        supports_vision=True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GLM-5.3 Flash — variante rapide multimodale Z.AI.",
+        badge="Rapide", verified_on="2026-09-20",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "cheap_text"}),
+    ),
+    "glm-5.3-flashx": ModelConfig(
+        name="glm-5.3-flashx", display_name="GLM-5.3 FlashX (Z.AI)",
+        provider=ProviderType.ZAI, model_id="glm-5.3-flashx",
+        context_window=200_000, max_output_tokens=128_000,
+        supports_vision=True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GLM-5.3 FlashX — variante multimodale Z.AI à haut débit.",
+        badge="Rapide", verified_on="2026-09-20",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "cheap_text"}),
+    ),
     "glm-5.2": ModelConfig(
         name="glm-5.2",
         display_name="GLM-5.2 (Z.AI)",
@@ -1309,6 +1628,8 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         cost_per_million_tokens=0.1,  # $0.10/M input, $0.30/M output
         description="Devstral — agent SWE Mistral, conçu pour les tâches de code multi-fichiers et repositories",
         badge="SWE Agent",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="codestral",
         capabilities=frozenset({"tool_calling", "cheap_text", "code_generation"}),
     ),
     "mistral-small": ModelConfig(
@@ -1352,18 +1673,55 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
 
+    # Snapshots Mistral confirmés par l'inventaire authentifié du compte.
+    "codestral-2508": ModelConfig(
+        "codestral-2508", "Codestral 25.08 (Mistral)", ProviderType.MISTRAL, "codestral-2508",
+        256_000, 16_384, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Snapshot Codestral 25.08 pour code et FIM.", capabilities=frozenset({"tool_calling", "code_generation"}),
+    ),
+    "ministral-14b-2512": ModelConfig(
+        "ministral-14b-2512", "Ministral 14B 25.12", ProviderType.MISTRAL, "ministral-14b-2512",
+        256_000, 16_384, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Snapshot Ministral 14B 25.12.", capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "ministral-8b-2512": ModelConfig(
+        "ministral-8b-2512", "Ministral 8B 25.12", ProviderType.MISTRAL, "ministral-8b-2512",
+        256_000, 16_384, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Snapshot Ministral 8B 25.12.", capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "ministral-3b-2512": ModelConfig(
+        "ministral-3b-2512", "Ministral 3B 25.12", ProviderType.MISTRAL, "ministral-3b-2512",
+        256_000, 16_384, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Snapshot Ministral 3B 25.12.", capabilities=frozenset({"tool_calling", "cheap_text"}),
+    ),
+    "mistral-large-2512": ModelConfig(
+        "mistral-large-2512", "Mistral Large 25.12", ProviderType.MISTRAL, "mistral-large-2512",
+        256_000, 16_384, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Snapshot Mistral Large 25.12.", capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "mistral-medium-3-5": ModelConfig(
+        "mistral-medium-3-5", "Mistral Medium 3.5", ProviderType.MISTRAL, "mistral-medium-3-5",
+        256_000, 16_384, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Mistral Medium 3.5 — modèle général équilibré.", capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "mistral-small-2603": ModelConfig(
+        "mistral-small-2603", "Mistral Small 26.03", ProviderType.MISTRAL, "mistral-small-2603",
+        256_000, 16_384, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Snapshot Mistral Small 26.03.", capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text"}),
+    ),
+
     # === DEEPSEEK V4 (disponible depuis le 24 avril 2026) ===
-    "deepseek-v4-flash": ModelConfig(
-        name="deepseek-v4-flash",
-        display_name="DeepSeek V4-Flash (API)",
+    "deepseek-flash": ModelConfig(
+        name="deepseek-flash",
+        display_name="DeepSeek Flash (API)",
         provider=ProviderType.DEEPSEEK,
-        model_id="deepseek-v4-flash",
+        model_id="deepseek-flash",
         context_window=1000000,
         max_output_tokens=384000,
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.14,  # $0.14/M input (cache miss), $0.28/M output
-        description="DeepSeek V4-Flash — 1M contexte, 384K output, rapide et économique, remplace deepseek-chat",
+        description="DeepSeek Flash — endpoint canonique actuel, rapide et économique.",
         badge="Nouveau",
         capabilities=frozenset({"tool_calling", "cheap_text", "reasoning"}),
     ),
@@ -1383,6 +1741,149 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
     ),
 
     # === DEEPSEEK V3.2 — DÉPRÉCIÉ (inaccessible après le 24 juillet 2026 à 15h59 UTC) ===
+    # === MOD-3 : ajouts vérifiés le 2026-09-20 ===
+    "gpt-6-astra": ModelConfig(
+        name="gpt-6-astra", display_name="GPT-6 Astra (OpenAI)",
+        provider=ProviderType.OPENAI, model_id="gpt-6-astra",
+        context_window=1_050_000, max_output_tokens=128_000,
+        supports_vision=True, supports_tools=True, cost_per_million_tokens=10.0,
+        pricing=ModelPricing(
+            input_per_million=10.0, output_per_million=50.0,
+            cached_input_per_million=1.0, cache_write_per_million=12.5,
+            source_url="https://developers.openai.com/api/docs/models/gpt-6-astra",
+            verified_on="2026-09-20", long_context_threshold=272_000,
+            long_context_input_multiplier=2.0, long_context_output_multiplier=1.5,
+        ),
+        description="GPT-6 Astra — modèle OpenAI le plus capable pour le raisonnement, le code, la recherche et computer use.",
+        badge="Frontier", source_url="https://developers.openai.com/api/docs/models/gpt-6-astra",
+        verified_on="2026-09-20", fallback_eligible=False,
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation", "responses_api"}),
+    ),
+    "gpt-6-sol": ModelConfig(
+        name="gpt-6-sol", display_name="GPT-6 Sol (OpenAI)",
+        provider=ProviderType.OPENAI, model_id="gpt-6-sol",
+        context_window=1_050_000, max_output_tokens=128_000,
+        supports_vision=True, supports_tools=True, cost_per_million_tokens=2.0,
+        pricing=ModelPricing(
+            input_per_million=2.0, output_per_million=10.0,
+            cached_input_per_million=0.20, cache_write_per_million=2.50,
+            source_url="https://developers.openai.com/api/docs/models/gpt-6-sol",
+            verified_on="2026-09-25", long_context_threshold=272_000,
+            long_context_input_multiplier=2.0, long_context_output_multiplier=1.5,
+        ),
+        description="GPT-6 Sol — modèle OpenAI pour le code complexe et les workflows agentiques, équilibrant capacité et coût.",
+        badge="Agentic", source_url="https://developers.openai.com/api/docs/models/gpt-6-sol",
+        verified_on="2026-09-25",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation", "responses_api"}),
+    ),
+    "gpt-6-luna": ModelConfig(
+        name="gpt-6-luna", display_name="GPT-6 Luna (OpenAI)",
+        provider=ProviderType.OPENAI, model_id="gpt-6-luna",
+        context_window=1_050_000, max_output_tokens=128_000,
+        supports_vision=True, supports_tools=True, cost_per_million_tokens=0.10,
+        pricing=ModelPricing(
+            input_per_million=0.10, output_per_million=0.50,
+            cached_input_per_million=0.01, cache_write_per_million=0.125,
+            source_url="https://developers.openai.com/api/docs/models/gpt-6-luna",
+            verified_on="2026-09-25", long_context_threshold=272_000,
+            long_context_input_multiplier=2.0, long_context_output_multiplier=1.5,
+        ),
+        description="GPT-6 Luna — modèle OpenAI rapide et économique pour les tâches ciblées et les volumes élevés.",
+        badge="Efficient", source_url="https://developers.openai.com/api/docs/models/gpt-6-luna",
+        verified_on="2026-09-25",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation", "cheap_text", "responses_api"}),
+    ),
+    "gpt-5.5-pro": ModelConfig(
+        "gpt-5.5-pro", "GPT-5.5 Pro (OpenAI)", ProviderType.OPENAI, "gpt-5.5-pro",
+        1_050_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5.5 Pro — calcul renforcé pour les travaux professionnels complexes.", badge="Pro",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context"}),
+    ),
+    "gpt-5.4-pro": ModelConfig(
+        "gpt-5.4-pro", "GPT-5.4 Pro (OpenAI)", ProviderType.OPENAI, "gpt-5.4-pro",
+        1_000_000, 128_000, True, supports_tools=True, cost_per_million_tokens=30.0,
+        description="GPT-5.4 Pro — modèle Pro antérieur pour raisonnement complexe.", badge="Pro",
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context"}),
+    ),
+    "gpt-5.2": ModelConfig(
+        "gpt-5.2", "GPT-5.2 (OpenAI)", ProviderType.OPENAI, "gpt-5.2",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5.2 — génération précédente pour tâches complexes et agentiques.", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "long_context"}),
+    ),
+    "gpt-5.2-pro": ModelConfig(
+        "gpt-5.2-pro", "GPT-5.2 Pro (OpenAI)", ProviderType.OPENAI, "gpt-5.2-pro",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=21.0,
+        pricing=ModelPricing(input_per_million=21.0, output_per_million=168.0, source_url="https://developers.openai.com/api/docs/models/gpt-5.2-pro", verified_on="2026-09-20"),
+        description="GPT-5.2 Pro — ancien modèle Pro, Responses API uniquement.", badge="Legacy Pro", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "responses_api"}),
+    ),
+    "gpt-5.1": ModelConfig(
+        "gpt-5.1", "GPT-5.1 (OpenAI)", ProviderType.OPENAI, "gpt-5.1",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5.1 — génération précédente OpenAI.", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "gpt-5": ModelConfig(
+        "gpt-5", "GPT-5 (OpenAI)", ProviderType.OPENAI, "gpt-5",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5 — famille stable antérieure.", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "gpt-5-mini": ModelConfig(
+        "gpt-5-mini", "GPT-5 Mini (OpenAI)", ProviderType.OPENAI, "gpt-5-mini",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5 Mini — raisonnement économique et tâches à haut débit.", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "cheap_text"}),
+    ),
+    "gpt-5-nano": ModelConfig(
+        "gpt-5-nano", "GPT-5 Nano (OpenAI)", ProviderType.OPENAI, "gpt-5-nano",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5 Nano — classification et instructions ciblées à haut débit.", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning", "cheap_text"}),
+    ),
+    "gpt-5-pro": ModelConfig(
+        "gpt-5-pro", "GPT-5 Pro (OpenAI)", ProviderType.OPENAI, "gpt-5-pro",
+        400_000, 128_000, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-5 Pro — ancien modèle Pro à calcul renforcé.", badge="Legacy Pro", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "o3-pro": ModelConfig(
+        "o3-pro", "o3-pro (OpenAI)", ProviderType.OPENAI, "o3-pro",
+        200_000, 100_000, True, supports_tools=True, cost_per_million_tokens=20.0,
+        description="o3-pro — ancien modèle de raisonnement à calcul renforcé.", badge="Legacy Pro", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "reasoning"}),
+    ),
+    "gpt-4.1-mini": ModelConfig(
+        "gpt-4.1-mini", "GPT-4.1 Mini (OpenAI)", ProviderType.OPENAI, "gpt-4.1-mini",
+        1_047_576, 32_768, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="GPT-4.1 Mini — modèle non-reasoning économique à long contexte.", lifecycle=ModelLifecycle.LEGACY,
+        capabilities=frozenset({"vision_describe", "tool_calling", "cheap_text", "long_context"}),
+    ),
+    "gemini-3.8-flash": ModelConfig(
+        "gemini-3.8-flash", "Gemini 3.8 Flash (Google)", ProviderType.GOOGLE, "gemini-3.8-flash",
+        1_048_576, 65_536, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Gemini 3.8 Flash — modèle Flash Google actuel pour agents et ingénierie logicielle longue durée.", badge="Nouveau",
+        source_url="https://ai.google.dev/gemini-api/docs/models", verified_on="2026-09-20",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation"}),
+    ),
+    "gemini-3.7-flash": ModelConfig(
+        "gemini-3.7-flash", "Gemini 3.7 Flash (Google)", ProviderType.GOOGLE, "gemini-3.7-flash",
+        1_048_576, 65_536, True, supports_tools=True, cost_per_million_tokens=-1.0,
+        description="Gemini 3.7 Flash — multimodal stable, function calling, computer use preview et thinking low/medium/high.",
+        source_url="https://ai.google.dev/gemini-api/docs/models/gemini-3.7-flash", verified_on="2026-09-20",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation"}),
+    ),
+    "gemma-4-26b-a4b-it": ModelConfig(
+        "gemma-4-26b-a4b-it", "Gemma 4 26B A4B (Google)", ProviderType.GOOGLE, "gemma-4-26b-a4b-it",
+        128_000, 16_384, True, supports_tools=False, cost_per_million_tokens=-1.0,
+        description="Gemma 4 26B MoE servi par l'API Google.", capabilities=frozenset({"vision_describe", "reasoning"}),
+    ),
+    "gemma-4-31b-it": ModelConfig(
+        "gemma-4-31b-it", "Gemma 4 31B (Google)", ProviderType.GOOGLE, "gemma-4-31b-it",
+        128_000, 16_384, True, supports_tools=False, cost_per_million_tokens=-1.0,
+        description="Gemma 4 31B dense servi par l'API Google.", capabilities=frozenset({"vision_describe", "reasoning"}),
+    ),
     "deepseek-v3": ModelConfig(
         name="deepseek-v3",
         display_name="DeepSeek V3.2 ⚠️ Déprécié jul 2026 (API)",
@@ -1393,8 +1894,10 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_vision=False,
         supports_tools=True,
         cost_per_million_tokens=0.27,  # $0.27/M input, $1.10/M output
-        description="DeepSeek V3.2 — DÉPRÉCIÉ : inaccessible après le 24 juillet 2026 à 15h59 UTC. Migrer vers deepseek-v4-flash.",
+        description="DeepSeek V3.2 — DÉPRÉCIÉ : inaccessible après le 24 juillet 2026 à 15h59 UTC. Migrer vers deepseek-flash.",
         badge="Déprécié",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="deepseek-flash",
         capabilities=frozenset({"tool_calling", "cheap_text"}),
     ),
     "deepseek-reasoner": ModelConfig(
@@ -1408,9 +1911,48 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         supports_tools=True,
         cost_per_million_tokens=2.19,  # $2.19/M input, $8.78/M output
         description="DeepSeek V3.2 Reasoner — DÉPRÉCIÉ : inaccessible après le 24 juillet 2026 à 15h59 UTC. Migrer vers deepseek-v4-pro.",
+        badge="Déprécié",
+        lifecycle=ModelLifecycle.RETIRED,
+        successor="deepseek-v4-pro",
         capabilities=frozenset({"tool_calling"}),
     ),
 }
+
+
+# Les migrations d'identifiants sont ajoutées ici, séparément des entrées
+# canoniques. Cette séparation évite qu'un alias apparaisse comme un second
+# modèle sélectionnable ou fausse les métriques de catalogue.
+MODEL_ALIASES: Dict[str, ModelAlias] = {
+    "claude-fable-5": ModelAlias(
+        target="claude-fable-5.1",
+        reason="provider-version-alias",
+        verified_on="2026-09-20",
+    ),
+    "deepseek-v4-flash": ModelAlias(
+        target="deepseek-flash",
+        reason="provider-renamed-endpoint",
+        verified_on="2026-09-20",
+    ),
+    "claude-mythos-5": ModelAlias(
+        target="claude-mythos-5.1",
+        reason="provider-version-alias",
+        source_url="https://platform.claude.com/docs/en/models/mythos-5-1/overview",
+        verified_on="2026-09-25",
+    ),
+}
+
+
+def resolve_model_name(name: str, aliases: Optional[Mapping[str, ModelAlias]] = None) -> str:
+    """Résout un alias de façon bornée ; une boucle conserve le nom demandé."""
+    migrations = MODEL_ALIASES if aliases is None else aliases
+    current = (name or "").strip()
+    visited: set[str] = set()
+    while current in migrations:
+        if current in visited:
+            return (name or "").strip()
+        visited.add(current)
+        current = migrations[current].target
+    return current
 
 
 def get_available_models() -> List[ModelConfig]:
@@ -1418,31 +1960,40 @@ def get_available_models() -> List[ModelConfig]:
     return list(AVAILABLE_MODELS.values())
 
 
+def get_selectable_models() -> List[ModelConfig]:
+    """Retourne uniquement les modèles proposés pour une nouvelle sélection."""
+    return [model for model in AVAILABLE_MODELS.values() if model.is_selectable()]
+
+
 def get_model_config(name: str) -> Optional[ModelConfig]:
     """Retourne la configuration d'un modèle par son nom."""
-    return AVAILABLE_MODELS.get(name)
+    return AVAILABLE_MODELS.get(resolve_model_name(name))
 
 
 MODEL_FALLBACKS: Dict[str, List[str]] = {
-    "claude-fable-5": [
-        "claude-opus-5",
-        "claude-opus-4.8",
+    "claude-fable-5.1": [
+        "claude-opus-5.5",
         "claude-sonnet-5",
-        "claude-sonnet-4.6",
+        "gpt-6-sol",
+        "deepseek-flash",
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-kimi-k2.6",
     ],
-    "claude-mythos-5": [
-        "claude-fable-5",
-        "claude-opus-5",
-        "claude-opus-4.8",
+    "claude-mythos-5.1": [
+        "claude-fable-5.1",
+        "claude-opus-5.5",
         "claude-sonnet-5",
-        "claude-sonnet-4.6",
+    ],
+    "claude-opus-5.5": [
+        "claude-sonnet-5",
+        "gpt-6-sol",
+        "deepseek-flash",
+        "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "claude-opus-5": [
-        "claude-opus-4.8",
+        "claude-opus-5.5",
         "claude-sonnet-5",
-        "claude-sonnet-4.6",
+        "gpt-6-sol",
+        "deepseek-flash",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "claude-sonnet-5": [
@@ -1451,171 +2002,210 @@ MODEL_FALLBACKS: Dict[str, List[str]] = {
         "nvidia-nemotron-3-ultra-550b-a55b",
         "nvidia-kimi-k2.6",
     ],
-    "deepseek-v4-flash": [
-        "nvidia-deepseek-v4-flash",
-        "nvidia-deepseek-v4-pro",
-        "nvidia-gpt-oss-120b",
+    "deepseek-flash": [
+        "nvidia-gpt-oss-20b",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "deepseek-v4-pro": [
-        "nvidia-deepseek-v4-pro",
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-deepseek-v4-flash",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ],
     "kimi-k2.7-code": [
         "kimi-k2.6",
         "nvidia-kimi-k2.6",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "kimi-k3": [
         "kimi-k2.7-code",
         "kimi-k2.6",
         "nvidia-kimi-k2.6",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "kimi-k2.6": [
         "nvidia-kimi-k2.6",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "kimi-k2.5": [
         "nvidia-kimi-k2.6",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "glm-5.2": [
         "glm-5.1",
         "glm-4.7-flashx",
         "glm-4.7-flash",
     ],
+    "glm-5.3": [
+        "glm-5.3-flashx",
+        "glm-5.3-flash",
+        "glm-5.2",
+    ],
     "glm-5.1": [
-        "nvidia-glm-5.1",
-        "nvidia-step-3.7-flash",
+        "nvidia-glm-5.3",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "minimax-m2.7": [
-        "nvidia-minimax-m3",
-        "nvidia-minimax-m2.7",
-        "nvidia-step-3.7-flash",
+        "nvidia-kimi-k3",
+        "nvidia-gpt-oss-20b",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "minimax-m3": [
         "minimax-m2.7",
-        "nvidia-minimax-m3",
-        "nvidia-minimax-m2.7",
+        "nvidia-kimi-k3",
+        "nvidia-gpt-oss-20b",
         "nvidia-gemma-4-31b-it",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
         "nvidia-kimi-k2.6",
     ],
     "gpt-5.5": [
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
         "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "gpt-6-astra": [
+        "gpt-6-sol",
+        "gpt-5.6-sol",
+        "claude-opus-5.5",
+        "claude-sonnet-5",
+        "deepseek-flash",
+        "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "gpt-6-sol": [
+        "gpt-6-luna",
+        "gpt-5.6-terra",
+        "claude-sonnet-5",
+        "deepseek-flash",
+        "nvidia-gpt-oss-20b",
+    ],
+    "gpt-6-luna": [
+        "deepseek-flash",
+        "qwen3-8b",
+        "nvidia-gpt-oss-20b",
     ],
     "gpt-5.6-sol": [
         "gpt-5.5",
         "gpt-5.6-terra",
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ],
     "gpt-5.6-terra": [
         "gpt-5.4",
         "gpt-5.6-luna",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "gpt-5.6-luna": [
         "gpt-5.4-mini",
-        "nvidia-gpt-oss-120b",
-        "nvidia-deepseek-v4-flash",
+        "nvidia-gpt-oss-20b",
     ],
+    # LOT ESC-1c : ces quatre modeles servent de PALIERS D'ESCALADE. Leur repli
+    # menait droit a un petit modele (ou nulle part pour les deux Anthropic) :
+    # un echec de quota faisait donc atterrir PLUS BAS que le point de depart.
+    # Un modele capable passe devant, les petits restent en dernier recours.
     "gpt-5.4": [
-        "nvidia-gpt-oss-120b",
+        "deepseek-v4-pro",
+        "deepseek-flash",
+        "nvidia-gpt-oss-20b",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "gpt-5.4-mini": [
-        "nvidia-gpt-oss-120b",
-        "nvidia-deepseek-v4-flash",
+        "deepseek-flash",
+        "deepseek-v4-pro",
+        "nvidia-gpt-oss-20b",
+    ],
+    "claude-sonnet-4.6": [
+        "deepseek-flash",
+        "deepseek-v4-pro",
+    ],
+    "claude-opus-4.6": [
+        "deepseek-v4-pro",
+        "deepseek-flash",
     ],
     "o3": [
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ],
     "o4-mini": [
-        "nvidia-gpt-oss-120b",
-        "nvidia-deepseek-v4-flash",
+        "nvidia-gpt-oss-20b",
     ],
     "gemini-3.1-pro": [
         "nvidia-gemma-4-31b-it",
-        "nvidia-minimax-m3",
-        "nvidia-step-3.7-flash",
+        "nvidia-kimi-k3",
+        "nvidia-nemotron-3.5-lightning",
         "nvidia-kimi-k2.6",
     ],
     "gemini-3.6-flash": [
         "gemini-3.5-flash",
         "gemini-2.5-flash",
-        "nvidia-step-3.7-flash",
-        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3.5-lightning",
+        "nvidia-gpt-oss-20b",
     ],
     "gemini-3.5-flash": [
         "gemini-2.5-flash",
-        "nvidia-step-3.7-flash",
-        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3.5-lightning",
+        "nvidia-gpt-oss-20b",
     ],
     "gemini-3.5-flash-lite": [
         "gemini-3.1-flash-lite",
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "gemini-3.1-flash-lite": [
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ],
     "gemini-2.5-flash-lite": [
         "gemini-2.5-flash",
-        "nvidia-step-3.7-flash",
-        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3.5-lightning",
+        "nvidia-gpt-oss-20b",
     ],
     "gemini-2.5-pro": [
         "nvidia-gemma-4-31b-it",
-        "nvidia-minimax-m3",
-        "nvidia-step-3.7-flash",
+        "nvidia-kimi-k3",
+        "nvidia-nemotron-3.5-lightning",
         "nvidia-kimi-k2.6",
     ],
     "gemini-2.5-flash": [
-        "nvidia-step-3.7-flash",
-        "nvidia-gpt-oss-120b",
+        "nvidia-nemotron-3.5-lightning",
+        "nvidia-gpt-oss-20b",
     ],
     "grok-4.6": [
         "grok-4.5",
         "grok-4.3",
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
+    ],
+    "grok-4.7": [
+        "grok-4.6",
+        "grok-4.5",
+        "grok-4.3",
+        "nvidia-nemotron-3-ultra-550b-a55b",
+        "nvidia-gpt-oss-20b",
     ],
     "grok-4.5": [
         "grok-4.3",
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ],
     "grok-build-0.1": [
         "grok-4.6",
         "grok-4.5",
         "grok-4.3",
-        "nvidia-deepseek-v4-flash",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ],
     "grok-4.3": [
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ],
     "mistral-large": [
-        "nvidia-gpt-oss-120b",
-        "nvidia-deepseek-v4-flash",
+        "nvidia-gpt-oss-20b",
     ],
 }
 
 
 def get_model_fallbacks(model_name: str) -> List[str]:
     """Retourne les fallbacks gratuits rattaches a un modele Lumena."""
-    name = (model_name or "").strip()
+    name = resolve_model_name(model_name)
     cfg = AVAILABLE_MODELS.get(name)
     if not cfg:
         for candidate_name, candidate_cfg in AVAILABLE_MODELS.items():
@@ -1625,7 +2215,68 @@ def get_model_fallbacks(model_name: str) -> List[str]:
                 break
     if not cfg:
         return []
-    return [fb for fb in MODEL_FALLBACKS.get(name, []) if fb in AVAILABLE_MODELS]
+    return [
+        fb
+        for fb in MODEL_FALLBACKS.get(name, [])
+        if fb in AVAILABLE_MODELS and AVAILABLE_MODELS[fb].is_fallback_eligible()
+    ]
+
+
+def validate_model_catalog(
+    *,
+    models: Optional[Mapping[str, ModelConfig]] = None,
+    aliases: Optional[Mapping[str, ModelAlias]] = None,
+    fallbacks: Optional[Mapping[str, Sequence[str]]] = None,
+) -> List[str]:
+    """Retourne toutes les incohérences du catalogue sans effet de bord."""
+    catalog = AVAILABLE_MODELS if models is None else models
+    migrations = MODEL_ALIASES if aliases is None else aliases
+    routes = MODEL_FALLBACKS if fallbacks is None else fallbacks
+    errors: List[str] = []
+
+    for key, config in catalog.items():
+        if key != config.name:
+            errors.append(f"{key}: key differs from model name {config.name!r}")
+        if not config.model_id.strip():
+            errors.append(f"{key}: model_id is empty")
+        if config.context_window <= 0:
+            errors.append(f"{key}: context_window must be positive")
+        if config.max_output_tokens <= 0:
+            errors.append(f"{key}: max_output_tokens must be positive")
+        if config.lifecycle == ModelLifecycle.RETIRED:
+            if config.selectable is True:
+                errors.append(f"{key}: retired model cannot be selectable")
+            if config.fallback_eligible is True:
+                errors.append(f"{key}: retired model cannot be fallback eligible")
+
+    for alias in migrations:
+        if alias in catalog:
+            errors.append(f"{alias}: alias duplicates a canonical model")
+        current = alias
+        visited: set[str] = set()
+        while current in migrations:
+            if current in visited:
+                errors.append(f"alias loop detected from {alias}")
+                break
+            visited.add(current)
+            current = migrations[current].target
+        else:
+            if current not in catalog:
+                errors.append(f"{alias}: alias target {current!r} does not exist")
+
+    for root, targets in routes.items():
+        if root not in catalog:
+            errors.append(f"{root}: fallback root does not exist")
+        seen: set[str] = set()
+        for target in targets:
+            if target in seen:
+                errors.append(f"{root}: duplicate fallback {target}")
+            seen.add(target)
+            if target not in catalog:
+                errors.append(f"{root}: fallback {target!r} does not exist")
+            elif not catalog[target].is_fallback_eligible():
+                errors.append(f"{root}: fallback {target!r} is not eligible")
+    return errors
 
 
 def get_default_model_for_provider(provider_name: str) -> Optional[ModelConfig]:
@@ -1634,8 +2285,12 @@ def get_default_model_for_provider(provider_name: str) -> Optional[ModelConfig]:
         pt = ProviderType(provider_name)
     except ValueError:
         return None
+    if pt is ProviderType.NVIDIA:
+        preferred = AVAILABLE_MODELS.get("nvidia-gpt-oss-20b")
+        if preferred is not None and preferred.is_selectable():
+            return preferred
     for m in AVAILABLE_MODELS.values():
-        if m.provider == pt:
+        if m.provider == pt and m.is_selectable():
             return m
     return None
 
@@ -1682,6 +2337,8 @@ def _cost_label(m: ModelConfig) -> str:
     """Retourne une étiquette de coût lisible pour affichage UI."""
     if m.is_local():
         return "Gratuit illimité"
+    if m.cost_per_million_tokens < 0:
+        return "Tarif non vérifié"
     if m.cost_per_million_tokens == 0.0:
         return "Gratuit"
     if m.cost_per_million_tokens <= 0.9:
@@ -1702,6 +2359,12 @@ def build_models_info() -> Dict[str, Dict[str, Any]]:
             "provider": _PROVIDER_DISPLAY_NAMES.get(m.provider, m.provider.value),
             "cost":     _cost_label(m),
             "desc":     m.description,
+            "model_id": m.model_id,
+            "lifecycle": m.lifecycle.value,
+            "selectable": m.is_selectable(),
+            "fallback_eligible": m.is_fallback_eligible(),
+            "aliases": list(m.aliases),
+            "pricing": m.pricing.as_dict() if m.pricing else None,
         }
         if m.badge:
             entry["badge"] = m.badge
@@ -2128,8 +2791,9 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     #         vision (analyse image via API), web (recherche/analyse web)
     # vision=0 => le modèle n'a PAS d'API vision
     # ── Anthropic ──────────────────────────────────────────────────────────
-    "claude-fable-5":              {"code": 96, "speed": 42, "reasoning": 99, "creative": 99, "research": 97, "vision": 97, "web": 94},
-    "claude-mythos-5":             {"code": 97, "speed": 38, "reasoning": 99, "creative": 99, "research": 98, "vision": 97, "web": 95},
+    "claude-fable-5.1":            {"code": 96, "speed": 42, "reasoning": 99, "creative": 99, "research": 97, "vision": 97, "web": 94},
+    "claude-mythos-5.1":           {"code": 97, "speed": 38, "reasoning": 99, "creative": 99, "research": 98, "vision": 97, "web": 95},
+    "claude-opus-5.5":             {"code": 99, "speed": 46, "reasoning": 100, "creative": 99, "research": 99, "vision": 99, "web": 96},
     "claude-opus-5":               {"code": 95, "speed": 44, "reasoning": 99, "creative": 98, "research": 97, "vision": 97, "web": 93},
     "claude-opus-4.8":             {"code": 94, "speed": 45, "reasoning": 98, "creative": 97, "research": 95, "vision": 96, "web": 92},
     "claude-opus-4.7":             {"code": 92, "speed": 45, "reasoning": 96, "creative": 97, "research": 94, "vision": 96, "web": 91},
@@ -2141,6 +2805,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "claude-haiku-4.5":            {"code": 74, "speed": 94, "reasoning": 72, "creative": 78, "research": 68, "vision": 72, "web": 70},
     # ── xAI / Grok ─────────────────────────────────────────────────────────
     "grok-4.3":                    {"code": 80, "speed": 85, "reasoning": 82, "creative": 75, "research": 80, "vision": 80, "web": 82},
+    "grok-4.7":                    {"code": 96, "speed": 68, "reasoning": 98, "creative": 88, "research": 96, "vision": 94, "web": 94},
     "grok-4.6":                    {"code": 90, "speed": 67, "reasoning": 94, "creative": 84, "research": 91, "vision": 90, "web": 88},
     "grok-4.5":                    {"code": 88, "speed": 70, "reasoning": 91, "creative": 82, "research": 88, "vision": 88, "web": 86},
     "grok-build-0.1":              {"code": 89, "speed": 82, "reasoning": 86, "creative": 72, "research": 76, "vision": 78, "web": 74},
@@ -2151,11 +2816,13 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "grok-4.20-multi-agent-0309":  {"code": 82, "speed": 70, "reasoning": 88, "creative": 68, "research": 82, "vision": 80, "web": 86},
     # ── DeepSeek ───────────────────────────────────────────────────────────
     "deepseek-v4-pro":             {"code": 95, "speed": 52, "reasoning": 95, "creative": 76, "research": 92, "vision":  0, "web": 80},
-    "deepseek-v4-flash":           {"code": 88, "speed": 80, "reasoning": 88, "creative": 72, "research": 82, "vision":  0, "web": 76},
+    "deepseek-flash":              {"code": 88, "speed": 80, "reasoning": 88, "creative": 72, "research": 82, "vision":  0, "web": 76},
     "deepseek-reasoner":           {"code": 82, "speed": 50, "reasoning": 92, "creative": 60, "research": 80, "vision":  0, "web": 72},
     "deepseek-v3":                 {"code": 84, "speed": 72, "reasoning": 82, "creative": 68, "research": 78, "vision":  0, "web": 75},
     # ── Google ─────────────────────────────────────────────────────────────
     "gemini-3.5-flash":            {"code": 82, "speed": 92, "reasoning": 84, "creative": 78, "research": 88, "vision": 92, "web": 90},
+    "gemini-3.8-flash":            {"code": 95, "speed": 89, "reasoning": 94, "creative": 86, "research": 96, "vision": 97, "web": 96},
+    "gemini-3.7-flash":            {"code": 92, "speed": 89, "reasoning": 92, "creative": 84, "research": 94, "vision": 96, "web": 95},
     "gemini-3.6-flash":            {"code": 90, "speed": 88, "reasoning": 91, "creative": 84, "research": 92, "vision": 95, "web": 93},
     "gemini-3.5-flash-lite":       {"code": 80, "speed": 94, "reasoning": 78, "creative": 72, "research": 84, "vision": 88, "web": 86},
     "gemini-3.1-flash-lite":       {"code": 76, "speed": 93, "reasoning": 74, "creative": 70, "research": 80, "vision": 86, "web": 83},
@@ -2166,6 +2833,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     # ── Moonshot (Kimi) ────────────────────────────────────────────────────
     "kimi-k3":                     {"code": 95, "speed": 40, "reasoning": 96, "creative": 88, "research": 96, "vision": 95, "web": 90},
     "kimi-k2.7-code":              {"code": 94, "speed": 55, "reasoning": 92, "creative": 80, "research": 94, "vision": 92, "web": 88},
+    "kimi-k2.7-code-highspeed":    {"code": 94, "speed": 92, "reasoning": 92, "creative": 80, "research": 94, "vision": 92, "web": 88},
     "kimi-k2.5":                   {"code": 74, "speed": 75, "reasoning": 78, "creative": 72, "research": 90, "vision":  0, "web": 82},
     "kimi-k2.6":                   {"code": 88, "speed": 62, "reasoning": 88, "creative": 78, "research": 92, "vision": 90, "web": 86},
     # ── NVIDIA NIM ─────────────────────────────────────────────────────────
@@ -2179,15 +2847,25 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "nvidia-minimax-m2.7":         {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
     "nvidia-minimax-m3":           {"code": 89, "speed": 72, "reasoning": 88, "creative": 86, "research": 86, "vision": 88, "web": 78},
     "nvidia-gemma-4-31b-it":       {"code": 82, "speed": 76, "reasoning": 84, "creative": 78, "research": 82, "vision": 86, "web": 76},
+    "nvidia-kimi-k3":              {"code": 95, "speed": 45, "reasoning": 96, "creative": 88, "research": 96, "vision": 95, "web": 90},
+    "nvidia-nemotron-3.5-lightning":{"code": 88, "speed": 94, "reasoning": 88, "creative": 78, "research": 84, "vision": 0, "web": 78},
+    "nvidia-gpt-oss-20b":          {"code": 78, "speed": 92, "reasoning": 80, "creative": 72, "research": 74, "vision": 0, "web": 70},
+    "nvidia-glm-5.3":              {"code": 92, "speed": 66, "reasoning": 94, "creative": 84, "research": 90, "vision": 0, "web": 86},
+    "nvidia-glm-5.3-flash":        {"code": 86, "speed": 93, "reasoning": 86, "creative": 80, "research": 84, "vision": 90, "web": 82},
+    "nvidia-muse-glimmer-30b":     {"code": 76, "speed": 88, "reasoning": 78, "creative": 82, "research": 76, "vision": 0, "web": 70},
     # ── MiniMax (natif) ────────────────────────────────────────────────────
     "minimax-m2.5":                {"code": 86, "speed": 80, "reasoning": 82, "creative": 82, "research": 78, "vision":  0, "web": 70},
     "minimax-m2.5-highspeed":      {"code": 84, "speed": 95, "reasoning": 78, "creative": 78, "research": 74, "vision":  0, "web": 66},
     "minimax-m2.1":                {"code": 80, "speed": 78, "reasoning": 76, "creative": 76, "research": 72, "vision":  0, "web": 65},
     "minimax-m2.1-highspeed":      {"code": 78, "speed": 94, "reasoning": 72, "creative": 72, "research": 68, "vision":  0, "web": 62},
     "minimax-m2.7":                {"code": 88, "speed": 76, "reasoning": 85, "creative": 84, "research": 80, "vision":  0, "web": 72},
+    "minimax-m2.7-highspeed":      {"code": 88, "speed": 94, "reasoning": 85, "creative": 84, "research": 80, "vision":  0, "web": 72},
     "minimax-m3":                  {"code": 90, "speed": 72, "reasoning": 88, "creative": 86, "research": 86, "vision":  0, "web": 78},
     # ── Z.AI (GLM) ────────────────────────────────────────────────────────
     "glm-5.2":                     {"code": 88, "speed": 62, "reasoning": 90, "creative": 82, "research": 84, "vision":  0, "web": 80},
+    "glm-5.3":                     {"code": 92, "speed": 62, "reasoning": 94, "creative": 84, "research": 90, "vision":  0, "web": 86},
+    "glm-5.3-flash":               {"code": 86, "speed": 94, "reasoning": 86, "creative": 80, "research": 84, "vision": 90, "web": 82},
+    "glm-5.3-flashx":              {"code": 88, "speed": 90, "reasoning": 88, "creative": 82, "research": 86, "vision": 92, "web": 84},
     "glm-5.1":                     {"code": 85, "speed": 65, "reasoning": 88, "creative": 80, "research": 82, "vision":  0, "web": 78},
     "glm-5":                       {"code": 84, "speed": 68, "reasoning": 86, "creative": 78, "research": 80, "vision":  0, "web": 76},
     "glm-5-turbo":                 {"code": 83, "speed": 76, "reasoning": 84, "creative": 76, "research": 78, "vision":  0, "web": 74},
@@ -2209,6 +2887,9 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "glm-5v-turbo":                {"code": 72, "speed": 68, "reasoning": 74, "creative": 76, "research": 70, "vision": 85, "web": 68},
     # ── OpenAI ─────────────────────────────────────────────────────────────
     "gpt-5.5":                     {"code": 98, "speed": 72, "reasoning": 99, "creative": 94, "research": 97, "vision": 98, "web": 96},
+    "gpt-6-astra":                 {"code": 100, "speed": 58, "reasoning": 100, "creative": 98, "research": 100, "vision": 100, "web": 100},
+    "gpt-6-sol":                   {"code": 99, "speed": 72, "reasoning": 99, "creative": 96, "research": 98, "vision": 99, "web": 98},
+    "gpt-6-luna":                  {"code": 92, "speed": 96, "reasoning": 91, "creative": 88, "research": 92, "vision": 94, "web": 92},
     # GPT-5.6 reste en réserve premium jusqu'à validation runtime : sélection
     # explicite disponible, mais aucun basculement automatique coûteux.
     "gpt-5.6-sol":                 {"code": 99, "speed": 70, "reasoning": 100, "creative": 96, "research": 99, "vision": 98, "web": 98},
@@ -2250,7 +2931,7 @@ def best_model_for(
     """
     # Modèles réservés aux tâches vraiment complexes : sélectionnés seulement
     # si leur avantage de score > _PREMIUM_THRESHOLD sur le meilleur standard.
-    _PREMIUM_MODELS = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "kimi-k3", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "grok-4.6", "grok-4.5", "grok-build-0.1"}
+    _PREMIUM_MODELS = {"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-fable-5.1", "claude-mythos-5.1", "claude-opus-5.5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "kimi-k3", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "grok-4.7", "grok-4.6", "grok-4.5", "grok-build-0.1"}
     _PREMIUM_THRESHOLD = 10
 
     candidates = preferred_models or list(MODEL_SKILLS.keys())
@@ -2264,7 +2945,7 @@ def best_model_for(
         if model_name not in MODEL_SKILLS:
             continue
         config = AVAILABLE_MODELS.get(model_name)
-        if not config:
+        if not config or not config.is_selectable():
             continue
         available = config.is_local() or check_api_key(config.provider)
         if not available:
@@ -2350,7 +3031,9 @@ def _resolve_vision_auto() -> Optional[str]:
         best_name: Optional[str] = None
         best_score = -1
         for name, cfg in AVAILABLE_MODELS.items():
-            if not cfg.supports_vision or cfg.is_local():
+            if not cfg.is_selectable() or not cfg.supports_vision or cfg.is_local():
+                continue
+            if cfg.cost_per_million_tokens < 0:
                 continue
             if cfg.cost_per_million_tokens > max_cost:
                 continue
@@ -2388,9 +3071,10 @@ def get_brain_model(task: str) -> Optional[str]:
     override = os.getenv(env_key, "auto").strip().lower()
 
     if override and override != "auto":
-        config = AVAILABLE_MODELS.get(override)
-        if config and check_api_key(config.provider):
-            return override
+        resolved = resolve_model_name(override)
+        config = AVAILABLE_MODELS.get(resolved)
+        if config and config.is_selectable() and check_api_key(config.provider):
+            return resolved
 
     # Pour image_gen, priorit\u00e9 aux mod\u00e8les supports_image_generation
     if task == "image_gen":
@@ -2418,6 +3102,8 @@ def models_with_capability(cap: str, *, available_only: bool = True) -> List[str
     """
     result: List[str] = []
     for name, cfg in AVAILABLE_MODELS.items():
+        if not cfg.is_selectable():
+            continue
         if cap not in cfg.capabilities:
             continue
         if available_only and not (cfg.is_local() or check_api_key(cfg.provider)):

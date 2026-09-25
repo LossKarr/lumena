@@ -195,24 +195,39 @@ _RUNNER = Path("src/subagents/runner.py").read_text(encoding="utf-8")
 _REACT = Path("src/reasoning/react.py").read_text(encoding="utf-8")
 
 
+# Largeur de la fenêtre lue avant `mark_done`.
+#
+# ⚠ ELLE A DÉJÀ DÉBORDÉ UNE FOIS. Au LOT 10 (03/09), l'ajout d'un quatrième
+# `annotate_*` à la chaîne de clôture a repoussé `get("mission_published")` à
+# **2510 caractères** de `mark_done` : dix de trop. Les invariants Z9 étaient
+# intacts — vérifié un par un, tous présents et dans l'ordre — mais trois tests
+# rougissaient. Une fenêtre à largeur fixe est un compteur déguisé : chaque lot
+# qui allonge la chaîne en chasse le plus ancien.
+#
+# Portée à 4000 : le plus lointain (`annotate_unproven_effects`) est à 3028, ce
+# qui laisse ~1000 caractères de marge. **Le prochain lot qui ajoute un maillon
+# doit REMESURER cette distance, pas simplement rougir puis élargir.**
+_FENETRE_CLOTURE = 4000
+
+
 def test_la_cloture_annote_bien_la_publication():
     """Même point d'appel que H6 : juste avant `mark_done`."""
     i = _RUNNER.index("orch.mark_done(mission_id, result_summary=")
-    avant = _RUNNER[i - 2500 : i]
+    avant = _RUNNER[i - _FENETRE_CLOTURE : i]
     assert "annotate_unpublished_deliverable" in avant
     assert "annotate_unproven_effects" in avant
 
 
 def test_la_cloture_annote_la_provenance():
     i = _RUNNER.index("orch.mark_done(mission_id, result_summary=")
-    assert "annotate_worker_report_fallback" in _RUNNER[i - 2500 : i]
+    assert "annotate_worker_report_fallback" in _RUNNER[i - _FENETRE_CLOTURE : i]
 
 
 def _bloc_cloture() -> str:
     """Le SITE D'APPEL, pas la définition : le nom apparaît aussi plus haut,
     dans la fonction elle-même (piège déjà rencontré au LOT Z6)."""
     fin = _RUNNER.index("orch.mark_done(mission_id, result_summary=")
-    return _RUNNER[fin - 2500 : fin]
+    return _RUNNER[fin - _FENETRE_CLOTURE : fin]
 
 
 def test_la_publication_est_jugee_sur_le_disque():
@@ -233,7 +248,7 @@ def test_les_fichiers_de_service_ne_sont_pas_comptes():
 
 def test_lannotation_ne_peut_pas_casser_la_cloture():
     for nom in ("annotate_unpublished_deliverable", "annotate_worker_report_fallback"):
-        i = _RUNNER.index(nom, _RUNNER.index("orch.mark_done") - 2500)
+        i = _RUNNER.index(nom, _RUNNER.index("orch.mark_done") - _FENETRE_CLOTURE)
         autour = _RUNNER[i - 900 : i + 500]
         assert "try:" in autour and "except Exception" in autour
 

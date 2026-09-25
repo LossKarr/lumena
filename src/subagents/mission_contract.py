@@ -50,6 +50,60 @@ WORKER_CONTRACT_PREAMBLE = (
     "signature, n'invente AUCUNE API hors contrat. N'écris QUE tes fichiers assignés."
 )
 
+# ── LOT 0 — le préambule aussi dépend du métier ──────────────────────────────────
+#
+# Le préambule ci-dessus ordonne « signatures EXACTES », « pas de réécriture totale »,
+# « NE modifie JAMAIS une signature ». Servi à un RÉDACTEUR, il contredit mot pour mot
+# la consigne de son stub, posée par I1 : « Remplace INTÉGRALEMENT ce contenu par le
+# document final ». Le worker recevait donc deux ordres opposés dans le même message.
+#
+# C'est la rechute exacte du défaut I1 — où le stub Markdown affichait « SIGNATURE
+# FIGÉE PAR LE CONTRAT — NE PAS MODIFIER » (parce qu'en Markdown `#` n'est pas un
+# commentaire mais un titre) et où le worker a obéi, livrant un `.md` rempli de Python.
+# I1 a corrigé le stub ; le préambule, lui, disait toujours la même chose.
+WORKER_CONTRACT_PREAMBLE_LIVRABLE = (
+    "📜 CONTRAT DE MISSION : lis d'abord CONTRAT.md (tu es DÉJÀ dans le dossier "
+    "de la mission — utilise UNIQUEMENT des chemins RELATIFS comme CONTRAT.md ou "
+    "rapport.md, ne recopie JAMAIS missions/<id>/ ni workspace/). "
+    "Tes fichiers existent en STUBS : ce sont des AMORCES à REMPLACER INTÉGRALEMENT "
+    "par le livrable final — pas des squelettes à compléter. Respecte le chemin, le "
+    "format et les sections annoncés au contrat. N'écris QUE tes fichiers assignés."
+)
+
+
+def contract_preamble_for_role(role: Any) -> str:
+    """Le préambule adapté au métier. Le CODE garde le sien, au bit près."""
+    return (WORKER_CONTRACT_PREAMBLE if normalize_role(role) in ("", ROLE_CODE)
+            else WORKER_CONTRACT_PREAMBLE_LIVRABLE)
+
+
+# ── LOT 4 — dire au worker qu'il peut lire ses frères ────────────────────────────
+#
+# `mission_journal_read` déclaré ne suffit pas : le worker voit 732 outils et n'en
+# emploie qu'une poignée. C'est la leçon de `contract.effects` — disponible depuis H4,
+# utilisé par 3 contrats sur 176 parce que rien ne l'annonçait.
+#
+# Ajouté SEULEMENT quand le worker a des frères : seul, il n'a personne à lire, et
+# une ligne de plus diluerait les autres consignes (AUD-017).
+_COORDINATION_STEER = (
+    "🤝 TU N'ES PAS SEUL : {n} workers travaillent EN PARALLÈLE sur cette mission. "
+    "Tu peux déjà lire leurs fichiers ; `mission_journal_read()` te donne en plus "
+    "leur RAISONNEMENT — ce qu'ils ont choisi, tenté, ou trouvé impossible. "
+    "Consulte-le quand ton travail dépend d'un autre (format, bibliothèque, nom de "
+    "route), quand tu bloques (un frère a peut-être déjà rencontré ton erreur), et "
+    "avant de conclure. Le CONTRAT reste la source de vérité : le journal est un "
+    "CONSTAT, il ne t'autorise jamais à sortir de ton périmètre."
+)
+
+
+def coordination_steer(nb_workers: int) -> str:
+    """Le rappel de coordination, ou "" si le worker travaille seul."""
+    try:
+        n = int(nb_workers)
+    except (TypeError, ValueError):
+        return ""
+    return _COORDINATION_STEER.format(n=n) if n >= 2 else ""
+
 
 # ── LOT G (run FidéliBar 2026-07-04) — discipline de codage du worker ─────────────
 # Le worker recevait le CONTRAT (préambule ci-dessus) mais pas la discipline de DEV
@@ -120,6 +174,247 @@ _DELEGATE_CODE_STEER = (
 )
 
 _CODE_EXT = (".py", ".html", ".css", ".js", ".ts", ".jsx", ".tsx", ".vue", ".svelte")
+
+# ── LOT 0 (2026-09-02) — LE RÔLE EST UNE DONNÉE, PLUS UNE EXTENSION ──────────────
+#
+# Constat mesuré avant d'écrire une ligne : Lumena porte **52 familles d'outils**
+# (`src/reasoning/handlers/*.py`) et son système de délégation n'en reconnaissait que
+# **TROIS** — frontend, backend, tests — tous déduits du SUFFIXE du fichier.
+#
+# Conséquence, mesurée en appelant le code : un worker qui rédige un `.md` ou produit
+# un `.csv` recevait `WORKER_CODING_DISCIPLINE`, qui s'ouvre sur « agent dev, pas un
+# rédacteur » et lui ordonne « après CHAQUE mutation, EXÉCUTE (module/tests
+# concernés) ». Un README n'a ni module ni test. Sur les 463 workers du corpus,
+# **66 % ne touchent JAMAIS le CodeAgent** (149 mutent en ReAct direct, 156 ne mutent
+# rien : recherche, lecture, analyse) — la discipline de codage ne les concernait pas.
+#
+# Le système SAVAIT pourtant distinguer un document : `_DOC_EXT` existe depuis I1 et
+# sert au stub (« Remplace INTÉGRALEMENT ce contenu »), à `validate_contract` et à
+# `inspect_worker_deliverables` — mais **jamais au choix de la discipline**. Le fait
+# était calculé, il servait ailleurs, et il était ignoré au moment de décider.
+#
+# Ce lot COMPLÈTE I1/I2/I3 (qui ont traité le stub et la validation) ; il ne les
+# refait pas. Il ajoute la couche qui manquait : la CONSIGNE DE TRAVAIL.
+#
+# ⚠️ RÉTROCOMPATIBILITÉ STRICTE : un worker de CODE et un worker d'EFFETS PURS
+# reçoivent un texte IDENTIQUE au bit près. Seuls les rôles qui n'avaient pas de
+# consigne adaptée changent.
+
+ROLE_CODE = "code"
+ROLE_DOCUMENT = "document"
+ROLE_DONNEES = "donnees"
+ROLE_RECHERCHE = "recherche"
+ROLE_NAVIGATEUR = "navigateur"
+ROLE_MEDIA = "media"
+ROLE_ACTION = "action"
+ROLE_GENERAL = "general"
+
+ROLES_CONNUS = (
+    ROLE_CODE, ROLE_DOCUMENT, ROLE_DONNEES, ROLE_RECHERCHE,
+    ROLE_NAVIGATEUR, ROLE_MEDIA, ROLE_ACTION, ROLE_GENERAL,
+)
+
+# Extensions par métier. `_CODE_EXT` reste la référence du code (inchangé) ;
+# `_DOC_EXT` est défini plus bas (I1) et reste la référence du rédactionnel.
+_DONNEES_EXT = (".csv", ".tsv", ".json", ".jsonl", ".xlsx", ".xls", ".parquet",
+                ".sql", ".yaml", ".yml", ".xml", ".ndjson")
+_MEDIA_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".mp4", ".webm",
+              ".mp3", ".wav", ".pdf")
+
+WORKER_DOCUMENT_DISCIPLINE = (
+    "📄 DISCIPLINE RÉDACTIONNELLE (tu produis un DOCUMENT, pas du code) :\n"
+    "• Ton livrable est un texte qu'un humain va LIRE. Écris-le en entier : remplace "
+    "INTÉGRALEMENT le stub, ne laisse ni titre vide, ni « TODO », ni section annoncée "
+    "puis absente.\n"
+    "• Structure d'abord (les sections attendues sont dans le contrat), rédige ensuite. "
+    "Chaque section annoncée DOIT contenir du contenu réel.\n"
+    "• N'écris PAS de code pour produire ton document, et ne mets pas de `def`/`class`/"
+    "`import` dedans : ce sont des mots, pas un programme.\n"
+    "• Tout CHIFFRE, date, nom ou citation doit venir d'une source que tu as réellement "
+    "consultée — cite-la. Un fait que tu ne peux pas sourcer, tu l'écris comme incertain "
+    "ou tu ne l'écris pas.\n"
+    "• Ne conclus PAS (FINAL) sans avoir RELU ton fichier après écriture : c'est ta "
+    "seule preuve qu'il est complet et lisible."
+)
+
+WORKER_DONNEES_DISCIPLINE = (
+    "📊 DISCIPLINE DONNÉES (tu produis un jeu de données, pas de la prose) :\n"
+    "• Respecte EXACTEMENT le schéma du contrat : mêmes colonnes, mêmes noms, même "
+    "ordre, même unité. Une colonne renommée casse tout ce qui lit ton fichier.\n"
+    "• N'INVENTE JAMAIS une valeur. Une donnée absente se note vide ou `null` — jamais "
+    "un chiffre plausible. Une seule valeur inventée rend le jeu entier non fiable.\n"
+    "• Après écriture, RELIS ton fichier et vérifie qu'il se parse (compte des lignes, "
+    "colonnes cohérentes, encodage) — ne suppose pas que c'est valide.\n"
+    "• Chaque donnée doit être traçable à sa source ; si tu agrèges, dis d'où vient "
+    "chaque agrégat."
+)
+
+WORKER_RECHERCHE_DISCIPLINE = (
+    "🔎 DISCIPLINE DE RECHERCHE (tu rapportes des FAITS, tu n'en produis pas) :\n"
+    "• Cherche RÉELLEMENT avec tes outils (web_search_brave, web_fetch, deep_research, "
+    "MCP…). Une réponse tirée de ta mémoire n'est pas une recherche.\n"
+    "• Chaque affirmation vient avec sa SOURCE (URL, titre, date). Sans source "
+    "atteignable, ce n'est pas un résultat : dis-le explicitement.\n"
+    "• Croise au moins deux sources sur un chiffre qui compte. Si elles divergent, "
+    "rapporte la divergence — ne choisis pas en silence.\n"
+    "• Distingue toujours ce que tu as LU de ce que tu en DÉDUIS.\n"
+    "• Ne conclus PAS (FINAL) en disant « je n'ai rien trouvé » sans dire OÙ tu as "
+    "cherché et avec quels termes."
+)
+
+WORKER_NAVIGATEUR_DISCIPLINE = (
+    "🌐 DISCIPLINE NAVIGATEUR (tu prouves un PARCOURS, pas une intention) :\n"
+    "• Cycle strict : browser_screenshot pour VOIR, browser_dom_state pour LIRE, UNE "
+    "action, puis re-screenshot pour VÉRIFIER. Jamais deux clics à l'aveugle.\n"
+    "• Sur une page de liste, SCROLLE avant de conclure que quelque chose est absent — "
+    "le contenu se charge en arrivant.\n"
+    "• Un parcours n'est prouvé que par ce que la page montre APRÈS l'action : un "
+    "screenshot final est obligatoire.\n"
+    "• Ne conclus PAS (FINAL) sur « la page semble » : cite ce que tu as vu, ou dis que "
+    "tu n'as pas pu le vérifier."
+)
+
+WORKER_MEDIA_DISCIPLINE = (
+    "🎬 DISCIPLINE MÉDIA (tu produis un fichier qu'on va REGARDER ou ÉCOUTER) :\n"
+    "• Utilise les outils natifs (generate_image, generate_logo, generate_svg, "
+    "generate_video…) — n'écris pas de script pour faire ce qu'un outil fait.\n"
+    "• Après génération, VÉRIFIE que le fichier existe et n'est pas vide, au chemin "
+    "exact du contrat.\n"
+    "• Respecte le format et les dimensions demandés ; à défaut, dis ce que tu as "
+    "produit à la place.\n"
+    "• Ne conclus PAS (FINAL) sur une génération que tu n'as pas vue aboutir."
+)
+
+WORKER_GENERAL_DISCIPLINE = (
+    "🧭 DISCIPLINE DE TRAVAIL (tu es une Lumena complète) :\n"
+    "• Tu disposes des MÊMES outils que le parent : web, fichiers, documents, "
+    "navigateur, mémoire, MCP, délégation. Choisis l'outil qui fait vraiment le "
+    "travail plutôt que de le décrire.\n"
+    "• Agis d'abord, raconte ensuite : une action non tentée n'est jamais un succès "
+    "partiel.\n"
+    "• Reste dans ton périmètre : ne touche pas aux livrables des autres workers.\n"
+    "• Ne conclus PAS (FINAL) sur une intention. Soit tu cites la PREUVE obtenue, soit "
+    "tu dis clairement ce qui n'a pas pu être fait, et pourquoi."
+)
+
+
+def _has_ext(paths: Any, exts: tuple) -> bool:
+    """True si au moins un chemin porte l'une de ces extensions."""
+    return any(str(p).lower().endswith(exts) for p in (paths or []))
+
+
+def normalize_role(raw: Any) -> str:
+    """Un `role` déclaré au contrat → rôle connu, ou "" si absent/inconnu.
+
+    Tolérante : casse, espaces et accents courants (« données » → `donnees`).
+    Un rôle inconnu retourne "" — la déduction par extension prend alors le relais,
+    donc un contrat mal orthographié n'est jamais pire qu'un contrat sans rôle."""
+    s = str(raw or "").strip().lower()
+    if not s:
+        return ""
+    for a, b in (("é", "e"), ("è", "e"), ("ê", "e"), ("à", "a"), ("ç", "c")):
+        s = s.replace(a, b)
+    alias = {
+        "dev": ROLE_CODE, "developpement": ROLE_CODE, "coding": ROLE_CODE,
+        "doc": ROLE_DOCUMENT, "documents": ROLE_DOCUMENT, "redaction": ROLE_DOCUMENT,
+        "data": ROLE_DONNEES, "donnee": ROLE_DONNEES,
+        "research": ROLE_RECHERCHE, "veille": ROLE_RECHERCHE,
+        "browser": ROLE_NAVIGATEUR, "web": ROLE_NAVIGATEUR,
+        "image": ROLE_MEDIA, "video": ROLE_MEDIA, "medias": ROLE_MEDIA,
+        "effet": ROLE_ACTION, "effects": ROLE_ACTION, "effets": ROLE_ACTION,
+    }
+    s = alias.get(s, s)
+    return s if s in ROLES_CONNUS else ""
+
+
+def role_of_worker(mine: Any, effects: Any = None, declared: Any = None) -> str:
+    """Le métier d'un worker. **Le contrat fait foi ; l'extension n'est qu'un repli.**
+
+    Ordre de décision :
+      1. `role` déclaré au contrat (source de vérité — c'est l'objet du lot) ;
+      2. extension des fichiers assignés : code > données > média > document
+         (le code d'abord : un worker qui a `app.py` ET `README.md` est un dev qui
+         documente, pas un rédacteur qui code) ;
+      3. effets purs sans aucun fichier → `action` (comportement H4, inchangé) ;
+      4. `general` par défaut.
+    """
+    r = normalize_role(declared)
+    if r:
+        return r
+    if _has_ext(mine, _CODE_EXT):
+        return ROLE_CODE
+    if _has_ext(mine, _DONNEES_EXT):
+        return ROLE_DONNEES
+    if _has_ext(mine, _MEDIA_EXT):
+        return ROLE_MEDIA
+    if _has_ext(mine, _DOC_EXT):
+        return ROLE_DOCUMENT
+    if effects and not (mine or []):
+        return ROLE_ACTION
+    return ROLE_GENERAL
+
+
+def unknown_role_warning(data: Any) -> str:
+    """LOT 0 — avertit quand un `role` déclaré n'est PAS reconnu. "" sinon.
+
+    Sans cela, `normalize_role` rend "" en silence et la déduction par extension
+    reprend la main : le lead écrit `role: "redacteur"`, obtient `document` par
+    hasard, et n'apprend JAMAIS que son mot n'a pas été compris. C'est le motif que
+    ce dépôt combat depuis soixante lots — un fait calculé qui n'atteint pas celui
+    qui décide.
+
+    AVERTISSEMENT, jamais une erreur : le repli fonctionne, la mission doit partir.
+    """
+    if not isinstance(data, dict):
+        return ""
+    inconnus: List[str] = []
+    for cle in ("files", "effects"):
+        for e in (data.get(cle) or []):
+            if not isinstance(e, dict):
+                continue
+            brut = str(e.get("role") or "").strip()
+            if brut and not normalize_role(brut):
+                qui = str(e.get("path") or e.get("owner") or "?")
+                item = f"{qui} → « {brut} »"
+                if item not in inconnus:
+                    inconnus.append(item)
+    if not inconnus:
+        return ""
+    return (
+        "⚠️ Rôle non reconnu, déduit de l'extension à la place : "
+        + " ; ".join(inconnus[:5])
+        + ". Valeurs acceptées : " + " | ".join(ROLES_CONNUS)
+        + ". Le métier décide de la consigne de travail du worker — un rédacteur ne "
+        "doit pas recevoir « exécute les tests après chaque mutation »."
+    )
+
+
+def _role_declared_for(entries: Any, effects: Any = None) -> str:
+    """Le `role` déclaré au contrat pour ce worker, "" si aucun.
+
+    Cherché dans ses entrées `files` puis ses `effects` ; le premier rôle CONNU
+    gagne. Un rôle mal orthographié est ignoré (→ ""), donc on retombe sur la
+    déduction par extension : jamais pire qu'un contrat sans rôle."""
+    for source in (entries or [], effects or []):
+        for e in source:
+            if isinstance(e, dict):
+                r = normalize_role(e.get("role"))
+                if r:
+                    return r
+    return ""
+
+
+def discipline_for_role(role: str) -> str:
+    """Le bloc de consigne d'un métier. `code` et `action` sont INCHANGÉS."""
+    return {
+        ROLE_CODE: WORKER_CODING_DISCIPLINE,
+        ROLE_ACTION: WORKER_EFFECT_DISCIPLINE,
+        ROLE_DOCUMENT: WORKER_DOCUMENT_DISCIPLINE,
+        ROLE_DONNEES: WORKER_DONNEES_DISCIPLINE,
+        ROLE_RECHERCHE: WORKER_RECHERCHE_DISCIPLINE,
+        ROLE_NAVIGATEUR: WORKER_NAVIGATEUR_DISCIPLINE,
+        ROLE_MEDIA: WORKER_MEDIA_DISCIPLINE,
+    }.get(role, WORKER_GENERAL_DISCIPLINE)
 
 
 def design_brief_for_contract(data: Any) -> str:
@@ -222,33 +517,72 @@ def _role_rider(mine: List[str], design_brief: str = "") -> str:
 # portée de la réécriture du lead. Marqueur d'idempotence = "DISCIPLINE DE CODAGE".
 _DISCIPLINE_MARKER = "DISCIPLINE DE CODAGE"
 
+# LOT 0 — l'idempotence de `inject_worker_discipline` reposait sur le SEUL marqueur du
+# codage. Dès qu'un worker reçoit la discipline de son métier (document, données,
+# recherche…), ce marqueur est absent → le filet du LOT A réinjecterait le bloc une
+# SECONDE fois. Un marqueur par métier ferme le trou ; `test_lot0_*` vérifie qu'aucune
+# discipline n'en manque, pour qu'un rôle ajouté demain ne casse pas l'idempotence en
+# silence.
+_MARQUEURS_DISCIPLINE = (
+    _DISCIPLINE_MARKER,
+    "DISCIPLINE RÉDACTIONNELLE",
+    "DISCIPLINE DONNÉES",
+    "DISCIPLINE DE RECHERCHE",
+    "DISCIPLINE NAVIGATEUR",
+    "DISCIPLINE MÉDIA",
+    "DISCIPLINE D'ACTION",
+    "DISCIPLINE DE TRAVAIL",
+)
+
+
+def porte_une_discipline(text: Any) -> bool:
+    """True si ce texte porte DÉJÀ le bloc de consigne d'un métier, quel qu'il soit."""
+    t = str(text or "")
+    return any(m in t for m in _MARQUEURS_DISCIPLINE)
+
 
 def _has_code_files(paths: Any) -> bool:
     """True si le worker possède au moins un fichier de CODE (extensions _CODE_EXT)."""
     return any(str(p).lower().endswith(_CODE_EXT) for p in (paths or []))
 
 
-def worker_discipline_block(allowed_files: Any, design_brief: str = "") -> str:
-    """Bloc discipline réutilisable : `WORKER_CODING_DISCIPLINE` (toujours) + steer de
-    délégation CodeAgent (`_DELEGATE_CODE_STEER`, si code) + rider(s) de rôle. Commence
-    toujours par le marqueur d'idempotence. Utilisé par `worker_objectives()` ET
-    force-injecté à la délégation par LOT A."""
-    parts = [WORKER_CODING_DISCIPLINE]
-    if _has_code_files(allowed_files):
+def worker_discipline_block(
+    allowed_files: Any, design_brief: str = "", role: Any = None
+) -> str:
+    """Bloc discipline du worker : la consigne de SON MÉTIER, plus — pour le code
+    seulement — le steer de délégation CodeAgent et les riders frontend/backend/tests.
+
+    LOT 0 — le métier vient du `role` déclaré au contrat, à défaut de l'extension
+    (`role_of_worker`). **Un worker de code reçoit un texte identique au bit près** à
+    celui d'avant le lot ; les autres métiers reçoivent enfin une consigne qui les
+    concerne, au lieu de « agent dev, pas un rédacteur ».
+
+    Utilisé par `worker_objectives()` ET force-injecté à la délégation par LOT A."""
+    _r = role_of_worker(allowed_files, None, role)
+    parts = [discipline_for_role(_r)]
+    if _r == ROLE_CODE:
+        # Steer + riders : réservés au code. Les autres métiers ont leur propre
+        # consigne, et `_role_rider` ne reconnaît de toute façon que du code.
         parts.append(_DELEGATE_CODE_STEER)
-    return "\n".join(parts) + _role_rider(list(allowed_files or []), design_brief)
+        return "\n".join(parts) + _role_rider(list(allowed_files or []), design_brief)
+    return "\n".join(parts)
 
 
-def inject_worker_discipline(text: str, allowed_files: Any) -> str:
-    """LOT A — ajoute le bloc discipline à un objectif worker s'il est ABSENT (idempotent)
-    et que le worker a du CODE. C'est le rempart contre la dérive d'objectifs : quoi que
-    le lead écrive, le worker de code reçoit la discipline + le steer de délégation.
-    Objectif généré (déjà le marqueur) ou worker non-code → texte inchangé."""
-    if not _has_code_files(allowed_files):
+def inject_worker_discipline(text: str, allowed_files: Any, role: Any = None) -> str:
+    """LOT A — ajoute le bloc discipline à un objectif worker s'il est ABSENT
+    (idempotent). C'est le rempart contre la dérive d'objectifs : quoi que le lead
+    écrive, le worker reçoit la discipline de son métier.
+
+    LOT 0 — s'applique désormais à TOUS les métiers. Avant, un `return text` sec sur
+    « pas de fichier de code » laissait un worker de recherche, de documents ou de
+    données repartir avec l'objectif brut du lead et rien d'autre — alors que 66 % des
+    workers du corpus ne touchent jamais au code.
+
+    Objectif déjà porteur d'une discipline (généré par `worker_objectives`, quel que
+    soit le métier) → inchangé."""
+    if porte_une_discipline(text):
         return text
-    if _DISCIPLINE_MARKER in (text or ""):
-        return text
-    return (text or "") + "\n\n" + worker_discipline_block(allowed_files)
+    return (text or "") + "\n\n" + worker_discipline_block(allowed_files, role=role)
 
 
 # ── validation ──────────────────────────────────────────────────────────────────
@@ -1075,7 +1409,14 @@ def render_contract_md(data: Dict[str, Any]) -> str:
              "Chaque worker REMPLIT ses stubs (signatures figées) et n'écrit QUE ses "
              "fichiers assignés. Toute API inter-fichiers est listée ici — n'en invente aucune autre.", ""]
     for f in data.get("files") or []:
-        lines.append(f"## `{f.get('path')}` — owner : **{f.get('owner')}**")
+        # LOT 0 — le métier retenu est ÉCRIT, pas seulement appliqué. Le worker lit
+        # CONTRAT.md en premier : il doit y voir sous quel métier il travaille, et le
+        # lead doit pouvoir constater ce que sa déclaration (ou son omission) a donné.
+        _r = role_of_worker([str(f.get("path") or "")], None, f.get("role"))
+        _suffixe = f" — métier : `{_r}`" if _r != ROLE_CODE else ""
+        lines.append(
+            f"## `{f.get('path')}` — owner : **{f.get('owner')}**{_suffixe}"
+        )
         desc = _entry_desc(f)
         if desc:
             lines.append(desc)
@@ -1338,13 +1679,17 @@ def worker_objectives(data: Dict[str, Any]) -> List[Dict[str, Any]]:
         eff = by_effect.get(owner) or []
         # H4 — un worker d'effets PURS ne doit pas recevoir la discipline de
         # CODAGE (« ne conclus pas sans une mutation réelle ») : elle le
-        # pousserait à écrire du code au lieu d'envoyer le mail. Cas strictement
-        # nouveau (aucun fichier + des effets) — tout worker possédant un fichier
-        # garde exactement le bloc historique.
-        _disc = WORKER_EFFECT_DISCIPLINE if (eff and not mine) \
-            else worker_discipline_block(mine, _design_brief)   # LOT A : discipline + steer + rider(s)
+        # pousserait à écrire du code au lieu d'envoyer le mail.
+        #
+        # LOT 0 — H4 traitait UN cas particulier (effets purs) ; le rôle le
+        # généralise à tous les métiers. `role_of_worker` rend exactement le même
+        # verdict que H4 sur les effets purs (`action`), et un worker de code garde
+        # le bloc historique au bit près. Le contrat, s'il déclare un `role`, fait foi.
+        _role_declare = _role_declared_for(entries, eff)
+        _r = role_of_worker(mine, eff, _role_declare)
+        _disc = worker_discipline_block(mine, _design_brief, role=_r)
         text = (
-            f"[Worker {owner}] {WORKER_CONTRACT_PREAMBLE}\n"
+            f"[Worker {owner}] {contract_preamble_for_role(_r)}\n"
             f"{_disc}\n"
         )
         if desc_lines:
@@ -1355,6 +1700,11 @@ def worker_objectives(data: Dict[str, Any]) -> List[Dict[str, Any]]:
             if desc_lines:
                 text += "\n"
             text += effects_brief(eff)
+        # LOT 4 — le rappel de coordination, en DERNIER : c'est un moyen, pas la
+        # mission. Et seulement à plusieurs — un worker seul n'a personne à lire.
+        _coord = coordination_steer(len(owners))
+        if _coord:
+            text += "\n\n" + _coord
         result.append({"objective": text, "allowed_files": mine})
     return result
 

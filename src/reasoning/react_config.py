@@ -4,12 +4,16 @@ Configuration, constantes, enums et dataclasses pour la boucle ReAct.
 Extrait de react.py pour améliorer la lisibilité et la maintenabilité.
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
 import platform
 import re
+
+if TYPE_CHECKING:
+    from .tool_result import ToolExecutionResult
+    from .execution_evidence import VerifiedExecutionEvidence
 
 
 # ── Feature flags ──────────────────────────────────────────────────
@@ -98,6 +102,32 @@ class Observation:
     # refus produits avant execution peuvent ainsi etre exclus des compteurs
     # de panne sans etre confondus avec une vraie erreur d'outil.
     origin: str = "tool"
+    execution: Optional["ToolExecutionResult"] = field(default=None, repr=False)
+    execution_evidence: Optional["VerifiedExecutionEvidence"] = field(default=None, repr=False)
+    # LOT CONN-7a — cause et geste qui reparent, a cote du refus.
+    #
+    # ADDITIF, comme `origin` avant lui, et pour la meme raison : `content` est un
+    # CONTRAT. 37 tests figent `content == "IDE: <code>"` par egalite stricte, dont
+    # les gels CONN-5 qui protegent des invariants de mission. Enrichir `content`
+    # en cassait 72 d'un coup - mesure faite avant de choisir cette voie.
+    # `repr=False` comme `execution` et `execution_evidence` : le gel RF-7a compare
+    # des `repr()` d'Observation, et un champ additif ne doit pas les changer.
+    guidance: Optional[str] = field(default=None, repr=False)
+
+
+def observation_lisible(observation) -> str:
+    """Le contenu d'une observation, suivi de son `guidance` s'il y en a un.
+
+    LOT CONN-7a. Vit ICI, a cote du champ, et non dans `react.py` : deux gels
+    protegent la taille de ce fichier, dont `test_react_budget_and_local_control_flow_only_shrink`
+    - il ne doit que RETRECIR. Appelee en remplacement d'une assignation existante,
+    elle n'y ajoute donc aucune ligne.
+
+    Generique : rien d'IDE ici, n'importe quel outil peut porter un `guidance`.
+    """
+    contenu = str(getattr(observation, "content", "") or "")
+    aide = getattr(observation, "guidance", None)
+    return f"{contenu}\n{aide}" if aide and aide not in contenu else contenu
 
 
 @dataclass

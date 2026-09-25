@@ -84,6 +84,9 @@ def _reset_loader_cache():
         ("o4-mini", "WORKFLOW"),
         ("gemini-2.0-flash", "GEMINI"),
         ("gemini-pro", "GEMINI"),
+        ("gpt-6-luna", "OPENAI WORKFLOW"),
+        ("grok-4.7", "XAI"),
+        ("deepseek-flash", "DEEPSEEK V4"),
     ],
 )
 def test_provider_prompt_routing(model, expected_marker):

@@ -27,6 +27,7 @@ def test_payload_is_explicit_and_never_contains_user_state() -> None:
     assert "src/version.py" in names
     assert "web/index.html" in names
     assert ".env" not in names
+    assert not any("node_modules" in Path(name).parts for name in names)
     assert not any(name == "installer" or name.startswith("installer/") for name in names)
     assert not any(name.split("/", 1)[0].lower() in PROTECTED_TOP_LEVEL for name in names)
 

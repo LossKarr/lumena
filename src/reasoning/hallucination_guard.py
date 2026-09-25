@@ -267,6 +267,7 @@ _HC_TOOLS_READONLY = frozenset({
     "get_document_record", "inspect_document_source", "list_document_models",
     "search_document_library", "search_documents_web",
     "list_missions", "mission_status", "mission_result",  # Lot 3 — lectures de mission
+    "mission_journal_read",
     "analyze_document", "autonomy_activity_summary", "autonomy_next_best_action", "bg_list",
     "bg_status", "browser_check_challenge", "browser_cookies_get", "browser_deep_research",
     "browser_dialog_log", "browser_dom_state", "browser_find", "browser_frame_content",
@@ -325,6 +326,8 @@ _HC_TOOLS_READONLY = frozenset({
     "wayback_check", "web_crawl", "web_crawl_campaign_explain", "web_crawl_campaign_status",
     "web_fetch", "web_search", "web_search_brave", "whois_lookup", "xor_decode",
     "get_document_history", "preview_document_edit",
+    "search_local_models", "inspect_local_model", "list_installed_local_models",
+    "recommend_local_model", "list_local_model_jobs", "get_local_model_job",
 })
 
 # TOUTE action (341 outils natifs + MCP curatés) — preuve d'une action réelle
@@ -357,7 +360,8 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "create_csv", "create_directory", "create_docx", "create_email_html",
     "create_from_template", "create_html", "create_ics", "create_invoice_pdf",
     "create_markdown", "create_meeting_report", "create_pdf", "create_pptx", "create_project",
-    "create_skill", "create_vcard", "create_xlsx", "create_zip", "cursor_ide_local",
+    "create_skill", "create_vcard", "create_xlsx", "create_zip",
+    "lumena_ide", "cursor_ide_local",  # renomme 24/09 ; l'ancien nom reste executable
     "custom_tool_create", "custom_tool_load", "data_export", "datagouv_download_resource",
     "delegate_task", "delegate_task_bg", "delegate_to_peer", "delete_file", "delete_skill",
     "delete_task", "update_skill",
@@ -426,7 +430,9 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "twitter_reply", "type_text", "ui_click", "ui_type", "undo_edit", "update_ionos_files",
     "update_lumena_config", "upscale_image", "web_crawl_campaign", "web_crawl_campaign_export",
     "web_crawl_campaign_pro_report", "write_file", "write_journal", "write_website_files",
-    "zip_documents", "zoom"
+    "zip_documents", "zoom",
+    "install_local_model", "enable_local_model", "disable_local_model", "select_local_model",
+    "unload_local_model", "verify_local_model", "prepare_delete_local_model", "confirm_delete_local_model",
 }) | _HC_TOOLS_MCP
 
 # Familles « génériques » : un claim VAGUE (« c'est fait », install…) est prouvé
@@ -586,6 +592,9 @@ def hallucination_retry_query(
     original_query: str,
     successful_tools: set[str],
     retries_used: int,
+    *,
+    execution_evidence=(),
+    require_structured_effects: bool = False,
 ) -> tuple[str | None, int]:
     """Anti-hallucination d'ACTION, partagé entre le chemin avec/sans plan.
 
@@ -601,7 +610,34 @@ def hallucination_retry_query(
         return None, retries_used
     if _HC_TEMPORAL_BYPASS_RE.search(combined_text):
         return None, retries_used
-    tools = successful_tools
+    from ..utils.external_tool_names import is_ide_tool_name
+    from .execution_guards import evidence_is_current, verified_family_matches
+
+    tools = {name for name in successful_tools if not is_ide_tool_name(name)}
+    verified = tuple(evidence for evidence in execution_evidence if evidence_is_current(evidence))
+    if require_structured_effects or any(is_ide_tool_name(name) for name in successful_tools) or verified:
+        normalized = _normalize_guard_text(combined_text)
+        file_claims = re.finditer(
+            r"\b(?:j'ai|i have|i've|i)\s+(?:ecrit|modifie|sauvegarde|enregistre|wrote|written|saved|updated)"
+            r"\b[^.\n]{0,60}\b(?:fichier|file|code|module|document)\b"
+            r"|\b(?:fichier|file)\b[^.\n]{0,60}\b(?:ecrit|modifie|enregistre|sauvegarde|saved|written|updated)\b",
+            normalized,
+        )
+        unproven_file = any(
+            not claim_match_is_negated(normalized, match.start(), match.end())
+            and not re.search(
+                r"\b(?:non|not|never|pas|jamais)\s+(?:\w+\s+){0,2}"
+                r"(?:ecrit|modifie|enregistre|sauvegarde|saved|written|updated)\b",
+                match.group(),
+            )
+            for match in file_claims
+        )
+        if (
+            unproven_file
+            and not tools.intersection(_HC_TOOLS_FILE)
+            and not any(verified_family_matches(evidence, _HC_TOOLS_FILE) for evidence in verified)
+        ):
+            return "La sauvegarde annoncée exige une écriture vérifiée sur la cible demandée.", retries_used + 1
     browser_used = any(t.startswith("browser_") for t in tools)
     runtime_proof = _has_runtime_server_claim_proof(combined_text, tools)
     # Rappel d'une mission déléguée à un pair (travail fait en async, pas localement)
@@ -610,9 +646,7 @@ def hallucination_retry_query(
     # (mission_status/result/list) et dit « c'est fait/fini » → la preuve est l'état
     # `done` LU, pas un outil d'action local. On relâche alors UNIQUEMENT les familles
     # vagues (jumeau local de `peer_recall`). Les claims PRÉCIS restent stricts.
-    mission_report = any(
-        t in {"mission_status", "mission_result", "list_missions"} for t in tools
-    )
+    mission_report = any(t in {"mission_status", "mission_result", "list_missions"} for t in tools)
     for _pattern, _expected in _HALLUCINATION_CLAIM_PATTERNS:
         m = re.search(_pattern, combined_text, re.IGNORECASE)
         if not m:
@@ -630,8 +664,10 @@ def hallucination_retry_query(
         if mission_report and _expected in _HC_GENERIC_FAMILIES:
             continue
         if browser_used and any(
-            kw in _pattern for kw in (
-                "message|messages", "envoyé|envoye|expedié|expedie",
+            kw in _pattern
+            for kw in (
+                "message|messages",
+                "envoyé|envoye|expedié|expedie",
                 r"\bj[''`]ai (envoyé|envoye",
             )
         ):
@@ -643,12 +679,17 @@ def hallucination_retry_query(
             t.startswith("mcp__") for t in tools
         ):
             continue
-        if not any(t in tools for t in _expected):
+        if not any(t in tools for t in _expected) and not any(
+            verified_family_matches(evidence, _expected) for evidence in verified
+        ):
             retries_used += 1
             logger.warning(
                 "[HALLUCINATION GUARD] action prétendue non exécutée "
                 "(pattern: {}, attendus: {}, utilisés: {}) - retry {}/2",
-                _pattern[:50], _expected, list(tools)[:5], retries_used,
+                _pattern[:50],
+                _expected,
+                list(tools)[:5],
+                retries_used,
             )
             return (
                 f"Requête originale: {original_query}\n\n"

@@ -65,6 +65,8 @@ def select_model_menu(console: Optional[Console] = None) -> str:
     paid_cloud_models = []
     
     for name, config in AVAILABLE_MODELS.items():
+        if not config.is_selectable():
+            continue
         if config.provider == ProviderType.OLLAMA:
             local_models.append((name, config))
         elif config.cost_per_million_tokens == 0:
@@ -168,27 +170,25 @@ def select_model_menu(console: Optional[Console] = None) -> str:
     else:
         # Version sans Rich
         print("\n🧠 SÉLECTION DU MODÈLE:")
-        print("1. Qwen 3 8B (Local)")
-        print("2. Gemini 2.5 Pro (Google)")
-        print("3. GPT-4o (OpenAI)")
-        print("4. Claude Sonnet 4 (Anthropic)")
-        print("5. Kimi K2.5 (Moonshot)")
-        print("6. Claude Opus 5 (Anthropic)")
-        print("7. Kimi K3 (Moonshot)")
+        selectable = [
+            (name, config) for name, config in AVAILABLE_MODELS.items()
+            if config.is_selectable()
+        ]
+        choices = {}
+        for index, (name, config) in enumerate(selectable, start=1):
+            availability = "local" if config.is_local() else (
+                "clé configurée" if check_api_key(config.provider) else "clé manquante"
+            )
+            print(f"{index}. {config.display_name} [{availability}]")
+            choices[str(index)] = name
         
         choice = input("\nVotre choix [1]: ").strip() or "1"
-        
-        choices = {
-            "1": "qwen3-8b",
-            "2": "gemini-2.5-pro",
-            "3": "gpt-4o",
-            "4": "claude-sonnet-4.6",
-            "5": "kimi-k2.5",
-            "6": "claude-opus-5",
-            "7": "kimi-k3",
-        }
-        
-        return choices.get(choice, "qwen3-8b")
+        selected = choices.get(choice, choices.get("1", "qwen3-8b"))
+        config = get_model_config(selected)
+        if config and not config.is_local() and not check_api_key(config.provider):
+            print(f"Clé API manquante pour {config.provider.value}; fallback local qwen3-8b.")
+            return "qwen3-8b"
+        return selected
 
 
 class LumenaCLI:

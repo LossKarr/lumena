@@ -8,7 +8,8 @@ Importe depuis: from src.prompts.agents.sub_agent_prompts import <NOM>
 _CODE_AGENT_SYSTEM = """\
 Tu es CodeAgent, un agent de développement autonome et itératif.
 Tu résous la tâche étape par étape en choisissant UNE action à chaque tour.
-Avant d'agir, décris ton plan en 2-3 étapes dans ton THOUGHT.
+Avant d'agir, donne dans `thought` un motif opérationnel bref et vérifiable.
+N'expose jamais une chaîne de pensée privée ni un raisonnement caché.
 
 == RÈGLES ABSOLUES (violation = échec) ==
 1. Si la description contient "🎯 FICHIER CIBLE PRINCIPAL : X" → ÉDITE X, pas un autre fichier.
@@ -23,9 +24,9 @@ Avant d'agir, décris ton plan en 2-3 étapes dans ton THOUGHT.
 
 == EFFICACITÉ MAXIMALE ==
 - La liste des fichiers du projet est DÉJÀ dans ton contexte → PAS BESOIN de list_files
-- Commence TOUJOURS par une ACTION PRODUCTIVE adaptee (write_file en creation, str_replace ou edit_lines en modification), pas par une lecture inutile
+- Commence par l'action utile suivante : lecture ciblée si la preuve manque, édition si le contenu est déjà fourni, `write_file` pour une création
 - Ne lis PAS 5 fichiers avant d'agir. Lis 1 fichier → modifie → lis le suivant si besoin
-- Après la dernière modification réussie (✅), utilise immédiatement "done" avec un résumé
+- Après la dernière modification, exécute la vérification pertinente si elle existe, puis utilise `done`
 
 == ENVIRONNEMENT ==
 Tu tournes sur WINDOWS (cmd.exe / PowerShell 5.1). Aide-mémoire :
@@ -46,7 +47,7 @@ Tu tournes sur WINDOWS (cmd.exe / PowerShell 5.1). Aide-mémoire :
 - write_file crée automatiquement tous les sous-dossiers (css/, js/, images/) — PAS BESOIN de mkdir
 
 Actions disponibles (réponds UNIQUEMENT en JSON valide, rien d'autre) :
-IMPORTANT: Ajoute TOUJOURS un champ "thought" (2-3 phrases) expliquant ton raisonnement dans CHAQUE action.
+IMPORTANT: Ajoute TOUJOURS un champ "thought" court donnant le but immédiat et la preuve attendue, sans raisonnement privé.
 
 {"action": "plan", "thought": "Je dois d'abord comprendre la structure du projet...", "steps": ["étape 1", "étape 2", "étape 3"]}
 {"action": "think", "thought": "raisonnement explicite avant une action complexe"}
@@ -346,6 +347,20 @@ from pathlib import Path as _Path_psp
 
 _CODEAGENT_PROMPTS_DIR = _Path_psp(__file__).parent / "codeagent"
 
+_PROVIDER_PROMPT_FILES = {
+    "anthropic": "anthropic.txt",
+    "openai": "gpt.txt",
+    "google": "gemini.txt",
+    "moonshot": "moonshot.txt",
+    "deepseek": "deepseek_v4.txt",
+    "xai": "xai.txt",
+    "nvidia": "nvidia.txt",
+    "minimax": "minimax.txt",
+    "zai": "zai.txt",
+    "mistral": "mistral.txt",
+    "ollama": "local.txt",
+}
+
 
 def _load_provider_prompt(model_name: str) -> str:
     """Charge le prompt système provider-specific pour CodeAgent.
@@ -361,31 +376,53 @@ def _load_provider_prompt(model_name: str) -> str:
 
     if not model_name:
         return ""
-    name = model_name.lower()
-    if "nvidia" in name or any(tok in name for tok in ("nemotron", "step-3.7", "stepfun")):
-        candidate = "nvidia.txt"
-    elif "deepseek-v4" in name:
-        candidate = "deepseek_v4.txt"
-    elif "deepseek" in name:
-        candidate = "deepseek.txt"
-    elif "kimi" in name or "moonshot" in name:
-        candidate = "moonshot.txt"
-    elif "claude" in name or "anthropic" in name:
-        candidate = "anthropic.txt"
-    elif "gpt" in name or "openai" in name or name.startswith(("o1", "o3", "o4")):
-        candidate = "gpt.txt"
-    elif "glm" in name or "zai" in name:
-        candidate = "zai.txt"
-    elif "gemini" in name:
-        candidate = "gemini.txt"
-    elif any(tok in name for tok in ("mistral", "codestral", "devstral", "ministral", "magistral", "pixtral")):
-        candidate = "mistral.txt"
-    elif "minimax" in name:
-        candidate = "minimax.txt"
-    elif any(tok in name for tok in ("ollama", "llama", "gemma", "qwen", "local")):
-        candidate = "local.txt"
-    else:
-        candidate = "default.txt"
+    name = model_name.strip().lower()
+    candidate = ""
+
+    # Le catalogue est la source de vérité. Cela évite par exemple de traiter
+    # un Gemma servi par Google comme un modèle Ollama à cause de son nom.
+    try:
+        from src.llm.providers import get_model_config
+
+        config = get_model_config(name)
+        if config is not None:
+            candidate = _PROVIDER_PROMPT_FILES.get(config.provider.value, "")
+            if config.provider.value == "deepseek" and config.lifecycle.value in {
+                "deprecated", "retired"
+            }:
+                candidate = "deepseek.txt"
+    except Exception:
+        candidate = ""
+
+    # Dernier recours pour les IDs directs absents du catalogue (notamment les
+    # modèles locaux saisis par l'utilisateur).
+    if not candidate:
+        if "nvidia" in name or any(tok in name for tok in ("nemotron", "step-3.7", "stepfun")):
+            candidate = "nvidia.txt"
+        elif "deepseek-v4" in name or "deepseek-flash" in name:
+            candidate = "deepseek_v4.txt"
+        elif "deepseek" in name:
+            candidate = "deepseek.txt"
+        elif "grok" in name or "xai" in name:
+            candidate = "xai.txt"
+        elif "kimi" in name or "moonshot" in name:
+            candidate = "moonshot.txt"
+        elif "claude" in name or "anthropic" in name:
+            candidate = "anthropic.txt"
+        elif "gpt" in name or "openai" in name or name.startswith(("o1", "o3", "o4")):
+            candidate = "gpt.txt"
+        elif "glm" in name or "zai" in name:
+            candidate = "zai.txt"
+        elif "gemini" in name:
+            candidate = "gemini.txt"
+        elif any(tok in name for tok in ("mistral", "codestral", "devstral", "ministral", "magistral", "pixtral")):
+            candidate = "mistral.txt"
+        elif "minimax" in name:
+            candidate = "minimax.txt"
+        elif any(tok in name for tok in ("ollama", "llama", "gemma", "qwen", "local")):
+            candidate = "local.txt"
+        else:
+            candidate = "default.txt"
 
     path = _CODEAGENT_PROMPTS_DIR / candidate
     try:

@@ -3,7 +3,7 @@ computer_use.py - Handlers computer-use fragmentés depuis react.py.
 
 Handlers (29):
   screenshot, click, type_text, open_app, close_app,
-  cursor_ide_local, hotkey, get_active_window, double_click,
+  lumena_ide, hotkey, get_active_window, double_click,
   scroll, move_mouse, press_key, close_window, wait,
   spotify_play, open_url, list_windows, drag,
   screenshot_analyze, click_element, find_element, zoom,
@@ -38,98 +38,10 @@ IS_WINDOWS = sys.platform.startswith("win")
 
 # ─── Helpers (cursor IDE) ─────────────────────────────────────────────────
 
-def _resolve_cursor_ide_root(ctx: HandlerContext) -> Path:
-    """Résout le dossier racine de cursor-ide-local."""
-    env_override = os.getenv("LUMENA_CURSOR_IDE_PATH", "").strip()
-    candidates: List[Path] = []
-    if env_override:
-        candidates.append(Path(env_override))
-    candidates.append(ctx.lumena_root.parent / "cursor-ide-local")
-    candidates.append(ctx.lumena_root / "cursor-ide-local")
+def _get_cursor_ide_launcher():
+    from ...tools.ide_launcher import get_ide_launcher
 
-    for candidate in candidates:
-        if candidate.exists() and (candidate / "package.json").exists():
-            return candidate.resolve()
-
-    if candidates:
-        return candidates[0].resolve()
-    return (ctx.lumena_root / "cursor-ide-local").resolve()
-
-
-def _list_cursor_ide_processes() -> List[Dict[str, Any]]:
-    """Détecte les processus liés à cursor-ide-local."""
-    if IS_WINDOWS:
-        ps_script = (
-            "$procs = Get-CimInstance Win32_Process | Where-Object { "
-            "(($_.CommandLine -ne $null) -and ($_.CommandLine -like '*cursor-ide-local*')) "
-            "-or ($_.Name -like 'cursor-ide-local*') "
-            "-or ($_.Name -like 'Lumena IDE*') "
-            "} | Select-Object -First 12 ProcessId, Name, CommandLine; "
-            "$procs | ConvertTo-Json -Compress"
-        )
-        try:
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps_script],
-                capture_output=True,
-                text=True,
-                timeout=6,
-                encoding="utf-8",
-                errors="replace",
-            )
-            payload = (result.stdout or "").strip()
-            if not payload:
-                return []
-            parsed = json.loads(payload)
-            if isinstance(parsed, dict):
-                parsed = [parsed]
-            if not isinstance(parsed, list):
-                return []
-            return [
-                {
-                    "pid": item.get("ProcessId"),
-                    "name": item.get("Name"),
-                    "command": (item.get("CommandLine") or "")[:180],
-                }
-                for item in parsed
-                if isinstance(item, dict)
-            ]
-        except Exception:
-            return []
-
-    # Linux / macOS
-    try:
-        result = subprocess.run(
-            ["ps", "-eo", "pid=,command="],
-            capture_output=True,
-            text=True,
-            timeout=6,
-            encoding="utf-8",
-            errors="replace",
-        )
-        entries: List[Dict[str, Any]] = []
-        for raw_line in (result.stdout or "").splitlines():
-            line = raw_line.strip()
-            if "cursor-ide-local" not in line.lower():
-                continue
-            parts = line.split(maxsplit=1)
-            if not parts:
-                continue
-            pid = parts[0]
-            cmd = parts[1] if len(parts) > 1 else ""
-            entries.append({"pid": pid, "name": "process", "command": cmd[:180]})
-        return entries
-    except Exception:
-        return []
-
-
-def _cursor_ide_status() -> Dict[str, Any]:
-    """Retourne le statut de cursor-ide-local."""
-    processes = _list_cursor_ide_processes()
-    return {
-        "running": len(processes) > 0,
-        "process_count": len(processes),
-        "processes": processes,
-    }
+    return get_ide_launcher()
 
 
 def _prepare_cursor_workspace_path(
@@ -153,52 +65,6 @@ def _prepare_cursor_workspace_path(
     if not requested.exists() or not requested.is_dir():
         raise ValueError(f"Workspace invalide: {requested}")
     return requested
-
-
-def _launch_cursor_ide_process(
-    ide_root: Path,
-    workspace_path: Optional[Path],
-) -> tuple:
-    """Lance cursor-ide-local en arrière-plan. Retourne (ok: bool, message: str)."""
-    launcher_candidates = [
-        ide_root / "LANCER_IDE.bat",
-        ide_root / "LANCER_IDE_COMPLET.bat",
-    ]
-    launcher = next((p for p in launcher_candidates if p.exists()), None)
-
-    env = os.environ.copy()
-    if workspace_path:
-        env["CURSOR_IDE_WORKSPACE"] = str(workspace_path)
-
-    popen_kwargs: Dict[str, Any] = {
-        "cwd": str(ide_root),
-        "env": env,
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-    }
-    if IS_WINDOWS:
-        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
-            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-        )
-        if creationflags:
-            popen_kwargs["creationflags"] = creationflags
-
-    try:
-        if IS_WINDOWS and launcher is not None:
-            subprocess.Popen(
-                ["cmd", "/c", "start", "", "cmd", "/c", str(launcher)],
-                **popen_kwargs,
-            )
-            return True, f"Lancement de Cursor IDE Local via {launcher.name}"
-
-        npm_cmd = ["npm", "run", "electron:dev"]
-        if workspace_path:
-            npm_cmd.extend(["--", f"--workspace={workspace_path}"])
-        subprocess.Popen(npm_cmd, **popen_kwargs)
-        return True, "Lancement de Cursor IDE Local via npm run electron:dev"
-    except Exception as exc:
-        return False, f"Echec lancement IDE: {exc}"
 
 
 async def _focus_cursor_ide_window() -> bool:
@@ -448,7 +314,7 @@ async def close_app(
         return HandlerResult.fail(f"Erreur close_app: {e}")
 
 
-async def cursor_ide_local(
+async def lumena_ide(
     ctx: HandlerContext,
     *,
     action: str = "status",
@@ -456,7 +322,7 @@ async def cursor_ide_local(
     create_if_missing: bool = True,
 ) -> HandlerResult:
     """
-    Gère cursor-ide-local.
+    LUMENA IDE — ton propre IDE (l'application Electron de Lumena).
 
     Actions:
     - status: vérifier si l'IDE tourne
@@ -468,34 +334,70 @@ async def cursor_ide_local(
     normalized = {
         "open": "ensure_open",
         "launch": "ensure_open",
+        # LOT IDE-3 : les mots que Charles et le modele emploient reellement.
+        "nouvelle_instance": "new_instance",
+        "new_window": "new_instance",
+        "autre_instance": "new_instance",
+        # LOT IDE-4 — mesure du run de 19 h 09 : Lumena a essaye `open_new`, qui
+        # n'existait pas, et a perdu un appel sur un refus d'action. Les formes qu'un
+        # modele compose naturellement a partir de `open` valent d'etre acceptees :
+        # refuser sur un synonyme n'apprend rien a personne.
+        "open_new": "new_instance",
+        "new": "new_instance",
+        "instance": "new_instance",
+        "ensure_new": "new_instance",
+        "open_workspace": "ensure_workspace",
+        "workspace": "ensure_workspace",
+        # LOT IDE-7 — run de 20 h 04 48 : elle a compose `set_workspace`, s'est fait
+        # refuser, et a perdu un appel. Cinquieme forme inventee spontanement apres
+        # les quatre d'IDE-4 : le modele nomme l'action, pas le verbe du catalogue.
+        "set_workspace": "ensure_workspace",
+        "change_workspace": "ensure_workspace",
     }.get(requested_action, requested_action)
-    allowed_actions = {"status", "ensure_open", "focus", "ensure_workspace"}
+    allowed_actions = {"status", "ensure_open", "focus", "ensure_workspace", "new_instance"}
     if normalized not in allowed_actions:
         return HandlerResult.fail(
-            "Erreur action cursor_ide_local: utilise status, ensure_open, "
-            "focus ou ensure_workspace."
+            "Erreur action lumena_ide: utilise status, ensure_open, "
+            "focus, ensure_workspace ou new_instance."
         )
 
-    ide_root = _resolve_cursor_ide_root(ctx)
-    if not ide_root.exists():
+    # LOT L5-2 (16/09/2026) — une mission ne deplace JAMAIS la fenetre de
+    # l'utilisateur. Mesure : `ensure_ready` ne lance aucun processus quand une IDE
+    # est deja connectee ; il appelle `get_ide_bridge().navigate(...)` sur le pont
+    # PARTAGE (`ide_launcher.py` l.84, l.153-170). Le catalogue declare pourtant
+    # `navigate` en `mission_policy: forbidden`, et `ide_launch` est bien refuse en
+    # mission (tout nom `ide_*` passe par le provider IDE, qui applique
+    # `authorize_mission_call`). Cette facade ECHAPPE a ce routage —
+    # `is_ide_tool_name("lumena_ide")` est False — et n'a aucune politique :
+    # c'etait la derniere porte ouverte. Le refus tombe AVANT le lanceur, sinon le
+    # `navigate` a deja eu lieu. `status` et `focus` restent autorises : ils ne
+    # changent pas de workspace, et la voie A exige que la fenetre ne BASCULE pas,
+    # pas qu'une mission soit aveugle.
+    if normalized in {"ensure_open", "ensure_workspace", "new_instance"} and getattr(ctx, "is_mission_run", False):
         return HandlerResult.fail(
-            f"Erreur: dossier cursor-ide-local introuvable ({ide_root}). "
-            "Définis LUMENA_CURSOR_IDE_PATH ou vérifie le repo."
+            "Refuse en mission : ouvrir l'IDE ou changer son workspace deplacerait "
+            "la fenetre de l'utilisateur. Une mission travaille dans son propre "
+            "dossier."
         )
 
-    status = _cursor_ide_status()
+    launcher = _get_cursor_ide_launcher()
     if normalized == "status":
+        readiness = await launcher.observe()
         return HandlerResult.ok(
-            f"Cursor IDE Local status: running={status['running']}, "
-            f"process_count={status['process_count']}, root={ide_root}"
+            "Lumena IDE status: "
+            f"connected={readiness.transport_connected}, "
+            f"handshake={readiness.handshake_received}, "
+            f"authenticated={readiness.authenticated}, "
+            f"workspace={readiness.workspace or 'aucun'}"
         )
 
     if normalized == "focus":
-        if not status["running"]:
-            return HandlerResult.fail("Cursor IDE Local n'est pas ouvert. Utilise action=ensure_open.")
+        readiness = await launcher.observe()
+        if not readiness.handshake_received:
+            return HandlerResult.fail("Lumena IDE n'est pas connecte. Utilise action=ensure_open.")
         focused = await _focus_cursor_ide_window()
         return HandlerResult.ok(
-            "Cursor IDE Local focus OK." if focused else "IDE ouvert mais focus non confirmé."
+            "Lumena IDE focus OK." if focused else "IDE connecte mais focus non confirme."
         )
 
     try:
@@ -505,28 +407,53 @@ async def cursor_ide_local(
             create_if_missing=bool(create_if_missing),
         )
     except Exception as exc:
-        return HandlerResult.fail(f"Erreur workspace cursor_ide_local: {exc}")
+        return HandlerResult.fail(f"Erreur workspace lumena_ide: {exc}")
 
-    if normalized == "ensure_open" and status["running"]:
-        focused = await _focus_cursor_ide_window()
-        return HandlerResult.ok(
-            f"Cursor IDE Local déjà ouvert (workspace cible: {workspace}). "
-            + ("Focus appliqué." if focused else "Focus non confirmé.")
-        )
-
-    ok, message = _launch_cursor_ide_process(
-        ide_root=ide_root,
-        workspace_path=workspace,
-    )
-    if not ok:
-        return HandlerResult.fail(f"Erreur cursor_ide_local: {message}")
-
-    await asyncio.sleep(1.5)
-    after = _cursor_ide_status()
+    # LOT IDE-3 — une FENETRE DE PLUS de Lumena IDE, demandable depuis le chat.
+    #
+    # Run reel du 24/09 18:24 : Charles demande « ouvre une autre instance ide avec
+    # ton workspace dedans ». Lumena ouvre **VS Code** (`code --new-window`) — elle
+    # voit pourtant trois fenetres « Lumena IDE » a l'iteration 7, se dit « il existe
+    # donc un IDE integre a Lumena », cherche l'outil par `discover_tools`... et ne le
+    # trouve pas. Alors elle retourne a VS Code et conclut « nouvelle instance VS Code ».
+    #
+    # Deux causes. (1) `ide_launch` porte bien `nouvelle_instance` depuis IDE-2, mais il
+    # DISPARAIT du catalogue des qu'une IDE est connectee — c'est une borne de securite
+    # de CONN-7d, figee par un test de CONN-3c, et c'est precisement le moment ou l'on
+    # veut une instance de plus. (2) Cette facade-ci reste toujours visible, mais elle
+    # ne savait pas ouvrir une seconde fenetre, et sa description parlait de
+    # « cursor-ide-local » — un nom technique que rien ne relie a « ton IDE ».
+    #
+    # `dedicated=True` existe depuis L5-3b-bis : profil `LUMENA_IDE_USER_DATA` distinct,
+    # donc verrou d'instance unique contourne, et lancement meme si une IDE tourne.
+    dediee = normalized == "new_instance"
+    result = await launcher.ensure_ready(workspace, dedicated=dediee)
+    if not result.available:
+        return HandlerResult.fail(result.error or f"Lumena IDE indisponible ({result.state}).")
+    # « reutilise » serait faux pour une dediee : elle n'en reutilise aucune. C'est ce
+    # mot, renvoye au run precedent, qui avait fait croire a Lumena qu'elle avait echoue.
+    origin = ("instance dediee lancee" if dediee
+              else ("reutilise" if result.reused else "lance"))
+    trust = "authentifie" if result.authenticated else "transport v2 non authentifie"
     return HandlerResult.ok(
-        f"{message}. workspace={workspace}. "
-        f"running={after['running']} process_count={after['process_count']}"
+        f"Lumena IDE {origin}; handshake confirme; {trust}; workspace={result.workspace or workspace}."
     )
+
+
+# Renommage `lumena_ide` (24/09/2026) — le nom que Charles a demande.
+#
+# Mesure du run de 18 h 24 : l'outil s'appelait `cursor_ide_local`, un nom herite du
+# fork Cursor dont l'IDE est issue. Lumena l'a lu, n'y a pas reconnu « ton IDE », et a
+# ouvert VS Code. IDE-3 avait corrige la DESCRIPTION ; le NOM, lui, continuait de
+# designer autre chose que ce que l'outil pilote. Le catalogue ne declare donc plus
+# que `lumena_ide` — un seul nom, sinon le modele arbitre entre deux outils identiques.
+#
+# L'ancien nom reste EXECUTABLE sans etre declare : il vit dans les conversations
+# passees, la memoire de Lumena et les logs. Deux voies le portent — le registre le
+# traduit au point d'entree de `execute` (`_NOMS_OUTILS_DEPRECIES`), et cet alias-ci
+# couvre les appels directs a la fonction. Le fuzzy du registre ne l'aurait pas
+# rattrape : les deux noms sont trop eloignes l'un de l'autre.
+cursor_ide_local = lumena_ide
 
 
 async def hotkey(ctx: HandlerContext, *, keys: str = None, input: str = None) -> HandlerResult:
@@ -1407,20 +1334,46 @@ def get_computer_use_handler_defs() -> List[HandlerDef]:
             source_module="handlers.computer_use",
         ),
         HandlerDef(
-            name="cursor_ide_local",
+            name="lumena_ide",
+            # LOT IDE-3 — la description decide de l'outil choisi.
+            #
+            # Run du 24/09 18:24 : « ouvre une autre instance ide avec ton workspace
+            # dedans ». Lumena a ouvert VS CODE. Son premier raisonnement, verbatim :
+            # « Losskarr veut une nouvelle instance de l'IDE (VS Code) ». L'ancienne
+            # description parlait de « l'IDE local cursor-ide-local » — un nom technique
+            # que rien ne relie a « TON IDE ». Elle a donc cherche ailleurs, vu trois
+            # fenetres « Lumena IDE », devine qu'un IDE integre existait, interroge
+            # `discover_tools`... sans le trouver, et fini par retourner a VS Code.
+            #
+            # On nomme donc l'outil par ce que Charles dit : **Lumena IDE, TON IDE**, et
+            # on ecrit la distinction en clair. VS Code reste accessible par `run_command
+            # code`, mais seulement quand il est DEMANDE.
             description=(
-                "Controle l'IDE local cursor-ide-local de Lumena: statut, ouverture, "
-                "focus et workspace projet."
+                "LUMENA IDE — ton propre IDE (l'application Electron de Lumena), a ne "
+                "PAS confondre avec VS Code. C'est l'outil a utiliser pour toute demande "
+                "du type « ton IDE », « ouvre une instance IDE », « une autre instance », "
+                "« une nouvelle fenetre », « une fenetre de plus », « ouvre ton editeur » : "
+                "statut, ouverture, focus, changement de workspace, et fenetre ou instance "
+                "SUPPLEMENTAIRE de Lumena IDE. "
+                "N'utilise VS Code (`run_command code`) que si on te le demande "
+                "explicitement par son nom."
             ),
             parameters={
                 "properties": {
-                    "action": {"type": "string", "description": "status | ensure_open | focus | ensure_workspace"},
+                    "action": {
+                        "type": "string",
+                        "description": (
+                            "status | ensure_open | focus | ensure_workspace | "
+                            "new_instance (une fenetre EN PLUS, avec son propre profil, "
+                            "sans toucher a celle qui est deja ouverte)"
+                        ),
+                    },
                     "workspace_path": {"type": "string", "description": "Chemin workspace cible"},
                     "create_if_missing": {"type": "boolean", "description": "Crée le workspace cible s'il n'existe pas", "default": False},
                 },
                 "required": ["action"],
             },
-            handler=cursor_ide_local,
+            handler=lumena_ide,
             category="computer_use",
             source_module="handlers.computer_use",
         ),

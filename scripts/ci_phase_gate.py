@@ -7,22 +7,22 @@ from pathlib import Path
 
 
 CRITICAL_TESTS = [
-    "tests/test_runtime_context.py",
-    "tests/test_workspace_policy.py",
-    "tests/test_task_orchestrator.py",
-    "tests/test_channel_envelope.py",
-    "tests/test_api_chat_metadata.py",
-    "tests/test_api_tasks_endpoints.py",
-    "tests/test_omnichannel_resume.py",
-    "tests/test_trace_stream_api.py",
-    "tests/test_slo_monitor.py",
-    "tests/test_status_slo.py",
-    "tests/test_cursor_ide_local_integration.py",
-    "tests/test_tool_system.py",
-    "tests/test_react_loop_guards.py",
-    "tests/test_react_file_guardrails.py",
-    "tests/test_core_runtime_context_bridge.py",
-    "tests/test_file_edits_collector.py",
+    "tests/llm/test_runtime_context.py",
+    "tests/security/test_workspace_policy.py",
+    "tests/agents/test_task_orchestrator.py",
+    "tests/channels/test_channel_envelope.py",
+    "tests/api/test_api_chat_metadata.py",
+    "tests/api/test_api_tasks_endpoints.py",
+    "tests/channels/test_omnichannel_resume.py",
+    "tests/api/test_trace_stream_api.py",
+    "tests/autonomy/test_slo_monitor.py",
+    "tests/autonomy/test_status_slo.py",
+    "tests/websites/test_lumena_ide_integration.py",
+    "tests/reasoning/test_tool_system.py",
+    "tests/reasoning/test_react_loop_guards.py",
+    "tests/reasoning/test_react_file_guardrails.py",
+    "tests/core/test_core_runtime_context_bridge.py",
+    "tests/tooling/test_file_edits_collector.py",
 ]
 
 

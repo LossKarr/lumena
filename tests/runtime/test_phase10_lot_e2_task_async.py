@@ -107,6 +107,9 @@ def _client_with_peer(tmp_path, monkeypatch, peer: dict,
     monkeypatch.setattr(peers_module, "_PEER_REGISTRY_FILE", reg_file)
     import src.utils.paths as _paths
     monkeypatch.setattr(_paths, "INSTANCE_ID", "self-001")
+    test_workspace = tmp_path / "workspace"
+    test_workspace.mkdir(exist_ok=True)
+    monkeypatch.setattr(_paths, "WORKSPACE_DIR", test_workspace)
     monkeypatch.setenv("LUMENA_ADMIN_TOKEN", "tok")
     monkeypatch.setenv("LUMENA_SETUP_COMPLETE", "1")
 

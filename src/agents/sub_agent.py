@@ -1168,7 +1168,13 @@ class SubAgent:
                 _phase26_token = None
             tool_system = get_tool_system()
             try:
-                result = await tool_system.execute_tool_by_name(tool_name, args)
+                # CONN-5D-2 — identite de l'appelant : sans elle, un outil IDE de
+                # mission est refuse (`ide_mission_caller_unknown`).
+                from ..reasoning.caller_context import CallerContext as _CallerContext
+                result = await tool_system.execute_tool_by_name(
+                    tool_name, args,
+                    caller=_CallerContext(kind="codeagent", agent_id=f"{self.agent_type.value}_agent"),
+                )
             finally:
                 if _phase26_token is not None:
                     try:
@@ -2062,11 +2068,10 @@ class CodeAgent(SubAgent):
         _metrics_attempts = 0
         llm = self._get_llm(task)
 
-        # ── Pattern Architect+Executor (best-in-class, cf. Aider/Cline) ──
-        # • Boucle d'exécution = deepseek-chat (rapide, tool-calling natif, 50 iters)
-        # • Phase Architect (dans _single_code_attempt) = deepseek-reasoner (1 appel, CoT long)
-        # Raison : Reasoner perd son CoT entre tours (doc officielle) → mauvais pour boucles,
-        # mais excellent pour planifier UNE fois. Chat exécute ensuite en suivant le plan.
+        # ── Pattern Architect+Executor ────────────────────────────────────
+        # Le modèle sélectionné reste identique entre planification et exécution.
+        # Les anciens endpoints DeepSeek Chat/Reasoner sont retirés et ne doivent
+        # plus être réintroduits par un auto-switch interne au CodeAgent.
         _model = getattr(llm, "model_name", "") or ""
         # P5 — cap d'itérations adapté au profil comportemental du modèle
         try:
@@ -2084,18 +2089,6 @@ class CodeAgent(SubAgent):
                 _effective_max_iter = _CODE_AGENT_MAX_ITER
         except Exception:
             _effective_max_iter = _CODE_AGENT_MAX_ITER
-        if "deepseek" in _model.lower() and "reasoner" in _model.lower():
-            # L'utilisateur a explicitement demandé reasoner → on le ramène à chat pour la boucle
-            try:
-                from ..llm.multi_provider import MultiProviderLLM
-                llm = MultiProviderLLM(model_name="deepseek-chat")
-                logger.info(
-                    "🎯 [CodeAgent] Boucle exec → deepseek-chat (rapide). "
-                    "Architect utilisera reasoner 1× pour planifier.",
-                )
-            except Exception as exc:
-                logger.warning("[CodeAgent] Swap chat échoué ({}), garde {}", exc, _model)
-
         prior_failures: list[str] = []
         last_result: AgentResult | None = None
         # P7 — telemetry : début de tâche CodeAgent
@@ -2206,16 +2199,9 @@ class CodeAgent(SubAgent):
                             )
                     except Exception:
                         pass  # git optionnel
-                # Enregistrer le projet dans le registre persistant
-                if self._task_workspace_root and self._task_workspace_root.exists():
-                    try:
-                        from ..utils.project_registry import register_project
-                        register_project(
-                            self._task_workspace_root,
-                            description=task.description[:200],
-                        )
-                    except Exception:
-                        pass  # registre optionnel
+                # Enregistrer le projet dans le registre persistant (L1d-1 : seulement
+                # si la tache a ECRIT ; un audit ne deplace pas le projet recent).
+                self._register_task_project(task.description)
                 # Sauvegarder dans la mémoire projet persistante (cross-session)
                 if self._task_workspace_root:
                     try:
@@ -3540,36 +3526,18 @@ class CodeAgent(SubAgent):
                         "Liste-les comme un plan d'action numéroté que l'exécuteur pourra suivre étape par étape."
                     )},
                 ]
-                # Architect = Reasoner UNIQUEMENT si le modèle par défaut est DeepSeek.
-                # Sinon (Opus, GPT-5, Gemini, etc.) → utiliser le modèle courant pour architecter
-                # (ces modèles n'ont pas besoin de swap reasoner, ils raisonnent nativement).
+                # L'architecte utilise le modèle courant. Aucun endpoint retiré
+                # n'est sélectionné implicitement.
                 try:
                     _arch_max_tokens = int(os.getenv("LUMENA_ARCHITECT_MAX_TOKENS", "12000"))
                 except (TypeError, ValueError):
                     _arch_max_tokens = 12000
                 _current_model_name = (getattr(llm, "model_name", "") or "").lower()
-                # Swap Architect → deepseek-reasoner UNIQUEMENT si le modèle courant est deepseek-v3
-                # (model_id = "deepseek-chat", V3.2 non-thinking).
-                # Les modèles V4 (deepseek-v4-flash, deepseek-v4-pro) raisonnent nativement → pas de swap.
-                _current_model_id = (getattr(llm, "model", "") or "").lower()
-                _is_deepseek_v3_chat = (_current_model_id == "deepseek-chat")
-                _llm_for_arch = None
-                if _is_deepseek_v3_chat:
-                    try:
-                        from ..llm.multi_provider import MultiProviderLLM
-                        _llm_for_arch = MultiProviderLLM(model_name="deepseek-reasoner")
-                        logger.info(
-                            "[CodeAgent] Architect = deepseek-reasoner (CoT 1×, max_tokens={}, {} fichier(s) cible(s) injecté(s))",
-                            _arch_max_tokens, len(_target_content_blocks),
-                        )
-                    except Exception:
-                        _llm_for_arch = llm
-                else:
-                    _llm_for_arch = llm
-                    logger.info(
-                        "[CodeAgent] Architect = {} (max_tokens={}, {} fichier(s) cible(s) injecté(s))",
-                        _current_model_name or "modèle courant", _arch_max_tokens, len(_target_content_blocks),
-                    )
+                _llm_for_arch = llm
+                logger.info(
+                    "[CodeAgent] Architect = {} (max_tokens={}, {} fichier(s) cible(s) injecté(s))",
+                    _current_model_name or "modèle courant", _arch_max_tokens, len(_target_content_blocks),
+                )
                 # ── Timeout Architect (configurable via panel/env) ──
                 try:
                     _arch_timeout = float(os.getenv("LUMENA_ARCHITECT_TIMEOUT", "600"))
@@ -3781,10 +3749,8 @@ class CodeAgent(SubAgent):
                     pass
             try:
                 # ── P8.SSE_TIMEOUT : wrapper timeout sur l'appel LLM ──
-                # Auto-switch autorisé : deepseek-chat peut basculer vers reasoner
-                # si le routeur heuristique détecte code_task (plus de tokens/contexte).
-                # Les garde-fous (Architect injection, anti-relecture, re-injection post-edit)
-                # sont model-agnostic et restent actifs.
+                # Aucun auto-switch DeepSeek V3/Reasoner : le modèle courant
+                # exécute la boucle et les garde-fous restent model-agnostic.
                 _chat_coro = llm.chat(
                     messages=messages,
                     temperature=temperature,
@@ -5955,22 +5921,61 @@ class CodeAgent(SubAgent):
             return "\n".join(errors[:5])[:600]
         return ""
 
+    def _dossier_de_tests_du_projet(self, modified_file: str):
+        """LOT AR-1 : les tests du PROJET ou elle travaille, jamais ceux de Lumena.
+
+        L'ancre etait `Path(__file__).parent.parent.parent` — la racine de Lumena,
+        quel que soit le projet edite. Combinee a un match par SOUS-CHAINE du contenu,
+        elle faisait recolter des tests etrangers : mesure du 25/09, **20 noms de
+        module courants sur 23** declenchaient le gate a tort (`app`, `main`, `config`,
+        `utils`, `server`, `game`, `world`, `state`, `auth`, `core`...).
+
+        Ces tests, rendus en noms NUS, etaient ensuite lances dans le cwd du projet ou
+        ils n'existent pas : pytest echouait, l'echec etait juge imputable (hors
+        mission `_allowed_files` est vide) et `_rollback_session` **detruisait un
+        travail correct**.
+
+        On part donc du workspace de la tache, sinon du dossier du fichier modifie, en
+        remontant au plus 3 niveaux pour trouver un `tests/`. Quand elle developpe
+        Lumena, l'ancre redevient naturellement le depot Lumena : le cas legitime que
+        le code visait est preserve.
+        """
+        base = getattr(self, "_task_workspace_root", None)
+        cible = Path(modified_file)
+        if not base:
+            base = cible.parent if cible.is_absolute() else Path.cwd()
+        base = Path(base)
+        for _ in range(4):  # la base elle-meme, puis 3 remontees
+            if (base / "tests").is_dir():
+                return base, base / "tests"
+            if base.parent == base:
+                break
+            base = base.parent
+        return None, None
+
     def _find_related_tests(self, modified_file: str) -> list[str]:
-        """Trouve les fichiers tests qui importent le module modifié."""
-        root = Path(__file__).parent.parent.parent
-        tests_dir = root / "tests"
-        if not tests_dir.exists():
+        """Trouve les fichiers tests qui importent le module modifié.
+
+        LOT AR-1 : ancre sur le projet (voir `_dossier_de_tests_du_projet`) et rend des
+        chemins RESOLVABLES depuis cette base — un nom nu introuvable produisait un
+        echec de pytest qui n'apprenait rien et detruisait tout.
+        """
+        base, tests_dir = self._dossier_de_tests_du_projet(modified_file)
+        if tests_dir is None:
             return []
         # Extraire le nom du module (src/tools/apply_patch.py → apply_patch)
         mod_name = Path(modified_file).stem
         # Aussi le chemin d'import (src.tools.apply_patch)
         mod_import = modified_file.replace("/", ".").replace("\\", ".").removesuffix(".py")
         results: list[str] = []
-        for tf in tests_dir.glob("test_*.py"):
+        for tf in sorted(tests_dir.glob("test_*.py")):
             try:
                 content = tf.read_text(encoding="utf-8", errors="ignore")
                 if mod_name in content or mod_import in content:
-                    results.append(tf.name)
+                    try:
+                        results.append(str(tf.relative_to(base)).replace("\\", "/"))
+                    except ValueError:
+                        results.append(str(tf))
             except Exception:
                 pass
         return results[:10]
@@ -6068,6 +6073,87 @@ class CodeAgent(SubAgent):
         except Exception as exc:
             return f"❌ Erreur list_files: {exc}"
 
+    def _register_task_project(self, description: str) -> None:
+        """Lot L1d-1 — inscrit le projet comme recent SEULEMENT si la tache a ecrit.
+
+        Mesure du 15/09/2026 : un audit du projet voisin, inscrit en fin de tache
+        reussie, rendait ce voisin « recemment actif » et « continue » y partait 5 fois
+        sur 5. Lire ou auditer ne deplace plus le projet recent.
+        """
+        root = getattr(self, "_task_workspace_root", None)
+        edits = (getattr(self, "_session_memory", None) or {}).get("edits_done") or []
+        if not root or not edits or not Path(root).exists():
+            return
+        try:
+            from ..utils import project_registry as _registry
+            _registry.register_project(root, description=(description or "")[:200])
+        except Exception:
+            pass  # registre optionnel
+
+    # Actions de la boucle qui ecrivent directement sur le disque via `_resolve_path`.
+    _L1C1_ACTIONS_ECRITURE = frozenset({
+        "write_file", "edit_file", "str_replace", "edit_lines", "insert_at_anchor", "undo_edit",
+    })
+
+    def _l1c1_refus_ecriture(self, act: str, action: dict) -> str:
+        """Lot L1c-1 — refus (texte) si une ecriture directe vise une zone protegee.
+
+        Le CodeAgent ecrit sans passer par les handlers : chemin absolu rendu tel quel
+        par `_resolve_path`, et `apply_patch` resout ses fichiers depuis le dossier
+        courant. On applique ici la MEME liste noire que les handlers (`.env`, `data/`,
+        `models/`, `backups/`), sur la cible reelle. Chaine vide = autorise.
+        """
+        from src.tools.file_guardrails import PathSecurityError, check_write_blacklist
+        cibles: list[Path] = []
+        if act in self._L1C1_ACTIONS_ECRITURE:
+            chemin = str(action.get("path", "") or "")
+            if chemin:
+                cibles.append(self._resolve_path(chemin))
+        elif act == "apply_patch":
+            try:
+                from src.tools.apply_patch import parse_patch
+                hunks = parse_patch(str(action.get("patch", "") or ""))
+            except Exception:
+                hunks = []
+            for hunk in hunks:
+                for attr in ("path", "move_path"):
+                    chemin = getattr(hunk, attr, None)
+                    if chemin:
+                        cibles.append(Path.cwd() / chemin)
+        if not cibles:
+            return ""
+        from src.tools.file_guardrails import WorkspaceFileGuardrails, check_lumena_code_write
+        racine = self._project_root()
+        espace = WorkspaceFileGuardrails(racine)._workspace_root()
+        for cible in cibles:
+            try:
+                check_write_blacklist(cible, racine)
+                # L1c-2 : code de Lumena (depot sauf workspace) -> edit_own_code seulement.
+                check_lumena_code_write(cible, racine, espace)
+            except PathSecurityError as err:
+                return f"⛔ {err}"
+        # L1c-3 : en MISSION, le CodeAgent reste dans son dossier (un chemin absolu ne
+        # l'en fait plus sortir) ; en chat, sauvegarde avant de toucher hors du depot.
+        from src.runtime.context import get_current_runtime_context
+        from src.tools.file_guardrails import _is_within, _resolve_safe, backup_before_outside_change
+        en_mission = getattr(get_current_runtime_context(), "channel", "") == "mission"
+        borne = _resolve_safe(Path(getattr(self, "_task_workspace_root", None) or espace))
+        depot, espace_r = _resolve_safe(Path(racine)), _resolve_safe(Path(espace))
+        for cible in cibles:
+            rp = _resolve_safe(Path(cible))
+            if en_mission:
+                if not _is_within(rp, borne):
+                    return (
+                        f"⛔ Écriture refusée : en mission, le CodeAgent reste dans son dossier "
+                        f"({borne}). {rp} est en dehors."
+                    )
+            elif not (_is_within(rp, depot) or _is_within(rp, espace_r)):
+                try:
+                    backup_before_outside_change(rp)
+                except PathSecurityError as err:
+                    return f"⛔ {err}"
+        return ""
+
     def _snapshot_file(self, snapshots: dict, file_path: str) -> None:
         """Sauvegarde le contenu original d'un fichier (une seule fois par session)."""
         if file_path in snapshots:
@@ -6128,6 +6214,11 @@ class CodeAgent(SubAgent):
                     "Rappelle un plan avec `read_only=false` pour reprendre l'édition, "
                     "ou utilise `done` pour sortir.",
                 )
+            # L1c (N11) : garde d'ecriture AVANT toute ecriture directe du CodeAgent,
+            # apres le verrou du mode plan (qui bloque sans evaluer de chemin).
+            _refus_ecriture = self._l1c1_refus_ecriture(act, action)
+            if _refus_ecriture:
+                return ActionResult(_refus_ecriture)
             if act == "plan":
                 steps = action.get("steps", [])
                 # P3: gère l'entrée/sortie du read-only mode
@@ -7743,15 +7834,13 @@ class SubAgentOrchestrator:
             )
 
         # ── Model Router : escalade progressive ──────────────────────────────
-        # Attempt 0 : garder le modèle utilisateur (deepseek-chat → auto-swap
-        #             deepseek-reasoner dans _iterative_code_loop)
+        # Attempt 0 : garder le modèle utilisateur sans auto-switch DeepSeek.
         # Attempt 1 : escalade OpenAI par grade (gpt-5.4-mini → gpt-5.4)
         # Attempt 2 : escalade Anthropic par grade (claude-sonnet → claude-opus)
         _user_locked_model = task.context.get("_best_model")
         _codex_brain_locked = bool(task.context.get("_codex_brain"))
         if _attempt == 0:
-            # Premier essai : on ne touche PAS au modèle, laisser l'auto-swap
-            # deepseek→reasoner se faire dans _iterative_code_loop
+            # Premier essai : on ne touche pas au modèle sélectionné.
             if not _user_locked_model:
                 logger.debug(
                     f"\U0001f3af Model router: attempt=0 → conserve modèle par défaut"
@@ -7761,23 +7850,14 @@ class SubAgentOrchestrator:
                     f"\U0001f3af Model router: attempt=0 → conserve {_user_locked_model}"
                 )
         elif _attempt > 0 and not _codex_brain_locked:
-            # Escalade progressive par provider
-            _ESCALATION_CHAIN = [
-                # attempt=1 : OpenAI par grade
-                ["gpt-5.4-mini", "gpt-5.4"],
-                # attempt=2+ : Anthropic par grade
-                ["claude-sonnet-4.6", "claude-opus-4.6"],
-            ]
-            chain_idx = min(_attempt - 1, len(_ESCALATION_CHAIN) - 1)
-            chain = _ESCALATION_CHAIN[chain_idx]
+            # LOT ESC-1b : la politique vit dans `llm/escalation_policy.py`. Elle
+            # ecarte un fournisseur dont le credit est epuise — `check_api_key` ne
+            # lisait qu'une variable d'environnement — et essaie les autres paliers
+            # avant de renoncer.
             escalated = None
             try:
-                from ..llm.providers import AVAILABLE_MODELS, check_api_key
-                for candidate in chain:
-                    cfg = AVAILABLE_MODELS.get(candidate)
-                    if cfg and check_api_key(cfg.provider):
-                        escalated = candidate
-                        break
+                from ..llm.escalation_policy import choisir_escalade
+                escalated = choisir_escalade(_attempt)
             except Exception as _esc_exc:
                 logger.debug(f"Escalation import error: {_esc_exc}")
 
@@ -7789,7 +7869,8 @@ class SubAgentOrchestrator:
                 )
             else:
                 logger.debug(
-                    f"\U0001f3af Model router: escalation chain {chain_idx} — aucun modèle disponible"
+                    "🔒 Escalade impossible (aucun fournisseur disponible) "
+                    "- conserve le modele courant (retry {})".format(_attempt)
                 )
         elif _attempt > 0:
             logger.info(

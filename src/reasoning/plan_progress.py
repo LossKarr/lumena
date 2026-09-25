@@ -58,6 +58,13 @@ _CORRECTION_TASK_VERBS: tuple = (
     "résoudre l'err", "resoudre l'err", "résoudre les err", "resoudre les err",
     "faire passer les test", "réparer les test", "reparer les test",
     "remplir", "compléter", "completer", "implémenter", "implementer",
+    # LOT L3-3 (run du 2026-09-16 16:19) — « Reecrire script.js dans le meme
+    # esprit » a ete cochee par un `read_file` : bilan 6/6 annonce, ZERO octet
+    # ecrit (verifie sur disque, mtime inchange). Le garde connaissait deja
+    # l'outil (`_READONLY_PLAN_TOOLS` contient read_file et read_files_batch) —
+    # il lui manquait le VERBE. Radicaux (la detection est substring) : couvrent
+    # reecrire / reecris / réécrire / réécris / rewrite.
+    "reecri", "réécri", "rewrite",
 )
 _READONLY_PLAN_TOOLS: frozenset = frozenset({
     "read_file", "read_files_batch", "read_document",

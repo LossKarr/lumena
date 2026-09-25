@@ -186,13 +186,8 @@ async def generate_video_handler(
     llm = lumena.llm
 
     _current_model = getattr(llm, "model", "") or ""
-    _DEEPSEEK_CHAT_MODELS = {"deepseek-v3", "deepseek-chat", "deepseek-v3-0324"}
     _code_model: str | None = None
-    if _current_model in _DEEPSEEK_CHAT_MODELS:
-        _code_model = "deepseek-reasoner"
-        logger.info("[video] Auto-upgrade LLM: {} → deepseek-reasoner", _current_model)
-
-    _effective_model = _code_model or _current_model
+    _effective_model = _current_model
     _model_family = classify_model_family(_effective_model)
     telemetry.model = _effective_model
 

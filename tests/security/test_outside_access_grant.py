@@ -213,12 +213,20 @@ class TestDetectOutsideAccessGrant:
         grant = _detect_outside_access_grant("ajoute une fonction dans agent_service.py")
         assert not grant.allow_read
 
-    def test_grant_never_allows_write(self, roots):
+    def test_chat_grant_writes_only_on_named_roots(self, roots):
+        """Lot L1c-3 : INVERSION VOLONTAIRE de `test_grant_never_allows_write`.
+
+        Decision de Charles du 15/09/2026 : en chat, l'endroit que l'utilisateur designe
+        devient inscriptible et supprimable (sauvegarde avant, garde commune ; code de
+        Lumena et liste noire toujours refuses ; missions et autonomie jamais concernees).
+        Ce qui ne change pas : rien d'autre que l'endroit designe.
+        """
         _, _, external, _ = roots
         query = f"va lire {external / 'notes.txt'}"
         grant = _detect_outside_access_grant(query)
-        assert not grant.allow_write
-        assert not grant.allow_delete
+        assert grant.allow_write and grant.allow_delete
+        assert grant.permits_write(external / "notes.txt")
+        assert not grant.permits_write(external.parent / "ailleurs.txt")
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ chaque boucle provider, et le wiring dans computer_task().
 """
 
 import asyncio
+import copy
 import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -23,6 +24,7 @@ from src.computer_use.native_cu import (
     _openai_cu_loop,
     _google_cu_loop,
     _CASCADE_ORDER,
+    _anthropic_cu_contract,
 )
 
 
@@ -195,6 +197,22 @@ class TestCascade:
         assert "OPENAI" in result.summary
 
     @pytest.mark.asyncio
+    async def test_model_refusal_is_terminal_and_never_cascades(self, monkeypatch):
+        """Un refus explicite ne doit jamais être contourné par un autre CU."""
+        from src.computer_use.native_cu import NativeCURefusal
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test2")
+
+        with patch("src.computer_use.native_cu._anthropic_cu_loop", new_callable=AsyncMock) as mock_ant, \
+             patch("src.computer_use.native_cu._openai_cu_loop", new_callable=AsyncMock) as mock_oai:
+            mock_ant.side_effect = NativeCURefusal("Anthropic CU refusal:claude-opus-5-5")
+            with pytest.raises(NativeCURefusal):
+                await try_native_cu_cascade("test goal")
+
+        mock_oai.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_fallback_to_google(self, monkeypatch):
         """Si Anthropic et OpenAI échouent, tente Google."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -286,6 +304,72 @@ class TestCascade:
 # ─── Anthropic CU Loop ───────────────────────────────────────────────────
 
 class TestAnthropicCULoop:
+    def test_opus55_uses_current_toolset_without_beta_header(self):
+        headers, tools, is_toolset = _anthropic_cu_contract(
+            "claude-opus-5-5", 1920, 1080, "test-key"
+        )
+        assert is_toolset is True
+        assert "anthropic-beta" not in headers
+        assert tools == [{"type": "computer_toolset_20260801"}]
+
+        old_headers, old_tools, old_is_toolset = _anthropic_cu_contract(
+            "claude-sonnet-4-6", 1920, 1080, "test-key"
+        )
+        assert old_is_toolset is False
+        assert old_headers["anthropic-beta"] == "computer-use-2025-01-24"
+        assert old_tools[0]["type"] == "computer_20251124"
+
+    @pytest.mark.asyncio
+    async def test_opus55_toolset_executes_batch_and_echoes_toolset_name(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        monkeypatch.setattr(
+            "src.computer_use.native_cu._ANTHROPIC_CU_MODEL", "claude-opus-5-5"
+        )
+        payloads = []
+        headers_seen = []
+        responses = iter([
+            {
+                "stop_reason": "tool_use",
+                "content": [
+                    {
+                        "type": "tool_use", "id": "t1", "name": "left_click",
+                        "toolset_name": "computer", "input": {"coordinate": [50, 60]},
+                    },
+                    {
+                        "type": "tool_use", "id": "t2", "name": "screenshot",
+                        "toolset_name": "computer", "input": {},
+                    },
+                ],
+            },
+            {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]},
+        ])
+
+        async def mock_post(url, **kwargs):
+            payloads.append(copy.deepcopy(kwargs["json"]))
+            headers_seen.append(dict(kwargs["headers"]))
+            response = MagicMock()
+            response.status_code = 200
+            response.json.return_value = next(responses)
+            return response
+
+        with patch("src.computer_use.native_cu._take_screenshot", new=_mock_screenshot()), \
+             patch("src.computer_use.native_cu._exec_action", new_callable=AsyncMock) as execute, \
+             patch("src.computer_use.native_cu.asyncio.sleep", new_callable=AsyncMock), \
+             patch("httpx.AsyncClient") as client_cls:
+            execute.return_value = "Clic à (50, 60)"
+            client = MagicMock(post=mock_post)
+            client_cls.return_value.__aenter__ = AsyncMock(return_value=client)
+            client_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            result = await _anthropic_cu_loop("batch", max_steps=2)
+
+        assert result.success is True
+        assert payloads[0]["tools"] == [{"type": "computer_toolset_20260801"}]
+        assert "anthropic-beta" not in headers_seen[0]
+        result_blocks = payloads[1]["messages"][-1]["content"]
+        assert [block["tool_use_id"] for block in result_blocks] == ["t1", "t2"]
+        assert all(block["toolset_name"] == "computer" for block in result_blocks)
+        execute.assert_awaited_once_with("left_click", {"coordinate": [50, 60], "x": 50, "y": 60})
+
     @pytest.mark.asyncio
     async def test_end_turn_no_tools(self, monkeypatch):
         """Si Claude répond sans tool_use, c'est terminé."""

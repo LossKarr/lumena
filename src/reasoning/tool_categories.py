@@ -103,6 +103,21 @@ _CONTRACTS: Dict[str, ToolCategoryContract] = {
         delegate_code_threshold=0,
     ),
 
+    "local_models": ToolCategoryContract(
+        name="local_models",
+        role="Rechercher, analyser et gérer les modèles locaux Ollama et Hugging Face GGUF.",
+        preconditions=["daemon Ollama disponible pour toute opération locale"],
+        allowed_effects=["recherche catalogue", "installation", "activation", "désactivation", "déchargement"],
+        refusal_reasons=[
+            "mutation sans demande utilisateur explicite",
+            "suppression sans ticket de confirmation humain",
+            "worker de mission non autorisé à modifier l'état global",
+        ],
+        autonomy_allowed=True,
+        requires_workspace=False,
+        delegate_code_threshold=0,
+    ),
+
     "web": ToolCategoryContract(
         name="web",
         role="Recherche web, requêtes HTTP, crawling de pages.",
@@ -433,6 +448,7 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "config_manager": "system",
     "heartbeat_self": "autonomy",
     "uncategorized": "system",
+    "local_models": "local_models",
     # Cohérence — catégories utilisées dans certains HandlerDef.category
     # mais absentes de la table principale.
     "code":               "codebase",

@@ -26,6 +26,29 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from loguru import logger
 
+# LOT GATE-1a — dossiers que la validation ne lit JAMAIS.
+#
+# Mesure du 23 septembre 2026 sur le workspace reel : `project_dir.rglob("*")`
+# parcourait **48 668 fichiers, 1,23 Go, dont 90 % de `node_modules`** - et lisait
+# le contenu de chacun. Le seul filtre ecartait les dossiers commencant par un
+# point, donc `.git` et `.venv` mais NI `node_modules`, NI `dist`, NI `build`.
+#
+# Consequence mesuree en production : un CodeAgent a echoue sur
+# `@remotion/studio/dist/chunk-ptnd65a9.js:12963`, un bundle minifie qu'il n'a
+# jamais ecrit, apres 19 minutes de silence.
+#
+# Definition UNIQUE et partagee : `verification_gate` avait sa propre liste, plus
+# courte, et les deux avaient deja diverge.
+EXCLUDED_DIRECTORIES = frozenset({
+    "node_modules", "dist", "build", "out", "coverage", "vendor",
+    "__pycache__", ".git", ".venv", "venv", ".next", ".nuxt", "target",
+})
+
+
+def is_excluded_path(parts) -> bool:
+    """Vrai si un composant du chemin releve d'un dossier jamais valide."""
+    return any(part in EXCLUDED_DIRECTORIES or part.startswith(".") for part in parts)
+
 
 # ═══════════════════════════════════════════════════════════════
 # DATA TYPES
@@ -229,6 +252,49 @@ def _validate_css(
     return issues
 
 
+def _arbitrer_js_par_node(file_path: str, content: str) -> Tuple[str, str]:
+    """`(verdict, detail)` — verdict ∈ {`ok`, `erreur`, `non_verifiable`}.
+
+    GATE-2. Appelé UNIQUEMENT quand le comptage naïf a déclenché : aucun processus
+    n'est lancé sur un fichier équilibré.
+
+    `node --check` ne comprend ni JSX ni TypeScript : il refuserait du code
+    parfaitement valide. Pour ces extensions on rend donc `non_verifiable` et on
+    le dit, plutôt que de fabriquer une erreur — c'est précisément la faute que ce
+    lot corrige, et la reproduire dans l'autre sens ne vaudrait pas mieux.
+    """
+    ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    if ext not in ("js", "mjs"):
+        return ("non_verifiable", f"node --check ne valide pas le .{ext}")
+
+    # Le contenu validé n'est pas forcément sur disque (validate_project travaille
+    # sur un dict en mémoire) : on écrit un temporaire avec l'extension qui décide
+    # du mode de parsing. `import`/`export` au niveau module exigent .mjs, sinon
+    # node parse en CommonJS et refuse une syntaxe ESM valide.
+    est_esm = ext == "mjs" or bool(
+        re.search(r"^\s*(?:import\s|export\s|export\{|import\{)", content, re.MULTILINE)
+    )
+    import tempfile
+    chemin = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".mjs" if est_esm else ".js",
+            encoding="utf-8", delete=False,
+        ) as tmp:
+            tmp.write(content)
+            chemin = Path(tmp.name)
+        from src.utils.syntax_check import verifier_js_par_node
+        return verifier_js_par_node(chemin)
+    except Exception as exc:
+        return ("non_verifiable", f"arbitrage node impossible: {type(exc).__name__}")
+    finally:
+        if chemin is not None:
+            try:
+                chemin.unlink()
+            except OSError:
+                pass
+
+
 def _validate_js(
     file_path: str,
     content: str,
@@ -259,18 +325,56 @@ def _validate_js(
                 ))
 
     # ── Accolades/parenthèses équilibrées ──
-    # Ignorer celles dans les strings et commentaires (heuristique simple)
+    # GATE-2 — le comptage DÉCLENCHE, node ARBITRE.
+    #
+    # Ce comptage ignore les délimiteurs dans les chaînes et les commentaires par
+    # une « heuristique simple », et elle se trompe. Mesure du corpus au 24/09/2026 :
+    # `JS_UNBALANCED_SYNTAX` est le **premier motif d'échec du gate sur cinq mois**
+    # (23 occurrences sur 246 événements). Le run du 24/09 à 03:04 en donne la
+    # démonstration : le gate annonçait « 120 '(' vs 121 ')' » quand `node --check`
+    # sortait 0 et qu'un comptage explicite donnait 262 = 262. Le CodeAgent a passé
+    # une quinzaine d'itérations à s'en défendre, puis a ajouté une parenthèse dans
+    # un commentaire pour « équilibrer le compteur » — un garde faux n'obtient pas
+    # de la rigueur, il obtient du contournement.
+    #
+    # On garde donc le comptage comme DÉCLENCHEUR (gratuit, aucun processus lancé
+    # quand tout est équilibré) et on ne CONCLUT que sur l'avis de `node --check`,
+    # qui est autoritatif et déjà présent dans le dépôt — il était branché sur
+    # `files.py` et `codex_codeagent.py`, mais pas ici.
     stripped = _strip_js_strings_and_comments(content)
+    _desequilibres = []
     for opener, closer, name in [("{", "}", "accolades"), ("(", ")", "parenthèses"), ("[", "]", "crochets")]:
         o_count = stripped.count(opener)
         c_count = stripped.count(closer)
         if o_count != c_count:
+            _desequilibres.append(
+                f"{name} déséquilibrées: {o_count} '{opener}' vs {c_count} '{closer}'"
+            )
+    if _desequilibres:
+        _verdict, _detail = _arbitrer_js_par_node(file_path, content)
+        if _verdict == "erreur":
+            # node a vu une vraie erreur : son message porte la ligne et la colonne,
+            # ce que le comptage n'a jamais su dire.
             issues.append(ValidationIssue(
                 file_path=file_path, line=0, severity=Severity.ERROR,
                 code="JS_UNBALANCED_SYNTAX",
-                message=f"{name} déséquilibrées: {o_count} '{opener}' vs {c_count} '{closer}'",
-                suggestion=f"Fichier probablement tronqué — vérifier la fin du fichier",
+                message=f"node --check : {_detail}",
+                suggestion="Corriger la ligne signalée par node",
             ))
+        elif _verdict != "ok":
+            # node absent ou muet : on ne peut pas trancher, on le DIT au lieu de
+            # faire passer un soupçon pour une preuve.
+            issues.append(ValidationIssue(
+                file_path=file_path, line=0, severity=Severity.ERROR,
+                code="JS_UNBALANCED_SYNTAX",
+                message=f"{' ; '.join(_desequilibres)} (non confirmé : {_detail})",
+                suggestion="Installer node pour une vérification fiable, ou vérifier la fin du fichier",
+            ))
+        else:
+            logger.debug(
+                f"[GATE-2] {file_path} : comptage déséquilibré ({'; '.join(_desequilibres)}) "
+                "mais node --check accepte le fichier — faux positif écarté"
+            )
 
     # ── Fonctions appelées depuis HTML (onclick, etc.) ──
     # Vérifier que les fonctions globales référencées dans HTML existent dans les JS
@@ -952,6 +1056,8 @@ def _has_typeof_function_guard(name: str, content: str) -> bool:
 def validate_project(
     files: Dict[str, str],
     project_dir: Optional[Path] = None,
+    *,
+    skip_lsp: bool = False,
 ) -> ValidationReport:
     """
     Valide un ensemble de fichiers de projet.
@@ -970,7 +1076,9 @@ def validate_project(
     all_files = {k.replace("\\", "/"): v for k, v in files.items()}
     if project_dir and project_dir.exists():
         for fp in project_dir.rglob("*"):
-            if fp.is_file() and not any(p.startswith(".") for p in fp.relative_to(project_dir).parts):
+            # GATE-1a : `is_excluded_path` couvre aussi les dossiers en point,
+            # seul filtre d'origine — le comportement ne s'elargit jamais.
+            if fp.is_file() and not is_excluded_path(fp.relative_to(project_dir).parts):
                 rel = str(fp.relative_to(project_dir)).replace("\\", "/")
                 if rel not in all_files:
                     try:
@@ -1000,7 +1108,15 @@ def validate_project(
     all_issues.extend(_validate_cross_node(all_files))
 
     # ── Validation LSP (si disponible et project_dir fourni) ──
-    if project_dir and project_dir.exists():
+    #
+    # LOT GATE-1d : `skip_lsp` rend EXPLICITE ce qui reposait sur un accident.
+    # `_run_lsp_diagnostics` sautait le LSP en detectant un event loop en cours
+    # (« le handler le fera »). Des que `validate_project` est appele dans un
+    # THREAD - ce que GATE-1c fait pour rendre le plafond effectif - il n'y a plus
+    # d'event loop : le LSP repartait, et `validate_project_async` le payait DEUX
+    # fois. Mesure du 23 septembre : 0,00 s en appel direct, **15,8 s via
+    # `to_thread`**, pour exactement le meme travail.
+    if project_dir and project_dir.exists() and not skip_lsp:
         lsp_issues = _run_lsp_diagnostics(project_dir, list(files.keys()))
         all_issues.extend(lsp_issues)
 
@@ -1076,10 +1192,10 @@ def validate_directory(project_dir: Path) -> ValidationReport:
     for fp in project_dir.rglob("*"):
         if fp.is_file():
             rel = str(fp.relative_to(project_dir)).replace("\\", "/")
-            # Skip hidden, node_modules, etc.
-            if any(part.startswith(".") for part in fp.relative_to(project_dir).parts):
-                continue
-            if "node_modules" in rel or "__pycache__" in rel:
+            # GATE-1a : TROISIEME liste d'exclusion du fichier, plus courte que les
+            # deux autres (elle ignorait `dist`, `build`, `out`, `coverage`,
+            # `vendor`). Toutes partagent desormais `EXCLUDED_DIRECTORIES`.
+            if is_excluded_path(fp.relative_to(project_dir).parts):
                 continue
             try:
                 files[rel] = fp.read_text(encoding="utf-8", errors="replace")
@@ -1092,13 +1208,29 @@ def validate_directory(project_dir: Path) -> ValidationReport:
 async def validate_project_async(
     files: Dict[str, str],
     project_dir: Optional[Path] = None,
+    *,
+    lsp_timeout: Optional[float] = None,
 ) -> ValidationReport:
     """
     Version async de validate_project — utilise LSP directement via await.
     À utiliser depuis les handlers async (ReAct, project, website).
     """
-    # D'abord le check régulier (synchrone, rapide)
-    report = validate_project(files, project_dir)
+    # LOT GATE-1c — le check statique part dans un THREAD.
+    #
+    # Il etait appele ici en synchrone, avec le commentaire « (synchrone, rapide) ».
+    # Il ne l'est pas : il lit tout le dossier fourni. Deux consequences mesurees en
+    # production le 23 septembre 2026 :
+    #   * sans aucun point d'`await`, le `asyncio.wait_for(timeout=15)` de `run_gate`
+    #     ne pouvait RIEN interrompre - duree reelle **1 187 s, 79x le plafond** ;
+    #   * l'event loop entier gelait, donc le chat et les missions avec lui.
+    # `to_thread` rend les deux possibles : le plafond coupe, et le reste vit.
+    import asyncio
+    import functools
+
+    # `skip_lsp=True` : le LSP est fait juste en dessous, avec le budget de
+    # l'appelant. Sans cela il tournerait deux fois (voir GATE-1d).
+    report = await asyncio.to_thread(
+        functools.partial(validate_project, files, project_dir, skip_lsp=True))
 
     # Ajouter les diagnostics LSP si possible
     if project_dir and project_dir.exists():
@@ -1112,7 +1244,28 @@ async def validate_project_async(
                 DiagnosticSeverity.HINT: Severity.INFO,
             }
 
-            diags = await lsp_check_project(project_dir, list(files.keys()), timeout=15.0)
+            # LOT GATE-1d : le budget vient de l'APPELANT quand il en a un.
+            #
+            # `15.0` en dur egalait le budget total de la gate (15-20 s), donc le
+            # depassement etait garanti par construction. Mesure du 23 septembre :
+            # `pyright` s'initialise en 0,3 s puis `wait_diagnostics` attend un
+            # evenement qui n'arrive JAMAIS sur un fichier propre - le timeout
+            # entier, 20,86 s pour rendre « 0 diagnostic ».
+            #
+            # Defaut `None` = 15.0 : les appelants existants ne changent pas.
+            #
+            # Et le budget est IMPOSE de l'exterieur, pas seulement demande :
+            # mesure du 23 septembre, `lsp_check_project` ne tient pas le sien
+            # (8 s demandes -> 24,7 s reels ; 3 s -> 19,7 s), un cout fixe
+            # echappant au parametre. Le verdict STATIQUE coute 0,00 s : il ne
+            # doit jamais partir a la poubelle parce que le LSP traine. Meme
+            # raisonnement, et meme forme, que le budget propre donne aux tests
+            # dans `verification_gate` le 29 aout 2026.
+            _budget = 15.0 if lsp_timeout is None else max(1.0, float(lsp_timeout))
+            diags = await asyncio.wait_for(
+                lsp_check_project(project_dir, list(files.keys()), timeout=_budget),
+                timeout=_budget + 2.0,
+            )
             for d in diags:
                 try:
                     rel_path = str(Path(d.file_path).relative_to(project_dir)).replace("\\", "/")

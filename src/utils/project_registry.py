@@ -99,6 +99,186 @@ def _find_in_dated_dirs(name: str) -> Optional[Path]:
     return None
 
 
+# ── Lot L1d-1 : ancre de projet ──────────────────────────────────────────────
+# Mesure du 15/09/2026 : A travaille -> audit de B -> « continue » renvoyait B 5 fois
+# sur 5. Ces trois fonctions donnent a toutes les sources la meme reponse a
+# « sur quel projet suis-je ? » : l'ancre, sauf projet DESIGNE explicitement.
+
+_PROJECT_MARKERS = (
+    ".git", "package.json", "pyproject.toml", "requirements.txt", "setup.py",
+    "composer.json", "Cargo.toml", "go.mod", "pom.xml", "build.gradle", ".lumena_project",
+)
+_MARKER_MAX_LEVELS = 8
+
+
+def project_root_for(path: str | Path, *, allow_plain_dir: bool = True) -> Optional[Path]:
+    """Racine du projet qui contient `path` (fichier ou dossier), dans ou hors workspace.
+
+    Ordre : projet du registre ; `workspace/<date>/<projet>` ou `workspace/<projet>` ;
+    hors workspace, dossier ancetre portant un marqueur de projet (.git, package.json,
+    pyproject.toml...). Sinon le dossier parent si ``allow_plain_dir`` (sinon None :
+    un simple dossier n'est pas un projet, il ne doit pas deplacer l'ancre).
+    """
+    if not path:
+        return None
+    try:
+        candidate = Path(path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    registered = find_project_by_path(candidate)
+    if registered:
+        try:
+            return Path(registered.get("path", "")).resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            pass
+    workspace = Path(WORKSPACE_DIR).resolve(strict=False)
+    try:
+        parts = candidate.relative_to(workspace).parts
+    except ValueError:
+        parts = None
+    if parts is not None:
+        if not parts:
+            return None
+        if _DATE_DIR_RE.match(parts[0]):
+            if len(parts) < 2:
+                return None
+            name, root = parts[1], workspace / parts[0] / parts[1]
+        else:
+            name, root = parts[0], workspace / parts[0]
+        if name.startswith(("_", ".")) or name.lower() in _SYSTEM_DIRS:
+            return None
+        return root
+    start = candidate if candidate.is_dir() else candidate.parent
+    home = Path.home().resolve(strict=False)
+    current = start
+    for _ in range(_MARKER_MAX_LEVELS):
+        if current == home or current.parent == current:
+            break
+        if any((current / marker).exists() for marker in _PROJECT_MARKERS):
+            return current
+        current = current.parent
+    return start if allow_plain_dir else None
+
+
+def anchor_root_for_mutation(target) -> Optional[Path]:
+    """Racine du projet touche par une ECRITURE, pour poser l'ancre ; None sinon.
+
+    Appelee par la boucle ReAct (`react.py`, dont le budget de lignes et les
+    `try`/imports locaux sont geles) : ne leve jamais. Un simple dossier sans marqueur
+    de projet n'est pas un projet et ne deplace pas l'ancre.
+    """
+    try:
+        return project_root_for(target, allow_plain_dir=False)
+    except Exception:
+        return None
+
+
+def _distinctive_slug(slug: str) -> bool:
+    """Un nom de projet ne DESIGNE que s'il ne peut pas etre un mot de la phrase.
+
+    LOT Z41 : le slug `tests` detournait 19 requetes. Il faut un tiret, un souligne,
+    un chiffre, ou au moins 8 caracteres.
+    """
+    return bool(slug) and (bool(re.search(r"[-_0-9]", slug)) or len(slug) >= 8)
+
+
+_QUOTED_PATH_RE = re.compile(r"[\"'«]([^\"'»\n]{3,})[\"'»]")
+_PATH_START_RE = re.compile(r"[A-Za-z]:[\\/]|(?<![\w.])/")
+
+
+def _existing_path_in_text(text: str) -> Optional[Path]:
+    """Chemin EXISTANT ecrit dans la phrase, espaces compris (lot L1d-2).
+
+    Entre guillemets d'abord ; sinon, depuis chaque debut de chemin, on essaie la plus
+    longue suite de mots puis on recule mot a mot jusqu'a tomber sur un chemin reel.
+    Sans cela, `C:\\Users\\moi\\Mes Documents\\site vitrine` s'arretait au premier espace.
+    """
+    for match in _QUOTED_PATH_RE.finditer(text or ""):
+        try:
+            quoted = Path(match.group(1).strip())
+            if quoted.exists():
+                return quoted
+        except (OSError, ValueError):
+            continue
+    for match in _PATH_START_RE.finditer(text or ""):
+        segment = re.split(r"[\n\"'<>|?*]", (text or "")[match.start():])[0]
+        words = segment.split(" ")
+        for end in range(len(words), 0, -1):
+            candidate = " ".join(words[:end]).rstrip(".,;:)!»")
+            if not candidate:
+                continue
+            try:
+                written = Path(candidate)
+                if written.exists():
+                    return written
+            except (OSError, ValueError):
+                continue
+    return None
+
+
+def anchor_after_delegation(success: bool, artifacts, workspace_path: str = "") -> Optional[Path]:
+    """Projet a ancrer apres une delegation au CodeAgent, ou None (lot L1d-2).
+
+    Il faut un succes ET des fichiers reellement ecrits : un audit delegue, qui ne
+    produit rien, ne deplace pas le projet de la conversation. Un dossier ordinaire
+    (sans marqueur de projet) n'est pas une ancre.
+    """
+    if not success:
+        return None
+    written = [str(a).strip() for a in (artifacts or []) if str(a).strip()]
+    if not written:
+        return None
+    for candidate in ([workspace_path] if workspace_path else []) + written:
+        root = anchor_root_for_mutation(candidate)
+        if root is not None and root.is_dir():
+            return root
+    return None
+
+
+def designated_project(query: str) -> Optional[Path]:
+    """Projet que la requete DESIGNE explicitement, ou None (suite de conversation).
+
+    Designation = chemin absolu ecrit (existant), dossier `workspace/...` nomme, ou nom
+    exact et distinctif d'un projet du registre. Jamais de devinette floue ni de repli
+    « projet le plus recent ».
+    """
+    text = query or ""
+    written = _existing_path_in_text(text)
+    if written is not None:
+        root = project_root_for(written)
+        if root is not None and root.is_dir():
+            return root
+    named = named_workspace_target(text)
+    if named is not None:
+        for base in (ROOT_DIR, WORKSPACE_DIR.parent):
+            if (base / named).is_dir():
+                return base / named
+        dated = _find_in_dated_dirs(named.name)
+        if dated is not None:
+            return dated
+    normalized = _norm(text)
+    best: Optional[tuple[str, Path]] = None
+    for project in load_registry():
+        project_path = Path(project.get("path", ""))
+        slug = _norm(project.get("slug", "") or project_path.name)
+        if slug.lstrip("_") in _SYSTEM_DIRS or not _distinctive_slug(slug):
+            continue
+        if re.search(r"(?<![\w-])" + re.escape(slug) + r"(?![\w-])", normalized) and project_path.is_dir():
+            if best is None or len(slug) > len(best[0]):
+                best = (slug, project_path)
+    return best[1] if best else None
+
+
+def choose_delegate_project(anchor_path: str, text: str) -> str:
+    """Projet a donner au CodeAgent : le projet DESIGNE, sinon l'ancre, sinon ""."""
+    designated = designated_project(text)
+    if designated is not None:
+        return str(designated)
+    if anchor_path and Path(anchor_path).is_dir():
+        return str(anchor_path)
+    return ""
+
+
 # ── API publique ─────────────────────────────────────────────────────────────
 
 def load_registry() -> list[dict]:
@@ -695,6 +875,28 @@ def resolve_workspace(
         p = Path(str(_pre))
         if p.is_dir():
             return WorkspaceResolution(path=p, intent=intent or "modify", source="context", confidence=1.0)
+
+    # ── 1b. Lot L1d-1 : ancre de la conversation ──
+    # Une suite de conversation (« continue », « corrige le bug ») revient sur l'ancre ;
+    # un projet DESIGNE explicitement l'emporte sans la deplacer. Une creation sans
+    # designation n'est jamais rabattue sur l'ancre.
+    _anchor_raw = ctx.get("anchor_path")
+    if _anchor_raw:
+        _anchor = Path(str(_anchor_raw))
+        if _anchor.is_dir():
+            _designated = designated_project(query)
+            if _designated is not None:
+                try:
+                    _same = _designated.resolve() == _anchor.resolve()
+                except OSError:
+                    _same = False
+                if not _same:
+                    logger.info("[resolve_workspace] Projet désigné (ancre conservée): {}", _designated)
+                    return WorkspaceResolution(path=_designated, intent=intent, source="designated", confidence=0.95)
+            if intent != "create" or _designated is not None:
+                _anchor_intent = "modify" if intent in ("unknown", "create") else intent
+                logger.info("[resolve_workspace] Ancre de conversation: {}", _anchor)
+                return WorkspaceResolution(path=_anchor, intent=_anchor_intent, source="anchor", confidence=0.9)
 
     # ── 2. Chemin absolu explicite dans la query ──
     _EXPLICIT_RE = re.compile(

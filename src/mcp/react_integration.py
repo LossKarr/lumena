@@ -14,6 +14,7 @@ import os
 import re
 import unicodedata
 import uuid
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -826,7 +827,7 @@ def _register_phase26_native_handler(
     if tool_registry is None or not hasattr(tool_registry, "tools"):
         raise Phase26RegistrationError("registry_invalid")
     tools = getattr(tool_registry, "tools", None)
-    if not isinstance(tools, dict):
+    if not isinstance(tools, MutableMapping):
         raise Phase26RegistrationError("registry_invalid")
     native_names = getattr(tool_registry, "_native_handler_names", frozenset())
     if name in native_names:
@@ -882,7 +883,7 @@ class MCPReActIntegration:
         if tool_registry is None or not hasattr(tool_registry, "tools"):
             return False, "registry_invalid"
         tools = getattr(tool_registry, "tools", None)
-        if not isinstance(tools, dict):
+        if not isinstance(tools, MutableMapping):
             return False, "registry_invalid"
         expected = {
             CAPABILITY_TOOL_NAME,

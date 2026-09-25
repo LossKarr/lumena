@@ -92,15 +92,16 @@ class TestMiniMaxModels:
 
     def test_nvidia_minimax_description_updated(self):
         cfg = get_model_config("nvidia-minimax-m2.7")
-        assert "préférer MiniMax natif" in cfg.description
+        assert "absente" in cfg.description
+        assert cfg.is_selectable() is False
 
     def test_minimax_m3_fallbacks(self):
         from src.llm.providers import get_model_fallbacks
 
         fallbacks = get_model_fallbacks("minimax-m3")
-        assert fallbacks[:2] == ["minimax-m2.7", "nvidia-minimax-m3"]
-        assert "nvidia-minimax-m2.7" in fallbacks
-        assert "nvidia-step-3.7-flash" in fallbacks
+        assert fallbacks[:2] == ["minimax-m2.7", "nvidia-kimi-k3"]
+        assert "nvidia-minimax-m2.7" not in fallbacks
+        assert "nvidia-step-3.7-flash" not in fallbacks
 
 
 # ── P2.3: _chat_minimax_result routing ───────────────────────────────────────
@@ -125,6 +126,17 @@ class TestMiniMaxRouting:
              patch.object(_M, "_load_model_config"):
             obj = _M(model_name="deepseek-v3")
             assert "minimax" in obj.fallback_order
+
+    def test_nvidia_is_the_last_text_provider_fallback(self, monkeypatch):
+        from src.llm.multi_provider import MultiProviderLLM as _M
+
+        monkeypatch.setenv("LUMENA_FALLBACK_ORDER", "nvidia,google,deepseek,nvidia,ollama")
+        with patch.object(_M, "_resolve_initial_model_name", return_value="deepseek-v3"), \
+             patch.object(_M, "_resolve_ollama_host", return_value="http://localhost:11434"), \
+             patch.object(_M, "_load_model_config"):
+            obj = _M(model_name="deepseek-v3")
+
+        assert obj.fallback_order == ["google", "deepseek", "ollama", "nvidia"]
 
     @pytest.mark.asyncio
     async def test_chat_provider_result_inner_routes_minimax(self):
@@ -228,7 +240,7 @@ class TestConfigPanelP2:
     def test_brain_code_has_minimax(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_CODE")
         assert "minimax-m3" in entry["options"]
-        assert "nvidia-minimax-m3" in entry["options"]
+        assert "nvidia-minimax-m3" not in entry["options"]
         assert "minimax-m2.5" in entry["options"]
         assert "minimax-m2.7" in entry["options"]
 
@@ -243,13 +255,13 @@ class TestConfigPanelP2:
         assert "o3" in entry["options"]
         assert "o4-mini" in entry["options"]
         assert "kimi-k2.7-code" in entry["options"]
-        assert "nvidia-minimax-m3" in entry["options"]
+        assert "nvidia-minimax-m3" not in entry["options"]
         assert "nvidia-gemma-4-31b-it" in entry["options"]
 
     def test_brain_web_has_minimax(self, config_schema):
         entry = next(e for e in config_schema if e["key"] == "LUMENA_BRAIN_WEB")
         assert "minimax-m3" in entry["options"]
-        assert "nvidia-minimax-m3" in entry["options"]
+        assert "nvidia-minimax-m3" not in entry["options"]
         assert "minimax-m2.5" in entry["options"]
         assert "kimi-k2.7-code" in entry["options"]
 

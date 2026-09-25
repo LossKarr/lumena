@@ -39,7 +39,10 @@ from src.llm.codex_subscription import (
 )
 from src.reasoning.react_config import Action, ActionType, Observation, ReActStep, Thought
 from src.reasoning.test_proof import is_test_command, parse_test_outcome
-from src.runtime.execution_ledger import _extract_proof, _extract_target
+from src.reasoning.execution_observation_runtime import (
+    record_tool_observation, successful_observation_names, plan_execution_fields,
+)
+from src.utils.external_tool_names import is_ide_tool_name
 from src.utils.paths import ROOT_DIR
 
 
@@ -932,29 +935,21 @@ def _record_tool_observation(
                 str(getattr(observation, "content", "") or ""),
                 getattr(observation, "exit_code", None),
             )
-    target = _extract_target(name, arguments)
-    proof = _extract_proof(
-        name,
-        str(getattr(observation, "content", "") or ""),
-        bool(getattr(observation, "success", False)),
+    entry = record_tool_observation(
+        react.execution_ledger, iteration=iteration, name=name, args=arguments,
+        observation=observation, legacy_meta=meta,
     )
-    react.execution_ledger.append(
-        iteration=iteration,
-        action=name,
-        target=target,
-        success=bool(getattr(observation, "success", False)),
-        proof=proof,
-        meta=meta,
-    )
+    meta = entry.meta
     for sub in getattr(observation, "sub_results", ()) or ():
-        react.execution_ledger.append(
-            iteration=iteration,
-            action=sub.tool_name,
-            target=_extract_target(sub.tool_name, sub.args),
-            success=bool(sub.success),
-            proof=_extract_proof(sub.tool_name, sub.content, sub.success),
-            meta={"duration_ms": 0.0, "via": "codex_mcp_parallel"},
+        record_tool_observation(
+            react.execution_ledger, iteration=iteration, name=sub.tool_name, args=sub.args,
+            observation=sub, legacy_meta={"duration_ms": 0.0, "via": "codex_mcp_parallel"},
         )
+        if is_ide_tool_name(sub.tool_name):
+            react._update_plan_progress(
+                sub.tool_name, sub.args, sub.content, iteration, allow_fallback=False,
+                **plan_execution_fields(sub.tool_name, sub),
+            )
     test_outcome = meta.get("test_outcome")
     if isinstance(test_outcome, dict) and react.task_id and react.task_orchestrator:
         try:
@@ -966,13 +961,17 @@ def _record_tool_observation(
         except Exception:
             pass
     try:
-        react._successful_session_tools.add(name)
+        if is_ide_tool_name(name):
+            react._successful_session_tools.update(successful_observation_names(name, observation))
+        else:
+            react._successful_session_tools.add(name)
         react._feed_structured_tool(name)
         react._update_plan_progress(
             name,
             arguments,
             str(getattr(observation, "content", "") or ""),
             iteration,
+            **plan_execution_fields(name, observation),
         )
         react._mark_task_checkpoint(
             {"phase": "codex_tool", "tool": name, "success": bool(observation.success)}

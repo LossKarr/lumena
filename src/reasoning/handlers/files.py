@@ -32,18 +32,26 @@ try:
     from ...tools.file_guardrails import (
         PathSecurityError,
         _is_within,
+        _resolve_safe,
         check_path_boundary,
         check_read_blacklist,
+        check_secret_zone,
         check_write_blacklist,
         check_delete_allowed,
+        check_lumena_code_write,
+        backup_before_outside_change,
     )
 except ImportError:
     PathSecurityError = Exception
     _is_within = None
+    _resolve_safe = None
     check_path_boundary = None
     check_read_blacklist = None
+    check_secret_zone = None
     check_write_blacklist = None
     check_delete_allowed = None
+    check_lumena_code_write = None
+    backup_before_outside_change = None
 
 
 def _assert_write_boundary(resolved: Path, ctx: HandlerContext) -> None:
@@ -68,6 +76,164 @@ def _assert_write_boundary(resolved: Path, ctx: HandlerContext) -> None:
         raise
     except Exception:
         pass  # Erreur de résolution — ne pas bloquer, laisser le handler gérer
+
+
+def assert_write_allowed(
+    resolved: Path, ctx: HandlerContext, *, is_dir: bool = False, boundary: bool = True,
+) -> None:
+    """Lot L1c-1 — LA garde d'ecriture commune a toutes les portes.
+
+    Frontiere (racine Lumena / workspace), perimetre de mission (LOT 2.3, tests
+    contractuels, fichiers d'un worker vivant) puis liste noire P0.2 (`.env`, `data/`,
+    `models/`, `backups/`). Avant L1c-1, `edit_file`, `multi_edit_file`, `apply_patch`,
+    `undo_edit`, `create_zip`, `create_directory` et `apply_patches` ignoraient la
+    liste noire (N11). ``boundary=False`` : porte dont la frontiere n'existait pas
+    avant ce lot (aucun droit retire). Leve PathSecurityError.
+    """
+    outside = False
+    if boundary:
+        try:
+            _assert_write_boundary(resolved, ctx)
+        except PathSecurityError:
+            # Lot L1c-3 : en CHAT, l'endroit designe par l'utilisateur ou le projet en
+            # cours s'ecrit hors depot. Jamais en mission ni en autonomie.
+            grant_fn = getattr(ctx, "chat_write_grant", None)
+            grant = grant_fn() if callable(grant_fn) else None
+            if grant is None or not grant.permits_write(resolved):
+                raise
+            outside = True
+    _assert_mission_file_allowed(resolved, ctx, is_dir=is_dir)
+    # getattr : contexte leger sans racine (tests, appels degrades) -> comme
+    # `_assert_write_boundary`, pas de liste noire evaluable, pas de plantage.
+    lumena_root = getattr(ctx, "lumena_root", None)
+    if check_write_blacklist is not None and lumena_root is not None:
+        check_write_blacklist(resolved, lumena_root)
+    # Lot L1c-2 : le code de Lumena (depot sauf workspace) n'est ecrit que par
+    # edit_own_code. S'applique aussi aux portes sans frontiere (boundary=False).
+    guardrails = getattr(ctx, "file_guardrails", None)
+    if check_lumena_code_write is not None and lumena_root is not None and guardrails is not None:
+        check_lumena_code_write(resolved, lumena_root, guardrails._workspace_root())
+    # Lot L1c-3/4 : toutes les gardes sont passees -> sauvegarde du fichier existant
+    # AVANT que la porte ne le modifie ou le supprime.
+    if outside and backup_before_outside_change is not None:
+        backup_before_outside_change(resolved)
+
+
+def assert_read_allowed(resolved: Path, ctx: HandlerContext) -> None:
+    """Lot L1d-3 — LA garde de lecture commune : liste noire P0.2 + zones secretes.
+
+    La lecture est libre partout sur le PC en conversation (`_outside_read_grant`) ;
+    ces deux verrous valent PARTOUT et quelle que soit l'autorisation du tour.
+    Leve PathSecurityError.
+    """
+    lumena_root = getattr(ctx, "lumena_root", None)
+    if check_read_blacklist is not None and lumena_root is not None:
+        check_read_blacklist(resolved, lumena_root)
+    if check_secret_zone is not None:
+        check_secret_zone(resolved)
+
+
+def execution_work_dir(ctx: HandlerContext):
+    """Lot L2-2 — dossier de travail du tour pour une porte d'execution, ou None.
+
+    En mission : le dossier ISOLE de la mission. Sinon : la racine d'execution du tour.
+    Mesure du 16/09 : `process_run` et `bg_start` heritaient de `Path.cwd()`, et le
+    dossier de lancement reel de Lumena est la RACINE DU DEPOT (`START.bat` fait
+    `cd /d "%~dp0"`) - ces deux portes lancaient donc leurs processus dans le code de
+    Lumena. Ne leve jamais.
+    """
+    try:
+        subdir_fn = getattr(ctx, "mission_workspace_subdir", None)
+        subdir = subdir_fn() if callable(subdir_fn) else ""
+        guardrails = getattr(ctx, "file_guardrails", None)
+        if subdir and guardrails is not None:
+            mission_dir = Path(guardrails._workspace_root()) / subdir
+            if mission_dir.is_dir():
+                return mission_dir
+        runtime_root = getattr(ctx, "runtime_root", None)
+        return Path(runtime_root) if runtime_root else None
+    except Exception:
+        return None
+
+
+# Outils dont le dossier de travail est LEGITIMEMENT dans le depot, mesure a l'appui.
+# Exemptions NOMMEES : elles ne s'etendent a aucun autre outil, et ne valent que pour
+# le depot (hors depot, la regle normale s'applique - test dedie).
+_EXEMPTIONS_EXECUTION = {
+    # lance pytest SUR Lumena : son dossier est la racine, par conception.
+    "run_tests",
+    # execute le script d'un skill installe : `skills/<nom>/` (skills/tools.py:405).
+    "execute_skill",
+    # s'execute dans un dossier temporaire jetable (security.py:530,554). LIMITE
+    # ASSUMEE : le code execute peut viser des chemins absolus -> porte NON fermee.
+    "execute_multilang",
+}
+
+# Portes dont le dossier ne vient PAS du modele : hors depot, on ne demande aucune
+# designation (elles suivent le dossier du tour). Dans le depot, la regle s'applique.
+_EXEMPTIONS_HORS_DEPOT = {"process_run", "bg_start", "dev_run_fix", "execute_multilang"}
+
+
+def assert_execution_cwd_allowed(cwd, ctx: HandlerContext, *, outil: str = "") -> None:
+    """Lot L2-1 — une commande est jugee sur SON DOSSIER DE TRAVAIL.
+
+    Mesure du 16/09/2026 sur 1399 commandes reelles : la cible d'ecriture n'est lisible
+    dans la ligne que pour 11,2 % d'entre elles, et 20,6 % ecrivent de facon opaque
+    (`node -e`, `python -c`). Juger le TEXTE serait une illusion ; le dossier de travail,
+    lui, est explicite dans ~95 % des cas.
+
+    Memes verdicts que `assert_write_allowed` : `workspace/` autorise ; tout le reste du
+    depot refuse (code de Lumena, dossiers de projet poses a la racine compris) ; hors
+    depot, seulement ce que le chat designe ou le projet en cours (jamais en mission ni
+    en autonomie). Contexte leger sans racine -> ne juge pas, ne plante pas (lecon L1c-1).
+    Leve PathSecurityError.
+    """
+    if cwd is None:
+        return
+    guardrails = getattr(ctx, "file_guardrails", None)
+    lumena_root = getattr(ctx, "lumena_root", None)
+    if guardrails is None or lumena_root is None or _is_within is None or _resolve_safe is None:
+        return
+    try:
+        cible = _resolve_safe(Path(cwd))
+        racine = _resolve_safe(Path(lumena_root))
+        espace = _resolve_safe(Path(guardrails._workspace_root()))
+    except (OSError, ValueError, RuntimeError):
+        return
+    # L2-2 : ces portes ne recoivent PAS leur dossier du modele - il vient du tour
+    # (`execution_work_dir`) ou d'un temporaire jetable. Le trou mesure les concernant
+    # est le DEPOT (`Path.cwd()` = racine) : c'est cela qu'on ferme. Exiger en plus une
+    # designation hors depot casserait des usages normaux (mesure : 4 tests existants).
+    # LIMITE ASSUMEE pour `execute_multilang` : le code execute peut viser des chemins
+    # absolus -> cette porte n'est PAS fermee par L2-2.
+    if outil in _EXEMPTIONS_HORS_DEPOT:
+        try:
+            if not (_resolve_safe(Path(cwd)) == _resolve_safe(Path(getattr(ctx, "lumena_root", cwd)))
+                    or _is_within(_resolve_safe(Path(cwd)),
+                                  _resolve_safe(Path(getattr(ctx, "lumena_root", cwd))))):
+                return
+        except (OSError, ValueError, RuntimeError, TypeError):
+            return
+    if cible == espace or _is_within(cible, espace):
+        return
+    if cible == racine or _is_within(cible, racine):
+        # L2-2 : exemption NOMMEE pour les outils dont le dossier est legitimement dans
+        # le depot (mesure a l'appui). Elle ne vaut QUE pour le depot.
+        if outil in _EXEMPTIONS_EXECUTION:
+            return
+        raise PathSecurityError(
+            f"Exécution refusée: {cible} fait partie du code de Lumena. Une commande ne "
+            "s'exécute pas dans le dépôt : travaille dans le workspace."
+        )
+    grant_fn = getattr(ctx, "chat_write_grant", None)
+    grant = grant_fn() if callable(grant_fn) else None
+    if grant is not None and grant.permits_write(cible):
+        return
+    raise PathSecurityError(
+        f"Exécution refusée: {cible} est hors du dépôt. En conversation, désigne "
+        "l'emplacement dans ta demande ou travaille dans le projet en cours ; une "
+        "mission reste dans son dossier."
+    )
 
 
 def _mission_relative_hint(ctx: HandlerContext, path: str) -> str:
@@ -385,10 +551,26 @@ async def _append_syntax_warning(message: str, target_path: Path, workspace_root
         from src.config.codeagent_flags import REACT_QUALITY_GATES
         if not REACT_QUALITY_GATES:
             return message
-        from src.utils.syntax_check import check_syntax
-        warn = await check_syntax(target_path, workspace_root=workspace_root)
-        if warn:
-            return f"{message}\n\n⚠️ Syntaxe/lint : {warn}"
+        from src.utils.syntax_check import ERREUR, NON_VERIFIABLE, verify_syntax
+        verdict, detail = await verify_syntax(
+            target_path, workspace_root=workspace_root
+        )
+        if verdict == ERREUR:
+            return f"{message}\n\n⚠️ Syntaxe/lint : {detail}"
+        # LOT 8a — l'écriture a réussi, mais RIEN ne l'a relue. L'agent doit le
+        # savoir : sans cette ligne, l'absence de warning se lit « c'est bon », et
+        # il conclut sur un fichier que personne n'a regardé (Z38 : ~20 PHP écrits,
+        # 0 validé, redéclarations réparées de tête 6×).
+        # Un fichier ABSENT n'est pas un « langage non vérifiable » : c'est une autre
+        # anomalie, et la confondre avec celle-ci brouillerait le signal. On ne parle
+        # de non-vérifiabilité que d'un fichier qui existe bel et bien.
+        if verdict == NON_VERIFIABLE and Path(target_path).is_file():
+            return (
+                f"{message}\n\n🔎 NON VÉRIFIÉ ({detail}). L'écriture a réussi, mais "
+                "aucun validateur n'a relu ce fichier — ne conclus pas « vérifié » "
+                "dessus. Prouve-le autrement (exécuter le programme, un test) ou "
+                "dis-le clairement dans ta réponse."
+            )
     except Exception as exc:
         logger.debug(f"[P7 syntax_check] skip: {exc}")
     return message
@@ -667,12 +849,11 @@ async def read_file_handler(
     """Lit un fichier avec pagination lignes. Les valeurs de secrets sont masquées."""
     try:
         resolved = ctx.resolve_path(path)
-        # P0.2: block reads to secrets / private data
-        if check_read_blacklist is not None:
-            try:
-                check_read_blacklist(resolved, ctx.lumena_root)
-            except PathSecurityError as sec_err:
-                return HandlerResult.fail(str(sec_err), handler_name="read_file")
+        # P0.2 + L1d-3 : secrets de Lumena et zones secretes du PC
+        try:
+            assert_read_allowed(resolved, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="read_file")
         if not resolved.exists():
             _home = Path.home()
             return HandlerResult.ok(
@@ -733,6 +914,10 @@ async def list_directory_handler(ctx: HandlerContext, path: str = ".") -> Handle
     """Liste les fichiers et dossiers d'un répertoire."""
     try:
         dir_path = ctx.resolve_path(path, want_dir=True)
+        try:
+            assert_read_allowed(dir_path, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="list_directory")
 
         if not dir_path.exists():
             _home = Path.home()
@@ -786,6 +971,10 @@ async def find_files_handler(ctx: HandlerContext, pattern: str, path: str = "wor
             return HandlerResult.ok("Pattern vide pour find_files", handler_name="find_files")
 
         root_dir = ctx.resolve_path(path, want_dir=True)
+        try:
+            assert_read_allowed(root_dir, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="find_files")
         if not root_dir.exists():
             return HandlerResult.ok(f"Repertoire non trouve: {path}", handler_name="find_files")
         if not root_dir.is_dir():
@@ -895,6 +1084,16 @@ async def find_files_handler(ctx: HandlerContext, pattern: str, path: str = "wor
         return HandlerResult.fail(f"Erreur find_files: {e}", handler_name="find_files")
 
 
+# LOT IDE-5 — extensions que Windows EXECUTE au double-clic (donc via
+# `os.startfile`). `.py` n'y figure pas : il s'ouvre dans l'editeur associe. La liste
+# vaut sur les trois OS : `xdg-open`/`open` honorent aussi les associations.
+_EXTENSIONS_QUI_EXECUTENT = frozenset({
+    ".bat", ".cmd", ".com", ".exe", ".ps1", ".psm1", ".vbs", ".vbe", ".js", ".jse",
+    ".wsf", ".wsh", ".msi", ".msp", ".scr", ".reg", ".lnk", ".hta", ".cpl", ".jar",
+    ".pif", ".sh", ".app", ".appref-ms", ".inf", ".scf",
+})
+
+
 async def open_file_handler(
     ctx: HandlerContext, path: str = None, file_path: str = None,
 ) -> HandlerResult:
@@ -909,6 +1108,24 @@ async def open_file_handler(
     if not resolved.exists():
         return HandlerResult.ok(
             f"❌ Fichier non trouvé: {path}\n💡 Essayé: workspace/, lumena/, cwd/",
+            handler_name="open_file",
+        )
+    # LOT IDE-5 (24/09/2026) — `open_file` n'est pas une porte d'execution.
+    #
+    # Run de 20 h 03 : `run_command npm start` refuse dans `ide/`, puis, verbatim :
+    # « je peux l'ouvrir avec l'application par defaut Windows (double-clic =
+    # execution), ce qui CONTOURNE LE BLOCAGE ». -> `open_file` sur le .bat ->
+    # « ✅ Fichier ouvert ». Elle a nomme le contournement, et il a marche.
+    #
+    # `os.startfile` sur un `.bat`/`.ps1`/`.exe` ne l'OUVRE pas : il l'EXECUTE. Le
+    # refus tombe AVANT le lancement, sinon le programme a deja demarre. Et il ne
+    # vaut pas que dans le depot : cette porte s'ouvre partout sur le disque.
+    if resolved.suffix.lower() in _EXTENSIONS_QUI_EXECUTENT:
+        return HandlerResult.fail(
+            f"⛔ Ouverture refusée: {resolved.name} s'EXÉCUTE au lieu de s'ouvrir "
+            f"({resolved.suffix.lower()}). `open_file` sert à montrer un document. "
+            "Pour lancer un programme : `open_app`. Pour exécuter une commande : "
+            "`run_command` — qui, lui, refuse le dépôt.",
             handler_name="open_file",
         )
     try:
@@ -965,28 +1182,28 @@ async def write_file_handler(
         ide_runtime = ctx.is_ide_runtime()
         requested_path = Path(path)
         ide_direct_path = False
+        _rwt_extra: Dict[str, Any] = {}
         if ide_runtime and requested_path.is_absolute():
             target_path = requested_path
             resolved_workspace_relative = ""
             ide_direct_path = True
         else:
+            # L1c-3 : autorisation d'ecriture du chat, passee SEULEMENT si elle existe.
+            _grant_fn = getattr(ctx, "chat_write_grant", None)
+            _write_grant = _grant_fn() if callable(_grant_fn) else None
+            _rwt_extra = {"outside_grant": _write_grant} if _write_grant is not None else {}
             target_path, _redirected, resolved_workspace_relative = ctx.file_guardrails.resolve_write_target(
                 path,
                 project_name=project,
                 mission_workspace_subdir=ctx.mission_workspace_subdir(),
+                **_rwt_extra,
             )
         # P0.2: vérifier la boundary avant toute écriture (couvre le chemin IDE direct)
+        # + P0.2 liste noire + L1c-2 code de Lumena : la garde commune (lot L1c).
         try:
-            _assert_write_boundary(target_path, ctx)
-            _assert_mission_file_allowed(target_path, ctx)
+            assert_write_allowed(target_path, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="write_file")
-        # P0.2: block writes to protected zones (.env, data/, models/, backups/)
-        if check_write_blacklist is not None:
-            try:
-                check_write_blacklist(target_path, ctx.lumena_root)
-            except PathSecurityError as sec_err:
-                return HandlerResult.fail(str(sec_err), handler_name="write_file")
         existed_before, before_content = _before_snapshot(target_path)
 
         patch_strict = ctx.patch_strict_enabled()
@@ -1043,6 +1260,7 @@ async def write_file_handler(
                 project_name=project,
                 require_non_empty=True,
                 mission_workspace_subdir=ctx.mission_workspace_subdir(),
+                **_rwt_extra,
             )
             if not write_result.success:
                 details = "; ".join(write_result.validation_errors) if write_result.validation_errors else write_result.message
@@ -1096,7 +1314,13 @@ async def delete_file_handler(ctx: HandlerContext, path: str) -> HandlerResult:
             try:
                 check_delete_allowed(file_path, ctx.lumena_root, ctx.file_guardrails._workspace_root())
             except PathSecurityError as sec_err:
-                return HandlerResult.fail(str(sec_err), handler_name="delete_file")
+                # Lot L1c-4 : hors workspace, seul le CHAT supprime, a l'endroit designe
+                # ou dans le projet en cours, APRES sauvegarde (garde commune : code de
+                # Lumena, liste noire, missions et autonomie restent refuses).
+                try:
+                    assert_write_allowed(file_path, ctx)
+                except PathSecurityError:
+                    return HandlerResult.fail(str(sec_err), handler_name="delete_file")
         else:
             # Fallback: legacy protection for src/ and data/
             lumena_root = ctx.lumena_root
@@ -1155,13 +1379,14 @@ async def create_zip_handler(
         if zip_path and str(zip_path).strip():
             out_zip = ctx.resolve_path(str(zip_path).strip(), want_dir=False)
         else:
-            out_zip = root / f"archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+            # L1c-2 : une creation va au workspace, jamais a la racine du code.
+            default_dir = ctx.file_guardrails._workspace_root() if ctx.file_guardrails is not None else root
+            out_zip = default_dir / f"archive_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
 
         if out_zip.suffix.lower() != ".zip":
             out_zip = out_zip.with_suffix(".zip")
         try:
-            _assert_write_boundary(out_zip, ctx)
-            _assert_mission_file_allowed(out_zip, ctx)
+            assert_write_allowed(out_zip, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="create_zip")
         if out_zip.exists() and out_zip.is_dir():
@@ -1228,8 +1453,7 @@ async def edit_file_handler(
     try:
         resolved = ctx.resolve_path(file_path)
         try:
-            _assert_write_boundary(resolved, ctx)
-            _assert_mission_file_allowed(resolved, ctx)
+            assert_write_allowed(resolved, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="edit_file")
         existed_before, before_content = _before_snapshot(resolved)
@@ -1322,8 +1546,7 @@ async def multi_edit_file_handler(ctx: HandlerContext, edits: list) -> HandlerRe
             # LOT 2.3 (+ frontière, absente jusqu'ici sur ce chemin) : chaque fichier
             # édité doit rester dans les limites ET dans le périmètre du worker.
             try:
-                _assert_write_boundary(resolved, ctx)
-                _assert_mission_file_allowed(resolved, ctx)
+                assert_write_allowed(resolved, ctx)
             except PathSecurityError as sec_err:
                 return HandlerResult.fail(str(sec_err), handler_name="multi_edit_file")
             existed_before, before_content = _before_snapshot(resolved)
@@ -1474,15 +1697,9 @@ async def insert_at_anchor_handler(
     try:
         resolved = ctx.resolve_path(path)
         try:
-            _assert_write_boundary(resolved, ctx)
-            _assert_mission_file_allowed(resolved, ctx)
+            assert_write_allowed(resolved, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="insert_at_anchor")
-        if check_write_blacklist is not None:
-            try:
-                check_write_blacklist(resolved, ctx.lumena_root)
-            except PathSecurityError as sec_err:
-                return HandlerResult.fail(str(sec_err), handler_name="insert_at_anchor")
 
         if not resolved.exists():
             return HandlerResult.ok(
@@ -1549,8 +1766,7 @@ async def apply_patch_handler(
         # D'abord essayer de résoudre le chemin via le système normal (workspace inclus)
         resolved = ctx.resolve_path(file_path)
         try:
-            _assert_write_boundary(resolved, ctx)
-            _assert_mission_file_allowed(resolved, ctx)
+            assert_write_allowed(resolved, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
 
@@ -1633,16 +1849,10 @@ async def apply_patch_new_handler(ctx: HandlerContext, patch_content: str) -> Ha
             if not hunk_path:
                 continue
             resolved = (patch_root / hunk_path).resolve()
-            # P0.2: block patches to protected zones
-            if check_write_blacklist is not None:
-                try:
-                    check_write_blacklist(resolved, lumena_root)
-                except PathSecurityError as sec_err:
-                    return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
-            # Frontière + périmètre worker (2.3) sur CHAQUE fichier patché.
+            # Garde commune (frontiere, perimetre worker 2.3, liste noire P0.2, code de
+            # Lumena L1c-2) sur CHAQUE fichier patché.
             try:
-                _assert_write_boundary(resolved, ctx)
-                _assert_mission_file_allowed(resolved, ctx)
+                assert_write_allowed(resolved, ctx)
             except PathSecurityError as sec_err:
                 return HandlerResult.fail(str(sec_err), handler_name="apply_patch")
             existed_before, before_content = _before_snapshot(resolved)
@@ -1822,18 +2032,18 @@ async def grep_search_handler(
         )
     try:
         root = ctx.lumena_root
-        target = (root / path).resolve()
-        # P0.2: boundary + read blacklist check on search target
-        if check_path_boundary is not None:
-            try:
-                check_path_boundary(target, root, ctx.file_guardrails._workspace_root())
-            except PathSecurityError as sec_err:
-                return HandlerResult.fail(str(sec_err), handler_name="grep_search")
-        if check_read_blacklist is not None:
-            try:
-                check_read_blacklist(target, root)
-            except PathSecurityError as sec_err:
-                return HandlerResult.fail(str(sec_err), handler_name="grep_search")
+        # L1d-3 : meme resolution que les autres outils de lecture (avant : toujours
+        # `root / path`, donc impossible de chercher dans un projet hors du depot).
+        try:
+            target = ctx.resolve_path(path, want_dir=True)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="grep_search")
+        except Exception:
+            target = (root / path).resolve()
+        try:
+            assert_read_allowed(target, ctx)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="grep_search")
         if not target.exists():
             return HandlerResult.fail(
                 f"❌ Chemin non trouvé: {path}", handler_name="grep_search"
@@ -1934,8 +2144,7 @@ async def undo_edit_handler(ctx: HandlerContext, file_path: str = "") -> Handler
         latest = sessions[0]
         target = ctx.resolve_path(file_path)
         try:
-            _assert_write_boundary(target, ctx)
-            _assert_mission_file_allowed(target, ctx)
+            assert_write_allowed(target, ctx)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="undo_edit")
 
@@ -1960,6 +2169,11 @@ async def undo_edit_handler(ctx: HandlerContext, file_path: str = "") -> Handler
             backup_file = candidates[0]
             # Reconstituer la cible originale depuis le chemin du backup
             target = ctx.lumena_root / backup_file.relative_to(latest)
+            # L1c-1 : la cible reconstituee est une NOUVELLE cible -> meme garde.
+            try:
+                assert_write_allowed(target, ctx)
+            except PathSecurityError as sec_err:
+                return HandlerResult.fail(str(sec_err), handler_name="undo_edit")
 
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(backup_file, target)
@@ -2013,8 +2227,7 @@ async def create_directory_handler(
             else:
                 target = ctx.runtime_root / target
         try:
-            _assert_write_boundary(target, ctx)
-            _assert_mission_file_allowed(target, ctx, is_dir=True)
+            assert_write_allowed(target, ctx, is_dir=True)
         except PathSecurityError as sec_err:
             return HandlerResult.fail(str(sec_err), handler_name="create_directory")
         target.mkdir(parents=True, exist_ok=exist_ok)

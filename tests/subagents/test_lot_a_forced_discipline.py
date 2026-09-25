@@ -39,9 +39,21 @@ def test_block_backend_rider():
 
 
 def test_block_non_code_worker_discipline_but_no_steer():
+    """LOT 0 (2026-09-02) — l'INTENTION de ce test est conservée, son texte attendu a
+    changé.
+
+    Il vérifiait qu'un worker non-code reçoit « une discipline, mais pas le steer ».
+    C'est toujours ce qu'on veut. Mais la discipline servie était
+    `WORKER_CODING_DISCIPLINE`, qui s'ouvre sur « agent dev, pas un rédacteur » et
+    ordonne « après CHAQUE mutation, EXÉCUTE (module/tests concernés) » — à quelqu'un
+    dont le livrable est un README, sans module ni test.
+
+    Le test figeait donc le défaut. Il vérifie désormais que le worker reçoit la
+    discipline de SON métier, et toujours pas le steer de délégation CodeAgent."""
     block = worker_discipline_block(["README.md"])
-    assert _DISC in block              # la discipline reste (non-régression)
-    assert _STEER not in block         # pas de steer de délégation pour du non-code
+    assert "DISCIPLINE RÉDACTIONNELLE" in block   # la discipline de SON métier
+    assert _DISC not in block                     # plus celle du codage
+    assert _STEER not in block                    # toujours pas de steer (inchangé)
 
 
 # ── A.2 : injection idempotente (le helper appelé par le handler) ──────────────────
@@ -70,11 +82,27 @@ def test_inject_idempotent_when_already_present():
     assert out.count(_DISC) == 1      # pas de doublon
 
 
-def test_inject_noop_for_non_code_worker():
-    """Worker sans fichier de code → on n'injecte rien (pas de bruit)."""
+def test_inject_couvre_TOUS_les_metiers():
+    """LOT 0 — ce test attendait exactement le défaut que le lot corrige.
+
+    Il exigeait `inject_worker_discipline(txt, ["README.md"]) == txt` : le filet du
+    LOT A ne s'armait QUE pour le code. Un worker de documents, de données ou de
+    recherche dont le lead avait réécrit l'objectif repartait donc avec la prose du
+    lead et RIEN d'autre — alors que 66 % des 463 workers du corpus ne touchent jamais
+    au CodeAgent.
+
+    Le filet couvre désormais tous les métiers, et reste idempotent."""
     txt = "[Worker w_doc] Rédige le README."
-    assert inject_worker_discipline(txt, ["README.md"]) == txt
-    assert inject_worker_discipline(txt, []) == txt
+    out = inject_worker_discipline(txt, ["README.md"])
+    assert out != txt
+    assert "DISCIPLINE RÉDACTIONNELLE" in out
+    assert out.startswith(txt)                       # l'objectif du lead est préservé
+    assert inject_worker_discipline(out, ["README.md"]) == out   # idempotent
+
+    # Sans aucun fichier ni effet : discipline générale, jamais celle du codage.
+    vide = inject_worker_discipline(txt, [])
+    assert "DISCIPLINE DE TRAVAIL" in vide
+    assert _DISC not in vide
 
 
 # ── Non-régression : worker_objectives inchangé ───────────────────────────────────

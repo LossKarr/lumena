@@ -277,7 +277,17 @@ def test_le_squelette_de_la_boucle_est_INTACT():
     # missions. L'emission ajoutee est defensive (le bus de trace ne doit
     # jamais faire tomber la boucle), d'ou un `try` de plus. Elle n'ajoute
     # ni `continue`, ni `return`, ni import local.
-    assert (conts, rets, trys) == (48, 33, 78), (
+    # 48 -> 49 (`continue`) et 78 -> 79 (`try`) : LOT 13, PUBLISH GATE.
+    # Mesure : 72 missions sur 95 (76 %) produisent des fichiers et ne les
+    # publient JAMAIS — dont 61 terminees `done`. Ce n'est pas l'outil (24
+    # publications reussies pour 1 echec au ledger) : le lead n'essaie pas,
+    # parce que rien ne le lui demande tant qu'il peut encore agir.
+    # La porte copie la mecanique du BROWSER GATE : un `try` defensif (un
+    # garde ne doit jamais faire tomber la boucle) et un `continue` pour
+    # relancer une fois. Aucun `return` ajoute, aucun import local.
+    # CONN-4D : parsing ledger extrait avec parite tracee, un try/import en moins.
+    # ORI-3/4 ajoute deux reprises bornees, sans nouvelle sortie ni try local.
+    assert (conts, rets, trys) == (51, 33, 78), (
         f"le squelette a bouge : continue={conts} return={rets} try={trys}"
     )
 
@@ -312,7 +322,14 @@ def test_l_etat_partage_a_DIMINUE():
     # l'utilisateur. Le cliquet sert a empecher la REPOUSSE silencieuse de
     # l'etat partage, pas a interdire une correction — mais il ne doit jamais
     # bouger sans que la raison soit ecrite ici.
-    assert len(locales) <= 641, (
+    # 641 -> 643 : LOT 13, PUBLISH GATE. Deux locales seulement —
+    # `_pg_shots` (le compteur de tirs, comme `_bg_shots` du BROWSER GATE)
+    # et `_pub` (le couple (dossier, guidance) rendu par la decision pure).
+    # J'en avais ecrit QUATRE : `_pub_ws` et `_pub_guidance` deballaient le
+    # couple pour deux usages. Le cliquet a fait son travail — ils sont
+    # supprimes, on lit `_pub[0]` et `_pub[1]`. Le cliquet empeche la
+    # REPOUSSE silencieuse, pas la correction : la raison est ecrite ici.
+    assert len(locales) <= 643, (
         f"{len(locales)} locales — RF-9c en avait laisse 644, ces quatre "
         f"feuilles doivent en emporter cinq (plafond releve a 641 le 2026-08-29)"
     )

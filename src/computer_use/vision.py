@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from loguru import logger
 
+from src.utils.safe_errors import safe_error_summary
+
 try:
     from PIL import Image
     PIL_AVAILABLE = True
@@ -542,8 +544,9 @@ class VisionModule:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return {"success": True, "answer": text}
         except Exception as e:
-            logger.error(f"Erreur Gemini Vision: {e}")
-            return {"success": False, "error": str(e)}
+            safe_error = safe_error_summary(e)
+            logger.error("Erreur Gemini Vision: {}", safe_error)
+            return {"success": False, "error": safe_error}
     
     async def analyze_with_claude(
         self,
@@ -905,7 +908,7 @@ class VisionModule:
             entry.failures += 1
             entry.cooldown_until = time.time() + 60.0
 
-        entry.last_error = str(error)[:200]
+        entry.last_error = safe_error_summary(error, limit=200)
 
     # ------------------------------------------------------------------
     # P3.4 helper — dispatch par provider name

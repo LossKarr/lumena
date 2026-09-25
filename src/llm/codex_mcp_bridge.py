@@ -18,9 +18,12 @@ import sys
 import re
 import unicodedata
 from dataclasses import dataclass
+from contextlib import nullcontext
 from typing import Any, Callable, Iterable, Mapping
 
 from src.reasoning.caller_context import CallerContext
+from src.reasoning.external_tool_registry import ExternalToolCatalog, bind_external_catalog
+from src.utils.external_tool_names import is_ide_tool_name
 from src.runtime.context import (
     RuntimeContext,
     get_current_runtime_context,
@@ -170,8 +173,9 @@ def _mcp_tools_from_legacy_schemas(
             {
                 "name": name,
                 "description": description,
-                "inputSchema": _mcp_safe_schema_node(
-                    function.get("parameters"), root=True
+                "inputSchema": (
+                    json.loads(json.dumps(function.get("parameters"))) if is_ide_tool_name(name)
+                    else _mcp_safe_schema_node(function.get("parameters"), root=True)
                 ),
             }
         )
@@ -215,6 +219,7 @@ class LumenaCodexToolBridge:
         self._server: asyncio.AbstractServer | None = None
         self._token = ""
         self._runtime_context: RuntimeContext | None = None
+        self._external_catalog: ExternalToolCatalog | None = None
 
     @property
     def endpoint(self) -> CodexMCPBridgeEndpoint:
@@ -235,6 +240,11 @@ class LumenaCodexToolBridge:
         if self._server is not None:
             return
         self._runtime_context = get_current_runtime_context()
+        capture = getattr(self.registry, "get_external_tool_catalog", None)
+        if callable(capture):
+            catalog = capture()
+            if type(catalog) is ExternalToolCatalog:
+                self._external_catalog = catalog
         self._token = secrets.token_urlsafe(32)
         self._server = await asyncio.start_server(
             self._handle_client,
@@ -246,6 +256,7 @@ class LumenaCodexToolBridge:
     async def stop(self) -> None:
         server, self._server = self._server, None
         self._token = ""
+        self._external_catalog = None
         if server is not None:
             server.close()
             await server.wait_closed()
@@ -277,13 +288,17 @@ class LumenaCodexToolBridge:
         }
 
     def tools(self) -> list[dict[str, Any]]:
-        declared = _mcp_tools_from_legacy_schemas(
-            self.registry.get_tools_schema(), self.allowed_tools
-        )
+        with self._catalog_scope():
+            declared = _mcp_tools_from_legacy_schemas(
+                self.registry.get_tools_schema(), self.allowed_tools
+            )
         # LOT Z34 phase 2 — toujours en dernier : le jeu contextuel reste la
         # suggestion principale, l'invocateur n'est que la porte de sortie.
         declared.append(self._invoke_tool_schema())
         return declared
+
+    def _catalog_scope(self):
+        return bind_external_catalog(self._external_catalog) if self._external_catalog is not None else nullcontext()
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -375,7 +390,8 @@ class LumenaCodexToolBridge:
             token = push_runtime_context(self._runtime_context)
         started = asyncio.get_running_loop().time()
         try:
-            observation = await self.registry.execute(name, arguments, caller=caller)
+            with self._catalog_scope():
+                observation = await self.registry.execute(name, arguments, caller=caller)
         finally:
             if token is not None:
                 pop_runtime_context(token)

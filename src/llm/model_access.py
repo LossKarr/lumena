@@ -62,7 +62,25 @@ class ModelAttemptTrace:
         payload["failure_kind"] = (
             self.failure_kind.value if self.failure_kind is not None else None
         )
+        payload["reason"] = _redact_trace_reason(self.reason)
         return payload
+
+
+_TRACE_SECRET_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    re.compile(r"(?i)((?:api[_-]?key|token|client_secret|password)\s*[:=]\s*)[^\s,;&]+"),
+    re.compile(r"(?i)([?&](?:key|api_key|token|access_token|client_secret)=)[^&\s]+"),
+    re.compile(r"\b(?:sk|xai|AIza|nvapi|glm|minimax)-[A-Za-z0-9._-]{8,}\b"),
+)
+
+
+def _redact_trace_reason(reason: str) -> str:
+    """Keep operational context while removing credentials from public traces."""
+    value = str(reason or "")
+    for pattern in _TRACE_SECRET_PATTERNS:
+        replacement = r"\1<redacted>" if pattern.groups else "<redacted>"
+        value = pattern.sub(replacement, value)
+    return value[:500]
 
 
 _STATUS_RE = re.compile(r"\b(400|401|402|403|408|409|422|429|5\d\d)\b")
@@ -82,7 +100,11 @@ def classify_model_failure(error: BaseException) -> ModelFailureKind:
         return ModelFailureKind.CANCELLED
 
     text = str(error or "").lower()
-    if text.startswith("anthropic_refusal:") or "content policy" in text:
+    if (
+        text.startswith("anthropic_refusal:")
+        or text.startswith("model_refusal:")
+        or "content policy" in text
+    ):
         return ModelFailureKind.REFUSAL
 
     status = _status_code(error)

@@ -106,7 +106,7 @@ EXPECTED_COMPUTER_USE_NAMES = [
     "type_text",
     "open_app",
     "close_app",
-    "cursor_ide_local",
+    "lumena_ide",
     "hotkey",
     "get_active_window",
     "double_click",

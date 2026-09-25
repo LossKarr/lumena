@@ -240,6 +240,34 @@ def _suspicious_delegate_success_reason(result: Any, agent_kind: str) -> str:
     return ""
 
 
+def _pose_ancre_apres_delegation(ctx, success, artifacts, missing, workspace_path) -> None:
+    """Lot L1d-2 — une delegation qui a REELLEMENT ecrit devient le projet du canal.
+
+    Avant : seules les mutations de la boucle ReAct posaient l'ancre, donc un travail
+    confie au CodeAgent ne la deplacait pas et « continue » pouvait repartir ailleurs.
+    Les fichiers annonces mais absents (`missing`) ne comptent pas : rien n'a ete ecrit.
+    Ne leve jamais : une ancre est un confort, jamais un motif d'echec.
+    """
+    try:
+        from ...utils.project_registry import anchor_after_delegation
+        reels = [str(a) for a in (artifacts or []) if str(a) not in set(missing or [])]
+        ancre = anchor_after_delegation(bool(success), reels, str(workspace_path or ""))
+        if ancre is None:
+            return
+        _lum = getattr(ctx, "lumena", None)
+        _id_svc = getattr(_lum, "_identity_svc", None) if _lum else None
+        _rt_ctx = getattr(ctx, "runtime_ctx", None) or getattr(_lum, "runtime_ctx", None)
+        if _id_svc is None or _rt_ctx is None:
+            return
+        from ...core_services.identity_service import IdentityService as _IDS
+        _ck = _IDS.resolve_channel_key(_rt_ctx)
+        if _ck:
+            _id_svc.remember_code_context(_ck, str(ancre), project_slug=ancre.name)
+            logger.info("delegate_task: ancre de conversation posée sur {}", str(ancre)[:80])
+    except Exception as exc:
+        logger.debug("delegate_task: ancre non posée: {}", exc)
+
+
 async def delegate_task_handler(
     ctx: HandlerContext,
     description: str,
@@ -308,15 +336,20 @@ async def delegate_task_handler(
                     from ...core_services.identity_service import IdentityService as _IDS
                     _ck = _IDS.resolve_channel_key(_rt_ctx)
                     _rpc = _id_svc.get_recent_code_context(_ck) if _ck else None
-                    if _rpc:
-                        import os as _os
-                        _rpc_path = _rpc.get("workspace_path", "")
-                        if _rpc_path and _os.path.isdir(_rpc_path):
-                            _effective_project_path = _rpc_path
-                            logger.info(
-                                "delegate_task: project_path depuis contexte récent: {}",
-                                _rpc_path[:80],
-                            )
+                    _rpc_path = str((_rpc or {}).get("workspace_path", "") or "")
+                    # L1d-1 : l'ancre de la conversation, sauf projet DESIGNE explicitement
+                    # (aller auditer un voisin ne doit ni etre rabattu sur l'ancre, ni la
+                    # deplacer).
+                    from ...utils.project_registry import choose_delegate_project
+                    _chosen = choose_delegate_project(
+                        _rpc_path, f"{description}\n{getattr(ctx, 'original_user_query', '') or ''}",
+                    )
+                    if _chosen:
+                        _effective_project_path = _chosen
+                        logger.info(
+                            "delegate_task: project_path ({}) : {}",
+                            "ancre" if _chosen == _rpc_path else "désigné", _chosen[:80],
+                        )
             except Exception as _rpc_exc:
                 logger.debug("delegate_task: récupération contexte récent échouée: {}", _rpc_exc)
 
@@ -550,6 +583,11 @@ async def delegate_task_handler(
             if result.success else ""
         )
         _effective_success = bool(result.success) and not _suspicious_reason
+        # L1d-2 : le projet que le CodeAgent vient d'ECRIRE devient celui de la conversation.
+        _pose_ancre_apres_delegation(
+            ctx, _effective_success, result.artifacts, _missing_artifacts,
+            getattr(task_ctx, "workspace_path", "") or "",
+        )
         _icon = "✅" if _effective_success else "❌"
         _duration = f"{result.duration_ms / 1000:.1f}s" if result.duration_ms else "N/A"
         _artifacts_str = ""
@@ -661,15 +699,19 @@ async def delegate_task_bg_handler(
                     from ...core_services.identity_service import IdentityService as _IDS_BG
                     _ck_bg = _IDS_BG.resolve_channel_key(_rt_ctx_bg)
                     _rpc_bg = _id_svc_bg.get_recent_code_context(_ck_bg) if _ck_bg else None
-                    if _rpc_bg:
-                        import os as _os_bg
-                        _rpc_path_bg = _rpc_bg.get("workspace_path", "")
-                        if _rpc_path_bg and _os_bg.path.isdir(_rpc_path_bg):
-                            _effective_project_path_bg = _rpc_path_bg
-                            logger.info(
-                                "delegate_task_bg: project_path depuis contexte récent: {}",
-                                _rpc_path_bg[:80],
-                            )
+                    _rpc_path_bg = str((_rpc_bg or {}).get("workspace_path", "") or "")
+                    # L1d-1 : meme choix que delegate_task (ancre sauf projet designe).
+                    from ...utils.project_registry import choose_delegate_project as _choose_bg
+                    _chosen_bg = _choose_bg(
+                        _rpc_path_bg,
+                        f"{description}\n{getattr(ctx, 'original_user_query', '') or ''}",
+                    )
+                    if _chosen_bg:
+                        _effective_project_path_bg = _chosen_bg
+                        logger.info(
+                            "delegate_task_bg: project_path ({}) : {}",
+                            "ancre" if _chosen_bg == _rpc_path_bg else "désigné", _chosen_bg[:80],
+                        )
             except Exception as _rpc_exc_bg:
                 logger.debug("delegate_task_bg: récupération contexte récent échouée: {}", _rpc_exc_bg)
 
@@ -728,7 +770,7 @@ async def delegate_task_bg_handler(
 
         # L'abonnement Codex est un rail d'exécution, pas un simple modèle API.
         # Il doit donc survivre à la délégation background au lieu de retomber
-        # sur core.llm (souvent deepseek-chat) et son auto-switch reasoner.
+        # sur le modèle API courant.
         from ...llm.codex_subscription import load_codex_subscription_settings
         from ...llm.codex_codeagent import should_route_codeagent_to_codex
 
@@ -857,7 +899,23 @@ async def bg_start_handler(
 ) -> HandlerResult:
     """Lance une commande en arrière-plan."""
     try:
+        # Regle apprise n°4 : forme d'import INCHANGEE (les tests remplacent ce module
+        # entier dans `sys.modules` ; `from ...background import manager` contournerait
+        # leur doublure des que le vrai module a ete charge avant).
         from ...background.manager import get_task_manager
+        from ...utils.command_sanitizer import sanitize_chained_command
+        from .files import PathSecurityError as _SecErr, assert_execution_cwd_allowed, execution_work_dir
+
+        # L2-2 : cette porte n'avait NI juge de commandes NI dossier borne
+        # (`create_subprocess_shell(command)` sans `cwd`, donc racine du depot).
+        _dossier = execution_work_dir(ctx)
+        try:
+            assert_execution_cwd_allowed(_dossier, ctx, outil="bg_start")
+        except _SecErr as _sec:
+            return HandlerResult.ok(f"⛔ {_sec}", handler_name="bg_start")
+        _permis, _raison = sanitize_chained_command(command)
+        if not _permis:
+            return HandlerResult.ok(f"⛔ {_raison}", handler_name="bg_start")
 
         manager = get_task_manager()
         task = await manager.start_command(name, command)
@@ -1094,10 +1152,44 @@ async def process_run_handler(
     ctx: HandlerContext, command: str, wait_ms: int = 5000
 ) -> HandlerResult:
     """Lance une commande avec background automatique."""
-    try:
-        from ...tools.process_manager import get_process_manager
+    if getattr(ctx, "is_mission_run", False):
+        # Lot natif prealable a CONN-5C-2 : en mission, memes gardes que run_command
+        # (le sanitizer est applique par run_background), et aucun shell ou interpreteur
+        # interactif : `process_input` lui enverrait des lignes qu'aucune garde ne voit.
+        from ...utils.interactive_commands import interactive_launch
+        from .system import _mission_destructive_target_violation
 
-        manager = get_process_manager()
+        interactive = interactive_launch(command)
+        if interactive:
+            return HandlerResult.fail(
+                f"⛔ En mission, lancement interactif refuse : `{interactive[:80]}`. "
+                "Lance une commande unique avec `run_command` (ex. `python script.py`, `cmd /c ...`).",
+                handler_name="process_run",
+            )
+        violation = _mission_destructive_target_violation(ctx, command)
+        if violation:
+            return HandlerResult.fail(
+                f"⛔ Commande destructive hors du dossier de mission : `{violation}`.",
+                handler_name="process_run",
+            )
+    try:
+        # Regle apprise n°4 : ne JAMAIS changer la forme d'un import que des doublures
+        # observent. `from ...tools import process_manager as _pm` lit l'attribut du
+        # paquet deja importe et contourne `patch.dict(sys.modules, ...)` des que le
+        # vrai module a ete charge avant (mesure : 3 tests verts seuls, rouges en lot).
+        from ...tools.process_manager import get_process_manager
+        from .files import PathSecurityError as _SecErr, assert_execution_cwd_allowed, execution_work_dir
+
+        # L2-2 : sans dossier explicite, `ProcessManager` heritait de `Path.cwd()`, soit
+        # la RACINE DU DEPOT en production (mesure du 16/09). On lui donne le dossier du
+        # tour, et on le juge comme `run_command`.
+        _dossier = execution_work_dir(ctx)
+        try:
+            assert_execution_cwd_allowed(_dossier, ctx, outil="process_run")
+        except _SecErr as _sec:
+            return HandlerResult.ok(f"⛔ {_sec}", handler_name="process_run")
+
+        manager = get_process_manager(work_dir=_dossier) if _dossier else get_process_manager()
         output, process_id = await manager.run_background(
             command=command, wait_ms_before_async=wait_ms
         )
@@ -1151,6 +1243,14 @@ async def process_input_handler(
     ctx: HandlerContext, process_id: str, text: str
 ) -> HandlerResult:
     """Envoie de l'input à un processus."""
+    if getattr(ctx, "is_mission_run", False):
+        # Lot natif prealable a CONN-5C-2 : du texte ecrit sur l'entree d'un processus
+        # echappe au sanitizer et a G1. En mission, chaque commande passe par run_command.
+        return HandlerResult.fail(
+            "⛔ En mission, `process_input` est desactive : l'entree d'un processus echappe "
+            "aux gardes. Lance chaque commande avec `run_command`.",
+            handler_name="process_input",
+        )
     try:
         from ...tools.process_manager import get_process_manager
 

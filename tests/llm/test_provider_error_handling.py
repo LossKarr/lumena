@@ -187,21 +187,16 @@ class TestProviderFallback:
             llm = MultiProviderLLM(model_name="claude-fable-5")
             llm._is_code_heavy_request = MagicMock(return_value=(False, None))
             llm._continue_if_needed = AsyncMock(side_effect=lambda **kw: kw["initial_result"])
-            llm._chat_provider_result = AsyncMock(side_effect=[
-                ValueError("anthropic_refusal:claude-fable-5"),
-                {
-                    "text": "fallback ok",
-                    "finish_reason": "stop",
-                    "provider_used": "anthropic",
-                    "model_used": "claude-opus-4.8",
-                },
-            ])
+            llm._chat_provider_result = AsyncMock(
+                side_effect=ValueError("anthropic_refusal:claude-fable-5")
+            )
 
             text = await llm.chat([{"role": "user", "content": "test"}], no_upgrade=True)
 
-        assert text == "fallback ok"
+        assert text.startswith("[Refus]")
         assert llm.provider_health["anthropic"]["failures"] == 0
-        assert llm.get_last_response_meta()["fallback_used"] is True
+        assert llm.get_last_response_meta()["fallback_used"] is False
+        assert llm._chat_provider_result.await_count == 1
 
 
 class TestRemoteProtocolError:
@@ -219,6 +214,51 @@ class TestRemoteProtocolError:
         
         assert "Erreur protocole" in msg
         assert llm.provider_health["anthropic"]["failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_exhausted_credit_429_is_not_retried(monkeypatch):
+    """Un solde épuisé n'est pas une limitation de débit transitoire."""
+    from src.llm.multi_provider import MultiProviderLLM
+    from src.llm.providers import ProviderType
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    response = httpx.Response(
+        429,
+        request=request,
+        text='{"error":{"code":"credit_balance_exhausted"}}',
+    )
+    error = httpx.HTTPStatusError("quota", request=request, response=response)
+    llm = MultiProviderLLM(model_name="gpt-6-sol")
+    llm._TRANSIENT_RETRIES = 2
+    inner = AsyncMock(side_effect=error)
+    monkeypatch.setattr(llm, "_chat_provider_result_inner", inner)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            await llm._chat_provider_result_with_retry(
+                ProviderType.OPENAI,
+                [{"role": "user", "content": "hello"}],
+                0.0,
+                16,
+                "gpt-6-sol",
+            )
+    finally:
+        await llm.close()
+
+    assert inner.await_count == 1
+
+
+def test_anthropic_low_credit_http_400_is_classified_as_quota():
+    from src.llm.multi_provider import _raise_for_anthropic_error
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(
+        400,
+        request=request,
+        text='{"error":{"message":"Your credit balance is too low to access the Anthropic API."}}',
+    )
+    with pytest.raises(RuntimeError, match="402 Anthropic API credit quota exhausted"):
+        _raise_for_anthropic_error(response)
 
 
 if __name__ == "__main__":

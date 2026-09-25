@@ -248,7 +248,7 @@ def _collect_live_stats() -> Dict[str, Any]:
 
     # ── Default model ───────────────────────────────────────────────────────
     import os
-    default_model = os.environ.get("LUMENA_DEFAULT_MODEL", "deepseek-v3")
+    default_model = os.environ.get("LUMENA_DEFAULT_MODEL", "deepseek-flash")
 
     stats = {
         "tools_count": tools_count,
@@ -2774,7 +2774,7 @@ async def get_product_docs():
     # ── Build dynamic HTML fragments ────────────────────────────────────
     # Fallback chain
     provider_display = {
-        "deepseek": "DeepSeek V3", "openai": "OpenAI", "anthropic": "Anthropic",
+        "deepseek": "DeepSeek V4.1", "openai": "OpenAI", "anthropic": "Anthropic",
         "google": "Gemini", "moonshot": "Kimi", "xai": "xAI Grok",
         "nvidia": "NVIDIA", "ollama": "Ollama",
     }

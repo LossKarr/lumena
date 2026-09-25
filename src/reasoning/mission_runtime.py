@@ -732,6 +732,63 @@ def rf6b_decision_nudge_ecrits_non_publies(etat, deja_tire: bool):
     )
 
 
+def rf6b_decision_publication_manquante(etat, tirs: int):
+    """LOT 13 (2026-09-02) — la mission a PRODUIT et n'a jamais publié.
+
+    Mesuré sur `data/task_orchestrator_state.json` :
+
+        184  missions lead avec ledger
+         23  publient
+        161  ne publient pas
+              89  n'ont RIEN produit (recherche, analyse, effets)  → normal
+              72  ONT PRODUIT et n'ont PAS publié                  → le défaut
+                  dont 61 terminées `done`, avec succès
+
+    **76 % des missions qui produisent quelque chose ne le livrent jamais.**
+
+    Ce n'est PAS l'outil : 24 publications réussies pour 1 échec au ledger. Le lead
+    n'essaie simplement pas — et rien ne le lui demande. `_LEAD_PREFIX` (1 129 car.)
+    parle du contrat, de `delegate_and_wait` et du CodeAgent, jamais de publier ; le
+    nudge Z24 exige d'avoir DÉJÀ publié pour s'armer ; et `_NOT_PUBLISHED_BANNER`
+    arrive APRÈS la fin — un constat servi à l'utilisateur quand tout est joué.
+
+    Le motif du dépôt, encore : le fait est calculé, il atteint l'utilisateur, et il
+    arrive trop tard pour changer quoi que ce soit.
+
+    Rend `(dossier, guidance)` ou None. Doctrine Z23 : ceci REDIRIGE une fois, ça ne
+    tue jamais le run — le lead peut avoir de bonnes raisons de ne pas publier
+    (brouillon, livrable incomplet), et la bannière dira la vérité s'il persiste.
+    """
+    if not etat.est_run_mission():
+        return None
+    if tirs >= 1:
+        return None
+    try:
+        led = etat.ledger()
+        if led.has_published():
+            return None                      # déjà fait — muet
+        # A-t-on produit quelque chose ? `has_any_mutation` couvre write_file,
+        # delegate_task, create_project… mais PAS `delegate_and_wait` (vérifié :
+        # absent de MUTATION_TOOLS). Une mission qui délègue tout à des workers
+        # échapperait donc au garde — on l'ajoute explicitement.
+        _produit = led.has_any_mutation() or led.has_successful_action(
+            "delegate_and_wait"
+        )
+        if not _produit:
+            return None                      # les 89 missions sans production — muet
+        ws = etat.dossier_mission() or "ton dossier de mission"
+    except Exception:
+        return None
+    return ws, (
+        "📦 STOP — tu as produit des fichiers et tu n'as PAS publié. Ils sont dans "
+        f"`{ws}` (ton dossier de TRAVAIL) : l'utilisateur ne les verra pas.\n\n"
+        "Appelle MAINTENANT `publish_mission_workspace` pour livrer, PUIS conclus.\n\n"
+        "Si tu ne DOIS pas publier (livrable incomplet, brouillon, ou la mission ne "
+        "demandait aucun fichier), conclus quand même — mais dis-le explicitement "
+        "dans ta réponse. (Relance bornée : au prochain FINAL, la clôture passe.)"
+    )
+
+
 def rf6b_decision_ecrasement_livrable(etat, tool_name, tool_args, tirs: int):
     """P2b — l'outil reecrit-il en place un livrable deja livre ?
 

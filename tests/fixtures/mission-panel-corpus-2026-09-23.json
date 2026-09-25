@@ -1,0 +1,146 @@
+{
+ "schema_version": 1,
+ "saved_at": "2026-09-23T21:00:00+00:00",
+ "tasks": [
+  {
+   "task_id": "task_fixture_done",
+   "state": "done",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_done",
+    "kind": "mission",
+    "deadline_ts": "2020-01-01T00:00:00"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": false,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  },
+  {
+   "task_id": "task_fixture_cancelled",
+   "state": "cancelled",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_cancelled",
+    "kind": "mission",
+    "deadline_ts": "2020-01-01T00:00:00"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": true,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  },
+  {
+   "task_id": "task_fixture_checkpointed",
+   "state": "checkpointed",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_checkpointed",
+    "kind": "mission"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": false,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  },
+  {
+   "task_id": "task_fixture_failed",
+   "state": "failed",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_failed",
+    "kind": "mission",
+    "deadline_ts": "2020-01-01T00:00:00"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": false,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  },
+  {
+   "task_id": "task_fixture_failed_child",
+   "state": "failed",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_failed_child",
+    "kind": "mission",
+    "parent_id": "task_fixture_failed"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": false,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  },
+  {
+   "task_id": "task_fixture_running",
+   "state": "running",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_running",
+    "kind": "mission",
+    "deadline_ts": "2030-01-01T00:00:00"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": false,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  },
+  {
+   "task_id": "task_fixture_running_child",
+   "state": "done",
+   "created_at": "2026-09-20T10:00:00+00:00",
+   "updated_at": "2026-09-23T21:00:00+00:00",
+   "metadata": {
+    "objective": "objectif de task_fixture_running_child",
+    "kind": "mission",
+    "parent_id": "task_fixture_running"
+   },
+   "channel": "web",
+   "conversation_id": "conv_fixture",
+   "message_preview": "",
+   "result_summary": "",
+   "last_error": null,
+   "cancel_requested": false,
+   "checkpoint_history": [],
+   "last_checkpoint": null,
+   "checkpoint_compaction": null
+  }
+ ],
+ "conversation_index": {}
+}

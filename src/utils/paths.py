@@ -16,6 +16,19 @@ from pathlib import Path
 # ── Project root ────────────────────────────────────────────────────────────
 ROOT_DIR: Path = Path(__file__).resolve().parent.parent.parent
 
+
+def _dir_from_env(name: str, default: Path) -> Path:
+    """Dossier lu dans l'environnement, independant du dossier de lancement (lot L1b).
+
+    Absente ou vide -> ``default`` ; relative (``./workspace``) -> ancree sur
+    ``ROOT_DIR`` ; absolue -> inchangee.
+    """
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    path = Path(value)
+    return path if path.is_absolute() else ROOT_DIR / path
+
 # ── Instance identity ───────────────────────────────────────────────────────
 INSTANCE_ID: str = os.getenv("LUMENA_INSTANCE_ID", "default")
 INSTANCE_NAME: str = os.getenv("LUMENA_INSTANCE_NAME", "Lumena")
@@ -31,10 +44,10 @@ _raw_role = os.getenv("LUMENA_INSTANCE_ROLE", "standalone").strip().lower()
 INSTANCE_ROLE: str = _raw_role if _raw_role in {"primary", "worker", "standalone"} else "standalone"
 
 # ── Top-level directories ──────────────────────────────────────────────────
-DATA_DIR: Path = Path(os.getenv("LUMENA_DATA_DIR", str(ROOT_DIR / "data")))
-WORKSPACE_DIR: Path = Path(os.getenv("LUMENA_WORKSPACE_DIR", str(ROOT_DIR / "workspace")))
-LOGS_DIR: Path = Path(os.getenv("LUMENA_LOGS_DIR", str(DATA_DIR / "logs")))
-BACKUPS_DIR: Path = Path(os.getenv("LUMENA_BACKUPS_DIR", str(ROOT_DIR / "backups")))
+DATA_DIR: Path = _dir_from_env("LUMENA_DATA_DIR", ROOT_DIR / "data")
+WORKSPACE_DIR: Path = _dir_from_env("LUMENA_WORKSPACE_DIR", ROOT_DIR / "workspace")
+LOGS_DIR: Path = _dir_from_env("LUMENA_LOGS_DIR", DATA_DIR / "logs")
+BACKUPS_DIR: Path = _dir_from_env("LUMENA_BACKUPS_DIR", ROOT_DIR / "backups")
 
 # ── Data sub-directories ───────────────────────────────────────────────────
 MEMORY_DIR: Path = DATA_DIR / "memory"
@@ -49,8 +62,8 @@ SCREENSHOTS_DIR: Path = DATA_DIR / "screenshots"
 BROWSER_PROFILES_DIR: Path = DATA_DIR / "browser_profiles"
 BROWSER_TRACES_DIR: Path = DATA_DIR / "browser_traces"
 RECEIVED_IMAGES_DIR: Path = DATA_DIR / "received_images"
-GENERATED_IMAGES_DIR: Path = Path(os.getenv("LUMENA_GENERATED_IMAGES_DIR", str(WORKSPACE_DIR / "images")))
-RECEIVED_DOCS_DIR: Path = Path(os.getenv("LUMENA_UPLOADS_DIR", str(DATA_DIR / "received_documents")))
+GENERATED_IMAGES_DIR: Path = _dir_from_env("LUMENA_GENERATED_IMAGES_DIR", WORKSPACE_DIR / "images")
+RECEIVED_DOCS_DIR: Path = _dir_from_env("LUMENA_UPLOADS_DIR", DATA_DIR / "received_documents")
 CUSTOM_HANDLERS_DIR: Path = DATA_DIR / "custom_handlers"
 CODE_INDEX_DIR: Path = DATA_DIR / "code_index"
 TRAINING_POOL_DIR: Path = DATA_DIR / "training_pool"
@@ -66,10 +79,8 @@ INSTALLED_SKILLS_DIR: Path = DATA_DIR / "installed_skills"
 CAPTURES_DIR: Path = DATA_DIR / "captures"
 CHROMADB_DIR: Path = DATA_DIR / "chromadb"
 TEMPLATES_DIR: Path = ROOT_DIR / "assets" / "templates"
-DOCUMENT_STUDIO_DIR: Path = Path(
-    os.getenv("LUMENA_DOCUMENT_STUDIO_DIR", str(DATA_DIR / "document_studio"))
-)
-UPDATES_DIR: Path = Path(os.getenv("LUMENA_UPDATES_DIR", str(DATA_DIR / "updates")))
+DOCUMENT_STUDIO_DIR: Path = _dir_from_env("LUMENA_DOCUMENT_STUDIO_DIR", DATA_DIR / "document_studio")
+UPDATES_DIR: Path = _dir_from_env("LUMENA_UPDATES_DIR", DATA_DIR / "updates")
 
 # ── Well-known files ────────────────────────────────────────────────────────
 JOURNAL_JSON: Path = DATA_DIR / "journal.json"
@@ -86,7 +97,7 @@ APIS_REGISTRY_JSON: Path = DATA_DIR / "apis_registry.json"
 FINETUNED_REGISTRY: Path = MEMORY_DIR / "finetuned_models.json"
 EMOTION_STATE_FILE: Path = DATA_DIR / "emotion_state.json"
 EMOTION_HISTORY_FILE: Path = DATA_DIR / "emotion_history.jsonl"
-SESSIONS_SQLITE: Path = Path(os.getenv("LUMENA_SESSIONS_DB", str(DATA_DIR / "sessions.sqlite")))
+SESSIONS_SQLITE: Path = _dir_from_env("LUMENA_SESSIONS_DB", DATA_DIR / "sessions.sqlite")
 
 
 # ── Instance ID auto-generation ────────────────────────────────────────────

@@ -13,7 +13,7 @@ jobs:
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     env:
       # Les tests run_command ciblent l'execution Windows locale. Docker Desktop
       # utilise des conteneurs Windows sur ce runner et refuse --pids-limit.

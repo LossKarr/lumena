@@ -246,7 +246,16 @@ def test_le_squelette_de_la_boucle_est_INTACT():
     trys = sum(1 for x in ast.walk(ri) if isinstance(x, ast.Try))
     imps = sum(1 for x in ast.walk(ri)
                if isinstance(x, (ast.Import, ast.ImportFrom)))
-    assert conts == 48, f"les `continue` ont bouge : {conts} au lieu de 48"
+    # 48 -> 49 (`continue`) et 78 -> 79 (`try`) : LOT 13, PUBLISH GATE.
+    # Mesure : 72 missions sur 95 (76 %) produisent des fichiers et ne les
+    # publient JAMAIS — dont 61 terminees `done`. Ce n'est pas l'outil (24
+    # publications reussies pour 1 echec au ledger) : le lead n'essaie pas,
+    # parce que rien ne le lui demande tant qu'il peut encore agir.
+    # La porte copie la mecanique du BROWSER GATE : un `try` defensif (un
+    # garde ne doit jamais faire tomber la boucle) et un `continue` pour
+    # relancer une fois. Aucun `return` ajoute, aucun import local.
+    # ORI-3/4 : reprise bornee apres interruption LLM et reconciliation finale.
+    assert conts == 51, f"les `continue` ont bouge : {conts} au lieu de 51"
     assert rets == 33, f"les retours ont bouge : {rets} au lieu de 33"
     # 77 -> 78 : lot panel missions 14. La pensee du LEAD est parsee dans
     # cette boucle depuis toujours et n'etait ecrite qu'au log `debug` : la
@@ -254,13 +263,15 @@ def test_le_squelette_de_la_boucle_est_INTACT():
     # missions. L'emission ajoutee est defensive (le bus de trace ne doit
     # jamais faire tomber la boucle), d'ou un `try` de plus. Elle n'ajoute
     # ni `continue`, ni `return`, ni import local.
+    # CONN-4D : parsing ledger extrait avec parite tracee, un try/import en moins.
     assert trys == 78, f"les `try` ont bouge : {trys} au lieu de 78"
     # 48 -> 47 : la feuille a emporte SON PROPRE import local
     # (`compact_batch_observation`, utilise uniquement par la compaction des
     # documents). L'invariant 15 presume les imports locaux intentionnels ; il
     # n'interdit pas a une feuille de partir avec le sien.
-    assert imps == 47, (
-        f"les imports locaux ont bouge : {imps} au lieu de 47 — invariant 15, "
+    # CONN-4D : l'import du parseur natif accompagne son helper extrait.
+    assert imps == 46, (
+        f"les imports locaux ont bouge : {imps} au lieu de 46 — invariant 15, "
         f"ils sont presumes intentionnels"
     )
 

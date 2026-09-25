@@ -45,8 +45,17 @@ class TestRunCommand:
     @pytest.mark.asyncio
     async def test_invalid_command(self, ctx):
         r = await run_command_handler(ctx, command="zzz_nonexistent_command_12345")
-        # Sur Windows ça retourne une erreur dans stderr mais pas une exception
-        assert r.success or "Erreur" in r.output
+        # LOT L3-2 (16/09/2026) — MISE A JOUR JUSTIFIEE.
+        # Avant : `assert r.success or "Erreur" in r.output`. Cette commande n'existe
+        # pas, elle est donc refusee par la liste blanche, et un refus etait rendu par
+        # `HandlerResult.ok` -> `success=True`. Or `run_command` est dans
+        # `MUTATION_TOOLS` et le ledger compte `entry.success and action in
+        # MUTATION_TOOLS` : une MUTATION REUSSIE etait enregistree sans qu'aucune
+        # commande n'ait tourne (motif C0.2, corrige jadis pour `write_file`).
+        # Maintenant : un refus est un ECHEC, et son motif reste lisible - c'est ce que
+        # ce test exige desormais, au lieu de tolerer l'ancien comportement.
+        assert r.success is False
+        assert "⛔" in r.output and "whitelist" in r.output.lower()
 
     @pytest.mark.asyncio
     async def test_async_no_event_loop_block(self, ctx):

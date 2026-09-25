@@ -1265,10 +1265,22 @@ def _pop_tool_runtime_context(tokens: Dict[str, Any]) -> None:
         logger.debug("pop_runtime_context skipped: {}", e)
 
 
-async def _call_lumena_with_context(method_name: str, message: str, channel: str, ide_context: Dict[str, Any]) -> str:
+async def _call_lumena_with_context(
+    method_name: str,
+    message: str,
+    channel: str,
+    ide_context: Dict[str, Any],
+    *,
+    task_id: Optional[str] = None,
+) -> str:
     """
     Call lumena.chat / lumena.think_and_act with backward-compatible kwargs.
     Some test doubles and old integrations only accept (message).
+
+    LOT ORI-4 : `task_id` doit traverser jusqu'a `think_and_act`. Sans lui,
+    `ReActLoop._orchestrator_enabled()` est faux (il exige orchestrateur ET
+    task_id) et le checkpoint de steering n'est JAMAIS execute : aucune
+    orientation ne peut etre remise, quel que soit le nombre d'iterations.
     """
     if not deps.lumena:
         raise RuntimeError("Lumena not initialized")
@@ -1281,6 +1293,8 @@ async def _call_lumena_with_context(method_name: str, message: str, channel: str
             kwargs["source_channel"] = channel
         if "ide_context" in params:
             kwargs["ide_context"] = ide_context
+        if task_id and "task_id" in params:
+            kwargs["task_id"] = task_id
     except Exception:
         kwargs = {"source_channel": channel, "ide_context": ide_context}
     return await method(message, **kwargs) if kwargs else await method(message)
@@ -1294,6 +1308,7 @@ async def _call_lumena_with_step_timeout_and_retry(
     ide_context: Dict[str, Any],
     step_timeout_sec: float,
     max_retries: int,
+    task_id: Optional[str] = None,
 ) -> tuple[str, Dict[str, Any]]:
     attempts = 0
     while True:
@@ -1305,6 +1320,7 @@ async def _call_lumena_with_step_timeout_and_retry(
                 message,
                 channel,
                 ide_context,
+                task_id=task_id,
             )
             if step_timeout_sec > 0:
                 response = await asyncio.wait_for(call_coro, timeout=step_timeout_sec)
@@ -1358,6 +1374,7 @@ async def _call_lumena_with_auto_resume_on_timeout(
             ide_context=ide_context,
             step_timeout_sec=step_timeout_sec,
             max_retries=max_retries,
+            task_id=task_id,
         )
         return response, {
             **meta,
@@ -1468,6 +1485,13 @@ async def chat(request: ChatRequest, _auth=Depends(deps.verify_admin_token)):
                 "request_id": envelope.get("request_id"),
                 "client": client_name,
                 "source": "api_chat",
+                "kind": "agent_turn" if request.use_agent else "chat_turn",
+                "initial_objective": request.message,
+                "objective": request.message,
+                "owner_user_id": (request.owner_user_id or "local:owner"),
+                "requester_user_id": _session_user_id(request),
+                "source_channel": channel,
+                "source_conversation_id": envelope.get("conversation_id"),
             },
             task_id=task_id,
         )
@@ -1819,6 +1843,13 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                     "request_id": envelope.get("request_id"),
                     "client": client_name,
                     "source": "api_chat_stream",
+                    "kind": "agent_turn" if request.use_agent else "chat_turn",
+                    "initial_objective": request.message,
+                    "objective": request.message,
+                    "owner_user_id": (request.owner_user_id or "local:owner"),
+                    "requester_user_id": _session_user_id(request),
+                    "source_channel": channel,
+                    "source_conversation_id": envelope.get("conversation_id"),
                 },
                 task_id=task_id,
             )
@@ -2224,7 +2255,6 @@ async def chat_stream(request: ChatRequest, _auth=Depends(deps.verify_admin_toke
                                     label = parts[1].strip()[:120] if len(parts) > 1 else thought[:120]
                                     yield _emit({"type": "thinking", "content": label})
                                 elif "Auto-switch model" in thought or "auto-switch" in thought.lower():
-                                    # "Auto-switch model for this turn: deepseek-chat -> deepseek-reasoner"
                                     yield _emit({"type": "thinking", "content": thought.split(" | ")[-1] if " | " in thought else thought})
                                 elif "\u23f3 LLM en cours" in thought:
                                     # LLM call starting — extract useful info

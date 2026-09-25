@@ -113,7 +113,9 @@ class TestConfigPanel:
         assert "gemini-3.1-flash-image" in options
         assert "huggingface-sdxl" in options
         assert "gpt-image-2" in options
-        assert "gpt-image-1.5" in options
+        assert "gpt-image-2.5-sunburst" in options
+        assert "gpt-image-2.5-flare" in options
+        assert "gpt-image-1.5" not in options
         assert "flux-2-pro" in options
         assert "flux-2-klein-9b" in options
         assert "flux-1.1-pro-ultra" in options

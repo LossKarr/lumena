@@ -25,7 +25,7 @@ from src.version import __version__
 from web.routes.lifespan import lifespan  # noqa: E402
 
 # ── Route modules ──
-from web.routes import system, chat, sessions, tasks, config, models, content, advanced, setup, onboarding, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, document_studio, codex_subscription, updates  # noqa: E402
+from web.routes import system, chat, sessions, tasks, config, models, local_models, content, advanced, setup, onboarding, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, steering, document_studio, codex_subscription, updates  # noqa: E402
 
 # ── App creation ──
 _SETUP_DONE = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
@@ -58,7 +58,7 @@ app.add_middleware(
 # ── GZip compression (bypass SSE to avoid buffering) ──
 from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
 
-_SSE_PATHS = frozenset({"/api/chat/stream", "/api/trace/stream", "/api/finetuning/progress", "/api/finetuning/install-deps"})
+_SSE_PATHS = frozenset({"/api/chat/stream", "/api/trace/stream", "/api/finetuning/progress", "/api/finetuning/install-deps", "/api/local-models/events"})
 
 
 class _GZipNoSSE:
@@ -235,6 +235,7 @@ app.include_router(sessions.router)
 app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(models.router)
+app.include_router(local_models.router)
 app.include_router(content.router)
 app.include_router(advanced.router)
 app.include_router(setup.router)
@@ -252,6 +253,7 @@ app.include_router(image_gen.router)
 app.include_router(peers.router)
 app.include_router(mcp.router)
 app.include_router(missions.router)
+app.include_router(steering.router)
 app.include_router(document_studio.router)
 app.include_router(codex_subscription.router)
 app.include_router(updates.router)

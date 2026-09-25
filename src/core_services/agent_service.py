@@ -18,6 +18,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from src.documents.document_intent import resolve_document_route
+from src.reasoning.external_tool_scope import scoped_external_tools
 from src.prompts.services.agent_service_prompts import (
     _LLM_FACT_EXTRACT_PROMPT,
 )
@@ -182,8 +183,11 @@ _PC_SCOPE_KEYWORDS = (
 def _detect_outside_access_grant(query: str) -> "OutsideAccessGrant":  # type: ignore[return]
     """Analyse la requête et retourne un grant d'accès hors workspace borné.
 
-    Seule la lecture est accordée. L'écriture reste toujours interdite hors workspace.
-    Si aucune intention explicite n'est détectée, retourne un grant vide (aucun accès).
+    Lot L1c-3 (décision de Charles du 15/09/2026) : en chat, l'endroit désigné est
+    lisible, inscriptible et supprimable, avec sauvegarde avant (garde commune) ; le code
+    de Lumena et la liste noire restent refusés. Missions et autonomie n'appellent
+    jamais cette fonction. Si aucune intention explicite n'est détectée, retourne un
+    grant vide (aucun endroit hors workspace ; le projet en cours reste accessible).
     """
     if not _OUTSIDE_GRANT_AVAILABLE:
         return None  # type: ignore[return-value]
@@ -223,7 +227,7 @@ def _detect_outside_access_grant(query: str) -> "OutsideAccessGrant":  # type: i
     if not allowed_roots:
         return OutsideAccessGrant.none()
 
-    return OutsideAccessGrant.for_paths(*allowed_roots)
+    return OutsideAccessGrant.for_chat(*allowed_roots)
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -340,6 +344,56 @@ class AgentService:
     def get_last_agent_meta(self) -> Dict[str, Any]:
         return dict(self.core._last_agent_meta)
 
+    async def _route_and_compose_steering(
+        self,
+        user_message: str,
+        source_channel: str,
+        sender_info: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Mutate through the runtime, then let Lumena phrase the factual result."""
+        try:
+            from src.runtime.channel_steering import route_channel_steering
+            from src.runtime.context import get_current_runtime_context
+
+            context = get_current_runtime_context()
+            owner_user_id = str(getattr(context, "owner_user_id", None) or "local:owner")
+            conversation_id = getattr(context, "conversation_id", None)
+            external = source_channel in {"telegram", "whatsapp", "discord", "api"}
+            sender_is_owner = bool(sender_info and sender_info.get("is_owner")) if external else True
+            routed = route_channel_steering(
+                self.core.task_orchestrator,
+                user_message,
+                source_channel=source_channel,
+                conversation_id=conversation_id,
+                owner_user_id=owner_user_id,
+                sender_is_owner=sender_is_owner,
+            )
+            if not routed.handled:
+                return None
+        except Exception as exc:
+            logger.warning("channel steering pre-router unavailable: %s", exc)
+            return None
+
+        # Once the runtime handled the request, never fall through into a new
+        # chat/Agent turn: that could duplicate work after a successful write.
+        fact_json = json.dumps(routed.facts, ensure_ascii=False, sort_keys=True)
+        try:
+            messages = [
+                {"role": "system", "content": self.core.personality.get_system_prompt()},
+                {"role": "system", "content": (
+                    "Voici le résultat structuré et autoritatif du runtime d'orientation. "
+                    "Réponds toi-même à l'utilisateur dans ton style habituel, brièvement et honnêtement. "
+                    "N'invente aucune application ni réussite absente des faits. "
+                    f"FAITS_RUNTIME={fact_json}"
+                )},
+                {"role": "user", "content": user_message},
+            ]
+            response = await self.core.llm.chat(messages)
+            return str(response or "").strip() or fact_json
+        except Exception as exc:
+            logger.warning("channel steering response composition failed: %s", exc)
+            return fact_json
+
     # ──────────────────────────────────────────────────────────────────────────
     # Runtime controls
     # ──────────────────────────────────────────────────────────────────────────
@@ -375,11 +429,13 @@ class AgentService:
             "qwen3": "qwen3-8b",
             "qwen 3": "qwen3-8b",
             "coder": "qwen2.5-coder-14b",
-            "deepseek": "deepseek-v3",
-            "deepseek v3": "deepseek-v3",
-            "deepseek chat": "deepseek-v3",
-            "deepseek reasoner": "deepseek-reasoner",
-            "reasoner": "deepseek-reasoner",
+            "deepseek": "deepseek-flash",
+            "deepseek v4": "deepseek-flash",
+            "deepseek flash": "deepseek-flash",
+            "deepseek v3": "deepseek-flash",
+            "deepseek chat": "deepseek-flash",
+            "deepseek reasoner": "deepseek-v4-pro",
+            "reasoner": "deepseek-v4-pro",
             "gpt": "gpt-4o",
             "gpt4": "gpt-4o",
             "gpt-4": "gpt-4o",
@@ -387,6 +443,14 @@ class AgentService:
             "opus": "claude-opus-4.8",
             "opus 5": "claude-opus-5",
             "claude opus 5": "claude-opus-5",
+            "opus 5.5": "claude-opus-5.5",
+            "claude opus 5.5": "claude-opus-5.5",
+            "mythos 5.1": "claude-mythos-5.1",
+            "claude mythos 5.1": "claude-mythos-5.1",
+            "gpt 6 sol": "gpt-6-sol",
+            "gpt-6 sol": "gpt-6-sol",
+            "gpt 6 luna": "gpt-6-luna",
+            "gpt-6 luna": "gpt-6-luna",
             "gemini": "gemini-2.5-flash",
             "gemini 3.6": "gemini-3.6-flash",
             "gemini 3.6 flash": "gemini-3.6-flash",
@@ -404,6 +468,8 @@ class AgentService:
             "grok": "grok-4.3",
             "grok 4.3": "grok-4.3",
             "grok4.3": "grok-4.3",
+            "grok 4.7": "grok-4.7",
+            "grok4.7": "grok-4.7",
             "grok 4.6": "grok-4.6",
             "grok4.6": "grok-4.6",
             "grok 4.5": "grok-4.5",
@@ -1362,6 +1428,7 @@ Conversations et apprentissages de la journée.
                 meta = {}
         return response, meta, False
 
+    @scoped_external_tools
     async def chat(
         self,
         user_message: str,
@@ -1381,6 +1448,15 @@ Conversations et apprentissages de la journée.
         if runtime_control is not None:
             return runtime_control
 
+        sender_info = c._resolve_sender_identity(sender, source_channel)
+        if not sender_info and source_channel == "whatsapp":
+            sender_info = c._identity_svc._resolve_whatsapp_identity(sender, source_channel)
+        steering_response = await self._route_and_compose_steering(
+            user_message, source_channel, sender_info,
+        )
+        if steering_response is not None:
+            return steering_response
+
         if self._codex_chat_action_uses_agent(user_message, source_channel):
             logger.info("[Chat/Codex] demande actionnable -> rail Agent Lumena")
             return await self.think_and_act(
@@ -1388,10 +1464,6 @@ Conversations et apprentissages de la journée.
                 source_channel=source_channel,
                 sender=sender,
             )
-
-        sender_info = c._resolve_sender_identity(sender, source_channel)
-        if not sender_info and source_channel == "whatsapp":
-            sender_info = c._identity_svc._resolve_whatsapp_identity(sender, source_channel)
 
         active_context = (
             c._load_tg_context(sender_info["tg_id"])
@@ -1800,6 +1872,7 @@ Conversations et apprentissages de la journée.
     # chat_stream()
     # ──────────────────────────────────────────────────────────────────────────
 
+    @scoped_external_tools
     async def chat_stream(
         self, user_message: str, source_channel: str = "web",
         channel_id: Optional[str] = None, user_id: Optional[str] = None,
@@ -2179,6 +2252,7 @@ Conversations et apprentissages de la journée.
     # think_and_act()
     # ──────────────────────────────────────────────────────────────────────────
 
+    @scoped_external_tools
     async def think_and_act(
         self,
         query: str,
@@ -2198,6 +2272,15 @@ Conversations et apprentissages de la journée.
         runtime_control = await self._handle_runtime_controls(query, source_channel=source_channel)
         if runtime_control is not None:
             return runtime_control
+
+        _steering_sender = c._resolve_sender_identity(sender, source_channel)
+        if not _steering_sender and source_channel == "whatsapp":
+            _steering_sender = c._identity_svc._resolve_whatsapp_identity(sender, source_channel)
+        steering_response = await self._route_and_compose_steering(
+            query, source_channel, _steering_sender,
+        )
+        if steering_response is not None:
+            return steering_response
 
         # ── Phase 3 : routage intelligent (déterministe, sans LLM) ──────────
         _detected_intent: str = "react"  # Phase 7.2 : capturé pour conditionner MEMORY.md
@@ -2574,6 +2657,7 @@ Conversations et apprentissages de la journée.
     # think_and_act_silent()
     # ──────────────────────────────────────────────────────────────────────────
 
+    @scoped_external_tools
     async def think_and_act_silent(
         self,
         task: str,

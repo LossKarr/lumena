@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import shlex
 import re
-from typing import Tuple, Optional, Set
+from typing import Any, Tuple, Optional, Set
 from loguru import logger
 
 
@@ -23,6 +23,11 @@ DEFAULT_ALLOWED_EXECUTABLES: Set[str] = {
     "node", "node.exe", "npm", "npm.cmd", "npx", "npx.cmd",
     "yarn", "yarn.cmd", "pnpm", "pnpm.cmd", "bun", "bun.exe",
     "tsc", "tsc.cmd", "eslint", "prettier",
+    # L2-3 (constat N2) : refuser `vite` en admettant `npx vite` n'a aucun sens - c'est
+    # le MEME binaire, lance depuis node_modules/.bin. Mesure du 16/09 a l'appui.
+    "vite", "vite.cmd", "vitest", "vitest.cmd", "tsx", "tsx.cmd",
+    "rollup", "rollup.cmd", "webpack", "webpack.cmd", "esbuild", "esbuild.cmd",
+    "jest", "jest.cmd", "nodemon", "nodemon.cmd",
     # PHP — `php -l` est la SEULE facon de valider un fichier PHP ; sans lui
     # le CodeAgent corrige a l'aveugle (run « SaaS complet » du 2026-08-25 :
     # 20 fichiers PHP ecrits, zero valide, redeclarations reparees de tete).
@@ -112,6 +117,8 @@ BLOCKED_PATTERNS = [
     r"shutdown",              # shutdown
     r"reboot",                # reboot
     r"taskkill\s+/f",         # taskkill /f (force kill)
+    # LOT SRV-1 : voir `_RESSEMBLE_A_UN_ARRET_DE_PROCESSUS_RE` plus bas —
+    # ces deux patterns-ci restent bloques, mais leur refus NOMME la voie ouverte.
     r"reg\s+delete",          # reg delete
     r"net\s+user",            # net user (modification utilisateurs)
     r"attrib\s+[+-]",         # attrib (modification attributs systeme)
@@ -170,11 +177,28 @@ _PS_BLOCKED_VERBS: Set[str] = {
     "mount", "dismount", "suspend", "resume",
 }
 
+# Lot L2-3 — verbes qui ECRIVENT dans un dossier : admis quand le dossier de travail a
+# ete juge autorise (L2-1/L2-2). Les verbes systeme (`stop`, `kill`, `register`,
+# `enable`, `mount`...) restent refuses en toutes circonstances.
+_PS_VERBES_ECRITURE: Set[str] = {"new", "copy", "move", "rename", "add", "set", "remove"}
+
 # Regex pour détecter les cmdlets PowerShell (Verb-Noun)
 _PS_CMDLET_RE = re.compile(r'^([A-Za-z]+)-[A-Za-z]', re.IGNORECASE)
 
 # Regex pour détecter les expressions PowerShell pures (range, variable, tableau)
 _PS_EXPR_RE = re.compile(r'^(\d+\.\.|\$[A-Za-z]|@{|@\(|\[)', re.IGNORECASE)
+
+# SAN-1 — `$x = ...` / `$env:X = ...` : le nom de la variable affectee.
+_PS_AFFECTATION_RE = re.compile(r'^(\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*)\s*=\s*')
+# A DROITE d'une affectation, seule une valeur INERTE echappe au jugement : une
+# chaine entierement quotee, ou un nombre. Tout le reste est juge comme une commande.
+#
+# La regle a ete prise dans l'autre sens d'abord — « bloquer si la valeur contient un
+# operateur d'appel » — et la mesure l'a refutee : `$x = evil.exe` et `$x = .\evil.exe`
+# ne contiennent aucun operateur, passaient donc pour des litteraux, alors que les
+# memes commandes NUES etaient bloquees. Une affectation ne doit etre ni plus laxiste
+# ni plus stricte que la commande qu'elle porte.
+_PS_VALEUR_INERTE_RE = re.compile(r"""^(?:'[^']*'|"[^"]*"|-?\d+(?:\.\d+)?)$""")
 
 # Mots-clés de contrôle PowerShell (flow control, fonctions, blocs)
 # Autorisés comme "pseudo-exécutables" — ils ne sont pas des programmes mais du langage PS natif
@@ -195,7 +219,43 @@ DANGEROUS_OPERATORS = [
 ]
 
 
-def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> Tuple[bool, str]:
+# LOT SRV-1 — les patterns bloques qui visent un ARRET de processus. Leur refus nomme
+# `process_kill` / `stop_website_server`, au lieu de laisser chercher un contournement.
+_RESSEMBLE_A_UN_ARRET_DE_PROCESSUS_RE = re.compile(
+    r"\b(taskkill|stop-process|kill)\b",
+    re.IGNORECASE,
+)
+
+
+def _hors_chaines(command: str) -> str:
+    """Commande privee du CONTENU de ses chaines litterales (lot L2-3).
+
+    Mesure du 16/09 : `echo "config ssh ok"` etait refuse parce que le motif `\\bssh\\b`
+    s'applique a la commande entiere, guillemets compris. Un mot dans un texte n'est pas
+    une commande. Les guillemets sont conserves (vides) pour ne pas coller les jetons.
+    """
+    sortie = []
+    quote = ""
+    for c in command:
+        if quote:
+            if c == quote:
+                quote = ""
+                sortie.append(c)
+            continue
+        if c in ("'", '"'):
+            quote = c
+            sortie.append(c)
+            continue
+        sortie.append(c)
+    return "".join(sortie)
+
+
+def sanitize_command(
+    command: str,
+    extra_allowed: Optional[Set[str]] = None,
+    *,
+    workdir_allowed: bool = False,
+) -> Tuple[bool, str]:
     """
     Valide une commande shell avant execution.
 
@@ -228,9 +288,34 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
             )
 
     # 1. Verifier les patterns toujours bloques
+    # L2-3 : sur la commande PRIVEE du contenu de ses chaines - un mot dans un texte
+    # n'est pas une commande (mesure : `echo "config ssh ok"` etait refuse).
+    _sans_chaines = _hors_chaines(command_stripped)
     for pattern in BLOCKED_PATTERNS:
-        if re.search(pattern, command_stripped, re.IGNORECASE):
+        if re.search(pattern, _sans_chaines, re.IGNORECASE):
             logger.warning("Commande bloquee (pattern dangereux): {}", command_stripped[:80])
+            # LOT SRV-1 — un refus muet fabrique la recherche du contournement suivant.
+            #
+            # Run du 25/09 a 02 h 29-02 h 30 : « Commande bloquee: pattern dangereux
+            # detecte » sur `Stop-Process`, puis sur `taskkill /F /PID`, puis son
+            # raisonnement : « `taskkill` declenche le filtre. Je change de strategie :
+            # j'utilise PowerShell `Stop-Process` » - bloque aussi. Trois essais, aucune
+            # porte nommee, abandon.
+            #
+            # Le patron inverse est PROUVE EN RUNTIME le meme soir : a 23:17:28
+            # `ide__navigate` est refuse, le refus nomme `lumena_ide(ensure_workspace)`,
+            # et elle reussit 4 SECONDES plus tard. A 20:07, le meme refus sans porte
+            # nommee lui avait coute dix minutes.
+            #
+            # Le pattern reste bloque : ces commandes visent des processus arbitraires
+            # de la machine. On ne les ouvre pas, on nomme la voie encadree.
+            if _RESSEMBLE_A_UN_ARRET_DE_PROCESSUS_RE.search(_sans_chaines):
+                return False, (
+                    "Commande bloquee: pattern dangereux detecte. Pour arreter un "
+                    "processus ou un serveur que tu as lance, utilise l'outil "
+                    "`process_kill` (par PID) ou `stop_website_server` (serveur web) ; "
+                    "`bg_list` te montre ce qui tourne."
+                )
             return False, f"Commande bloquee: pattern dangereux detecte"
 
     # 2. Verifier les operateurs d'injection
@@ -355,6 +440,13 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
     ps_match = _PS_CMDLET_RE.match(executable)
     if ps_match:
         verb = ps_match.group(1).lower()
+        # L2-3 : ces verbes ECRIVENT. Ils etaient refuses parce que le dossier n'etait
+        # pas borne ; depuis L1c/L2-1/L2-2 il l'est, et une commande qui travaille dans
+        # un dossier autorise est deja contenue. Mesure : `New-Item`, `Copy-Item`,
+        # `Remove-Item` refuses 26 fois alors qu'ils visaient le workspace.
+        # `Remove-Item -Recurse` reste refuse par BLOCKED_PATTERNS, verifie plus haut.
+        if workdir_allowed and verb in _PS_VERBES_ECRITURE:
+            return True, ""
         if verb in _PS_BLOCKED_VERBS:
             logger.warning(
                 "Cmdlet PowerShell bloquee (verbe '{}'): {}",
@@ -423,7 +515,7 @@ def sanitize_command(command: str, extra_allowed: Optional[Set[str]] = None) -> 
     return True, ""
 
 
-def _extract_executable(command: str) -> Optional[str]:
+def _extract_executable(command: str, profondeur: int = 0) -> Optional[str]:
     """Extrait le nom de l'executable principal d'une commande."""
     # Gerer les commandes chainees (&&, ||, ;)
     # On verifie seulement la premiere commande
@@ -442,6 +534,48 @@ def _extract_executable(command: str) -> Optional[str]:
     # Ex: (Get-Content file.css -Raw | Select-String '{').Count
     if first_cmd.startswith('('):
         first_cmd = first_cmd.lstrip('(')
+
+    # SAN-1 — une AFFECTATION de variable n'est pas une execution.
+    #
+    # Mesure du run reel du 24/09/2026 : Lumena cherchait a ouvrir une seconde
+    # instance de son IDE. Elle avait tout compris — le verrou d'instance unique,
+    # son lien au repertoire `userData`, les deux variables d'environnement, l'exe
+    # package. Trois strategies ont ete refusees, toutes pour la meme raison :
+    #
+    #   $env:LUMENA_IDE_WORKSPACE='C:\...\lumena\workspace'  ->  « executable
+    #                                                             'workspace' non autorise »
+    #   $r='C:\Users\charl\Desktop\lumena'                   ->  « executable 'lumena' »
+    #
+    # Le mecanisme : `shlex.split` fusionne l'affectation en UN token, puis le
+    # basename en est extrait — donc le dernier segment du CHEMIN devenait
+    # « l'executable ». Trente iterations perdues sur un garde qui lisait un nom de
+    # dossier comme un programme.
+    #
+    # On rend donc le token BRUT pour une affectation de LITTERAL, ce qui laisse
+    # `_PS_EXPR_RE` la reconnaitre comme une expression PowerShell.
+    #
+    # La prudence porte sur la partie DROITE : `$x = Start-Process ...` ou
+    # `$x = & 'C:\evil.exe'` sont de vraies executions et doivent rester jugees.
+    # Seule une valeur litterale — chaine quotee, nombre, chemin nu — passe ici.
+    # Et le revers, mesure en ecrivant ce lot : `_PS_EXPR_RE` autorisait TOUTE
+    # commande commencant par `$x`, quelle que soit la suite. Donc a HEAD,
+    # `$x = & 'C:\evil.exe'`, `$x = Start-Process notepad` et `$x = .\evil.exe`
+    # passaient DEJA — trois executions deguisees en affectations. Le garde refusait
+    # les chemins inoffensifs et laissait entrer les appels : exactement a l'envers.
+    #
+    # Une affectation dont la valeur EXECUTE quelque chose est donc jugee sur cette
+    # valeur, pas sur le nom de la variable.
+    affectation = _PS_AFFECTATION_RE.match(first_cmd)
+    if affectation:
+        valeur = first_cmd[affectation.end():].strip()
+        if _PS_VALEUR_INERTE_RE.match(valeur):
+            return affectation.group(1)
+        if profondeur < 2:
+            # L'operateur d'appel (`&`) n'est pas le programme : il l'introduit.
+            nue = valeur.lstrip("&").strip() if valeur[:1] == "&" else valeur
+            extrait = _extract_executable(nue, profondeur=profondeur + 1)
+            if extrait:
+                return extrait
 
     try:
         # B0.4a (run PlantCare) — shlex en mode POSIX MANGE les backslashes d'un
@@ -538,7 +672,12 @@ def _split_shell_operators_respecting_quotes(command: str) -> list:
     return parts
 
 
-def sanitize_chained_command(command: str, extra_allowed: Optional[Set[str]] = None) -> Tuple[bool, str]:
+def sanitize_chained_command(
+    command: str,
+    extra_allowed: Optional[Set[str]] = None,
+    *,
+    workdir_allowed: bool = False,
+) -> Tuple[bool, str]:
     """
     Valide une commande avec operateurs de chaine (&&, ||, ;, |).
     Chaque sous-commande est validee individuellement.
@@ -552,7 +691,7 @@ def sanitize_chained_command(command: str, extra_allowed: Optional[Set[str]] = N
         sub_cmd = sub_cmd.strip()
         if not sub_cmd:
             continue
-        allowed, reason = sanitize_command(sub_cmd, extra_allowed)
+        allowed, reason = sanitize_command(sub_cmd, extra_allowed, workdir_allowed=workdir_allowed)
         if not allowed:
             return False, f"Sous-commande bloquee: {reason}"
 
@@ -723,6 +862,96 @@ def destructive_command_target_violation(
         return ""
     except Exception:
         return ""
+# ══════════════════════════════════════════════════════════════════════════════
+# LOT EXE-1 — la porte d'execution est REELLEMENT unique
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Journaux de Charles, 23 septembre 2026, 21 h 38. Lumena ne peut pas lancer son
+# IDE ; `run_command` la refuse ; elle ecrit alors : « Le `run_command` est bloque
+# dans le depot. **Je pivote : j'utilise le PowerShell MCP (canal different)** »,
+# et un `Start-Process` arbitraire passe.
+#
+# Audit : `assert_execution_cwd_allowed` protege 5 points NATIFS. Les outils MCP
+# passent par `_execute_inner` sans aucune garde d'execution.
+
+# Commandes qui LISENT l'etat de la machine sans rien changer. Sept refus du
+# 23 septembre portaient sur elles, au seul motif que le dossier de travail etait
+# le depot - alors qu'elles n'y ecrivent rien.
+#
+# Liste volontairement COURTE et exacte : chaque entree est une commande qui, seule
+# et sans argument d'action, ne fait que rapporter. `taskkill` n'y est pas, `sc
+# stop` non plus.
+_LECTURES_SYSTEME = (
+    "tasklist", "netstat", "ipconfig", "systeminfo", "whoami", "hostname", "wmic",
+    "get-process", "get-service", "get-nettcpconnection", "get-childitem",
+    "ps", "lsof", "df", "free", "uptime", "uname",
+)
+
+# Ce qui, present n'importe ou dans la ligne, interdit de la tenir pour une lecture.
+# `tasklist && rm -rf build` n'est pas une lecture : c'est une suppression precedee
+# d'une lecture.
+_ENCHAINEMENTS = ("&&", "||", ";", "&", "`", "$(")
+_VERBES_D_ACTION = (
+    "start-process", "stop-process", "taskkill", "kill", "rm ", "del ", "rmdir",
+    "remove-item", "new-item", "set-content", "add-content", "out-file",
+    "npm ", "npx ", "yarn ", "pnpm ", "git ", "pip ", "python ", "node ",
+    "invoke-webrequest", "curl ", "wget ", "sc ", "net ", "reg ", "mkdir",
+    # `wmic ... call create` lance un processus : l'appel doit sortir des lectures.
+    " call ", "delete", "terminate",
+)
+
+
+def is_system_state_read(command: Any) -> bool:
+    """Vrai si la commande ne fait que RAPPORTER l'etat de la machine.
+
+    LOT EXE-1. Une garde qui refuse `tasklist` parce que le dossier courant est le
+    depot ne protege rien - et pousse a chercher une autre porte, ce qui est
+    exactement arrive le 23 septembre 2026.
+
+    Prudent par construction : le moindre enchainement ou verbe d'action fait
+    repondre False. Mieux vaut refuser une lecture legitime que laisser passer une
+    ecriture deguisee.
+    """
+    texte = str(command or "").strip().lower()
+    if not texte:
+        return False
+    if any(marque in texte for marque in _ENCHAINEMENTS):
+        # `netstat -ano | findstr :5173` reste une lecture : le tube ne fait que
+        # filtrer. Tout autre enchainement, lui, peut porter une action.
+        if "|" not in texte or any(m in texte for m in _ENCHAINEMENTS if m != "&"):
+            return False
+    if any(verbe in texte for verbe in _VERBES_D_ACTION):
+        return False
+    premier = texte.split()[0].strip("\"'")
+    premier = premier.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if premier.endswith(".exe"):
+        premier = premier[:-4]
+    return premier in _LECTURES_SYSTEME
+
+
+# Outils MCP qui LANCENT des processus. Ils doivent passer par la meme garde que
+# `run_command`, sinon la « porte unique » de L2 en est une seconde.
+_MCP_EXECUTANTS = (
+    "powershell", "shell", "bash", "cmd", "execute_command", "run_command",
+    "execute", "terminal", "process", "spawn", "exec",
+)
+
+
+def mcp_tool_executes_commands(name: Any) -> bool:
+    """Vrai si cet outil MCP peut lancer un processus.
+
+    LOT EXE-1. La reconnaissance porte sur le SUFFIXE de l'outil, jamais sur le
+    serveur : `mcp__windows-mcp__PowerShell` et `mcp__autre__PowerShell` executent
+    tous les deux. Un serveur de memoire, de documentation ou de messagerie n'est
+    pas concerne et ne doit pas etre ralenti.
+    """
+    texte = str(name or "").strip().lower()
+    if not texte.startswith("mcp__"):
+        return False
+    suffixe = texte.rsplit("__", 1)[-1]
+    return any(marque in suffixe for marque in _MCP_EXECUTANTS)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project
 # Licensed under AGPL-3.0 (open source) or a Commercial License (proprietary use)

@@ -49,6 +49,22 @@ from src.utils.paths import DATA_DIR  # noqa: E402
 
 _ETAT = DATA_DIR / "task_orchestrator_state.json"
 
+def _corpus_exploitable() -> bool:
+    """Vrai seulement si l'etat des taches contient VRAIMENT quelque chose.
+
+    LOT ORCH-1 (23/09/2026) : `_ETAT.exists()` ne suffit pas. Apres la corruption
+    mesuree ce jour-la - 12 270 771 octets de zeros, puis un etat remis a vide -
+    le fichier EXISTAIT sans rien contenir, et ces tests echouaient en affirmant
+    qu'une fonctionnalite avait disparu. **Un corpus vide ne prouve rien** : il ne
+    dit pas que le runtime a cesse de persister, seulement qu'il n'a rien a dire.
+    """
+    try:
+        import json as _json
+        return bool(_json.loads(_ETAT.read_text(encoding="utf-8")).get("tasks"))
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node indisponible")
 
 
@@ -277,7 +293,7 @@ def test_annulee_RECULE_et_interrompue_APPELLE():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
 def test_TOUS_les_etats_du_corpus_ont_une_traduction():
     """Le vrai garde : si le runtime invente un etat demain, ce test le voit
     avant que l'ecran ne le peigne en « travaille »."""
@@ -292,12 +308,39 @@ def test_TOUS_les_etats_du_corpus_ont_une_traduction():
     )
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
-def test_les_deux_etats_corriges_existent_VRAIMENT_dans_le_corpus():
-    """Preuve que ce lot corrige un defaut reel et pas une hypothese."""
-    taches = [t for t in json.loads(_ETAT.read_text(encoding="utf-8"))["tasks"]
+_FIXTURE = Path(__file__).parents[2] / "tests" / "fixtures" / "mission-panel-corpus-2026-09-23.json"
+
+
+def test_les_deux_etats_corriges_existent_dans_le_corpus_de_PREUVE():
+    """Preuve que ce lot corrige un defaut reel et pas une hypothese.
+
+    REG-2 (24/09/2026) : cette preuve lisait l'etat VIVANT. Elle est tombee des que
+    le corpus a change - `cancelled` et `checkpointed` avaient disparu - en annoncant
+    que « le correctif n'aurait pas d'objet », alors qu'aucun code n'avait bouge.
+
+    Le corpus d'origine n'est pas recuperable : l'incident ORCH-1 a laisse
+    `task_orchestrator_state.CORROMPU-2026-09-23T2139.json`, 12 270 771 octets
+    d'octets nuls. La preuve est donc figee dans une fixture, qui porte chacun des
+    etats que la mesure du 23/09 avait exhibes.
+    """
+    taches = [t for t in json.loads(_FIXTURE.read_text(encoding="utf-8"))["tasks"]
               if isinstance(t, dict)]
     n_cancel = sum(1 for t in taches if t.get("state") == "cancelled")
     n_check = sum(1 for t in taches if t.get("state") == "checkpointed")
-    assert n_cancel > 0, "aucune tache annulee : le correctif n'aurait pas d'objet"
-    assert n_check > 0, "aucune tache interrompue : le correctif n'aurait pas d'objet"
+    assert n_cancel > 0, "le corpus de preuve ne porte plus d'annulation : fixture a refaire"
+    assert n_check > 0, "le corpus de preuve ne porte plus d'interruption : fixture a refaire"
+
+
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
+def test_les_etats_du_corpus_reel_sont_tous_traduits_meme_les_rares():
+    """Le CONSTAT sur le vivant : tout etat persiste doit avoir une traduction.
+
+    Celui-la vaut pour n'importe quel corpus, meme vide de `cancelled` : il verifie
+    un invariant, pas la presence d'un cas. C'est ce qui le rend stable.
+    """
+    taches = [t for t in json.loads(_ETAT.read_text(encoding="utf-8"))["tasks"]
+              if isinstance(t, dict)]
+    connus = {"done", "cancelled", "failed", "checkpointed", "running", "waiting",
+              "queued", "pending"}
+    inconnus = sorted({t.get("state") for t in taches if t.get("state")} - connus)
+    assert not inconnus, f"etats persistes sans traduction : {inconnus}"

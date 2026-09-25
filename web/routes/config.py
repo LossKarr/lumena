@@ -1,6 +1,7 @@
 """Configuration (.env) management and alerts routes."""
 from __future__ import annotations
 import json as _json
+import importlib
 import os
 import threading
 from datetime import datetime
@@ -14,6 +15,29 @@ from web.routes.deps import verify_admin_token
 
 from src.utils.paths import ROOT_DIR, IDENTITY_JSON, MEMORY_MD, DATA_DIR, ALERTS_DIR
 from src.llm.providers import AVAILABLE_MODELS as _AVAILABLE_MODELS
+
+_TEXT_MODEL_OPTIONS = [
+    name for name, model in _AVAILABLE_MODELS.items()
+    if model.is_selectable() and not model.supports_image_generation
+]
+_VISION_MODEL_OPTIONS = ["auto", *[
+    name for name, model in _AVAILABLE_MODELS.items()
+    if model.is_selectable() and model.supports_vision
+]]
+_CODE_MODEL_OPTIONS = ["auto", *[
+    name for name, model in _AVAILABLE_MODELS.items()
+    if model.is_selectable()
+    and ({"code_generation", "tool_calling", "reasoning"} & set(model.capabilities))
+]]
+_WEB_MODEL_OPTIONS = ["auto", *[
+    name for name, model in _AVAILABLE_MODELS.items()
+    if model.is_selectable() and model.supports_tools
+]]
+
+
+def _image_model_options() -> list[str]:
+    from src.services.image_gen import _MODEL_CATALOG
+    return ["auto", *[name for name, info in _MODEL_CATALOG.items() if info.selectable]]
 
 _PROJECT_ROOT = ROOT_DIR
 _ENV_WRITE_LOCK = threading.Lock()  # sérialise toutes les écritures .env
@@ -73,17 +97,17 @@ _CONFIG_SCHEMA: list[dict] = [
      "restart": True,
      "hint": "1 = affiche une petite fenetre Lumena pendant l'initialisation du serveur local. 0 = demarrage sans splash."},
     {"key": "LUMENA_DEFAULT_MODEL", "label": "Modèle par défaut", "group": "LLM", "type": "select",
-     "options": [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
-     "default": "deepseek-v3",
-     "hint": "Modèle LLM utilisé par défaut pour toutes les requêtes. DeepSeek-V3 offre le meilleur rapport qualité/prix. Les cerveaux spécialisés ci-dessous peuvent surcharger ce choix."},
-    {"key": "LUMENA_CODE_AUTOSWITCH_REASONER", "label": "Auto-switch DeepSeek → Reasoner (code)", "group": "LLM", "type": "bool", "default": "1",
-     "hint": "Bascule automatique de deepseek-chat vers deepseek-reasoner sur les tâches de code lourdes (évite la truncation sur longs contextes). Désactiver si tu utilises un modèle non-DeepSeek ou pour forcer la vitesse."},
+     "options": _TEXT_MODEL_OPTIONS,
+     "default": "deepseek-flash",
+     "hint": "Modèle LLM actif utilisé par défaut. DeepSeek Flash offre un bon rapport qualité/prix. Les cerveaux spécialisés ci-dessous peuvent surcharger ce choix."},
+    {"key": "LUMENA_CODE_AUTOSWITCH_REASONER", "label": "Compatibilité auto-switch DeepSeek V3 → Reasoner", "group": "LLM", "type": "bool", "default": "0",
+     "hint": "Désactivé : DeepSeek Chat et Reasoner V3 sont retirés. Conservé uniquement pour relire une ancienne configuration ; Lumena utilise DeepSeek Flash sans bascule automatique."},
     {"key": "LUMENA_ARCHITECT_MAX_TOKENS", "label": "Architect max_tokens (CodeAgent)", "group": "LLM", "type": "number", "default": "12000", "min": 2000, "max": 32000,
      "hint": "Nombre max de tokens pour la phase Architect (plan de modif). 4000 = plan court, truncation fréquente sur plans complexes. 12000 = plan détaillé sans troncature. Augmente si TRONCATURE DÉTECTÉE dans les logs."},
     {"key": "LUMENA_ARCHITECT_MAX_FILES", "label": "Architect max fichiers injectés", "group": "LLM", "type": "number", "default": "4", "min": 1, "max": 20,
-     "hint": "Nombre max de fichiers dont le contenu est donné à l'Architect pour planifier. 4 = rapide, focus (défaut). 8-12 = refactors multi-fichiers. >15 = Opus/Gemini uniquement (DeepSeek Reasoner sature)."},
+     "hint": "Nombre max de fichiers dont le contenu est donné à l'Architect pour planifier. 4 = rapide, focus (défaut). 8-12 = refactors multi-fichiers."},
     {"key": "LUMENA_ARCHITECT_TIMEOUT", "label": "Architect timeout (sec)", "group": "LLM", "type": "number", "default": "600", "min": 60, "max": 3600,
-     "hint": "Timeout max de la phase Architect (plan). 600s = 10 min (défaut, couvre DeepSeek Reasoner CoT long). Descendre à 180-300 pour Kimi/Opus/GPT plus rapides."},
+     "hint": "Timeout max de la phase Architect (plan). 600s = 10 min et couvre les modèles à raisonnement long."},
     {"key": "LUMENA_CODE_AGENT_MAX_ITER", "label": "CodeAgent max itérations", "group": "LLM", "type": "number", "default": "50", "min": 5, "max": 200,
      "hint": "Nombre max d'itérations THOUGHT→ACTION→OBSERVATION du CodeAgent avant arrêt forcé. 50 convient pour la majorité. Augmenter pour refactors très longs."},
     {"key": "LUMENA_CODE_AGENT_MAX_OUTER_RETRIES", "label": "CodeAgent retries externes", "group": "LLM", "type": "number", "default": "3", "min": 1, "max": 10,
@@ -93,7 +117,16 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "LUMENA_SUBAGENT_TIMEOUT", "label": "Agents de dev — timeout global (sec)", "group": "LLM", "type": "number", "default": "0", "min": 0, "max": 86400,
      "hint": "Timeout global d'exécution d'un agent de DEV (CodeAgent, ResearchAgent…). 0 = pas de limite. Sinon en secondes. (À ne pas confondre avec la section « Missions ».)"},
     {"key": "LUMENA_SSE_TIMEOUT_SECONDS", "label": "SSE streaming timeout (sec)", "group": "LLM", "type": "number", "default": "300", "min": 30, "max": 3600,
-     "hint": "Timeout d'un appel LLM en streaming SSE côté SubAgent. 300 = 5 min (défaut). Augmenter pour Reasoner CoT très long."},
+     "hint": "Timeout d'un appel LLM en streaming SSE côté SubAgent. 300 = 5 min (défaut). Augmenter pour les modèles à raisonnement long."},
+    # LOT 10 — le plafond qui bride le plus, et qui n'était nulle part.
+    # Sémaphore GLOBAL au processus, un seul point d'acquisition
+    # (multi_provider._chat_provider_result) : chat, heartbeat, lead de mission,
+    # workers et CodeAgents le partagent. Il était lu depuis l'environnement et
+    # absent d'ici, alors que ses trois frères « Missions » y figurent — donc
+    # invisible dans l'UI et inconnu de `update_lumena_config`.
+    {"key": "LUMENA_PROVIDER_CONCURRENCY", "label": "Appels LLM simultanés par fournisseur", "group": "LLM",
+     "type": "number", "default": "2", "min": 1, "max": 16, "restart": True,
+     "hint": "Nombre d'appels LLM en vol vers UN MÊME fournisseur (DeepSeek, OpenAI…). Plafond global au processus, partagé par le chat et les missions. C'est LUI qui borne réellement une mission dont plusieurs workers font le même métier : monter « Missions — workers en parallèle » sans monter celui-ci n'accélère rien. Monter les deux augmente la charge sur le fournisseur (quota, 429) et sur la machine pour un LLM local. Redémarrage requis : les sémaphores sont créés une fois par boucle."},
     {"key": "LUMENA_PLAN_MAX_PARALLEL", "label": "PlannerAgent max parallélisme", "group": "LLM", "type": "number", "default": "3", "min": 1, "max": 20,
      "hint": "Nombre max de sous-tâches exécutées en parallèle par le PlannerAgent. 3 = défaut (équilibre rate-limits/latence)."},
     # ── SubAgents : override modèle per-agent ──────────────────────────────────
@@ -101,42 +134,42 @@ _CONFIG_SCHEMA: list[dict] = [
     # Valeur explicite = force ce modèle pour ce SubAgent uniquement (sans toucher aux autres).
     {"key": "LUMENA_AGENT_CODE_MODEL", "label": "CodeAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le CodeAgent (write/edit/run code). auto = routage automatique (recommandé). Forcer Kimi K2.5 / Opus / DeepSeek-reasoner pour refactors lourds."},
     {"key": "LUMENA_AGENT_RESEARCH_MODEL", "label": "ResearchAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le ResearchAgent (recherche web + synthèse). auto = routage automatique. Gemini 2.5 Pro excellent pour long contexte + citations."},
     {"key": "LUMENA_AGENT_FILE_MODEL", "label": "FileAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le FileAgent (lecture/écriture I/O simple). auto = routage automatique. GPT-4o-mini / Haiku suffisent largement et économisent."},
     {"key": "LUMENA_AGENT_BROWSER_MODEL", "label": "BrowserAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le BrowserAgent (Playwright + analyse DOM). auto = routage automatique. Gemini 2.5 Flash rapide + vision native."},
     {"key": "LUMENA_AGENT_DEBUG_MODEL", "label": "DebugAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le DebugAgent (analyse stacktraces, bugs subtils). auto = routage automatique. Opus / DeepSeek-reasoner pour deep thinking."},
     {"key": "LUMENA_AGENT_REFACTOR_MODEL", "label": "RefactorAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le RefactorAgent (pattern matching, restructuration). auto = routage automatique. Kimi K2.5 / Opus excellents."},
     {"key": "LUMENA_AGENT_PLANNER_MODEL", "label": "PlannerAgent — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par le PlannerAgent (décomposition de tâches). auto = routage automatique. Sonnet / DeepSeek-v3 rapides et structurés."},
     {"key": "LUMENA_AGENT_GENERAL_MODEL", "label": "ForkingAgent / Général — modèle",
      "group": "SubAgents", "type": "select",
-     "options": ["auto"] + [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
+     "options": ["auto", *_TEXT_MODEL_OPTIONS],
      "default": "auto",
      "hint": "Modèle utilisé par les SubAgents sans type dédié (ForkingAgent, etc.). auto = routage automatique."},
     # ── Missions (sous-agents « Lumena complète » en arrière-plan) ──────────────────────
@@ -160,61 +193,22 @@ _CONFIG_SCHEMA: list[dict] = [
     # ── Cerveaux Spécialisés ───────────────────────────────────────────────────────────
     {"key": "LUMENA_BRAIN_VISION", "label": "Cerveau Vision (analyse images)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-4o", "gpt-4o-mini",
-                 "o3", "o4-mini",
-                 "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4.8", "claude-sonnet-5", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude-haiku-4.5",
-                 "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
-                 "grok-4.6", "grok-4.5", "grok-build-0.1", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-0309-non-reasoning",
-                 "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "nvidia-step-3.7-flash", "nvidia-kimi-k2.6",
-                 "nvidia-minimax-m3", "nvidia-gemma-4-31b-it",
-                 "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.6v", "glm-4.5v", "glm-ocr", "glm-5v-turbo"],
+     "options": _VISION_MODEL_OPTIONS,
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le disponible avec support vision (OpenAI/Anthropic/Google/Grok/Z.AI)"},
     {"key": "LUMENA_BRAIN_CODE", "label": "Cerveau Code (analyse et g\u00e9n\u00e9ration)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-4o", "gpt-4o-mini",
-                 "o3", "o4-mini",
-                 "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4.8", "claude-sonnet-5", "claude-opus-4.7", "claude-opus-4.6", "claude-sonnet-4.6", "grok-4.3",
-                 "deepseek-v3", "deepseek-reasoner", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro", "gemini-2.5-pro",
-                 "kimi-k3", "kimi-k2.7-code", "kimi-k2.6",
-                 "nvidia-deepseek-v4-pro", "nvidia-deepseek-v4-flash", "nvidia-gpt-oss-120b", "nvidia-step-3.7-flash",
-                 "nvidia-kimi-k2.6", "nvidia-glm-5.1", "nvidia-nemotron-3-ultra-550b-a55b",
-                 "nvidia-minimax-m3", "nvidia-minimax-m2.7", "nvidia-gemma-4-31b-it",
-                 "minimax-m3", "minimax-m2.5", "minimax-m2.7",
-                 "grok-4.6", "grok-4.5", "grok-build-0.1", "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
-                 "glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.7-flashx", "glm-4.7-flash",
-                 "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4-32b-0414-128k"],
+     "options": _CODE_MODEL_OPTIONS,
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le code disponible (score HumanEval/SWE-bench)"},
     {"key": "LUMENA_BRAIN_WEB", "label": "Cerveau Web (recherche et analyse web)",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.1-pro", "gemini-2.5-pro", "gemini-2.5-flash",
-                 "claude-fable-5", "claude-opus-5", "claude-opus-4.8", "claude-sonnet-5", "claude-sonnet-4.6", "claude-opus-4.7", "claude-opus-4.6", "gpt-4o-mini",
-                 "grok-4.6", "grok-4.5", "grok-4.3", "grok-4.20-0309-reasoning", "grok-4.20-multi-agent-0309",
-                 "kimi-k3", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "deepseek-v3", "minimax-m3", "minimax-m2.5",
-                 "nvidia-deepseek-v4-pro", "nvidia-gpt-oss-120b", "nvidia-step-3.7-flash", "nvidia-glm-5.1",
-                 "nvidia-minimax-m3", "nvidia-gemma-4-31b-it",
-                 "nvidia-nemotron-3-ultra-550b-a55b",
-                 "glm-5.2", "glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7", "glm-4.7-flashx", "glm-4.7-flash",
-                 "glm-4.6", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4-32b-0414-128k"],
+     "options": _WEB_MODEL_OPTIONS,
      "default": "auto",
      "hint": "auto = meilleur mod\u00e8le disponible pour la recherche et analyse web"},
     {"key": "LUMENA_BRAIN_IMAGE_GEN", "label": "Mod\u00e8le g\u00e9n\u00e9ration d'images",
      "group": "Cerveaux Sp\u00e9cialis\u00e9s", "type": "select",
-     "options": ["auto",
-                 "gemini-3.1-flash-lite-image", "gemini-3.1-flash-image", "gemini-3-pro-image", "gemini-2.5-flash-image",
-                 "huggingface-sdxl",
-                 "cogview-4", "glm-image",
-                 "gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini",
-                 "flux-2-max", "flux-2-pro", "flux-2-flex", "flux-2-klein-4b", "flux-2-klein-9b", "flux-schnell",
-                 "flux-kontext-pro", "flux-kontext-max", "flux-1.1-pro-ultra",
-                 "stable-image-ultra", "stable-image-core", "sd3.5-large", "sd3.5-large-turbo", "sd3.5-medium", "sd3.5-flash",
-                 "imagen-4-ultra", "imagen-4", "imagen-4-fast",
-                 "ideogram-v4-quality", "ideogram-v4", "ideogram-v4-turbo",
-                 "ideogram-v3-quality", "ideogram-v3-balanced", "ideogram-v3-turbo",
-                 "recraft-v4", "recraft-v4-svg",
-                 "grok-imagine-image-2.0", "grok-imagine-image", "grok-imagine-image-quality", "grok-imagine-image-pro", "minimax-image-01",
-                 "seedream-5-lite", "seedream-4.5", "wan-2.7-image-pro", "qwen-image", "hunyuan-image-3"],
+     "options": _image_model_options(),
      "default": "auto",
      "hint": "auto = cascade gratuite puis payante par co\u00fbt croissant selon les cl\u00e9s disponibles. Mod\u00e8les : Gemini, Z.AI, GPT-image, FLUX, Stable Diffusion, Imagen, Ideogram, Recraft, MiniMax, Replicate, HuggingFace."},
     {"key": "LUMENA_IMAGE_DEFAULT_SIZE", "label": "Taille d'image par d\u00e9faut",
@@ -658,9 +652,9 @@ _CONFIG_SCHEMA: list[dict] = [
     # ── Fine-tuning ──────────────────────────────────────────────────────────
     {"key": "LUMENA_JUDGE_MODEL", "label": "Modèle LLM du judge",
      "group": "Fine-tuning", "type": "select",
-     "options": [k for k, m in _AVAILABLE_MODELS.items() if not m.supports_image_generation],
-     "default": "deepseek-chat",
-     "hint": "Modèle LLM utilisé pour scorer la qualité des conversations avant fine-tuning. deepseek-chat est le plus rapide et économique."},
+     "options": _TEXT_MODEL_OPTIONS,
+     "default": "deepseek-flash",
+     "hint": "Modèle LLM actif utilisé pour scorer la qualité des conversations avant fine-tuning. DeepSeek Flash est rapide et économique."},
     {"key": "LUMENA_JUDGE_THRESHOLD", "label": "Seuil de validation judge",
      "group": "Fine-tuning", "type": "number", "default": "6.5", "min": 0, "max": 10,
      "hint": "Score minimum (0-10) pour qu'une conversation entre dans le dataset d'entraînement. 6.5 par défaut. Augmenter pour plus de sélectivité."},
@@ -727,6 +721,41 @@ _CONFIG_SCHEMA: list[dict] = [
      "group": "MCP", "type": "bool", "default": "1",
      "hint": "Kill switch sécurité : 1 = bloque les transports HTTP/SSE distants des serveurs MCP. 0 = autorise les MCPs en remote (avancé)."},
 ]
+
+def _refresh_model_selector_options() -> None:
+    """Recalcule les sélecteurs après une découverte dynamique Ollama."""
+    # Certains outils de diagnostic rechargent ``src.llm.providers``. Résoudre
+    # le module courant évite de garder un ancien dictionnaire par référence.
+    catalog = importlib.import_module("src.llm.providers").AVAILABLE_MODELS
+    text = [
+        name for name, model in catalog.items()
+        if model.is_selectable() and not model.supports_image_generation
+    ]
+    specialized = {
+        "LUMENA_BRAIN_VISION": ["auto", *(
+            name for name, model in catalog.items()
+            if model.is_selectable() and model.supports_vision
+        )],
+        "LUMENA_BRAIN_CODE": ["auto", *(
+            name for name, model in catalog.items()
+            if model.is_selectable()
+            and ({"code_generation", "tool_calling", "reasoning"} & set(model.capabilities))
+        )],
+        "LUMENA_BRAIN_WEB": ["auto", *(
+            name for name, model in catalog.items()
+            if model.is_selectable() and model.supports_tools
+        )],
+        "LUMENA_BRAIN_IMAGE_GEN": _image_model_options(),
+    }
+    for entry in _CONFIG_SCHEMA:
+        key = entry.get("key")
+        if key in {"LUMENA_DEFAULT_MODEL", "LUMENA_JUDGE_MODEL"}:
+            entry["options"] = list(text)
+        elif key in specialized:
+            entry["options"] = specialized[key]
+
+
+_refresh_model_selector_options()
 
 # ── P3.3 restart flags manquants ─────────────────────────────────────────────
 for _e in _CONFIG_SCHEMA:
@@ -907,6 +936,7 @@ def _write_env_values(updates: dict[str, str]) -> None:
 
 @router.get("/api/config", dependencies=[Depends(verify_admin_token)])
 async def get_config():
+    _refresh_model_selector_options()
     env_vals = _read_env_file()
     fallbacks = _read_rules_fallbacks()
     # Merge: .env prime sur fallbacks

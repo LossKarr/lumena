@@ -269,21 +269,23 @@ class TestCanaryDeepSeekV4NoSwap:
             result, _ = llm._is_code_heavy_request(messages, max_tokens=16000)
             assert result is False, "V4-pro ne doit pas déclencher le swap vers reasoner"
 
-    def test_deepseek_chat_still_triggers_swap(self):
-        """_is_code_heavy_request retourne True pour deepseek-chat (V3.2) sur code."""
+    def test_deepseek_chat_never_triggers_retired_swap(self):
+        """Même le drapeau legacy ne réactive pas l'endpoint reasoner retiré."""
         from src.llm.multi_provider import MultiProviderLLM
         import os
         with patch("src.llm.multi_provider.get_model_config") as mock_cfg:
             mock_cfg.return_value = MagicMock(
                 model_id="deepseek-chat",
                 provider=__import__("src.llm.providers", fromlist=["ProviderType"]).ProviderType.DEEPSEEK,
+                is_selectable=lambda: False,
             )
             llm = object.__new__(MultiProviderLLM)
             llm._config = mock_cfg.return_value
             messages = [{"role": "user", "content": "crée une API Python complète avec auth JWT"}]
             with patch.dict(os.environ, {"LUMENA_CODE_AUTOSWITCH_REASONER": "1"}):
                 result, reason = llm._is_code_heavy_request(messages, max_tokens=16000)
-            assert result is True, "deepseek-chat (V3.2) doit déclencher le swap vers reasoner"
+            assert result is False
+            assert reason is None
 
 
 # ══════════════════════════════════════════════════════════════════════════════

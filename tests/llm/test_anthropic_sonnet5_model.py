@@ -51,11 +51,14 @@ def test_claude_sonnet_5_config_lists_and_not_image_generation():
 
 
 def test_claude_sonnet_5_setup_wizard_recommendations():
-    from pathlib import Path
+    import asyncio
+    from web.routes.setup import setup_schema
 
-    setup_text = Path("web/routes/setup.py").read_text(encoding="utf-8")
-
-    assert '"claude-sonnet-5"' in setup_text
+    payload = asyncio.run(setup_schema())
+    brains = next(step for step in payload["steps"] if step["id"] == "brains")
+    fields = {field["key"]: field for field in brains["fields"]}
+    for key in ("LUMENA_BRAIN_VISION", "LUMENA_BRAIN_CODE", "LUMENA_BRAIN_WEB"):
+        assert "claude-sonnet-5" in fields[key]["options"]
 
 
 def test_anthropic_sampling_helper_covers_sonnet_5():
@@ -123,9 +126,7 @@ async def test_anthropic_result_payload_strips_sampling_for_sonnet_5(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_anthropic_tools_refusal_uses_safe_fallback_and_strips_sampling(monkeypatch):
-    from unittest.mock import AsyncMock
-
+async def test_anthropic_tools_refusal_is_terminal_and_strips_sampling(monkeypatch):
     from src.llm.multi_provider import MultiProviderLLM
 
     captured = {}
@@ -152,19 +153,15 @@ async def test_anthropic_tools_refusal_uses_safe_fallback_and_strips_sampling(mo
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     llm = MultiProviderLLM(model_name="claude-sonnet-5")
     llm._http = _HTTP()
-    llm.chat = AsyncMock(return_value="fallback ok")
-
-    result = await llm._chat_anthropic_with_tools(
-        [{"role": "user", "content": "hello"}],
-        _ToolSystem(),
-        temperature=0.7,
-        max_tokens=128,
-        max_iterations=1,
-    )
-
-    assert result == "fallback ok"
+    with pytest.raises(ValueError, match="anthropic_refusal"):
+        await llm._chat_anthropic_with_tools(
+            [{"role": "user", "content": "hello"}],
+            _ToolSystem(),
+            temperature=0.7,
+            max_tokens=128,
+            max_iterations=1,
+        )
     assert captured["payload"]["model"] == "claude-sonnet-5"
     assert "temperature" not in captured["payload"]
     assert "top_p" not in captured["payload"]
     assert "top_k" not in captured["payload"]
-    llm.chat.assert_awaited_once()

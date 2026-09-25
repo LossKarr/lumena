@@ -148,7 +148,7 @@ async def test_chat_continuation_warning_when_still_truncated(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_auto_switches_to_reasoner_for_long_code_tasks(monkeypatch):
+async def test_chat_keeps_successor_for_long_code_tasks(monkeypatch):
     llm = MultiProviderLLM(model_name="deepseek-v3")
     captured = {}
 
@@ -170,13 +170,13 @@ async def test_chat_auto_switches_to_reasoner_for_long_code_tasks(monkeypatch):
     meta = llm.get_last_response_meta()
 
     assert output == "ok"
-    assert "reasoner" in str(captured.get("model", "")).lower()
-    assert meta["auto_switch_used"] is True
-    assert meta["auto_switch_reason"] is not None
+    assert captured.get("model") == "deepseek-flash"
+    assert meta["auto_switch_used"] is False
+    assert meta["auto_switch_reason"] is None
 
 
 @pytest.mark.asyncio
-async def test_chat_auto_switch_uplifts_inherited_deepseek_chat_budget(monkeypatch):
+async def test_chat_does_not_uplift_budget_to_retired_reasoner(monkeypatch):
     llm = MultiProviderLLM(model_name="deepseek-v3")
     captured = {}
 
@@ -194,14 +194,14 @@ async def test_chat_auto_switch_uplifts_inherited_deepseek_chat_budget(monkeypat
 
     output = await llm.chat(
         [{"role": "user", "content": "corrige ce code python et applique un patch propre"}],
-        max_tokens=llm.max_output_tokens,  # hérité du modèle source deepseek-chat (= 8192)
+        max_tokens=llm.max_output_tokens,
     )
     meta = llm.get_last_response_meta()
 
     assert output == "ok"
-    assert "reasoner" in str(captured.get("model", "")).lower()
-    assert captured.get("max_tokens") == 65536
-    assert meta["auto_switch_used"] is True
+    assert captured.get("model") == "deepseek-flash"
+    assert captured.get("max_tokens") == llm.max_output_tokens
+    assert meta["auto_switch_used"] is False
 
 
 @pytest.mark.asyncio

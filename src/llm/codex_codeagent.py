@@ -32,7 +32,7 @@ from src.llm.codex_subscription import (
     CodexSubscriptionGateway,
     CodexSubscriptionSettings,
 )
-from src.utils.syntax_check import check_syntax
+from src.utils.syntax_check import ERREUR, NON_VERIFIABLE, verify_syntax
 
 
 THREAD_START_METHOD = "thread/start"
@@ -492,12 +492,20 @@ async def run_codeagent_with_codex_subscription(
                 )
 
             syntax_errors: list[str] = []
+            # LOT 8a — les fichiers qu'AUCUN validateur n'a pu relire. Ils ne font
+            # PAS echouer la tache : bloquer un projet Rust ou PHP parce que la
+            # machine n'a pas le compilateur serait absurde. Mais le constat se
+            # grave et remonte, doctrine Z40c : la porte laisse passer, elle ne se
+            # tait pas. Sans cela, l'absence d'erreur se lit « verifie » (Z38).
+            non_verifies: list[str] = []
             for rel in changed:
                 candidate = execution_root / rel
                 if candidate.is_file():
-                    error = await check_syntax(candidate)
-                    if error:
-                        syntax_errors.append(f"{rel}: {error}")
+                    verdict, detail = await verify_syntax(candidate)
+                    if verdict == ERREUR:
+                        syntax_errors.append(f"{rel}: {detail}")
+                    elif verdict == NON_VERIFIABLE:
+                        non_verifies.append(f"{rel} ({detail})")
             green_test = any(_is_green_test_item(item) for item in items)
             tests_expected = _tests_exist(execution_root)
             if syntax_errors or (tests_expected and not green_test):
@@ -530,10 +538,21 @@ async def run_codeagent_with_codex_subscription(
                     elif dst.exists():
                         dst.unlink()
             artifacts = [str((workspace / rel).resolve()) for rel in changed]
+            _sortie = final_text or "Codex a termine la tache et les validations."
+            if non_verifies:
+                # Le fait atteint celui qui decide : le worker lit cette sortie,
+                # et `syntax_unverified` la rend interrogeable au ledger.
+                _sortie += (
+                    "\n\n🔎 NON VÉRIFIÉ — aucun validateur n'a pu relire "
+                    f"{len(non_verifies)} fichier(s) : "
+                    + " ; ".join(non_verifies[:6])
+                    + ". Le code a été écrit, il n'a pas été prouvé correct : "
+                    "ne conclus pas « vérifié » dessus sans une exécution réelle."
+                )
             return CodexCodeAgentResult(
                 task_id=task_id,
                 success=True,
-                output=final_text or "Codex a termine la tache et les validations.",
+                output=_sortie,
                 meta={
                     "iterations": len(items),
                     "thread_id": thread_id,
@@ -541,6 +560,7 @@ async def run_codeagent_with_codex_subscription(
                     "model": model or "server-default",
                     "green_test": green_test,
                     "engine": "codex_subscription",
+                    "syntax_unverified": list(non_verifies),
                 },
                 artifacts=artifacts,
                 duration_ms=int((time.monotonic() - started) * 1000),

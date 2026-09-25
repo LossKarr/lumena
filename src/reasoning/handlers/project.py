@@ -1663,10 +1663,7 @@ async def create_project_handler(
         logger.info("[create_project] Type '{}' détecté → directives spécifiques injectées", _project_type)
 
     sem = asyncio.Semaphore(_MAX_PARALLEL)
-    _is_deepseek = hasattr(llm, "provider") and "deepseek" in str(getattr(llm, "provider", "")).lower()
-    _gen_model: Optional[str] = "deepseek-reasoner" if (_is_deepseek and len(valid_files) > 15) else None
-    if _gen_model:
-        logger.info("[create_project] {} fichiers > 15 → démarrage avec deepseek-reasoner", len(valid_files))
+    _gen_model: Optional[str] = None
 
     # ── Détection modèle léger → trimmer le prompt ──
     _current_model_name = str(getattr(llm, "model", "") or "").lower()
@@ -1685,7 +1682,6 @@ async def create_project_handler(
         "gpt-4o-mini": "gpt-4o",
         "gpt-5.4-mini": "gpt-5.4",
         "gpt-4.1-mini": "gpt-4.1",
-        "deepseek-chat": "deepseek-reasoner",
     }
 
     def _get_upgrade_model(current: str) -> Optional[str]:
@@ -1736,7 +1732,7 @@ async def create_project_handler(
                     **(({"model": model_override}) if model_override else {}),
                 )
 
-                # ── Détection de troncature → retry avec deepseek-reasoner (32K) ──
+                # ── Détection de troncature → retry borné sans endpoint retiré ──
                 _meta = getattr(llm, "_last_response_meta", None) or {}
                 _was_truncated = _meta.get("text_may_be_incomplete", False)
                 _used_model = str(_meta.get("model_used", model_override or "")).lower()
@@ -1751,8 +1747,6 @@ async def create_project_handler(
                 # Si tronqué ou vide → retry avec modèle upgrade (provider-agnostic)
                 if _was_truncated and (not raw or not raw.strip()):
                     _upgrade = _get_upgrade_model(_used_model) if _used_model else None
-                    if _is_deepseek and "reasoner" not in _used_model:
-                        _upgrade = "deepseek-reasoner"
                     if _upgrade:
                         logger.warning(
                             "[create_project] 🔄 {} : vide/tronqué sur {} → retry avec {} (32K)",
@@ -1779,26 +1773,6 @@ async def create_project_handler(
                             **({"max_tokens": _fmax} if _fmax is not None else {}),
                             **(({"model": model_override}) if model_override else {}),
                         )
-                elif (
-                    _was_truncated
-                    and _is_deepseek
-                    and "reasoner" not in _used_model
-                ):
-                    logger.warning(
-                        "[create_project] 🔄 {} : tronqué sur {} → retry avec deepseek-reasoner (32K)",
-                        file_entry["path"], _used_model,
-                    )
-                    raw = await llm.chat(
-                        messages=file_messages,
-                        temperature=0.3,
-                        max_tokens=32768,
-                        model="deepseek-reasoner",
-                    )
-                    # Re-nettoyer
-                    _meta2 = getattr(llm, "_last_response_meta", None) or {}
-                    if _meta2.get("text_may_be_incomplete", False) and "⚠️" in raw:
-                        raw = re.sub(r'\n\n⚠️[^\n]*$', '', raw)
-
                 content = _strip_code_fences(raw)
 
                 # ── Guard : détecter si le LLM a retourné un JSON manifest ──
@@ -1823,10 +1797,7 @@ async def create_project_handler(
                 # ── Guard : détecter contenu tronqué → retry ──
                 if _looks_truncated(content, _ext):
                     _retry_model: Optional[str] = None
-                    if _is_deepseek:
-                        _retry_model = "deepseek-reasoner"
-                    else:
-                        _retry_model = _get_upgrade_model(_used_model)
+                    _retry_model = _get_upgrade_model(_used_model)
                     logger.warning(
                         "[create_project] ✂️ {} semble tronqué ({} chars, ext={}) → retry {}",
                         file_entry["path"], len(content), _ext,
@@ -1872,14 +1843,8 @@ async def create_project_handler(
     errors = []
     _completed_indices: List[int] = []  # indices dans valid_files pour plan_update
 
-    _COMPLEX_EXTENSIONS = {".py", ".ts", ".tsx", ".rs", ".go", ".java", ".cpp", ".js", ".html"}
-
     def _pick_model(f: Dict[str, str], current_model: Optional[str]) -> Optional[str]:
-        # Fichiers "lourds" → deepseek-reasoner directement pour éviter troncature + retry coûteux
-        if _is_deepseek:
-            ext = "." + f.get("path", "").rsplit(".", 1)[-1].lower() if "." in f.get("path", "") else ""
-            if ext in _COMPLEX_EXTENSIONS:
-                return "deepseek-reasoner"
+        # Conserver le modèle choisi ; aucun endpoint historique n'est injecté.
         return current_model
 
     async def _process_one_and_write(f: Dict[str, str], global_idx: int, current_model: Optional[str]) -> bool:
@@ -1900,8 +1865,6 @@ async def create_project_handler(
             # Retry avec modèle upgrade si disponible, sinon même modèle
             _failed_model = str((getattr(llm, "_last_response_meta", None) or {}).get("model_used", current_model or "")).lower()
             _retry_override = _get_upgrade_model(_failed_model)
-            if not _retry_override and _is_deepseek:
-                _retry_override = "deepseek-chat"
             logger.info(
                 "[create_project] 🔄 {} retry avec {} (après échec {})",
                 file_path, _retry_override or "modèle par défaut", _failed_model,
@@ -2251,6 +2214,23 @@ async def create_project_handler(
 
 # ─── Handler dev_run_fix ────────────────────────────────────────────────────
 
+def _l2_2_refus_dossier(ctx, dossier) -> str:
+    """L2-2 — refus (texte) si ce dossier d'execution est interdit ; "" sinon.
+
+    `_run_project_cmd` lance `create_subprocess_shell(cmd, cwd=...)` : le dossier est
+    le seul point de controle honnete (la cible n'est lisible que dans 11 % des lignes).
+    """
+    try:
+        from .files import PathSecurityError as _SecErr, assert_execution_cwd_allowed
+        try:
+            assert_execution_cwd_allowed(dossier, ctx, outil="dev_run_fix")
+        except _SecErr as _sec:
+            return f"⛔ {_sec}"
+    except Exception:
+        return ""
+    return ""
+
+
 async def dev_run_fix_handler(
     ctx: HandlerContext,
     command: str,
@@ -2279,6 +2259,11 @@ async def dev_run_fix_handler(
         return HandlerResult.fail(
             f"❌ Répertoire inexistant : {base_dir}", handler_name=handler_name
         )
+
+    # L2-2 : juge le dossier AVANT de lister les fichiers et de lancer quoi que ce soit.
+    _refus_l2 = _l2_2_refus_dossier(ctx, base_dir)
+    if _refus_l2:
+        return HandlerResult.ok(_refus_l2, handler_name=handler_name)
 
     max_attempts = max(1, min(int(max_attempts), 5))
 
@@ -2860,6 +2845,11 @@ async def test_and_fix_handler(
             f"❌ Répertoire inexistant : {base_dir}", handler_name=handler_name
         )
 
+    # L2-4 : meme garde que `dev_run_fix`, son jumeau (meme resolution, meme lanceur).
+    _refus_l2 = _l2_2_refus_dossier(ctx, base_dir)
+    if _refus_l2:
+        return HandlerResult.ok(_refus_l2, handler_name=handler_name)
+
     max_attempts = max(1, min(int(max_attempts), 6))
 
     # Auto-détecter la commande si non fournie
@@ -2960,6 +2950,11 @@ async def lint_and_fix_handler(
         return HandlerResult.fail(
             f"❌ Répertoire inexistant : {base_dir}", handler_name=handler_name
         )
+
+    # L2-4 : meme garde que `dev_run_fix`, son jumeau (meme resolution, meme lanceur).
+    _refus_l2 = _l2_2_refus_dossier(ctx, base_dir)
+    if _refus_l2:
+        return HandlerResult.ok(_refus_l2, handler_name=handler_name)
 
     max_attempts = max(1, min(int(max_attempts), 5))
 

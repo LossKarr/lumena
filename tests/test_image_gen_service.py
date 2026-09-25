@@ -129,7 +129,10 @@ class TestModelProvider:
             assert model in _MODEL_PROVIDER, f"{model} not in _MODEL_PROVIDER"
 
     def test_fallback_order_covers_catalog(self):
-        assert set(_PROVIDER_FALLBACK_ORDER) == set(_MODEL_CATALOG)
+        assert set(_PROVIDER_FALLBACK_ORDER) == {
+            name for name, info in _MODEL_CATALOG.items()
+            if info.selectable and info.auto_eligible
+        }
 
     def test_auto_fallback_is_cost_first_not_premium_first(self):
         first_tier = _PROVIDER_FALLBACK_ORDER[:4]

@@ -24,6 +24,9 @@ import subprocess
 import difflib
 from time import perf_counter
 from loguru import logger
+from src.utils.project_registry import anchor_root_for_mutation  # L1d-1 : ancre de projet
+from src.reasoning.steering_runtime import apply_steering_checkpoint
+from src.runtime.steering_dispatcher import STEERING_INTERRUPTED, await_interruptible_llm
 
 # Cancel token registry: thread_id → threading.Event
 # Enregistré depuis chat.py avant le démarrage du thread agent.
@@ -47,7 +50,7 @@ from src.reasoning.delegate_strategy import (  # noqa: F401
 
 # ── Imports depuis react_config (constantes, enums, flags) ─────────
 from .react_config import (
-    ActionType, Thought, Action, Observation, ReActStep, TaskItem,
+    ActionType, Thought, Action, Observation, observation_lisible, ReActStep, TaskItem,
     IS_WINDOWS, OS_NAME,
     ADVANCED_TOOLS_AVAILABLE, apply_patch, edit_file, parse_patch,
     ContextCompactor, get_token_stats, format_token_stats, estimate_tokens,
@@ -101,6 +104,7 @@ from .mission_runtime import (
     rf6a_is_worker_run as _mr__is_worker_run,
     rf6a_is_delegated_worker as _mr__is_delegated_worker,
     rf6b_decision_nudge_ecrits_non_publies as _mr_decision_nudge,
+    rf6b_decision_publication_manquante as _mr_decision_publication_manquante,
     rf6b_decision_ecrasement_livrable as _mr_decision_ecrasement,
     rf6b_decision_intention_mission_chat as _mr_decision_intention_chat,
 )
@@ -163,6 +167,11 @@ from ..runtime.execution_ledger import (
     _extract_target as _ledger_extract_target,
     _extract_proof as _ledger_extract_proof,
 )
+from .execution_observation_runtime import (
+    observation_execution_fields, record_tool_observation, execute_with_observed_receipt,
+    successful_observation_names, execution_guard_context, plan_execution_fields,
+)
+from .execution_guards import structured_observation_success
 # ── Anti-hallucination guard : extrait dans src/reasoning/hallucination_guard.py
 # Re-export pour compat (react reste le point d'import historique des tests).
 from src.reasoning.hallucination_guard import (  # noqa: F401
@@ -1798,11 +1807,15 @@ class ReActLoop:
             raise SystemExit("user_cancelled_react")
 
     async def _execute_tool_with_cancel_guard(
-        self, name: str, args: Dict[str, Any], *, caller: Any,
+        self, name: str, args: Dict[str, Any], *, caller: Any, iteration: int = 0,
     ):
         """Execute one tool only while the owning stream is still active."""
         self._raise_if_user_cancelled(f"outil {name}")
-        return await self.tools.execute(name, args, caller=caller)
+        from src.runtime.steering_dispatcher import execution_phase
+        with execution_phase(getattr(self, "task_id", None), "tool"):
+            return await execute_with_observed_receipt(
+                self.tools, getattr(self, "execution_ledger", None), name, args, caller=caller, iteration=iteration,
+            )
 
     @property
     def _is_mission_run(self) -> bool:
@@ -3480,7 +3493,7 @@ class ReActLoop:
             tool_name = step.action.tool_name or "FINAL"
             formatted.append(f"ACTION: {tool_name}")
             if step.observation:
-                observation_text = step.observation.content or ""
+                observation_text = observation_lisible(step.observation)
                 if i < compact_count:
                     # Étapes semi-récentes: résumé compact (300 chars — assez pour garder les noms clés)
                     summary = observation_text[:300].replace("\n", " ").strip()
@@ -3629,7 +3642,7 @@ class ReActLoop:
 
     def _update_plan_progress(self, tool_name: str, tool_args: Dict[str, Any],
                                observation_content: str, iteration: int,
-                               allow_fallback: bool = True) -> None:
+                               allow_fallback: bool = True, *, execution_observation=None) -> None:
         """Met a jour le plan en cochant les taches completees par l'outil execute.
 
         allow_fallback : si False, SEUL le matching prouvé (sémantique tool+args+obs)
@@ -3676,6 +3689,7 @@ class ReActLoop:
             definir_derniere_avance=_definir_derniere_avance,
             obtenir_route_document=lambda: ReActLoop._document_route_for_run(self),
             types_documents_requis=ReActLoop._document_plan_required_kinds,
+            execution_observation=execution_observation,
         ))
 
         # Émettre l'état du plan (dédupliqué)
@@ -3915,6 +3929,7 @@ class ReActLoop:
         query, self._premature_final_retries = hallucination_retry_query(
             combined_text, original_query,
             self._successful_session_tools, self._premature_final_retries,
+            **execution_guard_context(getattr(self, "execution_ledger", None)),
         )
         return query
 
@@ -4104,31 +4119,11 @@ class ReActLoop:
                     raise
                 except Exception:
                     pass
-                # Voice V2 V6 — pause cooperative and persistent steering. Both
-                # happen BETWEEN iterations, never in the middle of a tool.
                 try:
-                    from src.runtime.task_steering import (
-                        acknowledge_control, consume_text_steering,
-                    )
-                    _work_record = self.task_orchestrator.get_task(self.task_id) or {}
-                    _work_meta = _work_record.get("metadata") or {}
-                    if _work_meta.get("pause_requested"):
-                        self.task_orchestrator.set_task_metadata(self.task_id, paused=True)
-                        acknowledge_control(self.task_orchestrator, self.task_id, "pause")
-                        while True:
-                            if self.task_orchestrator.is_cancel_requested(self.task_id):
-                                raise SystemExit("task_orchestrator_cancel")
-                            _paused_record = self.task_orchestrator.get_task(self.task_id) or {}
-                            if not ((_paused_record.get("metadata") or {}).get("pause_requested")):
-                                self.task_orchestrator.set_task_metadata(self.task_id, paused=False)
-                                break
-                            await asyncio.sleep(0.2)
-                    _steer_text, _steer_ids = consume_text_steering(
-                        self.task_orchestrator, self.task_id,
-                    )
+                    _steer_text, _steer_ids = await apply_steering_checkpoint(self.task_orchestrator, self.task_id)
                     if _steer_text:
                         query = f"{query}\n\n{_steer_text}" if query else _steer_text
-                        logger.info("[ReAct] steering applique task={} commands={}", self.task_id, _steer_ids)
+                        logger.info("[ReAct] steering remis task={} commands={}", self.task_id, _steer_ids)
                 except SystemExit:
                     raise
                 except Exception as _steer_exc:
@@ -4408,10 +4403,14 @@ class ReActLoop:
                             f"LLM_RETRY: itération {i+1}, tentative {_attempt+1}/3, "
                             f"timeout={_llm_call_timeout}s — LLM lent ou contexte lourd, attente..."
                         )
-                    response = await asyncio.wait_for(
+                    response = await await_interruptible_llm(
                         self.llm_chat(messages, stop=_react_stop),
+                        task_id=self.task_id,
                         timeout=_llm_call_timeout,
                     )
+                    if response is STEERING_INTERRUPTED:
+                        _llm_last_exc = None
+                        break
                     _llm_last_exc = None
                     break  # succès
                 except asyncio.TimeoutError:
@@ -4472,6 +4471,9 @@ class ReActLoop:
                     _finish_iteration(status="ok", summary="fallback_compact_after_triple_timeout")
                     continue
                 raise _llm_last_exc
+            if response is STEERING_INTERRUPTED:
+                _finish_iteration(status="ok", summary="urgent_steering_llm_relaunch")
+                continue
             # ── Check global deadline après l'appel LLM ──
             if hasattr(self, '_timeout_deadline') and perf_counter() > self._timeout_deadline:
                 raise asyncio.TimeoutError()
@@ -5562,6 +5564,15 @@ class ReActLoop:
             
             # 4. Si c'est une réponse finale, retourner
             if action.action_type == ActionType.FINAL_ANSWER:
+                if self._orchestrator_enabled():
+                    from src.reasoning.steering_runtime import reconcile_before_final
+                    _steering_retry = await reconcile_before_final(
+                        self.task_orchestrator, self.task_id, action.answer or "",
+                    )
+                    if _steering_retry:
+                        query = f"{query}\n\n{_steering_retry}" if query else _steering_retry
+                        _finish_iteration(status="ok", summary="steering_final_relaunch")
+                        continue
                 _document_deterministic_final = False
                 _document_workflow_incomplete_final = False
                 _document_free_grounded_final = False
@@ -6266,7 +6277,7 @@ class ReActLoop:
                             continue
 
                         # Guard anti-exagération : le FINAL prétend plus d'envois que la réalité
-                        _final_text = _combined_text
+                        _final_text = (action.answer or "") + " " + (thought.content or "")
                         # Compter les channels mentionnés dans la réponse FINAL (#channel-name)
                         # Exclure les headings markdown (##) et les IDs numériques (#9654)
                         _claim_channels_raw = re.findall(
@@ -6352,7 +6363,7 @@ class ReActLoop:
                     _claims_action = ledger_text_claims_action(_final_text_lower)
 
                     # Exonération read-only : rapport read-only sans mutation attendue.
-                    _eff_succ_tools = compute_effective_successful_tools(self.history)
+                    _eff_succ_tools = compute_effective_successful_tools(self.history, execution_success=structured_observation_success)
                     _all_successful_readonly = bool(_eff_succ_tools) and all(
                         self._tool_is_safe_readonly(_t) for _t in _eff_succ_tools
                     )
@@ -7149,6 +7160,41 @@ class ReActLoop:
                             continue
                     except Exception as _bg_exc:
                         logger.debug("[BROWSER GATE] skip: {}", _bg_exc)
+                # ── LOT 13 (2026-09-02) — PUBLISH GATE, relance bornée ──────────
+                # 72 missions sur 95 (76 %) produisent des fichiers et ne les
+                # publient JAMAIS — dont 61 terminées `done`. L'outil marche (24
+                # réussites / 25 tentatives au ledger) : le lead n'essaie pas,
+                # parce que rien ne le lui demande tant qu'il peut encore agir.
+                # Même mécanique bornée que le BROWSER GATE juste au-dessus.
+                _pg_shots = getattr(self, "_publish_gate_shots", 0)
+                if (answer and self._is_mission_run
+                        and _pg_shots < 1
+                        and i < self.max_iterations - 2):
+                    try:
+                        _pub = _mr_decision_publication_manquante(
+                            _entree_mission(self), _pg_shots,
+                        )
+                        if _pub:
+                            self._publish_gate_shots = _pg_shots + 1
+                            # PG-1.c — un tir accordé est une stratégie neuve, pas
+                            # une stagnation.
+                            self._iterations_without_progress = 0
+                            logger.warning(
+                                "[PUBLISH GATE] FINAL avec des fichiers produits et "
+                                "AUCUNE publication réussie au ledger → relance "
+                                "dirigée {}/1. dossier={} task={}",
+                                self._publish_gate_shots, _pub[0], self.task_id)
+                            self.history.pop()
+                            # `_pub` = (dossier, guidance) — pas de déballage : le
+                            # cliquet RF-9d borne l'état local de cette boucle, et
+                            # deux noms de plus pour deux usages ne le valent pas.
+                            query = (
+                                f"Requête originale: {original_query}\n\n{_pub[1]}"
+                            )
+                            _finish_iteration(status="ok", summary="publish_gate_relaunch")
+                            continue
+                    except Exception as _pg_exc:
+                        logger.debug("[PUBLISH GATE] skip: {}", _pg_exc)
                 # M108 (run FocusForge): opening the page is not proof of the
                 # requested interaction. Give the lead a small bounded action
                 # budget to perform the flow and observe a DOM/JS state change.
@@ -7422,7 +7468,7 @@ class ReActLoop:
                     observation = await self._execute_tool_with_cancel_guard(
                         action.tool_name,
                         action.tool_args,
-                        caller=_CALLER_REACT,
+                        caller=_CALLER_REACT, iteration=i,
                     )
                 # Capture the complete catalog JSON before warnings or history
                 # compaction alter the model-visible observation.
@@ -7466,6 +7512,7 @@ class ReActLoop:
                         success=observation.success,
                         sub_results=getattr(observation, "sub_results", ()),
                         origin=getattr(observation, "origin", "tool"),
+                        **observation_execution_fields(observation),
                     )
                 # Injecter l'avertissement d'hallucination dans l'observation si récidive
                 if _halluc_warning and observation.content:
@@ -7474,6 +7521,7 @@ class ReActLoop:
                         success=observation.success,
                         sub_results=getattr(observation, "sub_results", ()),
                         origin=getattr(observation, "origin", "tool"),
+                        **observation_execution_fields(observation),
                     )
                 step.observation = observation
 
@@ -7507,49 +7555,12 @@ class ReActLoop:
 
                 # ── ExecutionLedger V1 : enregistrer chaque action exécutée ──
                 try:
-                    _led_target = _ledger_extract_target(
-                        action.tool_name, action.tool_args or {},
+                    _led_intent = getattr(self._structured_state, "last_intent", None)
+                    _led_entry = record_tool_observation(
+                        self.execution_ledger, iteration=i, name=action.tool_name, args=action.tool_args or {},
+                        observation=observation, duration_seconds=_tool_exec_duration, intent=_led_intent,
                     )
-                    _led_proof = _ledger_extract_proof(
-                        action.tool_name, observation.content or "", observation.success,
-                    )
-                    _led_intent = None
-                    _ss_for_led = self._structured_state
-                    if _ss_for_led is not None:
-                        _led_intent = _ss_for_led.last_intent
-                    _led_meta = {
-                        "duration_ms": round(_tool_exec_duration * 1000, 1),
-                        "intent": _led_intent,
-                    }
-                    # VERROU DE VÉRITÉ : pour une commande shell qui lance des
-                    # tests, on parse l'issue réelle (pytest/jest/…) et on la
-                    # stocke — la finalisation mission ne pourra plus clamer
-                    # « tests verts » sans preuve verte au ledger.
-                    if action.tool_name in ("run_command", "run_shell", "exec_command"):
-                        try:
-                            from src.reasoning.test_proof import (
-                                is_test_command as _is_test_cmd,
-                                parse_test_outcome as _parse_test_outcome,
-                            )
-                            _cmd_str = str((action.tool_args or {}).get("command", "") or "")
-                            # LOT 2.4 — la commande au meta : preuve `node --check`
-                            # consultable par le JS GATE / has_js_syntax_check().
-                            _led_meta["command"] = _cmd_str[:200]
-                            if _is_test_cmd(_cmd_str):
-                                _exit_code = getattr(observation, "exit_code", None)
-                                _led_meta["test_outcome"] = _parse_test_outcome(
-                                    _cmd_str, observation.content or "", _exit_code,
-                                )
-                        except Exception:
-                            pass
-                    self.execution_ledger.append(
-                        iteration=i,
-                        action=action.tool_name,
-                        target=_led_target,
-                        success=observation.success,
-                        proof=_led_proof,
-                        meta=_led_meta,
-                    )
+                    _led_target, _led_meta = _led_entry.target, _led_entry.meta
                     # M106: keep the latest test verdict in the persistent mission
                     # record so status/result remain factual after reboot or cancel.
                     _persisted_test = _led_meta.get("test_outcome")
@@ -7617,21 +7628,9 @@ class ReActLoop:
                     _sub_results_pt = getattr(observation, "sub_results", ())
                     for _sub in _sub_results_pt:
                         try:
-                            _sub_target = _ledger_extract_target(_sub.tool_name, _sub.args)
-                            _sub_proof = _ledger_extract_proof(
-                                _sub.tool_name, _sub.content, _sub.success
-                            )
-                            self.execution_ledger.append(
-                                iteration=i,
-                                action=_sub.tool_name,
-                                target=_sub_target,
-                                success=_sub.success,
-                                proof=_sub_proof,
-                                meta={
-                                    "duration_ms": 0.0,
-                                    "intent": _led_intent,
-                                    "via": "parallel_tools",
-                                },
+                            record_tool_observation(
+                                self.execution_ledger, iteration=i, name=_sub.tool_name, args=_sub.args,
+                                observation=_sub, intent=_led_intent, via="parallel_tools",
                             )
                         except Exception as _sub_led_exc:
                             logger.debug("[ExecutionLedger] parallel_tools sub: {}", _sub_led_exc)
@@ -7639,7 +7638,7 @@ class ReActLoop:
                 # ── Mission A : mémoriser le projet actif après mutation sur workspace ──
                 # Permet au tour suivant de réutiliser ce projet sans find_files.
                 if observation.success and _led_target and action.tool_name in _LEDGER_MUTATION_TOOLS:
-                    _ws_match = re.search(r'(.+?[/\\]workspace[/\\][\w\-]+)', _led_target.replace("\\", "/"))
+                    _ws_match = anchor_root_for_mutation(_led_target)  # L1d-1 : vraie racine
                     if _ws_match:
                         try:
                             _lum_mem = getattr(self.tools, "lumena", None)
@@ -7648,8 +7647,7 @@ class ReActLoop:
                                 from ..core_services.identity_service import IdentityService as _IDS_M
                                 _ck_mem = _IDS_M.resolve_channel_key(self.runtime_ctx)
                                 if _ck_mem:
-                                    _ws_path = _ws_match.group(1)
-                                    _slug = _ws_path.replace("\\", "/").rsplit("/", 1)[-1]
+                                    _ws_path, _slug = str(_ws_match), _ws_match.name
                                     _id_svc_mem.remember_code_context(_ck_mem, _ws_path, project_slug=_slug)
                                     logger.debug("[RecentProject] Mémorisé: {} → {}", _ck_mem, _ws_path)
                                     # Poser immédiatement dans established_facts pour ce run
@@ -7710,7 +7708,7 @@ class ReActLoop:
                         async def _run_one(_n: str, _a: dict):
                             try:
                                 return _n, await self._execute_tool_with_cancel_guard(
-                                    _n, _a, caller=_CALLER_REACT_PAR,
+                                    _n, _a, caller=_CALLER_REACT_PAR, iteration=i,
                                 ), None
                             except Exception as _e:
                                 return _n, None, _e
@@ -7762,7 +7760,7 @@ class ReActLoop:
                                     _ma_obs = _ma_gate
                                 else:
                                     _ma_obs = await self._execute_tool_with_cancel_guard(
-                                        _ma_name, _ma_args, caller=_CALLER_REACT_MA,
+                                        _ma_name, _ma_args, caller=_CALLER_REACT_MA, iteration=i,
                                     )
                                 _ma_dur = perf_counter() - _ma_start
                                 if hasattr(self, '_timeout_deadline'):
@@ -7770,7 +7768,7 @@ class ReActLoop:
                                     self._tool_time_total = getattr(self, '_tool_time_total', 0.0) + _ma_dur
                                 _combined_obs.append(f"[{_ma_name}] {_ma_obs.content or ''}")
                                 if self._task_plan and _ma_obs.success:
-                                    self._update_plan_progress(_ma_name, _ma_args, _ma_obs.content or "", i)
+                                    self._update_plan_progress(_ma_name, _ma_args, _ma_obs.content or "", i, **plan_execution_fields(_ma_name, _ma_obs))
                                 # Si un outil échoue, annuler les suivants du même type
                                 if not _ma_obs.success:
                                     _abort_multi = True
@@ -7783,6 +7781,7 @@ class ReActLoop:
                     observation = Observation(
                         content="\n\n".join(_combined_obs),
                         success=observation.success,
+                        **observation_execution_fields(observation),
                     )
                     step.observation = observation
 
@@ -7809,11 +7808,13 @@ class ReActLoop:
                                 getattr(_sub, "content", "") or "",
                                 i,
                                 allow_fallback=False,
+                                **plan_execution_fields(_sub_name, _sub),
                             )
                     else:
                         self._update_plan_progress(
                             action.tool_name or "", action.tool_args,
                             observation.content or "", i,
+                            **plan_execution_fields(action.tool_name or "", observation),
                         )
 
                 # LOT Z20 — hors du garde browser À DESSEIN : ce qui invalide une
@@ -8692,6 +8693,7 @@ class ReActLoop:
                             success=step.observation.success,
                             sub_results=getattr(step.observation, "sub_results", ()),
                             origin=getattr(step.observation, "origin", "tool"),
+                            **observation_execution_fields(step.observation),
                         ),
                     )
                     logger.debug(
@@ -8702,17 +8704,7 @@ class ReActLoop:
             # Accumuler le nom de l'outil dans le set session (survit aux compactions)
             if action.tool_name:
                 self._all_session_tools.add(action.tool_name)
-                # N'ajouter aux outils réussis que si l'observation indique un succès réel
-                if observation.success:
-                    self._successful_session_tools.add(action.tool_name)
-                    # parallel_tools agrège des sous-outils : propager les sous-outils
-                    # RÉUSSIS (format obs « ✅ N. <tool>: … ») — sinon le guard
-                    # anti-hallucination ne voit que « parallel_tools » et croit que
-                    # mail_send/telegram_send_document n'ont pas tourné → faux positif
-                    # → double-envoi (cf log 21/06).
-                    if action.tool_name == "parallel_tools" and observation.content:
-                        for _sub in re.findall(r"✅\s*\d+\.\s*([A-Za-z_]\w*)", observation.content):
-                            self._successful_session_tools.add(_sub)
+                self._successful_session_tools.update(successful_observation_names(action.tool_name, observation))
             self.history.append(step)
 
             # Mission artifacts must be visible before run_mission returns: the
@@ -8932,6 +8924,7 @@ class ReActLoop:
                             success=step.observation.success,
                             sub_results=getattr(step.observation, "sub_results", ()),
                             origin=getattr(step.observation, "origin", "tool"),
+                            **observation_execution_fields(step.observation),
                         )
 
             # 7. Mettre à jour la requête avec l'observation (plus de contexte)

@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="/static/css/tokens.css?v=4">
 <link rel="stylesheet" href="/static/css/layout.css?v=4">
 <link rel="stylesheet" href="/static/css/chat.css?v=8">
+<link rel="stylesheet" href="/static/css/chat-steering.css?v=2">
 <link rel="stylesheet" href="/static/css/components.css?v=7">
 <link rel="stylesheet" href="/static/css/thinking.css?v=3">
 <link rel="stylesheet" href="/static/css/setup.css?v=10">
@@ -22,6 +23,7 @@
 <link rel="stylesheet" href="/static/css/overview.css?v=2">
 <link rel="stylesheet" href="/static/css/updates.css?v=2">
 <link rel="stylesheet" href="/static/css/onboarding.css?v=3">
+<link rel="stylesheet" href="/static/css/local-models.css?v=3">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -318,6 +320,10 @@
             <span class="nav-item-icon"><i data-lucide="settings"></i></span>
             <span class="nav-item-label">Configuration</span>
           </div>
+          <div class="nav-item" data-panel="local-models">
+            <span class="nav-item-icon"><i data-lucide="hard-drive-download"></i></span>
+            <span class="nav-item-label">Modèles locaux</span>
+          </div>
           <div class="nav-item" data-panel="product-docs">
             <span class="nav-item-icon"><i data-lucide="book-open-check"></i></span>
             <span class="nav-item-label">Documentation</span>
@@ -413,6 +419,16 @@
               <div class="compose-drop-zone" id="compose-drop-zone" role="region" aria-label="Zone de depot de fichiers">Deposer fichiers ici</div>
               <div class="compose-input-wrap">
                 <div class="compose-attachments" id="compose-attachments" style="display:none"></div>
+                <div class="steering-live" id="steering-live" hidden aria-live="polite">
+                  <div class="steering-live-head">
+                    <span class="steering-live-label"><span class="steering-live-dot"></span>Lumena travaille</span>
+                    <div class="steering-policy" role="group" aria-label="Moment de prise en compte">
+                      <button type="button" class="active" data-steering-policy="next_checkpoint">Ajouter au travail</button>
+                      <button type="button" data-steering-policy="urgent_safe_boundary">Orienter maintenant</button>
+                    </div>
+                  </div>
+                  <div class="steering-history" id="steering-history" aria-label="Orientations en cours"></div>
+                </div>
                 <label for="message-input" class="sr-only">Message</label>
                 <textarea class="compose-textarea" id="message-input" placeholder="Ecris ton message..." rows="1"></textarea>
               </div>
@@ -424,6 +440,7 @@
                 <input type="file" id="file-upload-input" multiple style="display:none" accept="image/*,.pdf,.txt,.md,.py,.js,.ts,.html,.css,.json,.xml,.csv,.doc,.docx">
                 <button class="btn-icon" id="btn-chat-dictation" title="Dicter un message" aria-label="Dicter un message" aria-pressed="false"><i data-lucide="mic"></i></button>
                 <button class="btn-icon" id="btn-toggle-focus" title="Mode focus"><i data-lucide="maximize"></i></button>
+                <button class="btn-stop steering-stop" id="stop-btn" title="Arrêter le travail" aria-label="Arrêter le travail" hidden><i data-lucide="square"></i></button>
                 <button class="btn-send" id="send-btn" title="Envoyer"><i data-lucide="arrow-up"></i></button>
               </div>
             </div>
@@ -1369,6 +1386,98 @@
     </div>
 
     <!-- ======= CONFIGURATION ======= -->
+    <div class="panel" id="panel-local-models">
+      <div class="lm-shell">
+        <header class="lm-hero">
+          <div class="lm-hero-copy">
+            <div class="lm-eyebrow"><span class="lm-live-dot"></span> Local AI runtime</div>
+            <h1>Modèles locaux</h1>
+            <p>Choisissez, installez et pilotez vos modèles Ollama et Hugging Face GGUF depuis un seul espace.</p>
+          </div>
+          <div class="lm-hero-actions">
+            <button class="lm-icon-button" id="local-model-refresh" type="button" aria-label="Actualiser les modèles" title="Actualiser">
+              <i data-lucide="refresh-cw"></i>
+            </button>
+            <button class="lm-button lm-button-primary" id="local-model-hero-recommend" type="button">
+              <i data-lucide="sparkles"></i><span>Trouver mon modèle</span>
+            </button>
+          </div>
+        </header>
+
+        <section id="local-model-status" class="lm-status" aria-label="État du moteur local" aria-live="polite">
+          <div class="lm-stat-card"><span class="lm-stat-icon"><i data-lucide="server"></i></span><div><small>Moteur Ollama</small><strong>Connexion…</strong><span>Vérification du daemon</span></div></div>
+          <div class="lm-stat-card"><span class="lm-stat-icon"><i data-lucide="package-check"></i></span><div><small>Bibliothèque locale</small><strong>—</strong><span>modèles installés</span></div></div>
+          <div class="lm-stat-card"><span class="lm-stat-icon"><i data-lucide="activity"></i></span><div><small>Opérations</small><strong>—</strong><span>téléchargements actifs</span></div></div>
+          <div class="lm-stat-card"><span class="lm-stat-icon"><i data-lucide="hard-drive"></i></span><div><small>Stockage disponible</small><strong>—</strong><span>analyse matérielle</span></div></div>
+        </section>
+
+        <nav class="lm-page-nav" role="tablist" aria-label="Gestion des modèles locaux">
+          <button class="is-active" type="button" data-lm-view="discover" role="tab" aria-selected="true"><i data-lucide="compass"></i><span>Catalogue<small>Découvrir et comparer</small></span><b id="lm-catalog-count">0</b></button>
+          <button type="button" data-lm-view="installed" role="tab" aria-selected="false"><i data-lucide="library"></i><span>Mes modèles<small>Configurer le runtime</small></span><b id="lm-installed-count">0</b></button>
+          <button type="button" data-lm-view="jobs" role="tab" aria-selected="false"><i data-lucide="list-restart"></i><span>Opérations<small>Suivre les téléchargements</small></span><b id="lm-job-count">0</b></button>
+        </nav>
+
+        <section class="lm-command" data-lm-page-section="discover" aria-labelledby="lm-search-title">
+          <div class="lm-command-heading">
+            <div><span class="lm-section-kicker">Catalogue unifié</span><h2 id="lm-search-title">Quel modèle recherchez-vous ?</h2></div>
+            <div class="lm-source-legend"><span><i class="lm-source-dot ollama"></i>Ollama</span><span><i class="lm-source-dot hf"></i>Hugging Face</span></div>
+          </div>
+          <div class="lm-search-row">
+            <label class="lm-search-box" for="local-model-search">
+              <i data-lucide="search"></i>
+              <input id="local-model-search" type="search" maxlength="160" autocomplete="off" placeholder="Ex. Qwen, Kimi, vision, code ou owner/model-GGUF">
+              <kbd>Entrée</kbd>
+            </label>
+            <select id="local-model-source" class="lm-select" aria-label="Source du catalogue">
+              <option value="all">Toutes les sources</option><option value="ollama">Ollama</option><option value="huggingface">Hugging Face GGUF</option>
+            </select>
+            <button id="local-model-search-btn" class="lm-button lm-button-primary" type="button"><i data-lucide="search"></i> Rechercher</button>
+          </div>
+          <div class="lm-command-footer">
+            <p><i data-lucide="info"></i> Vous connaissez déjà l'identifiant exact ? Lumena peut l'installer directement après validation.</p>
+            <button id="local-model-direct-install" class="lm-text-button" type="button"><i data-lucide="download"></i> Installer l'identifiant saisi</button>
+          </div>
+        </section>
+
+        <div id="local-model-error" class="lm-notice" role="status" aria-live="polite" hidden></div>
+
+        <section class="lm-recommendation-panel" data-lm-page-section="discover" aria-labelledby="lm-recommend-title">
+          <div class="lm-section-head">
+            <div class="lm-section-title"><span class="lm-section-icon"><i data-lucide="wand-sparkles"></i></span><div><span class="lm-section-kicker">Sélection intelligente</span><h2 id="lm-recommend-title">Les meilleurs choix pour votre machine</h2><p>Classement explicable selon votre usage, votre mémoire et les informations publiées.</p></div></div>
+            <div class="lm-recommend-controls">
+              <select id="local-model-intent" class="lm-select" aria-label="Usage à recommander"><option value="general">Usage général</option><option value="code">Développement</option><option value="vision">Vision</option><option value="reasoning">Raisonnement</option><option value="embedding">Embeddings</option></select>
+              <button id="local-model-recommend-btn" class="lm-button" type="button"><i data-lucide="cpu"></i> Recalculer</button>
+            </div>
+          </div>
+          <div id="local-model-hardware" class="lm-hardware-strip" aria-live="polite"></div>
+          <div id="local-model-recommendations" class="lm-recommendations" aria-live="polite">
+            <div class="lm-skeleton-card"></div><div class="lm-skeleton-card"></div><div class="lm-skeleton-card"></div>
+          </div>
+        </section>
+
+        <section class="lm-library" aria-labelledby="lm-library-title">
+          <div class="lm-library-head">
+            <div><span class="lm-section-kicker">Bibliothèque</span><h2 id="lm-library-title">Explorer les modèles</h2><p id="local-model-source-note">Chargement des sources…</p></div>
+          </div>
+          <div id="local-model-grid" class="lm-grid" aria-live="polite">
+            <div class="lm-skeleton-card"></div><div class="lm-skeleton-card"></div><div class="lm-skeleton-card"></div>
+          </div>
+          <div id="local-model-jobs" class="lm-jobs" hidden></div>
+        </section>
+      </div>
+
+      <dialog id="local-model-delete-dialog" class="lm-dialog" aria-labelledby="lm-delete-title">
+        <form method="dialog">
+          <div class="lm-dialog-icon"><i data-lucide="trash-2"></i></div>
+          <span class="lm-section-kicker">Suppression définitive</span>
+          <h2 id="lm-delete-title">Supprimer ce modèle ?</h2>
+          <p id="local-model-delete-copy"></p>
+          <div id="local-model-delete-impact" class="lm-delete-impact"></div>
+          <div class="lm-dialog-actions"><button class="lm-button" value="cancel">Annuler</button><button class="lm-button lm-button-danger" id="local-model-delete-confirm" value="default">Supprimer du disque</button></div>
+        </form>
+      </dialog>
+    </div>
+
     <div class="panel" id="panel-config">
       <div class="cfg-layout">
         <nav class="cfg-sidebar">
@@ -1706,7 +1815,7 @@
 window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
-<script type="module" src="/static/js/main.js?v=52"></script>
+  <script type="module" src="/static/js/main.js?v=62"></script>
 <script type="module" src="/static/js/updates.js?v=2"></script>
 <script type="module">
 import { initSetupWizard } from '/static/js/setup.js?v=21';

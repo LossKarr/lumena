@@ -1,7 +1,9 @@
 """Integration contracts for Claude Opus 5 and Kimi K3."""
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -47,7 +49,7 @@ def test_frontier_profiles_fallbacks_and_provider_defaults_are_stable():
     assert get_model_profile("claude-opus-5").tool_call_quality == "excellent"
     assert get_model_profile("kimi-k3").retry_on_empty is True
     assert get_model_fallbacks("claude-opus-5")[:2] == [
-        "claude-opus-4.8",
+        "claude-opus-5.5",
         "claude-sonnet-5",
     ]
     assert get_model_fallbacks("kimi-k3")[:2] == ["kimi-k2.7-code", "kimi-k2.6"]
@@ -85,16 +87,22 @@ def test_frontier_explicit_aliases_do_not_change_historical_generic_aliases():
 
 
 def test_setup_and_cli_surfaces_include_both_models_and_global_kimi_endpoint():
+    from web.routes.setup import setup_schema
+
     setup_text = Path("web/routes/setup.py").read_text(encoding="utf-8")
     cli_text = Path("src/cli.py").read_text(encoding="utf-8")
+    payload = asyncio.run(setup_schema())
+    brains = next(step for step in payload["steps"] if step["id"] == "brains")
+    fields = {field["key"]: field for field in brains["fields"]}
 
-    assert setup_text.count('"claude-opus-5"') == 3
-    assert setup_text.count('"kimi-k3"') == 3
+    for name in ("claude-opus-5", "kimi-k3"):
+        for key in ("LUMENA_BRAIN_VISION", "LUMENA_BRAIN_CODE", "LUMENA_BRAIN_WEB"):
+            assert name in fields[key]["options"]
     assert "https://platform.kimi.ai/console/api-keys" in setup_text
     assert "MOONSHOT_BASE_URL" in setup_text
     assert "https://api.moonshot.ai/v1" in setup_text
-    assert '"6": "claude-opus-5"' in cli_text
-    assert '"7": "kimi-k3"' in cli_text
+    assert "config.is_selectable()" in cli_text
+    assert "for name, config in AVAILABLE_MODELS.items()" in cli_text
 
 
 def test_opus5_uses_existing_anthropic_no_sampling_contract():
@@ -113,6 +121,97 @@ def test_opus5_uses_existing_anthropic_no_sampling_contract():
     }
     _strip_anthropic_sampling_params(payload)
     assert payload == {"model": "claude-opus-5", "max_tokens": 128_000}
+
+
+def test_opus55_payload_uses_effort_without_manual_thinking_or_sampling(monkeypatch):
+    from src.llm.multi_provider import _build_anthropic_payload
+
+    monkeypatch.delenv("LUMENA_ANTHROPIC_EFFORT", raising=False)
+    payload = _build_anthropic_payload(
+        "claude-opus-5-5",
+        [{"role": "user", "content": "hello"}],
+        max_tokens=128_000,
+        temperature=0.7,
+        system="safe",
+        tools=[{"name": "probe", "input_schema": {"type": "object"}}],
+        tool_choice="auto",
+    )
+
+    assert payload["model"] == "claude-opus-5-5"
+    assert payload["output_config"] == {"effort": "medium"}
+    assert payload["tool_choice"] == {"type": "auto"}
+    assert "thinking" not in payload
+    assert not {"temperature", "top_p", "top_k"}.intersection(payload)
+
+
+def test_opus55_rejects_forced_tool_choice_before_network():
+    from src.llm.multi_provider import _build_anthropic_payload
+
+    with pytest.raises(ValueError, match="tool_choice"):
+        _build_anthropic_payload(
+            "claude-opus-5-5",
+            [{"role": "user", "content": "hello"}],
+            max_tokens=128,
+            tool_choice="any",
+        )
+
+
+@pytest.mark.asyncio
+async def test_opus55_multi_tool_loop_preserves_thinking_blocks_once(monkeypatch):
+    from src.llm.multi_provider import MultiProviderLLM
+
+    payloads = []
+    thinking = {"type": "thinking", "thinking": "", "signature": "opaque-signature"}
+
+    class Response:
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.body
+
+    bodies = iter([
+        {
+            "stop_reason": "tool_use",
+            "content": [
+                thinking,
+                {"type": "tool_use", "id": "t1", "name": "one", "input": {}},
+                {"type": "tool_use", "id": "t2", "name": "two", "input": {"x": 2}},
+            ],
+        },
+        {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]},
+    ])
+
+    class HTTP:
+        async def post(self, url, headers=None, json=None):
+            payloads.append(json)
+            return Response(next(bodies))
+
+    tool_system = SimpleNamespace(
+        get_tools_for_provider=lambda provider: [],
+        get_tools_prompt_section=lambda: "",
+        execute_tool=AsyncMock(
+            return_value=SimpleNamespace(success=True, output="ok", error=None)
+        ),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    llm = MultiProviderLLM(model_name="claude-opus-5.5")
+    llm._http = HTTP()
+    result = await llm._chat_anthropic_with_tools(
+        [{"role": "user", "content": "run"}], tool_system, 0.7, 128, 2
+    )
+
+    assert result == "done"
+    second_messages = payloads[1]["messages"]
+    assistant_turns = [m for m in second_messages if m["role"] == "assistant"]
+    assert len(assistant_turns) == 1
+    assert assistant_turns[0]["content"][0] == thinking
+    tool_results = second_messages[-1]["content"]
+    assert [item["tool_use_id"] for item in tool_results] == ["t1", "t2"]
+    assert "opaque-signature" not in result
 
 
 @pytest.mark.asyncio

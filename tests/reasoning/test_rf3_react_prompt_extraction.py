@@ -97,27 +97,45 @@ def empreinte(texte: str) -> tuple[int, str]:
 #
 # `test_l_empreinte_ne_depend_PAS_du_nombre_d_outils` verrouille cette propriete.
 
+# RECAPTUREE le 2026-09-24 (lot IDE-9). Motif : la regle 1 du prompt ReAct a ete
+# ETENDUE aux artefacts. Elle ne parlait que de ce que Lumena DIT ; le run de 20 h 05
+# a laisse sur le disque un `PREUVE_IDE.md` listant « Ouverture de fichier via
+# protocole IDE » et « Lecture de l'etat Git » — deux actions qui ont ECHOUE ensuite.
+# Le fichier avait ete ecrit AVANT les tentatives, et il est reste.
+#
+# L'ecart est de **+305 caracteres, IDENTIQUE sur les 20 comparaisons**, et il vaut
+# exactement la longueur de la phrase ajoutee (305). Le changement est donc unique,
+# volontaire, et rien d'autre du gabarit n'a bouge : c'est ce qui rend cette recapture
+# legitime au sens de la politique ci-dessus.
+
+# RECAPTUREE le 2026-09-25 (lot OA-7P). Les adaptateurs CodeAgent ont ete
+# raccourcis et rendus propres a chaque fournisseur. Les deux seuls scenarios
+# avec un modele actif changent donc volontairement : DeepSeek conserve un
+# bloc de perseverance borne (+606 caracteres contre OFF) et OpenAI/Codex
+# recoit son nouveau bloc de verification (+825). Les 18 autres empreintes et
+# les deux variantes OFF restent identiques.
+
 BASELINE: dict[str, dict] = {
-    "01_chat_simple__gatesOFF": {"taille": 9467, "sha": "c663fc51d78a", "appels": 1},
-    "01_chat_simple__gatesON": {"taille": 9467, "sha": "c663fc51d78a", "appels": 1},
-    "02_agent_outils__gatesOFF": {"taille": 8963, "sha": "7073058964cd", "appels": 1},
-    "02_agent_outils__gatesON": {"taille": 8963, "sha": "7073058964cd", "appels": 1},
-    "03_modele_faible__gatesOFF": {"taille": 9637, "sha": "d6136391dc76", "appels": 0},
-    "03_modele_faible__gatesON": {"taille": 9637, "sha": "d6136391dc76", "appels": 0},
-    "04_avec_skills__gatesOFF": {"taille": 10262, "sha": "ea1197749fed", "appels": 1},
-    "04_avec_skills__gatesON": {"taille": 10262, "sha": "ea1197749fed", "appels": 1},
-    "05_runtime_ide__gatesOFF": {"taille": 9329, "sha": "38e6b927e05d", "appels": 1},
-    "05_runtime_ide__gatesON": {"taille": 9329, "sha": "38e6b927e05d", "appels": 1},
-    "06_runtime_web__gatesOFF": {"taille": 8782, "sha": "cd1bd28707c1", "appels": 1},
-    "06_runtime_web__gatesON": {"taille": 8782, "sha": "cd1bd28707c1", "appels": 1},
-    "07_tache_id__gatesOFF": {"taille": 8970, "sha": "444fe9e06593", "appels": 1},
-    "07_tache_id__gatesON": {"taille": 8970, "sha": "444fe9e06593", "appels": 1},
-    "08_contexte_long__gatesOFF": {"taille": 13000, "sha": "ad4c896bb4bf", "appels": 1},
-    "08_contexte_long__gatesON": {"taille": 13000, "sha": "ad4c896bb4bf", "appels": 1},
-    "09_provider_api__gatesOFF": {"taille": 8969, "sha": "666b9ed0eb58", "appels": 1},
-    "09_provider_api__gatesON": {"taille": 9766, "sha": "c1685040ff10", "appels": 1},
-    "10_abonnement_codex__gatesOFF": {"taille": 9315, "sha": "2be2bd8dd704", "appels": 1},
-    "10_abonnement_codex__gatesON": {"taille": 10074, "sha": "dc8dccba6c86", "appels": 1},
+    "01_chat_simple__gatesOFF": {"taille": 9772, "sha": "bc79cf12b6ed", "appels": 1},
+    "01_chat_simple__gatesON": {"taille": 9772, "sha": "bc79cf12b6ed", "appels": 1},
+    "02_agent_outils__gatesOFF": {"taille": 9268, "sha": "6a87059b1f3b", "appels": 1},
+    "02_agent_outils__gatesON": {"taille": 9268, "sha": "6a87059b1f3b", "appels": 1},
+    "03_modele_faible__gatesOFF": {"taille": 9942, "sha": "fc7f7bd1afcf", "appels": 0},
+    "03_modele_faible__gatesON": {"taille": 9942, "sha": "fc7f7bd1afcf", "appels": 0},
+    "04_avec_skills__gatesOFF": {"taille": 10567, "sha": "2faf85bcf4a5", "appels": 1},
+    "04_avec_skills__gatesON": {"taille": 10567, "sha": "2faf85bcf4a5", "appels": 1},
+    "05_runtime_ide__gatesOFF": {"taille": 9634, "sha": "599f81dbcd19", "appels": 1},
+    "05_runtime_ide__gatesON": {"taille": 9634, "sha": "599f81dbcd19", "appels": 1},
+    "06_runtime_web__gatesOFF": {"taille": 9087, "sha": "ad76635df8c3", "appels": 1},
+    "06_runtime_web__gatesON": {"taille": 9087, "sha": "ad76635df8c3", "appels": 1},
+    "07_tache_id__gatesOFF": {"taille": 9275, "sha": "02effa05fc9a", "appels": 1},
+    "07_tache_id__gatesON": {"taille": 9275, "sha": "02effa05fc9a", "appels": 1},
+    "08_contexte_long__gatesOFF": {"taille": 13305, "sha": "1667d8331278", "appels": 1},
+    "08_contexte_long__gatesON": {"taille": 13305, "sha": "1667d8331278", "appels": 1},
+    "09_provider_api__gatesOFF": {"taille": 9274, "sha": "4518772d2252", "appels": 1},
+    "09_provider_api__gatesON": {"taille": 9880, "sha": "b90eab5299b2", "appels": 1},
+    "10_abonnement_codex__gatesOFF": {"taille": 9620, "sha": "959f55f74946", "appels": 1},
+    "10_abonnement_codex__gatesON": {"taille": 10445, "sha": "623556e534c1", "appels": 1},
 }
 
 
@@ -148,7 +166,7 @@ def scenarios(registre) -> dict[str, tuple[dict, str]]:
     Les deux derniers ont un MODELE ACTIF. Sans lui, `_active_model_id` reste
     vide, le bloc de hints provider ne se declenche jamais, et le drapeau
     `REACT_QUALITY_GATES` n'a aucun effet mesurable : la moitie de la matrice
-    serait des doublons. Mesure avec eux : +797 o et +759 o entre ON et OFF.
+    serait des doublons. Mesure avec eux : +606 o et +825 o entre ON et OFF.
     """
     return {
         "01_chat_simple": (dict(conversation_context="Bonjour."),
@@ -556,7 +574,7 @@ def test_react_conserve_une_coquille_qui_porte_la_mutation():
 #   tests/security/test_production_hardening.py
 #     - TestS2ReactWarnings::test_sandbox_except_logs_warning
 #     - TestS2ReactWarnings::test_agent_memory_except_logs_warning
-#   tests/websites/test_cursor_ide_local_integration.py
+#   tests/websites/test_lumena_ide_integration.py
 #     - test_react_prompt_adds_cursor_ide_rule_for_project_requests
 #   tests/websites/test_video_remotion.py
 #     - TestReactVideoContext::test_react_prompt_contains_video_marker
@@ -602,7 +620,7 @@ def test_comportement_la_section_ide_apparait_quand_le_workspace_est_connu(regis
     # La regression que le test d'origine gardait : plus d'injection statique
     # cursor-ide-local pour toute demande de projet.
     assert "PRIORITE IDE LOCAL (cursor-ide-local)" not in sans
-    assert "ACTION: cursor_ide_local" not in sans
+    assert "ACTION: lumena_ide" not in sans
 
 
 def test_comportement_le_canal_ide_ajoute_le_mode_developpement(registre):

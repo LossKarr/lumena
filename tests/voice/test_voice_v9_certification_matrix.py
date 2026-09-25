@@ -78,7 +78,8 @@ def test_matrix_100_mixed_status_steering_and_interruptions_without_agents():
             snap = registry.snapshot(rec.task_id)
             assert snap is not None and snap.state == "running"
     commands = orch.get_task(rec.task_id)["metadata"].get("steering_commands") or []
-    assert all(c["status"] == "applied" for c in commands)
+    assert all(c["status"] == "delivered" for c in commands)
+    assert all(c["delivery"].get("delivered_at") for c in commands)
 
 
 def test_matrix_screen_text_is_unchanged_by_speech_projection():
@@ -88,4 +89,3 @@ def test_matrix_screen_text_is_unchanged_by_speech_projection():
     assert screen == before
     assert "SUPERSECRET123" not in spoken.spoken
     assert "C:\\secret" not in spoken.spoken
-

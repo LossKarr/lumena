@@ -404,7 +404,7 @@ def _resolve_default_workspace_path() -> str:
 DEFAULT_WORKSPACE_PATH = _resolve_default_workspace_path()
 RUNTIME_CONTEXT_V2_ENABLED = _env_flag("LUMENA_RUNTIME_CONTEXT_V2", True)
 WORKSPACE_POLICY_V2_ENABLED = _env_flag("LUMENA_WORKSPACE_POLICY_V2", True)
-TASK_ORCHESTRATOR_V1_ENABLED = _env_flag("LUMENA_TASK_ORCHESTRATOR_V1", False)
+TASK_ORCHESTRATOR_V1_ENABLED = _env_flag("LUMENA_TASK_ORCHESTRATOR_V1", True)
 STREAM_EVENT_V2_ENABLED = _env_flag("LUMENA_STREAM_EVENT_V2", True)
 OMNICHANNEL_ENVELOPE_V1_ENABLED = _env_flag("LUMENA_OMNICHANNEL_ENVELOPE_V1", True)
 AUTONOMY_ON_WEB_ENABLED = _env_flag("LUMENA_WEB_AUTONOMY_ENABLED", True)
@@ -575,14 +575,14 @@ async def lifespan(app: FastAPI):
         print(" Initialisation de Lumena...")
         _setup_complete = os.getenv("LUMENA_SETUP_COMPLETE", "").strip() == "1"
 
-        # Enregistrer dynamiquement les modèles Ollama installés
+        # Réconcilier présence Ollama, activation durable et registre Lumena.
         try:
-            from src.llm.providers import sync_ollama_models
-            _ollama_count = sync_ollama_models()
-            if _ollama_count:
-                print(f" {_ollama_count} modele(s) Ollama detecte(s)")
+            from src.local_models.manager import get_local_model_manager
+            _ollama_reconcile = await get_local_model_manager().reconcile()
+            if _ollama_reconcile.get("enabled"):
+                print(f" {_ollama_reconcile['enabled']} modele(s) Ollama detecte(s)")
         except Exception as _oe:
-            logger.debug("[BOOT] sync_ollama_models skip: {}", _oe)
+            logger.debug("[BOOT] local model reconciliation skip: {}", _oe)
 
         try:
             deps.lumena = await initialize_lumena()
@@ -606,6 +606,14 @@ async def lifespan(app: FastAPI):
             _orch = getattr(deps.lumena, "task_orchestrator", None) if deps.lumena else None
             if _orch is not None:
                 reconcile_on_boot(_orch)
+                # LOT ORI-2b : les MISSIONS reprennent (ligne ci-dessus). Un tour
+                # Agent ou vocal, lui, est mort avec le processus : ses orientations
+                # n'ont plus de destinataire. Sans cette cloture, le composer
+                # affiche un travail en cours qui n'existe plus.
+                from src.runtime.steering_reconciliation import (
+                    clore_travaux_interrompus,
+                )
+                clore_travaux_interrompus(_orch)
                 # Lot 2.3 — relancer les missions `queued` (jamais les `needs_review`).
                 from src.subagents.manager import get_mission_manager, relaunch_queued
                 _z33_relaucees = relaunch_queued(get_mission_manager(deps.lumena))

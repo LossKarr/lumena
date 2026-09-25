@@ -12,6 +12,7 @@ import difflib
 import json
 import re
 from typing import Optional
+from ..utils.external_tool_names import is_ide_tool_name
 
 
 # ── fix_json_text ───────────────────────────────────────────────────
@@ -240,6 +241,8 @@ def normalize_action_name(name: str) -> str:
     """
     if not name:
         return name
+    if is_ide_tool_name(name):
+        return name
 
     # Fix AZ (Phase I-8) : un nom MCP namespacé est un CONTRAT du serveur,
     # pas une typo LLM — windows-mcp expose WaitFor/PowerShell/MultiSelect
@@ -354,6 +357,9 @@ def auto_fix_action_name(name: str, known_tools: set[str]) -> str:
     """
     if not name:
         return name
+    if is_ide_tool_name(name):
+        return name
+    known_tools = {tool for tool in known_tools if not is_ide_tool_name(tool)}
     if name in known_tools:
         return name
 

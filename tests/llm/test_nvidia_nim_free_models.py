@@ -39,22 +39,55 @@ def test_nvidia_nim_model_catalog(name):
 def test_nvidia_default_model_is_fast_free_fallback():
     cfg = get_default_model_for_provider("nvidia")
     assert cfg is not None
-    assert cfg.name == "nvidia-deepseek-v4-flash"
+    assert cfg.name == "nvidia-gpt-oss-20b"
+
+
+def test_retired_nvidia_deepseek_flash_is_not_selectable():
+    cfg = get_model_config("nvidia-deepseek-v4-flash")
+    assert cfg is not None
+    assert cfg.is_selectable() is False
+    assert cfg.is_fallback_eligible() is False
+
+
+@pytest.mark.asyncio
+async def test_nvidia_model_fallback_waits_until_global_provider_cascade_end():
+    """A model-specific NIM route must not bypass faster provider fallbacks."""
+    from src.llm.multi_provider import MultiProviderLLM
+
+    llm = MultiProviderLLM(model_name="deepseek-flash")
+    llm.fallback_order = ["deepseek", "mistral", "nvidia"]
+    llm._is_code_heavy_request = MagicMock(return_value=(False, None))
+    llm._continue_if_needed = AsyncMock(side_effect=lambda **kw: kw["initial_result"])
+    llm._chat_provider_result = AsyncMock(side_effect=[
+        RuntimeError("402 Payment Required"),
+        {
+            "text": "mistral fallback ok",
+            "finish_reason": "stop",
+            "provider_used": "mistral",
+            "model_used": "mistral-large-2512",
+        },
+    ])
+
+    text = await llm.chat([{"role": "user", "content": "test"}], no_upgrade=True)
+
+    assert text == "mistral fallback ok"
+    attempted_providers = [call.kwargs["provider"] for call in llm._chat_provider_result.await_args_list]
+    assert attempted_providers == [ProviderType.DEEPSEEK, ProviderType.MISTRAL]
 
 
 def test_model_level_fallbacks():
-    assert get_model_fallbacks("deepseek-v4-flash")[0] == "nvidia-deepseek-v4-flash"
-    assert get_model_fallbacks("deepseek-v4-pro")[0] == "nvidia-deepseek-v4-pro"
+    assert get_model_fallbacks("deepseek-v4-flash")[0] == "nvidia-gpt-oss-20b"
+    assert get_model_fallbacks("deepseek-v4-pro")[0] == "nvidia-nemotron-3-ultra-550b-a55b"
     assert get_model_fallbacks("kimi-k2.7-code")[:3] == [
         "kimi-k2.6",
         "nvidia-kimi-k2.6",
-        "nvidia-step-3.7-flash",
+        "nvidia-nemotron-3.5-lightning",
     ]
     assert get_model_fallbacks("kimi-k2.6")[0] == "nvidia-kimi-k2.6"
-    assert get_model_fallbacks("glm-5.1")[0] == "nvidia-glm-5.1"
+    assert get_model_fallbacks("glm-5.1")[0] == "nvidia-glm-5.3"
     assert get_model_fallbacks("minimax-m3")[:2] == [
         "minimax-m2.7",
-        "nvidia-minimax-m3",
+        "nvidia-kimi-k3",
     ]
 
 

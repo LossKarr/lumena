@@ -98,7 +98,7 @@ async def test_des_tests_trop_lents_ne_detruisent_PAS_la_validation_statique(mon
     class _Rapport:
         issues: list = []
 
-    async def _statique_rapide(files, ws):
+    async def _statique_rapide(files, ws, *, lsp_timeout=None):
         return _Rapport()
 
     async def _tests_interminables(ws, mf):
@@ -133,7 +133,7 @@ async def test_une_ERREUR_statique_bloque_toujours_sans_attendre_les_tests(monke
     class _Rapport:
         issues = [_Issue()]
 
-    async def _statique(files, ws):
+    async def _statique(files, ws, *, lsp_timeout=None):
         return _Rapport()
 
     async def _tests_jamais_appeles(ws, mf):
@@ -157,7 +157,7 @@ async def test_le_chemin_nominal_reste_identique(monkeypatch, tmp_path):
         issues: list = []
 
     monkeypatch.setattr("src.tools.code_validator.validate_project_async",
-                        lambda f, w: _reponse(_Rapport()), raising=False)
+                        lambda f, w, **_: _reponse(_Rapport()), raising=False)
     monkeypatch.setattr(G, "_run_detected_tests", lambda w, m: _reponse([]))
 
     res = await G.run_gate(tmp_path, ["a.py"], task_id="t", timeout=5.0)

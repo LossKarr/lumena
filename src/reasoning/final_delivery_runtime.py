@@ -29,6 +29,7 @@ from typing import Any, Callable
 from loguru import logger
 
 from src.reasoning.final_guards import apply_mission_truth_lock
+from src.reasoning.execution_guards import lock_ide_execution_message
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,14 @@ def rf8_truth_lock_mission_message(etat, message: str, *, origine: str = "") -> 
     """
     if not message:
         return message
+    try:
+        ide_ledger = etat.ledger()
+    except (AttributeError, TypeError):
+        ide_ledger = None
+    ide_locked, ide_info = lock_ide_execution_message(message, ide_ledger)
+    if ide_info.get("changed"):
+        etat.noter_verdict(ide_info)
+        return ide_locked
     if not (etat.est_run_mission()
             or etat.pont_codex()):
         return message

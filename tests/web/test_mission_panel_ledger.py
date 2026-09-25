@@ -50,6 +50,22 @@ from src.utils.paths import DATA_DIR  # noqa: E402
 
 _ETAT = DATA_DIR / "task_orchestrator_state.json"
 
+def _corpus_exploitable() -> bool:
+    """Vrai seulement si l'etat des taches contient VRAIMENT quelque chose.
+
+    LOT ORCH-1 (23/09/2026) : `_ETAT.exists()` ne suffit pas. Apres la corruption
+    mesuree ce jour-la - 12 270 771 octets de zeros, puis un etat remis a vide -
+    le fichier EXISTAIT sans rien contenir, et ces tests echouaient en affirmant
+    qu'une fonctionnalite avait disparu. **Un corpus vide ne prouve rien** : il ne
+    dit pas que le runtime a cesse de persister, seulement qu'il n'a rien a dire.
+    """
+    try:
+        import json as _json
+        return bool(_json.loads(_ETAT.read_text(encoding="utf-8")).get("tasks"))
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node indisponible")
 
 
@@ -264,7 +280,7 @@ def test_la_vue_tient_avec_une_mission_TOTALEMENT_vide():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
 def test_le_ledger_existe_VRAIMENT_dans_les_donnees_persistees():
     """Ce test est la preuve que le lot 6 se trompait. S'il rougit un jour,
     c'est que le runtime a cesse de persister le ledger — et alors la colonne
@@ -276,7 +292,7 @@ def test_le_ledger_existe_VRAIMENT_dans_les_donnees_persistees():
     assert avec, "aucune tache ne porte de ledger : la colonne mentirait"
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
 def test_le_modele_digere_le_corpus_REEL_sans_broncher(tmp_path):
     """Trente taches tirees du disque, telles quelles.
 

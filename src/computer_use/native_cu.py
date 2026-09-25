@@ -44,6 +44,10 @@ _TIMEOUT_SEC = int(os.getenv("LUMENA_CU_TIMEOUT_SEC", "600"))
 _HTTP_TIMEOUT = 180.0  # timeout par appel HTTP
 
 
+class NativeCURefusal(RuntimeError):
+    """Refus explicite du modèle : résultat terminal, jamais une panne à cascader."""
+
+
 # ─── Helpers ───────────────────────────────────────────────────────────────
 
 def _has_key(provider: str) -> bool:
@@ -181,7 +185,7 @@ async def _exec_action(action_name: str, params: Dict[str, Any]) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ANTHROPIC NATIVE CU — computer_20251124
+# ANTHROPIC NATIVE CU — legacy computer + current client toolset
 # ═══════════════════════════════════════════════════════════════════════════
 
 _ANTHROPIC_CU_MODEL = os.getenv("LUMENA_ANTHROPIC_CU_MODEL", "claude-sonnet-4-6")
@@ -191,12 +195,39 @@ Tu as accès à un outil 'computer' qui te permet d'interagir avec l'écran.
 Sois précis dans tes clics et tes actions. Quand le but est atteint, dis-le clairement."""
 
 
+def _anthropic_cu_contract(
+    model: str,
+    screen_width: int,
+    screen_height: int,
+    api_key: str,
+) -> Tuple[Dict[str, str], List[Dict[str, Any]], bool]:
+    """Retourne headers/outils sans mélanger les protocoles Anthropic CU."""
+    is_current_toolset = model == "claude-opus-5-5"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    if is_current_toolset:
+        tools = [{"type": "computer_toolset_20260801"}]
+    else:
+        headers["anthropic-beta"] = "computer-use-2025-01-24"
+        tools = [{
+            "type": "computer_20251124",
+            "name": "computer",
+            "display_width_px": screen_width,
+            "display_height_px": screen_height,
+            "display_number": 1,
+        }]
+    return headers, tools, is_current_toolset
+
+
 async def _anthropic_cu_loop(
     goal: str,
     max_steps: int = _MAX_ITERATIONS,
     timeout: float = _TIMEOUT_SEC,
 ) -> CUTaskResult:
-    """Boucle agent CU native Anthropic (computer_20251124).
+    """Boucle agent CU native Anthropic, ancien ou nouveau protocole.
 
     Flow :
       1. Envoie un message avec le goal + screenshot initial
@@ -213,12 +244,9 @@ async def _anthropic_cu_loop(
     ss_path, scr_w, scr_h = await _take_screenshot()
     ss_b64 = _encode_b64(ss_path)
 
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-        "anthropic-beta": "computer-use-2025-01-24",
-        "content-type": "application/json",
-    }
+    headers, tools, uses_current_toolset = _anthropic_cu_contract(
+        _ANTHROPIC_CU_MODEL, scr_w, scr_h, api_key
+    )
 
     # Messages initiaux
     messages = [
@@ -231,16 +259,6 @@ async def _anthropic_cu_loop(
                 },
                 {"type": "text", "text": f"BUT: {goal}\n\nVoici l'écran actuel. Commence à accomplir le but."},
             ],
-        }
-    ]
-
-    tools = [
-        {
-            "type": "computer_20251124",
-            "name": "computer",
-            "display_width_px": scr_w,
-            "display_height_px": scr_h,
-            "display_number": 1,
         }
     ]
 
@@ -278,6 +296,8 @@ async def _anthropic_cu_loop(
             data = resp.json()
 
         stop_reason = data.get("stop_reason", "")
+        if stop_reason == "refusal":
+            raise NativeCURefusal(f"Anthropic CU refusal:{_ANTHROPIC_CU_MODEL}")
         content_blocks = data.get("content", [])
 
         # Ajouter la réponse de l'assistant aux messages
@@ -310,7 +330,14 @@ async def _anthropic_cu_loop(
         for tu in tool_uses:
             tool_id = tu["id"]
             action_input = tu.get("input", {})
-            action_name = action_input.get("action", "screenshot")
+            toolset_name = tu.get("toolset_name")
+            if uses_current_toolset:
+                if toolset_name != "computer":
+                    action_name = "unknown_toolset"
+                else:
+                    action_name = str(tu.get("name") or "")
+            else:
+                action_name = action_input.get("action", "screenshot")
 
             # Extraire les coordonnées Anthropic (format: coordinate: [x, y])
             coord = action_input.get("coordinate", [])
@@ -335,22 +362,32 @@ async def _anthropic_cu_loop(
                 duration_ms=(time.time() - iter_start) * 1000,
             ))
 
-            # Prendre un nouveau screenshot après l'action
-            await asyncio.sleep(0.5)
-            ss_path, _, _ = await _take_screenshot()
-            ss_b64 = _encode_b64(ss_path)
-
-            tool_results.append({
+            result_block: Dict[str, Any] = {
                 "type": "tool_result",
                 "tool_use_id": tool_id,
-                "content": [
-                    {"type": "text", "text": output},
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": "image/png", "data": ss_b64},
+                "content": [{"type": "text", "text": output}],
+            }
+            if uses_current_toolset:
+                result_block["toolset_name"] = "computer"
+                if "Erreur" in output or action_name == "unknown_toolset":
+                    result_block["is_error"] = True
+
+            # Le nouveau toolset demande une image pour screenshot/zoom. Le
+            # protocole historique conserve son feedback visuel après action.
+            if not uses_current_toolset or action_name in {"screenshot", "zoom"}:
+                await asyncio.sleep(0.5)
+                ss_path, _, _ = await _take_screenshot()
+                ss_b64 = _encode_b64(ss_path)
+                result_block["content"].append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": ss_b64,
                     },
-                ],
-            })
+                })
+
+            tool_results.append(result_block)
 
         messages.append({"role": "user", "content": tool_results})
 
@@ -919,6 +956,10 @@ async def try_native_cu_cascade(
                 f"{result.total_duration_ms / 1000:.1f}s)"
             )
             return result
+        except NativeCURefusal:
+            # Un refus est une décision du modèle, pas une indisponibilité du
+            # fournisseur. Continuer contournerait cette décision.
+            raise
         except Exception as e:
             logger.warning(f"⚠️ CU natif {provider} échoué: {e}")
             continue

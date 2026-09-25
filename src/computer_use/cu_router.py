@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from loguru import logger
 
+from src.utils.safe_errors import safe_error_summary
+
 if TYPE_CHECKING:
     from .vision import VisionModule
 
@@ -187,8 +189,8 @@ async def route_cu_vision(
             logger.debug(f"route_cu_vision: succès via {provider}")
             return {"success": True, "text": text, "provider": provider}
         except Exception as exc:
-            last_error = str(exc)
-            logger.warning(f"route_cu_vision: échec {provider}: {exc}")
+            last_error = safe_error_summary(exc)
+            logger.warning("route_cu_vision: échec {}: {}", provider, last_error)
             vision._record_provider_failure(provider, exc)
 
     logger.error(f"route_cu_vision: tous les providers ont échoué. Dernier: {last_error}")

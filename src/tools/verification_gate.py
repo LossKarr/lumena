@@ -104,6 +104,10 @@ async def run_gate(
             _do_validate(
                 workspace, modified_files, task_id=task_id,
                 tests_budget=max(1.0, timeout * _TESTS_BUDGET_RATIO),
+                # GATE-1d : le LSP recoit une FRACTION du budget, jamais sa
+                # totalite - sinon il le consomme entier et le verdict statique,
+                # deja calcule, n'est jamais rendu.
+                lsp_budget=max(1.0, timeout * 0.4),
             ),
             timeout=timeout,
         )
@@ -135,14 +139,42 @@ async def run_gate(
 _TESTS_BUDGET_RATIO: float = 0.4
 
 
+def _dossier_de_contexte(workspace: Path, files: dict) -> Path:
+    """L'ancetre commun des fichiers valides, borne au workspace.
+
+    LOT GATE-1b. Un seul fichier rend son dossier ; plusieurs rendent leur plus
+    proche parent commun. Sans fichier, ou si le calcul echoue, on garde le
+    workspace : le comportement historique, jamais un perimetre invente.
+    """
+    dossiers = []
+    for rel in files:
+        try:
+            parent = (workspace / rel).resolve().parent
+            parent.relative_to(workspace.resolve())
+        except (OSError, ValueError):
+            continue
+        dossiers.append(parent)
+    if not dossiers:
+        return workspace
+    try:
+        import os
+
+        commun = Path(os.path.commonpath([str(d) for d in dossiers]))
+        commun.relative_to(workspace.resolve())
+    except (OSError, ValueError):
+        return workspace
+    return commun if commun.is_dir() else workspace
+
+
 async def _do_validate(
     workspace: Path,
     modified_files: Sequence[str],
     task_id: str = "",
     tests_budget: Optional[float] = None,
+    lsp_budget: Optional[float] = None,
 ) -> GateResult:
     """Validation réelle : statique + tests auto-détectés."""
-    from src.tools.code_validator import validate_project_async
+    from src.tools.code_validator import is_excluded_path, validate_project_async
 
     # ── 1. Validation statique ────────────────────────────────────────────────
     files: dict[str, str] = {}
@@ -157,13 +189,28 @@ async def _do_validate(
     if not files:
         for ext in (".py", ".js", ".ts", ".jsx", ".tsx"):
             for fp in workspace.rglob(f"*{ext}"):
-                if any(p in fp.parts for p in ("node_modules", "__pycache__", ".git", ".venv")):
+                # GATE-1a : la liste locale, plus courte, laissait passer `dist`,
+                # `build`, `out`, `coverage` et `vendor`. Definition partagee.
+                if is_excluded_path(fp.relative_to(workspace).parts):
                     continue
                 try:
                     rel = str(fp.relative_to(workspace))
                     files[rel] = fp.read_text(encoding="utf-8", errors="replace")
                 except Exception:
                     pass
+
+    # ── LOT GATE-1b : le CONTEXTE est le projet edite, jamais le workspace ────
+    #
+    # `validate_project_async(files, project_dir)` relit `project_dir` en entier
+    # pour la verification croisee JS/HTML. La gate lui passait
+    # `self._task_workspace_root`, c'est-a-dire TOUT le workspace de Lumena : d'ou
+    # l'echec mesure du 23 septembre sur `cinema-motion-studio`, un projet etranger
+    # a la tache. Les autres appelants (`project.py`, `remotion.py`,
+    # `website.py`) passent deja le dossier du projet - la faute etait ici seule.
+    #
+    # Le contexte retenu est l'ancetre commun des fichiers edites : il garde le
+    # HTML voisin dont le XREF a besoin, et s'arrete a la racine du projet.
+    contexte = _dossier_de_contexte(workspace, files)
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -179,7 +226,9 @@ async def _do_validate(
         )
 
     if files:
-        report = await validate_project_async(files, workspace)
+        # GATE-1d : le LSP recoit une FRACTION du budget, jamais sa totalite -
+        # sinon il le consomme entier et la validation statique n'est jamais rendue.
+        report = await validate_project_async(files, contexte, lsp_timeout=lsp_budget)
         errors = [str(i) for i in report.issues if i.severity.value == "error"]
         warnings = [str(i) for i in report.issues if i.severity.value == "warning"]
 

@@ -28,6 +28,21 @@ from loguru import logger
 
 _WHSEC_RE = re.compile(r"(whsec_[A-Za-z0-9]+)")
 
+# Les jetons Stripe que la CLI peut faire apparaître sur sa sortie. `whsec_` est
+# celui qui a réellement fuité dans `lumena.log` le 24/09/2026 ; les clés `sk_`
+# et `rk_` sont ajoutées parce qu'un secret qu'on n'a pas encore vu fuir n'est pas
+# un secret qui ne fuitera pas.
+_SECRETS_RE = re.compile(r"\b((?:whsec|sk_live|sk_test|rk_live|rk_test|sk|rk)_[A-Za-z0-9]{6,})")
+
+
+def _masquer_secrets(texte: str) -> str:
+    """Remplace tout jeton Stripe par ses six premiers caractères et des points.
+
+    On garde le préfixe : il permet de reconnaître DE QUEL secret il s'agit dans un
+    diagnostic, sans jamais livrer de quoi signer une requête.
+    """
+    return _SECRETS_RE.sub(lambda m: f"{m.group(1)[:6]}***", texte)
+
 
 class StripeCLIService:
     """Gère le processus `stripe listen` en arrière-plan.
@@ -199,11 +214,21 @@ class StripeCLIService:
                     self._login_needed = True
                     self._secret_event.set()  # Débloquer start() pour gérer le login
 
-                # Log
+                # Log — JAMAIS la ligne brute.
+                #
+                # Mesure du 24/09/2026 sur `data/logs/lumena.log` : le signing secret
+                # complet s'y trouvait en clair, sur une seule ligne :
+                #   « Ready! ... Your webhook signing secret is whsec_8895ae0e... »
+                # La ligne SUIVANTE, écrite par Lumena, dit pourtant
+                # « Webhook secret capturé: whsec_*** ». Le masquage existait donc,
+                # appliqué au nôtre et pas à la sortie du CLI — et `_WHSEC_RE`, le
+                # motif qui sait reconnaître ces secrets, était déjà là depuis le
+                # début : il servait à les CAPTURER, jamais à les cacher.
+                propre = _masquer_secrets(text)
                 if "-->" in text or "200" in text or "event" in text.lower():
-                    logger.info(f"[StripeCLI] {text}")
+                    logger.info(f"[StripeCLI] {propre}")
                 elif "status=403" not in text and "Authorization" not in text:
-                    logger.debug(f"[StripeCLI] {text}")
+                    logger.debug(f"[StripeCLI] {propre}")
         except Exception as exc:
             if self._running:
                 logger.error(f"[StripeCLI] Reader error: {exc}")

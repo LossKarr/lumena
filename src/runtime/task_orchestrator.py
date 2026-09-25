@@ -6,13 +6,16 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, TypeVar
 import json
 import os
 import uuid
 
+from loguru import logger
+
 TaskState = Literal["queued", "running", "waiting_io", "checkpointed", "done", "failed", "cancelled"]
 _VALID_TASK_STATES = {"queued", "running", "waiting_io", "checkpointed", "done", "failed", "cancelled"}
+_MutationResult = TypeVar("_MutationResult")
 
 
 def _result_summary_cap() -> int:
@@ -222,7 +225,31 @@ class TaskOrchestrator:
         tmp_path = self._persistence_path.with_suffix(f"{self._persistence_path.suffix}.tmp")
         try:
             self._persistence_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            # LOT ORCH-1 — DURABILITE avant atomicite.
+            #
+            # `write_text()` laisse le contenu dans le cache disque. Le `replace`
+            # ci-dessous est bien atomique au niveau du NOM - NTFS le journalise -
+            # mais les DONNEES du temporaire peuvent n'avoir jamais atteint le
+            # disque. Apres une coupure, le nom publie alors un fichier de la bonne
+            # taille au contenu jamais ecrit.
+            #
+            # Mesure du 23 septembre 2026 sur la machine de Charles : ce fichier
+            # faisait **12 270 771 octets, uniquement des zeros**, horodate a la
+            # seconde ou sa session s'est arretee. 199 racines de missions perdues.
+            with open(tmp_path, "w", encoding="utf-8") as flux:
+                json.dump(payload, flux, ensure_ascii=False, indent=2)
+                flux.flush()
+                os.fsync(flux.fileno())
+            # ORCH-1 — un repli, pour qu'une corruption ne coute pas TOUT.
+            # `replace` ecrase la version precedente : sans cette copie, il ne reste
+            # rien a reprendre. Best-effort : echouer a garder l'ancien etat ne doit
+            # jamais empecher d'enregistrer le nouveau.
+            if self._persistence_path.exists():
+                try:
+                    self._persistence_path.replace(
+                        self._persistence_path.with_suffix(self._persistence_path.suffix + ".bak"))
+                except OSError:
+                    pass
             tmp_path.replace(self._persistence_path)
             self._persistence_last_saved_at = save_ts
             self._persistence_last_error = None
@@ -237,10 +264,37 @@ class TaskOrchestrator:
     def _load_from_disk(self) -> None:
         if not self._persistence_path or not self._persistence_path.exists():
             return
-        try:
-            raw_payload = json.loads(self._persistence_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            self._persistence_last_error = str(exc)[:800]
+        # LOT ORCH-1 — un etat illisible ne fait plus repartir de zero EN SILENCE.
+        #
+        # Avant : `except Exception: return`. Lumena redemarrait vide sans un mot, et
+        # Charles n'a su pour la corruption du 23 septembre que parce que des TESTS
+        # lisaient ce corpus. Un historique perdu doit s'entendre.
+        raw_payload = None
+        _echecs = []
+        for _source in (self._persistence_path,
+                        self._persistence_path.with_suffix(self._persistence_path.suffix + ".bak")):
+            if not _source.exists():
+                continue
+            try:
+                raw_payload = json.loads(_source.read_text(encoding="utf-8"))
+            except Exception as exc:
+                _echecs.append(f"{_source.name}: {type(exc).__name__}")
+                continue
+            if _source != self._persistence_path:
+                logger.warning(
+                    "[ORCH-1] etat des taches illisible ({}) - repris depuis le repli {}",
+                    "; ".join(_echecs), _source.name,
+                )
+            break
+        if raw_payload is None:
+            self._persistence_last_error = (
+                "etat des taches illisible, aucun repli exploitable : " + "; ".join(_echecs)
+            )[:800] if _echecs else None
+            if _echecs:
+                logger.error(
+                    "[ORCH-1] etat des taches illisible et AUCUN repli : {} - "
+                    "l'historique des taches repart vide", "; ".join(_echecs),
+                )
             return
 
         loaded_tasks: Dict[str, TaskRecord] = {}
@@ -377,6 +431,27 @@ class TaskOrchestrator:
             record.updated_at = _now_iso()
             self._persist_locked()
             return record
+
+    def mutate_task_metadata(
+        self,
+        task_id: str,
+        mutator: Callable[[Dict[str, Any], Dict[str, Any]], _MutationResult],
+    ) -> _MutationResult:
+        """Apply one metadata transaction while holding the task lock.
+
+        The callback receives an isolated metadata mapping and a read-only task
+        snapshot. If it raises, no metadata change is committed or persisted.
+        """
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if not record:
+                raise KeyError(task_id)
+            metadata = dict(record.metadata or {})
+            result = mutator(metadata, record.to_dict())
+            record.metadata = metadata
+            record.updated_at = _now_iso()
+            self._persist_locked()
+            return result
 
     def cancel_task(self, task_id: str, *, propagate: bool = True) -> Dict[str, Any]:
         """Annule une tâche (coopératif : `cancel_requested` + `state=cancelled`).

@@ -131,6 +131,7 @@ class EntreeProgressionPlan:
     definir_derniere_avance: Callable[[Any], None]
     obtenir_route_document: Callable[[], Any]
     types_documents_requis: Callable[[str], Any]
+    execution_observation: Any = None
 
 
 def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
@@ -140,6 +141,12 @@ def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
     La sortie anticipee sur plan vide et l'emission de l'etat restent dans la
     coquille de `react.py`.
     """
+    from ..utils.external_tool_names import is_ide_tool_name
+    from .execution_plan_runtime import apply_verified_execution_plan
+
+    if is_ide_tool_name(e.tool_name):
+        apply_verified_execution_plan(e)
+        return
     tool_name = e.tool_name
     tool_args = e.tool_args
     observation_content = e.observation_content

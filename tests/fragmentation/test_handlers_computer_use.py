@@ -18,7 +18,7 @@ from src.reasoning.handlers.computer_use import (
     close_app,
     close_window,
     computer_task,
-    cursor_ide_local,
+    lumena_ide,
     double_click,
     drag,
     find_element,
@@ -803,19 +803,19 @@ class TestMousePattern:
         assert "inconnue" in r.output
 
 
-# ─── cursor_ide_local ─────────────────────────────────────────────────────
+# ─── lumena_ide ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio(mode="auto")
 class TestCursorIdeLocal:
     async def test_invalid_action(self):
-        r = await (cursor_ide_local(_make_ctx(), action="destroy"))
+        r = await (lumena_ide(_make_ctx(), action="destroy"))
         assert not r.success
         assert "status" in r.output
 
     async def test_status_ide_not_found(self):
         ctx = _make_ctx()
         # ide_root won't exist in test environment
-        r = await (cursor_ide_local(ctx, action="status"))
+        r = await (lumena_ide(ctx, action="status"))
         # Should fail because ide_root doesn't exist
         assert not r.success or "introuvable" in r.output or "status" in r.output.lower()
 
@@ -891,7 +891,7 @@ class TestComputerUseHandlerDefs:
         names = {d.name for d in defs}
         expected = {
             "click", "type_text", "open_app", "close_app",
-            "cursor_ide_local", "hotkey", "get_active_window", "double_click",
+            "lumena_ide", "hotkey", "get_active_window", "double_click",
             "scroll", "move_mouse", "press_key", "close_window", "wait",
             "spotify_play", "open_url", "list_windows", "drag",
             "screenshot_analyze", "click_element", "find_element",

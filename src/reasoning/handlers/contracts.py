@@ -9,7 +9,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..tool_result import ToolExecutionResult
+    from ..execution_evidence import VerifiedExecutionEvidence
 
 
 @dataclass
@@ -22,6 +26,8 @@ class SubToolResult:
     status_code: str = ""
     proof: Optional[str] = None
     args: Dict[str, Any] = field(default_factory=dict)
+    execution: Optional[ToolExecutionResult] = field(default=None, repr=False)
+    execution_evidence: Optional[VerifiedExecutionEvidence] = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,8 @@ class HandlerResult:
     handler_name: str = ""
     status_code: str = ""  # AgentResult.status_code propagé (success/partial/error…)
     sub_results: tuple = ()  # tuple[SubToolResult] — peuplé par parallel_tools_handler
+    execution: Optional[ToolExecutionResult] = field(default=None, repr=False)
+    execution_evidence: Optional[VerifiedExecutionEvidence] = field(default=None, repr=False)
 
     def to_legacy_str(self) -> str:
         """

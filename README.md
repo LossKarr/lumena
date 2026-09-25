@@ -3,8 +3,8 @@
 **Assistant IA personnel autonome, local-first, doté d'une mémoire persistante et capable d'agir réellement.**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.0.55-F28C28)](#état-des-composants)
-[![Tests](https://img.shields.io/badge/tests-20K%2B_passed-22C55E)](#tests)
+[![Version](https://img.shields.io/badge/version-v1.0.56-F28C28)](#état-des-composants)
+[![Tests](https://img.shields.io/badge/tests-23K%2B_passed-22C55E)](#tests)
 [![License](https://img.shields.io/badge/license-AGPL--3.0_%2F_Commercial-2563EB)](#licence)
 [![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#état-des-composants)
 
@@ -19,9 +19,9 @@ Elle ne se contente pas de proposer une procédure : en **mode Agent**, elle peu
 planifier une demande, appeler ses outils, produire des fichiers, contrôler les
 résultats obtenus et rendre compte des preuves réellement observées.
 
-> **Version bêta v1.0.55**
+> **Version bêta v1.0.56**
 >
-> Lumena est utilisable au quotidien, mais reste un projet solo en évolution.
+> Lumena est utilisable au quotidien et poursuit sa phase de stabilisation.
 > Certaines fonctions dépendent d'API, de logiciels locaux, d'identifiants ou
 > d'une validation humaine. Une capacité disponible n'est jamais une garantie
 > universelle de réussite sur tous les environnements.
@@ -40,6 +40,10 @@ Ces nombres décrivent deux niveaux différents et ne doivent pas être confondu
 - deux usages distincts : **Chat** pour dialoguer et **Agent** pour exécuter ;
 - routage entre conversation, outil direct, projet et raisonnement multi-étapes ;
 - boucle de raisonnement ReAct avec plan, actions, observations et preuves ;
+- orientation du travail Agent en cours depuis le chat, avec un mode qui attend
+  le prochain point sûr et un mode prioritaire qui reprend dès que possible ;
+- plusieurs orientations peuvent être ajoutées sans perdre la demande initiale,
+  le plan déjà construit ni les preuves déjà recueillies ;
 - plus de **590 outils natifs**, répartis dans **37 catégories** ;
 - réponses en streaming, interruption, reprise et suivi des tâches ;
 - identité, personnalité, humeur et contexte cohérents entre les interfaces ;
@@ -49,6 +53,8 @@ Ces nombres décrivent deux niveaux différents et ne doivent pas être confondu
 ### Réaliser des missions longues
 
 - missions asynchrones suivies depuis le panneau dédié ;
+- orientation des missions et de leurs workers depuis le Web ou un canal lié,
+  avec ciblage par périmètre et amendements explicites du contrat ;
 - délégation à plusieurs workers avec espaces de travail isolés ;
 - contrats de fichiers et signatures pour coordonner les projets logiciels ;
 - CodeAgent spécialisé pour écrire, corriger et tester du code ;
@@ -74,11 +80,30 @@ Ces nombres décrivent deux niveaux différents et ne doivent pas être confondu
 - opérations Git et GitHub, terminal, fichiers et commandes en sandbox ;
 - Repo Map, recherche vectorielle du code, AST, WorldModel et règles projet ;
 - diagnostics LSP, navigation vers les définitions et recherche de références ;
-- pont IDE, sessions CodeAgent et historique des modifications ;
+- connexion à Lumena IDE par découverte locale et appairage authentifié ;
+- catalogue d'outils IDE négocié avec périmètres, politiques et résultats structurés ;
+- lecture des buffers non enregistrés, navigation et diagnostics depuis le chat ;
+- instance Lumena IDE dédiée à chaque mission qui doit modifier un projet ;
+- sessions CodeAgent et historique des modifications ;
 - tests unitaires et contrôles d'intégration ;
 - prévisualisation locale et vérification par navigateur ;
 - contrôle du DOM, captures d'écran et validation d'interactions ;
 - génération vidéo avec Remotion et traitement d'images multi-provider.
+
+### Piloter Lumena IDE
+
+Lumena peut ouvrir son IDE, retrouver une instance existante, négocier les
+commandes réellement disponibles et agir dans le workspace auquel la connexion
+est attachée. Les lectures et la navigation peuvent partir du chat, y compris
+pour un buffer qui n'est pas encore enregistré sur disque. Les modifications de
+code suivent le rail CodeAgent ou mission et conservent les limites du projet.
+
+Une mission utilise sa propre instance et ne récupère jamais silencieusement la
+fenêtre personnelle de l'utilisateur. Une commande acceptée n'est pas confondue
+avec un effet terminé : Lumena vérifie le contenu, les diffs, les diagnostics,
+les tests et le journal d'exécution avant d'annoncer un résultat. Le skill
+**Lumena IDE Operator** lui rappelle ces règles et ne lui accorde aucun droit
+supplémentaire.
 
 ### Utiliser le web et l'ordinateur
 
@@ -149,6 +174,8 @@ jamais les quotas, abonnements, permissions ou politiques de leur fournisseur.
 - historique d'autonomie et preuves d'exécution ;
 - panneau de configuration, catalogue de modèles et assistant d'installation ;
 - annulation, reprise, archivage et restauration lorsque le composant le permet.
+- état observable des orientations, conservation après rafraîchissement et
+  reprise prudente après un redémarrage.
 
 ### Étendre ses capacités avec MCP
 
@@ -170,7 +197,9 @@ identifiants.
 Lumena embarque un système de skills indépendant du fournisseur LLM. Les skills
 actuels couvrent notamment la création de sites, les tests web, les documents,
 les feuilles de calcul, les présentations, les images, Remotion, Stripe, IONOS,
-data.gouv.fr, l'automatisation et la création de nouveaux skills.
+data.gouv.fr, l'automatisation et la création de nouveaux skills. **Local Model
+Manager** encadre le cycle de vie Ollama et Hugging Face ; **Lumena IDE
+Operator** guide l'utilisation authentifiée, bornée et vérifiable de l'IDE.
 
 Les fichiers `.lumena_rules` et `.lumena/rules.yaml` permettent également
 d'adapter les conventions à chaque projet sans modifier le cœur de Lumena.
@@ -199,7 +228,7 @@ réels de Lumena dans des panneaux spécialisés :
 | Contrôle | Overview, Repo Map, Code Search, Mémoire, Journal, Identité |
 | Agent | Outils, Règles, Instincts, Tâches, Missions, Documents, Sessions |
 | Apprentissage | Datasets, rapports d'apprentissage et Fine-tuning |
-| Système | Émotions, Voix, Hooks, Live Trace, Console, Logs, Alertes |
+| Système | Modèles locaux, Émotions, Voix, Hooks, Live Trace, Console, Logs, Alertes |
 | Infrastructure | Telegram, WhatsApp, Autonomie, Réseau/P2P, MCP, Providers, IONOS |
 | Commerce | Vue Stripe, Paiements, Abonnements et Produits |
 | Administration | Configuration, assistant de démarrage et documentation intégrée |
@@ -234,6 +263,50 @@ Les modèles d'image utilisent leur propre catalogue et leur propre chaîne de
 fallback. Lumena ne présente pas un modèle texte comme capable de générer une
 image si cette capacité n'est pas déclarée.
 
+Le catalogue texte suit aussi les générations actuelles destinées au code et
+aux agents, dont GPT-6 Astra, Sol et Luna, Claude Opus 5.5 et Grok 4.7. Les
+modèles à accès restreint, comme Claude Mythos 5.1, restent enregistrés pour la
+compatibilité mais ne sont pas proposés sans preuve d'accès. Les transports,
+outils, efforts de raisonnement et fallbacks sont adaptés au contrat réel de
+chaque fournisseur.
+
+### Modèles locaux sans terminal
+
+Le panneau **Système → Modèles locaux** réunit toute la gestion des modèles
+Ollama et des dépôts GGUF du Hub Hugging Face dans Lumena. Il est organisé en
+trois espaces complémentaires : **Catalogue** pour rechercher, comparer et
+installer, **Mes modèles** pour administrer les modèles présents sur la machine,
+et **Opérations** pour suivre les téléchargements et leur état.
+
+Chaque fiche présente les informations disponibles sur le modèle : description,
+source, usages, taille, quantification, licence, compatibilité matérielle et
+éléments encore inconnus. Lumena peut également recommander un modèle en fonction
+du besoin et des ressources détectées, sans transformer cette recommandation en
+garantie de compatibilité ou de performance.
+
+Depuis **Mes modèles**, l'utilisateur peut vérifier, activer, choisir, désactiver,
+décharger ou supprimer un modèle sans passer par un terminal. Installation,
+activation, sélection, chargement et présence sur disque restent des états
+distincts. Désactiver conserve les poids ; décharger libère la mémoire ; supprimer
+exige un ticket temporaire et une confirmation humaine distincte.
+
+Les mêmes opérations sont disponibles depuis le chat et le mode Agent. Les
+outils authentifiés et bornés renvoient des faits structurés, puis le skill
+**Local Model Manager** aide Lumena à choisir la bonne opération et à respecter
+son ordre d'exécution. Lumena rédige elle-même sa réponse, sans phrase
+conversationnelle préenregistrée. Une installation n'est annoncée comme réussie
+qu'après la fin du téléchargement et la vérification de l'état réellement observé.
+Une demande de recherche ou de conseil ne déclenche jamais silencieusement une
+installation, une désactivation ou une suppression.
+
+La recherche Hugging Face utilise l'API officielle et ne propose à
+l'installation directe que les dépôts GGUF compatibles avec Ollama. Les dépôts
+restreints, les licences et les métadonnées absentes restent signalés au lieu
+d'être devinés. Pour Ollama, Lumena recherche l'index public officiel et conserve
+une sélection datée comme repli. Comme cet index ne constitue pas une API publique
+stable et exhaustive, Lumena signale la couverture partielle et accepte aussi un
+identifiant valide saisi directement.
+
 ---
 
 ## Sécurité et contrôle
@@ -267,8 +340,11 @@ une décision, et rien ne change sur la machine tant qu'elle n'est pas prise.
 | Composant | État | Remarque |
 |---|---|---|
 | Chat et mode Agent | Opérationnel | Deux comportements distincts, même interface |
+| Orientation du travail | Opérationnel | Plusieurs consignes, reprise sûre, persistance et états observables |
 | Routage et registre d'outils | Opérationnel | Outil direct, projet, ReAct et politiques par catégorie |
 | Missions locales et sous-agents | V1 certifiée | Délégation, preuves, artefacts et clôture |
+| Lumena IDE | Opérationnel selon environnement | Appairage authentifié, outils négociés et instances de mission dédiées |
+| Modèles locaux | Opérationnel selon environnement | Catalogue Ollama et Hugging Face GGUF, cycle de vie contrôlé |
 | Document Studio | V1 close | 30 modèles, import et composition en mission |
 | Overview | V1 production | Données réelles en lecture seule et widgets configurables |
 | MCP | Opérationnel | Les services externes restent conditionnels |
@@ -349,7 +425,7 @@ Une seule source LLM suffit pour démarrer. Par exemple :
 
 ```env
 DEEPSEEK_API_KEY=...
-LUMENA_DEFAULT_MODEL=deepseek-v3
+LUMENA_DEFAULT_MODEL=deepseek-flash
 ```
 
 Les clés API, les modèles locaux, l'abonnement Codex, la voix, les canaux et les
@@ -442,6 +518,7 @@ src/core_services/   routage, contexte, identité, mémoire et services métier
 src/documents/       moteur Document Studio
 src/learning/        réflexions, succès, instincts et journaux d'apprentissage
 src/llm/             catalogues, profils et routage multi-provider
+src/local_models/    catalogue et cycle de vie Ollama et Hugging Face GGUF
 src/mcp/             intégration Model Context Protocol
 src/memory/          ChromaDB, BM25, Knowledge Graph et contexte de code
 src/perception/      lecture documentaire et extraction de connaissances
@@ -472,8 +549,8 @@ python -m pytest tests/ --timeout=15 -q
 python -m pytest tests/reasoning/test_react_plan.py -v
 ```
 
-La dernière exécution complète connue rend **20 264 tests réussis, 0 échec**
-(7 ignorés selon l'environnement). Ce nombre n'est pas une promesse permanente :
+La dernière exécution complète connue rend **23 278 tests réussis, 14 ignorés, 0 échec**.
+Ce nombre n'est pas une promesse permanente :
 chaque modification doit être validée contre la suite correspondant à son
 périmètre.
 
@@ -481,7 +558,7 @@ périmètre.
 
 ## Limites connues
 
-- le projet reste en bêta et est maintenu par une seule personne ;
+- le projet reste en bêta ;
 - les fournisseurs externes peuvent imposer quotas, pannes et restrictions ;
 - le Computer Use est plus complet sous Windows ;
 - Voice V2 attend encore sa certification humaine finale ;
@@ -516,4 +593,4 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
 
 ---
 
-**Lumena v1.0.55 — projet solo, architecture ouverte, actions contrôlées.**
+**Lumena v1.0.56 — architecture ouverte, actions contrôlées.**

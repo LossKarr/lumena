@@ -14,6 +14,7 @@ import json
 import re
 import os
 from loguru import logger
+from ..utils.external_tool_names import is_ide_tool_name
 
 from .file_guardrails import WorkspaceFileGuardrails
 try:
@@ -55,6 +56,9 @@ class ToolResult:
     output: str
     call_id: str = ""
     error: Optional[str] = None
+    execution: Any = None
+    execution_evidence: Any = None
+    sub_results: tuple = ()
 
 
 class LumenaToolSystem:
@@ -396,7 +400,8 @@ class LumenaToolSystem:
         """Itère sur tous les outils V2. Yields (name, description, parameters)."""
         if self._tool_registry and hasattr(self._tool_registry, 'tools'):
             for name, entry in self._tool_registry.tools.items():
-                yield name, entry.get("description", ""), entry.get("parameters", {})
+                parameters = entry.get("input_schema", {}) if is_ide_tool_name(name) else entry.get("parameters", {})
+                yield name, entry.get("description", ""), parameters
 
     def get_tools_for_provider(self, provider: str) -> List[Dict[str, Any]]:
         """
@@ -408,6 +413,18 @@ class LumenaToolSystem:
         tools_list = []
 
         for name, description, parameters in self._iter_all_tools():
+            if is_ide_tool_name(name):
+                if provider == "openai":
+                    tools_list.append({"type": "function", "function": {
+                        "name": name, "description": description, "parameters": parameters,
+                    }})
+                elif provider == "anthropic":
+                    tools_list.append({"name": name, "description": description, "input_schema": parameters})
+                elif provider == "google":
+                    tools_list.append({"name": name, "description": description, "parametersJsonSchema": parameters})
+                else:
+                    tools_list.append({"name": name, "description": description, "parameters": parameters})
+                continue
             if provider == "openai":
                 _props = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
                 _req = parameters.get("required", []) if isinstance(parameters, dict) else []
@@ -501,6 +518,10 @@ class LumenaToolSystem:
         ]
         
         for name, description, parameters in self._iter_all_tools():
+            if is_ide_tool_name(name):
+                lines.append(f"- **{name}**: {description}")
+                lines.append("  JSON Schema: " + json.dumps(parameters, ensure_ascii=False, sort_keys=True))
+                continue
             params_str = ", ".join([f'"{ k}": "{v.get("type", "string") if isinstance(v, dict) else v}"' for k, v in parameters.items()])
             lines.append(f"- **{name}**: {description}")
             if params_str:
@@ -523,15 +544,25 @@ class LumenaToolSystem:
             return len(self._tool_registry.tools)
         return 0
 
-    async def execute_tool(self, tool_call: ToolCall) -> ToolResult:
-        """Exécute un appel d'outil via ToolRegistry V2."""
+    async def execute_tool(self, tool_call: ToolCall, *, caller: Any = None) -> ToolResult:
+        """Exécute un appel d'outil via ToolRegistry V2.
+
+        CONN-5D-2 : un outil IDE s'execute sur le registre qui execute l'outil en cours
+        (celui de la mission qui a delegue a CodeAgent), s'il existe ; les outils natifs
+        restent sur le registre lie. L'appelant n'est transmis que s'il est fourni.
+        """
+        registry = self._tool_registry
+        if is_ide_tool_name(tool_call.name):
+            from ..reasoning.tool_call_scope import current_tool_registry
+            registry = current_tool_registry() or registry
         if (
-            self._tool_registry is not None
-            and hasattr(self._tool_registry, 'tools')
-            and tool_call.name in self._tool_registry.tools
+            registry is not None
+            and hasattr(registry, 'tools')
+            and tool_call.name in registry.tools
         ):
             try:
-                obs = await self._tool_registry.execute(tool_call.name, tool_call.arguments or {})
+                caller_kwargs = {} if caller is None else {"caller": caller}
+                obs = await registry.execute(tool_call.name, tool_call.arguments or {}, **caller_kwargs)
                 _obs_success = getattr(obs, 'success', True)
                 _obs_content = getattr(obs, 'content', str(obs))
                 return ToolResult(
@@ -539,6 +570,9 @@ class LumenaToolSystem:
                     output=_obs_content,
                     call_id=tool_call.call_id,
                     error=_obs_content if not _obs_success else None,
+                    execution=getattr(obs, "execution", None),
+                    execution_evidence=getattr(obs, "execution_evidence", None),
+                    sub_results=getattr(obs, "sub_results", ()),
                 )
             except Exception as e:
                 logger.error(f"❌ ToolRegistry execution failed for {tool_call.name}: {e}")
@@ -560,10 +594,12 @@ class LumenaToolSystem:
         self,
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
+        *,
+        caller: Any = None,
     ) -> str:
         """Compatibility wrapper for callers that pass name+args directly."""
         result = await self.execute_tool(
-            ToolCall(name=tool_name, arguments=arguments or {})
+            ToolCall(name=tool_name, arguments=arguments or {}), caller=caller,
         )
         if result.success:
             return result.output

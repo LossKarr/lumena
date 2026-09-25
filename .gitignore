@@ -41,6 +41,10 @@ src/mcp/data/*
 
 # Docs internes
 docs/
+!docs/
+docs/*
+!docs/LOCAL_MODELS.md
+!docs/WORK_STEERING.md
 docs-plan/
 
 # Runtime Lumena

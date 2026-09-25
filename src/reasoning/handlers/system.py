@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -242,6 +243,99 @@ def _command_not_found_in(stderr: str) -> bool:
     return any(signature in bas for signature in _COMMAND_NOT_FOUND_SIGNATURES)
 
 
+def _l2_3_dossier_autorise(ctx, cwd: Optional[str], command: str) -> bool:
+    """L2-3 — ce dossier de travail est-il deja autorise ? (jamais d'exception)
+
+    Le juge de commandes est une fonction PURE sur la chaine : il ne connait pas le
+    dossier. On le lui dit ici, ou l'information existe (prefixe `cd`, parametre `cwd`,
+    sinon dossier du tour). Le verdict fait foi plus bas : cette fonction ne sert qu'a
+    assouplir les verbes d'ecriture PowerShell quand le dossier est de toute facon
+    borne (L2-1/L2-2). En cas de doute : False, donc comportement historique.
+    """
+    try:
+        from .files import assert_execution_cwd_allowed, execution_work_dir
+
+        brut = (cwd or "").strip().strip("\"'")
+        if not brut:
+            import re as _re_cd
+            m = _re_cd.match(r'\s*cd\s+(?:/d\s+)?("[^"]+"|\'[^\']+\'|[^\s&|;]+)\s*&&',
+                             command or "", _re_cd.IGNORECASE)
+            if m:
+                brut = m.group(1).strip("\"'")
+        _mission_dir = None
+        try:
+            _sub = ctx.mission_workspace_subdir()
+            if _sub and ctx.file_guardrails is not None:
+                _mission_dir = Path(ctx.file_guardrails._workspace_root()) / _sub
+        except Exception:
+            _mission_dir = None
+        dossier = _resolve_cwd(brut, ctx.lumena_root, _mission_dir) if brut else None
+        if dossier is None:
+            dossier = execution_work_dir(ctx)
+        if dossier is None:
+            return False
+        assert_execution_cwd_allowed(dossier, ctx, outil="run_command")
+        return True
+    except Exception:
+        return False
+
+
+# ── LOT PS-1 (25/09/2026) — le garde PowerShell ne s'enveloppe plus lui-meme ──
+#
+# Run du 24/09 a 20 h 07 : Lumena lance
+#   powershell -NoProfile -Command "Start-Sleep -Seconds 12; Write-Output 'boot-wait'"
+# et recoit
+#   [STDERR] -NoProfile : Le terme «-NoProfile» n'est pas reconnu...
+#
+# Le garde verifiait la presence de `-Command` avec `re.match`, donc ANCRE AU DEBUT de ce
+# qui suit `powershell`. Sur `-NoProfile -Command "..."` le test echouait, et la commande
+# etait enveloppee une SECONDE fois :
+#   powershell -NoProfile -NonInteractive -Command "-NoProfile -Command \"Start-Sleep...\""
+# PowerShell recevait alors `-NoProfile` comme une commande.
+#
+# Mesure : **5 formes sur 7 cassees** — toute commande portant un flag avant `-Command`
+# (`-NoProfile`, `-NonInteractive`, `-NoLogo`, `-WindowStyle`, `-ExecutionPolicy`). Ironie :
+# le code lui-meme genere `powershell -NoProfile -Command "..."` pour traduire tail/head.
+#
+# La logique est extraite ici pour etre testable sans EXECUTER de commandes — meme geste
+# qu'au lot GATE-2 avec `verifier_js_par_node`.
+_PS_CMDLET_DECLENCHEUR_RE = re.compile(r"(?:^|[|;&])\s*[A-Z][a-z]+-[A-Z][a-z]+")
+_PS_PORTE_DEJA_COMMAND_RE = re.compile(
+    r"(?:^|\s)-(?:Command|c|File|EncodedCommand)\b", re.IGNORECASE,
+)
+_PS_PREFIXE_RE = re.compile(r"(?i)powershell(?:\.exe)?\s+")
+
+
+def reecrire_powershell_si_besoin(command: str, *, plateforme: str = None) -> str:
+    """Enveloppe une cmdlet `Verb-Noun` dans `powershell -Command`, une seule fois.
+
+    Rend la commande INCHANGEE quand elle porte deja `-Command`, `-File` ou `-c`, meme
+    precede d'autres flags. C'est tout l'objet du lot PS-1.
+    """
+    import sys as _sys
+
+    plateforme = plateforme if plateforme is not None else _sys.platform
+    bas = command.strip().lower()
+    if plateforme != "win32":
+        return command
+    if bas.startswith(("cmd", "python", "py ")):
+        return command
+    if not _PS_CMDLET_DECLENCHEUR_RE.search(command):
+        return command
+    if bas.startswith("powershell"):
+        prefixe = _PS_PREFIXE_RE.match(command)
+        if not prefixe:
+            return command
+        reste = command[prefixe.end():]
+        # PS-1 : `search` et non `match` — un flag peut preceder `-Command`.
+        if _PS_PORTE_DEJA_COMMAND_RE.search(reste):
+            return command
+        echappe = reste.replace('"', '\\"')
+        return f'powershell -NoProfile -NonInteractive -Command "{echappe}"'
+    echappe = command.replace('"', '\\"')
+    return f'powershell -NoProfile -NonInteractive -Command "{echappe}"'
+
+
 async def run_command_handler(
     ctx: HandlerContext, command: str,
     stdin_input: str = "", timeout: int = 0,
@@ -347,9 +441,21 @@ async def run_command_handler(
 
         from ...utils.command_sanitizer import sanitize_chained_command
         extra = ctx._discovered_executables if ctx._discovered_executables else None
-        allowed, reason = sanitize_chained_command(command, extra_allowed=extra)
+        # L2-3 : le dossier de travail sera juge juste apres (L2-1). Quand il est
+        # autorise, une ecriture PowerShell (`New-Item`, `Copy-Item`...) est deja
+        # contenue : mesure du 16/09, 26 refus de ce type visaient le workspace.
+        # Parametre NOMME, transmis seulement ici (regle apprise n°4).
+        allowed, reason = sanitize_chained_command(
+            command, extra_allowed=extra,
+            workdir_allowed=_l2_3_dossier_autorise(ctx, cwd, command),
+        )
         if not allowed:
-            return HandlerResult.ok(f"⛔ {reason}", handler_name="run_command")
+            # L3-2 : un refus est un ECHEC. Mesure du 16/09 : `run_command` est dans
+            # `MUTATION_TOOLS` et le ledger compte `entry.success and action in
+            # MUTATION_TOOLS` -> un refus rendu en succes enregistrait une MUTATION
+            # REUSSIE sans qu'aucune commande n'ait tourne (motif C0.2, corrige jadis
+            # pour `write_file`, jamais ici). Le motif du refus reste dans le message.
+            return HandlerResult.fail(f"⛔ {reason}", handler_name="run_command")
 
         # Guard: bloquer les commandes git nues et les `cd <dir> && git` visant
         # un dossier sans .git pour éviter d'opérer sur le repo lumena root.
@@ -490,6 +596,19 @@ async def run_command_handler(
                 )
             _cwd = _resolved_explicit
             logger.info("[run_command] cwd explicite résolu: {}", _cwd[:200])
+
+        # ── LOT L2-1 — LE DOSSIER DE TRAVAIL EST JUGE COMME UNE ECRITURE ──────
+        # Mesure du 16/09 sur 1399 commandes reelles : la cible n'est lisible que dans
+        # 11,2 % des lignes et 20,6 % ecrivent de facon opaque (`node -e`, `python -c`).
+        # Juger le texte serait une illusion ; le dossier, lui, est explicite (~95 %) et
+        # deja resolu ci-dessus. Memes verdicts que `assert_write_allowed` (L1c).
+        try:
+            from .files import PathSecurityError as _SecErrL2, assert_execution_cwd_allowed
+            assert_execution_cwd_allowed(_cwd, ctx)
+        except _SecErrL2 as _sec_l2:
+            logger.warning("[L2-1] execution refusee : cwd={} cmd={}", _cwd, str(command)[:120])
+            # L3-2 : ECHEC, pas succes (meme raison qu'au refus du juge de commandes).
+            return HandlerResult.fail(f"⛔ {_sec_l2}", handler_name="run_command")
 
         _command_lower = command.lower()
         _is_static_server = (
@@ -727,19 +846,10 @@ async def run_command_handler(
             and bool(_re.search(r"(?:^|[|;&])\s*[A-Z][a-z]+-[A-Z][a-z]+", command))
         )
         if _ps_wrap:
-            # Si la commande commence déjà par powershell(.exe) mais SANS -Command/-c,
-            # le pipe sera interprété par cmd.exe → réécrire avec -Command
-            if _cmd_stripped_lower.startswith("powershell"):
-                _ps_body_m = _re.match(r'(?i)powershell(?:\.exe)?\s+', command)
-                if _ps_body_m:
-                    _rest = command[_ps_body_m.end():]
-                    # Seulement réécrire si pas déjà -Command/-c/-File
-                    if not _re.match(r'(?i)\s*-(?:Command|c|File)', _rest):
-                        _escaped = _rest.replace('"', '\\"')
-                        command = f'powershell -NoProfile -NonInteractive -Command "{_escaped}"'
-            else:
-                _escaped = command.replace('"', '\\"')
-                command = f'powershell -NoProfile -NonInteractive -Command "{_escaped}"'
+            # LOT PS-1 : logique extraite dans `reecrire_powershell_si_besoin`, pour etre
+            # testable sans executer de commandes — et corrigee au passage (un flag avant
+            # `-Command` provoquait une DOUBLE enveloppe, 5 formes sur 7 cassees).
+            command = reecrire_powershell_si_besoin(command)
 
         # ── LOT 2.11.B : garde anti « pytest collecte les 16k tests de Lumena » ──
         # En mission, une pytest lancée depuis la RACINE Lumena avec une cible LARGE
@@ -1229,6 +1339,8 @@ async def parallel_tools_handler(
                 content=_obs_content[:_preview_cap],
                 status_code="success" if _obs_success else "failed",
                 args=call["args"],
+                execution=getattr(result, "execution", None),
+                execution_evidence=getattr(result, "execution_evidence", None),
             )
             status = "✅" if _obs_success else "❌"
             lines.append(f"{status} {idx}. {call['name']}: {preview}")

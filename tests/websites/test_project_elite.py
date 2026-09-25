@@ -1190,14 +1190,14 @@ class TestProviderAgnosticRetry:
     """Vérifie que le retry fonctionne pour n'importe quel provider (pas que deepseek)."""
 
     def test_upgrade_map_in_source(self):
-        """Le _UPGRADE_MAP couvre GPT nano/mini et deepseek."""
+        """Le _UPGRADE_MAP couvre les upgrades GPT encore sélectionnables."""
         import inspect
         from src.reasoning.handlers import project
         src = inspect.getsource(project.create_project_handler)
         assert "_UPGRADE_MAP" in src
         assert '"gpt-5.4-nano": "gpt-5.4-mini"' in src
         assert '"gpt-4.1-nano": "gpt-4.1-mini"' in src
-        assert '"deepseek-chat": "deepseek-reasoner"' in src
+        assert '"deepseek-chat": "deepseek-reasoner"' not in src
 
     def test_get_upgrade_model_in_source(self):
         """La fonction _get_upgrade_model existe dans le handler."""

@@ -15,6 +15,7 @@ def test_mission_handler_defs():
         "delegate_and_wait",       # Lot 5.2 — délégation lead→workers
         "write_mission_contract",  # LOT 2.2 — contrat machine + stubs avant délégation
         "publish_mission_workspace",  # A2 — publication déterministe du livrable
+        "mission_journal_read",    # LOT 4 — un worker lit ce que ses frères ont décidé
     }
 
 

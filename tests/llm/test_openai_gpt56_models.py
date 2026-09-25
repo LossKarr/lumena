@@ -1,6 +1,6 @@
 """Garde-fous d'intégration des modèles OpenAI GPT-5.6."""
 
-from pathlib import Path
+import asyncio
 from unittest.mock import patch
 
 import pytest
@@ -12,9 +12,9 @@ GPT56_MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
 @pytest.mark.parametrize(
     ("name", "cost", "badge"),
     (
-        ("gpt-5.6-sol", 5.0, "Frontier"),
-        ("gpt-5.6-terra", 2.5, "Balanced"),
-        ("gpt-5.6-luna", 1.0, "Efficient"),
+        ("gpt-5.6-sol", 4.0, "Frontier"),
+        ("gpt-5.6-terra", 2.0, "Balanced"),
+        ("gpt-5.6-luna", 0.20, "Efficient"),
     ),
 )
 def test_gpt56_catalog_and_official_contract(name, cost, badge):
@@ -59,18 +59,17 @@ def test_gpt56_fallbacks_are_ordered_and_available():
         "gpt-5.5",
         "gpt-5.6-terra",
         "nvidia-nemotron-3-ultra-550b-a55b",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
     ]
     assert get_model_fallbacks("gpt-5.6-terra") == [
         "gpt-5.4",
         "gpt-5.6-luna",
-        "nvidia-gpt-oss-120b",
+        "nvidia-gpt-oss-20b",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ]
     assert get_model_fallbacks("gpt-5.6-luna") == [
         "gpt-5.4-mini",
-        "nvidia-gpt-oss-120b",
-        "nvidia-deepseek-v4-flash",
+        "nvidia-gpt-oss-20b",
     ]
 
 
@@ -132,10 +131,15 @@ def test_gpt56_config_lists_and_image_generation_exclusion():
 
 
 def test_gpt56_setup_wizard_recommendations():
-    setup_text = Path("web/routes/setup.py").read_text(encoding="utf-8")
+    from web.routes.setup import setup_schema
+
+    schema = asyncio.run(setup_schema())
+    brains = next(step for step in schema["steps"] if step["id"] == "brains")
+    fields = {field["key"]: field for field in brains["fields"]}
 
     for name in GPT56_MODELS:
-        assert setup_text.count(f'"{name}"') == 3
+        for key in ("LUMENA_BRAIN_VISION", "LUMENA_BRAIN_CODE", "LUMENA_BRAIN_WEB"):
+            assert name in fields[key]["options"]
 
 
 @pytest.mark.parametrize("name", GPT56_MODELS)

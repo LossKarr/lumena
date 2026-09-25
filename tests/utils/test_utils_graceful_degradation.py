@@ -106,6 +106,13 @@ class TestGracefulDegradationCheckModule:
         assert "os" in gd._module_cache
         assert gd._module_cache["os"] is True
 
+    def test_optional_module_check_does_not_execute_heavy_import(self):
+        gd = GracefulDegradation()
+        gd._module_cache = {}
+        with patch("src.utils.graceful_degradation.importlib.util.find_spec", return_value=object()):
+            with patch("builtins.__import__", side_effect=AssertionError("heavy import executed")):
+                assert gd.check_module("faster_whisper") is True
+
 
 # ─── GracefulDegradation.is_feature_available ──────────────────────────────
 

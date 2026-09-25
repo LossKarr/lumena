@@ -1,0 +1,24 @@
+.steering-live{padding:8px 10px;border:1px solid rgba(249,146,45,.28);border-radius:10px;background:rgba(249,146,45,.055)}
+.steering-live[hidden]{display:none}
+.steering-live-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.steering-live-label{display:flex;align-items:center;gap:7px;color:var(--text);font-size:11px;font-weight:650;letter-spacing:.02em}
+.steering-live-dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px rgba(34,197,94,.1);animation:steering-live-pulse 1.8s ease-in-out infinite}
+@keyframes steering-live-pulse{50%{opacity:.45;transform:scale(.82)}}
+.steering-policy{display:flex;gap:3px;padding:3px;border:1px solid var(--border);border-radius:8px;background:rgba(0,0,0,.16)}
+.steering-policy button{border:0;border-radius:6px;padding:5px 8px;background:transparent;color:var(--muted);font:inherit;font-size:10px;cursor:pointer}
+.steering-policy button:hover{color:var(--text)}
+.steering-policy button.active{color:var(--accent);background:rgba(249,146,45,.12);box-shadow:inset 0 0 0 1px rgba(249,146,45,.2)}
+.steering-history{display:flex;flex-wrap:wrap;gap:5px;margin-top:7px}
+.steering-history:empty{display:none}
+.steering-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;padding:4px 7px;border:1px solid var(--border);border-radius:999px;color:var(--muted);font-size:10px;background:rgba(0,0,0,.14)}
+.steering-chip span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px}
+.steering-chip[data-status="delivered"],.steering-chip[data-status="incorporated"]{border-color:rgba(59,130,246,.35);color:#93c5fd}
+.steering-chip[data-status="applied"],.steering-chip[data-status="partially_applied"]{border-color:rgba(34,197,94,.3);color:#86efac}
+.steering-chip[data-status="rejected"],.steering-chip[data-status="late"]{border-color:rgba(239,68,68,.3);color:#fca5a5}
+.steering-stop{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center}
+.steering-stop[hidden]{display:none}
+@media(max-width:680px){.steering-live-head{align-items:flex-start;flex-direction:column}.steering-policy{width:100%}.steering-policy button{flex:1}.steering-chip span:first-child{max-width:180px}}
+
+/* ORI-2a : annuler (et corriger) une orientation encore en attente. */
+.steering-chip .steering-cancel{margin-left:6px;border:0;background:transparent;color:inherit;opacity:.55;cursor:pointer;font-size:14px;line-height:1;padding:0 2px;border-radius:4px}
+.steering-chip .steering-cancel:hover,.steering-chip .steering-cancel:focus-visible{opacity:1;background:rgba(255,255,255,.12)}

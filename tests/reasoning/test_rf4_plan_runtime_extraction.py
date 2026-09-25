@@ -817,7 +817,7 @@ def test_la_coquille_porte_la_sortie_anticipee_la_mutation_et_l_emission():
     assert "appliquer_progression_plan" in source, "la coquille n'appelle pas le module extrait"
 
 
-def test_la_signature_publique_est_inchangee():
+def test_la_signature_publique_reste_compatible_avec_preuve_optionnelle():
     """`execution_router.py` et une vingtaine de tests appellent cette methode
     directement : sa signature fait partie du contrat (invariant 13/14)."""
     from src.reasoning.react import ReActLoop
@@ -825,9 +825,12 @@ def test_la_signature_publique_est_inchangee():
     sig = inspect.signature(ReActLoop._update_plan_progress)
     assert list(sig.parameters) == [
         "self", "tool_name", "tool_args", "observation_content",
-        "iteration", "allow_fallback",
+        "iteration", "allow_fallback", "execution_observation",
     ]
     assert sig.parameters["allow_fallback"].default is True
+    # CONN-4D : ajout explicite sans changer les positions/appels historiques.
+    assert sig.parameters["execution_observation"].default is None
+    assert sig.parameters["execution_observation"].kind is inspect.Parameter.KEYWORD_ONLY
     assert sig.return_annotation is None or sig.return_annotation == "None"
     assert not inspect.iscoroutinefunction(ReActLoop._update_plan_progress)
 
@@ -1105,7 +1108,7 @@ def test_le_module_extrait_ne_declare_aucun_import_de_react():
         "reecrit, l'invariant peut desormais etre verifie plus strictement"
     )
 
-    # 2. le module extrait s'importe et expose son entree a 16 champs
+    # CONN-4D : 17 champs historiques + observation structuree optionnelle.
     res = subprocess.run(
         [sys.executable, "-c",
          "import src.reasoning.react_plan_runtime as m; "
@@ -1113,7 +1116,7 @@ def test_le_module_extrait_ne_declare_aucun_import_de_react():
         cwd=str(RACINE), capture_output=True, text=True, timeout=180,
     )
     assert res.returncode == 0, res.stderr[-2000:]
-    assert res.stdout.strip().splitlines()[-1] == "17"
+    assert res.stdout.strip().splitlines()[-1] == "18"
 
 
 def test_comportement_le_garde_browser_only_refuse_par_la_chaine_principale():

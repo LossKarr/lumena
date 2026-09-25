@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from loguru import logger
+from ..utils.external_tool_names import is_ide_tool_name
+from .execution_metadata import execution_metadata
 
 
 TRACE_EVENT_FIELDS = {
@@ -40,6 +42,7 @@ TRACE_EVENT_FIELDS = {
     "thought",
     "iteration",
     "max_iter",
+    "execution",
 }
 
 
@@ -134,6 +137,13 @@ class TraceBus:
         self._subscribers: Dict[str, _Subscriber] = {}
 
     def _sanitize_event(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if is_ide_tool_name(payload.get("tool_name")):
+            # ReAct/ToolSystem emit raw arguments BEFORE registry dispatch.
+            # Redact before buffering/fan-out, without changing native traces.
+            payload = dict(payload)
+            for key in ("summary", "error", "thought"):
+                if payload.get(key):
+                    payload[key] = "[IDE payload redacted]"
         clean: Dict[str, Any] = {
             "trace_id": payload.get("trace_id") or uuid.uuid4().hex,
             "turn_id": payload.get("turn_id") or uuid.uuid4().hex,
@@ -160,8 +170,12 @@ class TraceBus:
 
         # Preserve any explicit known field overrides.
         for key in TRACE_EVENT_FIELDS:
-            if key in payload and key not in {"summary", "error", "thought"}:
+            if key in payload and key not in {"summary", "error", "thought", "execution"}:
                 clean[key] = payload[key]
+
+        execution = execution_metadata(payload.get("execution")) if is_ide_tool_name(payload.get("tool_name")) else None
+        if execution is not None:
+            clean["execution"] = execution
 
         if clean.get("duration_ms") is not None:
             try:
@@ -428,6 +442,7 @@ def publish_trace(
     thought: Optional[str] = None,
     iteration: Optional[int] = None,
     max_iter: Optional[int] = None,
+    execution: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     context = current_trace_context()
     payload = {
@@ -450,6 +465,7 @@ def publish_trace(
         "thought": thought,
         "iteration": iteration,
         "max_iter": max_iter,
+        "execution": execution,
     }
     return get_trace_bus().publish(payload)
 # ──────────────────────────────────────────────────────────────────────────────

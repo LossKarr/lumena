@@ -13,8 +13,10 @@ au lieu de seulement *croire* l'avoir fait.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
+from copy import deepcopy
 from time import perf_counter
+from time import time as wall_time
 from typing import Any, Dict, List, Optional
 
 
@@ -29,9 +31,16 @@ class LedgerEntry:
     proof: Optional[str]  # hash, extrait, assertion — None si non disponible
     timestamp: float  # perf_counter() au moment de l'enregistrement
     meta: Dict[str, Any] = field(default_factory=dict)
+    evidence: Any = field(default=None, repr=False)
+    execution: Any = field(default=None, repr=False)
+    wall_timestamp: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        # Structured evidence is projected below; never persist its private target
+        # or an execution payload by recursively serializing it.
+        return {"iteration": self.iteration, "action": self.action, "target": self.target,
+                "success": self.success, "proof": self.proof, "timestamp": self.timestamp,
+                "meta": deepcopy(self.meta)}
 
 
 # ── Outils considérés comme des mutations (actions vérifiables) ──────────────
@@ -256,6 +265,7 @@ class ExecutionLedger:
 
     def __init__(self) -> None:
         self._entries: List[LedgerEntry] = []
+        self._verified_operations: Dict[tuple, LedgerEntry] = {}
 
     # ── Écriture ─────────────────────────────────────────────────────────────
 
@@ -278,9 +288,85 @@ class ExecutionLedger:
             proof=proof,
             timestamp=perf_counter(),
             meta=dict(meta or {}),
+            wall_timestamp=wall_time(),
         )
         self._entries.append(entry)
         return entry
+
+    def append_execution(self, *, iteration: int, result, evidence=None) -> LedgerEntry:
+        """Record a dispatch receipt explicitly, never through a last-result slot.
+
+        An unverified success is not a mutation proof. Completed operation replay
+        returns its original entry and cannot refresh tests after another write.
+        """
+        from ..reasoning.execution_evidence import EvidenceError, VerifiedExecutionEvidence
+        from ..reasoning.tool_result import ToolExecutionResult
+
+        if type(result) is not ToolExecutionResult:
+            raise EvidenceError("ledger_execution_invalid")
+        if evidence is not None:
+            if (type(evidence) is not VerifiedExecutionEvidence
+                    or any(getattr(evidence, key) != getattr(result, key) for key in (
+                        "tool_name", "operation_id", "provider_instance_id",
+                        "catalog_revision", "workspace_id", "effect"))):
+                raise EvidenceError("ledger_evidence_mismatch")
+        key = (result.provider_instance_id, result.catalog_revision, result.workspace_id, result.operation_id)
+        previous = self._verified_operations.get(key)
+        if previous is not None:
+            if previous.action != result.tool_name or previous.evidence.effect is not result.effect:
+                raise EvidenceError("ledger_operation_identity_conflict")
+            if evidence is not None and previous.evidence != evidence:
+                raise EvidenceError("ledger_operation_evidence_conflict")
+            return previous
+        if evidence is None:
+            for entry in reversed(self._entries):
+                if entry.evidence is None and entry.execution == result:
+                    return entry
+        meta = {"structured_execution": True, "effect": result.effect.value,
+                "operation_id": result.operation_id, "status": result.status.value,
+                "provider_instance_id": result.provider_instance_id,
+                "catalog_revision": result.catalog_revision, "workspace_id": result.workspace_id,
+                "verified": evidence is not None}
+        if evidence is not None:
+            meta.update(started_at=evidence.started_at, completed_at=evidence.completed_at,
+                        status="succeeded" if evidence.success else "failed")
+            outcome = evidence.test_outcome()
+            if outcome is not None:
+                meta["test_outcome"] = outcome
+        entry = LedgerEntry(
+            iteration=iteration, action=result.tool_name,
+            target=evidence.target if evidence else None,
+            success=evidence.success if evidence else result.completed_successfully,
+            proof=evidence.proof_digest if evidence else None, timestamp=perf_counter(),
+            meta=meta, evidence=evidence, execution=result, wall_timestamp=wall_time(),
+        )
+        self._entries.append(entry)
+        if evidence is not None:
+            self._verified_operations[key] = entry
+        return entry
+
+    @staticmethod
+    def _verified_effect(entry: LedgerEntry, *effects: str) -> bool:
+        return (entry.evidence is not None and entry.evidence.success
+                and entry.evidence.effect.value in effects)
+
+    @staticmethod
+    def _green_test(entry: LedgerEntry) -> bool:
+        from ..utils.external_tool_names import is_ide_tool_name
+
+        if entry.evidence is not None:
+            return entry.evidence.green_tests
+        if is_ide_tool_name(entry.action) or entry.meta.get("structured_execution"):
+            return False
+        return entry.success and bool(entry.meta.get("test_outcome", {}).get("green"))
+
+    @classmethod
+    def _mutation(cls, entry: LedgerEntry) -> bool:
+        if entry.meta.get("structured_execution"):
+            return cls._verified_effect(entry, "FILE_WRITE", "FILESYSTEM_DESTRUCTIVE", "PROCESS_LAUNCH",
+                                        "PROCESS_COMPLETION", "TEST_EXECUTION", "GIT_LOCAL_MUTATION",
+                                        "DEPLOY_MUTATION", "DESTRUCTIVE_SYSTEM")
+        return entry.success and entry.action in MUTATION_TOOLS
 
     # ── Lecture ───────────────────────────────────────────────────────────────
 
@@ -317,17 +403,17 @@ class ExecutionLedger:
         pas d'erreur de collecte, exit 0, SANS `--ignore` inventé).
         """
         return any(
-            e.success and bool((e.meta or {}).get("test_outcome", {}).get("green"))
+            self._green_test(e)
             for e in self._entries
         )
 
     @staticmethod
     def _is_source_mutation(entry: LedgerEntry) -> bool:
-        if not entry.success or entry.action not in {
+        if not entry.success or (not ExecutionLedger._verified_effect(entry, "FILE_WRITE") and entry.action not in {
             "write_file", "edit_file", "create_file", "apply_patch", "apply_patches",
             "insert_at_anchor", "edit_by_lines", "str_replace", "multi_edit_file",
             "write_website_files", "edit_website",
-        }:
+        }):
             return False
         target = str(entry.target or "").lower().split("?", 1)[0]
         return target.endswith((
@@ -343,13 +429,55 @@ class ExecutionLedger:
 
     def has_fresh_green_test_run(self) -> bool:
         """True when a green test run happened after the latest source mutation."""
+        if any(entry.meta.get("execution_conflict") for entry in self._entries):
+            return False
         last_mutation = self._latest_source_mutation_timestamp()
-        return any(
-            e.timestamp > last_mutation
-            and e.success
-            and bool((e.meta or {}).get("test_outcome", {}).get("green"))
-            for e in self._entries
-        )
+        from datetime import datetime
+        from ..reasoning.execution_guards import latest_file_evidence_is_current
+
+        if not latest_file_evidence_is_current(self._entries):
+            return False
+        structured_tests = [e for e in self._entries if e.evidence and e.evidence.test_counts is not None]
+        if structured_tests:
+            latest = {}
+            for entry in structured_tests:
+                evidence = entry.evidence
+                key = (evidence.provider_instance_id, evidence.catalog_revision, evidence.workspace_id,
+                       evidence.test_scope_digest or evidence.operation_id)
+                previous = latest.get(key)
+                if (previous is None or datetime.fromisoformat(evidence.completed_at.replace("Z", "+00:00"))
+                        >= datetime.fromisoformat(previous.evidence.completed_at.replace("Z", "+00:00"))):
+                    latest[key] = entry
+            completed_operations = {(e.evidence.provider_instance_id, e.evidence.catalog_revision,
+                                     e.evidence.workspace_id, e.evidence.operation_id) for e in structured_tests}
+            if any(e.execution and e.execution.effect.value == "TEST_EXECUTION"
+                   and (e.execution.provider_instance_id, e.execution.catalog_revision,
+                        e.execution.workspace_id, e.execution.operation_id) not in completed_operations
+                   for e in self._entries):
+                return False
+            mutations = [e for e in self._entries if self._is_source_mutation(e)]
+            return all(
+                self._green_test(entry) and all(
+                    datetime.fromisoformat(entry.evidence.started_at.replace("Z", "+00:00")).timestamp()
+                    > (datetime.fromisoformat(m.evidence.completed_at.replace("Z", "+00:00")).timestamp()
+                       if m.evidence else m.wall_timestamp)
+                    for m in mutations
+                ) for entry in latest.values()
+            )
+
+        for entry in self._entries:
+            if not self._green_test(entry):
+                continue
+            if entry.evidence is None:
+                if entry.timestamp > last_mutation:
+                    return True
+                continue
+            started = datetime.fromisoformat(entry.evidence.started_at.replace("Z", "+00:00")).timestamp()
+            mutations = [e for e in self._entries if self._is_source_mutation(e)]
+            if all(started > (datetime.fromisoformat(e.evidence.completed_at.replace("Z", "+00:00")).timestamp()
+                              if e.evidence else e.wall_timestamp) for e in mutations):
+                return True
+        return False
 
     def last_test_outcome(self) -> Optional[Dict[str, Any]]:
         """Dernière issue de tests connue (dict test_outcome) ou None.
@@ -358,6 +486,13 @@ class ExecutionLedger:
         X passed / Y errors ». Prend la plus récente commande de test.
         """
         for e in reversed(self._entries):
+            if e.evidence is not None:
+                outcome = e.evidence.test_outcome()
+                if outcome is not None:
+                    return outcome
+                continue
+            if e.meta.get("structured_execution"):
+                continue
             outcome = (e.meta or {}).get("test_outcome")
             if isinstance(outcome, dict) and outcome.get("is_test_cmd"):
                 return outcome
@@ -379,7 +514,7 @@ class ExecutionLedger:
         }
         out: set = set()
         for e in self._entries:
-            if e.success and e.action in write_tools and e.target:
+            if e.success and (e.action in write_tools or self._verified_effect(e, "FILE_WRITE")) and e.target:
                 out.add(_os.path.basename(str(e.target)).lower())
         return out
 
@@ -416,7 +551,7 @@ class ExecutionLedger:
         }
         return [
             e for e in self._entries
-            if e.success and e.action in write_tools and e.target
+            if e.success and (e.action in write_tools or self._verified_effect(e, "FILE_WRITE")) and e.target
             and e.timestamp > last_pub
         ]
 
@@ -464,15 +599,20 @@ class ExecutionLedger:
 
     def has_any_mutation(self) -> bool:
         """True si au moins une mutation réussie a été enregistrée."""
-        return any(e.success and e.action in MUTATION_TOOLS for e in self._entries)
+        return any(self._mutation(e) for e in self._entries)
 
     def successful_mutations(self) -> List[LedgerEntry]:
         """Retourne toutes les mutations réussies."""
-        return [e for e in self._entries if e.success and e.action in MUTATION_TOOLS]
+        return [e for e in self._entries if self._mutation(e)]
 
     def has_mutation_in_family(self, family: frozenset) -> bool:
         """True si au moins une mutation réussie appartient à la famille donnée."""
-        return any(e.success and e.action in family for e in self._entries)
+        from ..reasoning.execution_guards import verified_family_matches
+        from ..utils.external_tool_names import is_ide_tool_name
+
+        return any(e.success and ((e.action in family and not is_ide_tool_name(e.action))
+                                 or verified_family_matches(e.evidence, family))
+                   for e in self._entries)
 
     def has_mutation_for_target_hint(self, hint: str) -> bool:
         """True si une mutation réussie a une cible contenant hint (insensible à la casse).
@@ -484,7 +624,7 @@ class ExecutionLedger:
             return True  # pas de signal clair → on ne bloque pas
         h = hint.lower().strip("#").strip()
         return any(
-            e.success and e.action in MUTATION_TOOLS
+            self._mutation(e)
             and e.target is not None
             and h in e.target.lower()
             for e in self._entries
@@ -553,6 +693,7 @@ class ExecutionLedger:
     def clear(self) -> None:
         """Vide le journal (pour reset entre runs dans les tests)."""
         self._entries.clear()
+        self._verified_operations.clear()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

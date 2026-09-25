@@ -494,6 +494,7 @@ function renderCapabilities(vm, errors){
       ['package','Produits','stripe-products',panelState()],
     ]],
     ['Système',[
+      ['boxes','Modèles locaux','local-models',panelState()],
       ['mic','Voix','voice',capabilityState(!errors.has('voice'),vm.voice.running === true)],
       ['heart-pulse','Émotions','emotions',capabilityState(!errors.has('status'),modules.emotion_manager === true)],
       ['bell','Alertes','alerts',capabilityState(!errors.has('alerts'),vm.alertItems.length>0,{inactive:'AUCUNE'})],

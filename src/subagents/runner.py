@@ -145,6 +145,101 @@ def annotate_worker_report_fallback(text: Any, is_fallback: Any) -> str:
     return f"{_WORKER_REPORT_BANNER}\n\n{body}"
 
 
+_PROVIDER_CEILING_BANNER = (
+    "⏳ **{attente} sur {duree} de cette mission ont été passées à attendre un "
+    "créneau LLM** (`LUMENA_PROVIDER_CONCURRENCY={plafond}`, {appels} appel(s) mis "
+    "en file).\n"
+    "Ce plafond borne les appels simultanés vers un même fournisseur. Le monter "
+    "accélérerait les missions dont plusieurs workers font le même métier — monter "
+    "seulement « workers en parallèle » ne suffit pas.\n"
+    "**Constat, pas une action.** Ce réglage protège ton quota, ton LLM local et ta "
+    "machine : c'est ta décision, pas la mienne. Panel de configuration, groupe LLM."
+)
+
+_CEILING_MIN_SECONDS = 60.0   # en dessous, ce n'est pas une bride, c'est du bruit
+_CEILING_MIN_SHARE = 0.20     # et il faut que ce soit une PART du run
+
+
+def _duree_lisible(secondes: Any) -> str:
+    """« 400 » -> « 6 min 40 s ». Un constat qui parle en secondes brutes ne se
+    lit pas."""
+    try:
+        s = int(max(0.0, float(secondes)))
+    except Exception:
+        return "?"
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min {s % 60:02d} s"
+    return f"{s // 3600} h {(s % 3600) // 60:02d} min"
+
+
+def annotate_provider_ceiling(
+    text: Any,
+    attente_s: Any,
+    duree_s: Any,
+    appels: Any = 0,
+    plafond: Any = None,
+) -> str:
+    """LOT 10 — dire à l'utilisateur QUEL réglage a bridé sa mission.
+
+    `LUMENA_PROVIDER_CONCURRENCY` est le plafond qui bride le plus une mission à
+    plusieurs workers, et le seul des quatre qui n'existait ni dans le panel de
+    configuration, ni dans aucune trace. Mesuré le 03/09 : **une seule
+    occurrence** dans tout `src/` + `web/` — sa lecture depuis l'environnement.
+    Ses trois frères (`MISSION_CONCURRENCY`, `MISSION_WORKER_CONCURRENCY`,
+    `MISSION_MAX_DEPTH`) figurent pourtant dans la table depuis longtemps.
+
+    Conséquence concrète : on monte « workers en parallèle » de 2 à 6, rien
+    n'accélère, et rien n'explique pourquoi.
+
+    **CONSTAT, JAMAIS ACTION.** Lumena sait modifier sa propre configuration —
+    l'outil existe. Elle ne le fait pas ici : ces plafonds protègent le quota du
+    fournisseur, le LLM local et la machine. Même doctrine que les mises à jour,
+    « aucune installation sans ton accord ».
+
+    **Deux conditions, pas une** (AUD-017 — un avertissement qui se déclenche à
+    tort dilue tous les autres) : l'attente doit dépasser 60 s ET représenter au
+    moins 20 % du run. Une mission de 10 s qui attend 3 s ne dit rien ; une
+    mission d'une heure qui attend 70 s non plus.
+
+    L'attente reçue est l'**union des intervalles** (`telemetry.provider_wait`),
+    jamais une somme : deux workers bloqués 30 s en même temps coûtent 30 s à la
+    mission, pas 60.
+
+    Pur. Texte inchangé quand l'attente est négligeable ou inconnue.
+    """
+    body = str(text or "")
+    try:
+        attente = float(attente_s or 0.0)
+        duree = float(duree_s or 0.0)
+    except Exception:
+        return body
+    if attente < _CEILING_MIN_SECONDS or duree <= 0:
+        return body
+    if attente < _CEILING_MIN_SHARE * duree:
+        return body
+    try:
+        n = max(0, int(appels or 0))
+    except Exception:
+        n = 0
+    if plafond is None:
+        try:
+            from src.telemetry.provider_wait import plafond_provider
+            plafond = plafond_provider()
+        except Exception:
+            plafond = 2
+    banner = _PROVIDER_CEILING_BANNER.format(
+        attente=_duree_lisible(attente),
+        duree=_duree_lisible(duree),
+        plafond=plafond,
+        appels=n,
+    )
+    if banner[:40] in body:      # idempotent (re-clôture après reprise)
+        return body
+    return f"{banner}\n\n{body}" if body.strip() else banner
+
+
 def annotate_unproven_effects(text: Any, owners: Any) -> str:
     """H6 — porte le fait « cet effet n'a pas eu lieu » DANS le texte livré.
 
@@ -230,7 +325,20 @@ _LEAD_PREFIX = (
     "write_mission_contract (fichiers, owners, signatures d'API exactes) — il crée les "
     "stubs et te rend les objectifs avec le périmètre de chaque worker ; délègue ENSUITE "
     "avec ces objectifs. Un contrat en prose ne suffit pas : sans stubs ni périmètres, "
-    "les workers inventent des API incompatibles.\n\nMission :\n"
+    "les workers inventent des API incompatibles.\n"
+    # LOT 13 (2026-09-02) — ce préambule expliquait le contrat, la délégation et le
+    # CodeAgent, et ne disait PAS UN MOT de la publication. Mesuré : 72 missions sur
+    # 95 (76 %) produisent des fichiers et ne les livrent jamais, dont 61 terminées
+    # `done`. Ce n'est pas l'outil — 24 publications réussies pour 1 échec au ledger :
+    # le lead n'essaie pas, parce que rien ne le lui demande. Le seul texte qui en
+    # parlait, `_NOT_PUBLISHED_BANNER`, arrive APRÈS la fin.
+    # Même leçon que `contract.effects` (3 contrats sur 176) et que le champ `role`
+    # du lot 0 : une capacité que rien n'annonce n'est pas utilisée.
+    "📦 DERNIÈRE ÉTAPE — LIVRER. Quand ton livrable est prêt et vérifié, publie-le "
+    "avec publish_mission_workspace. Sans cet appel, tes fichiers restent dans ton "
+    "dossier de TRAVAIL et l'utilisateur ne les verra jamais : produire n'est pas "
+    "livrer. Si tu décides de ne pas publier (brouillon, livrable incomplet, mission "
+    "sans fichier), dis-le explicitement dans ta conclusion.\n\nMission :\n"
 )
 
 
@@ -384,6 +492,21 @@ async def run_mission(
     except Exception:
         _trace_tokens = None
 
+    # ── LOT 10 — ouvrir la mesure d'attente au plafond provider ──────────────
+    # Le ContextVar est pose ICI, avant que le lead et ses workers ne soient
+    # lances : les taches asyncio creees ensuite heritent d'une copie du contexte
+    # pointant vers LE MEME dictionnaire, donc leurs attentes s'y accumulent.
+    # On garde la reference en local — on ne relit jamais le ContextVar.
+    _attente_pw: Any = None
+    _t0_mission_pw = 0.0
+    try:
+        import time as _t_mod_pw
+        from src.telemetry.provider_wait import ouvrir_compteur as _ouvrir_pw
+        _attente_pw = _ouvrir_pw()
+        _t0_mission_pw = _t_mod_pw.perf_counter()
+    except Exception as _exc_pw:
+        logger.debug("[LOT 10] mesure d'attente provider indisponible: {}", _exc_pw)
+
     # Profil « lead » : cadrage de délégation UNIQUEMENT si la profondeur l'autorise
     # (sinon objectif brut → comportement identique, zéro régression au flag défaut).
     prompt = objective
@@ -421,6 +544,18 @@ async def run_mission(
     # run_meta, la mission le jetait : le runner ne pouvait juger que la FORME du
     # résultat, jamais les EFFETS. Rempli au mieux, jamais requis.
     proof: dict = {}
+
+    # CONN-5D-1 — contexte d'execution construit UNIQUEMENT depuis le demandeur
+    # enregistre a la creation. Le worker du lifespan n'en a aucun : sans lui, les
+    # gardes qui exigent un proprietaire (provider IDE) refusaient toute vraie mission.
+    # Sans demandeur valide, rien n'est pose (comportement anterieur). Retire au finally.
+    from contextlib import ExitStack as _ExitStack
+    from src.subagents.mission_identity import mission_runtime_scope
+    _identity_scope = _ExitStack()
+    try:
+        _identity_scope.enter_context(mission_runtime_scope(orch, mission_id))
+    except Exception as _identity_exc:
+        logger.debug("[mission {}] contexte d'execution non pose: {}", mission_id, _identity_exc)
 
     try:
         result = await core.think_and_act_silent(
@@ -497,6 +632,7 @@ async def run_mission(
         except Exception:
             pass
         clear_browser_owner(_browser_token)
+        _identity_scope.close()
         if _trace_tokens is not None:
             try:
                 from src.telemetry import pop_trace_context
@@ -699,6 +835,26 @@ async def run_mission(
             )
         except Exception as _exc_z9b:
             logger.debug("[Z9b] provenance du bilan non annotée: {}", _exc_z9b)
+        # LOT 10 — quel REGLAGE a bride cette mission ? Le seul des quatre
+        # plafonds qui n'etait ni dans le panel, ni dans aucune trace. Constat,
+        # jamais action : Lumena sait ecrire sa config, elle ne le fait pas ici.
+        try:
+            if _attente_pw is not None:
+                import time as _t_fin_pw
+                result = annotate_provider_ceiling(
+                    result,
+                    _attente_pw.get("attente_s", 0.0),
+                    _t_fin_pw.perf_counter() - _t0_mission_pw,
+                    appels=_attente_pw.get("appels_bloques", 0),
+                )
+        except Exception as _exc_pw2:
+            logger.debug("[LOT 10] bride provider non annotée: {}", _exc_pw2)
+        finally:
+            try:
+                from src.telemetry.provider_wait import fermer_compteur as _fermer_pw
+                _fermer_pw()
+            except Exception:
+                pass
         orch.mark_done(mission_id, result_summary=str(result))
     return {"mission_id": mission_id, "status": "done", "result": str(result),
             "artifacts": list(artifacts)}

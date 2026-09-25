@@ -340,7 +340,11 @@ class TestWriteFileBoundary:
         ext_file = external / "injected.txt"
 
         # Simuler contexte IDE (is_ide_runtime = True) avec chemin absolu
-        ctx_with_read_grant.ide_context = {"workspace_path": str(external)}
+        # Lot L1c-3 : le dossier ouvert dans l'IDE est desormais le « projet en cours »,
+        # inscriptible en chat (decision de Charles du 15/09/2026). Pour garder l'intention
+        # de ce test (chemin absolu HORS projet et hors autorisation d'ecriture -> refus),
+        # l'IDE est ouverte sur un sous-dossier qui ne contient pas la cible.
+        ctx_with_read_grant.ide_context = {"workspace_path": str(external / "subdir")}
 
         result = asyncio.get_event_loop().run_until_complete(
             write_file_handler(

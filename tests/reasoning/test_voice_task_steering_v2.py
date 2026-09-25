@@ -35,7 +35,9 @@ async def test_react_consumes_voice_steering_once_before_prompt():
     assert await loop.run("prepare les donnees") == "Voici le format demande."
     assert "utilise le format CSV" in prompts[0]
     command = orch.get_task(task_id)["metadata"]["steering_commands"][0]
-    assert command["status"] == "applied"
+    assert command["status"] == "partially_applied"
+    assert command["delivery"]["delivered_at"]
+    assert command["outcome"]["evidence_kind"] == "final_reconciliation"
 
 
 @pytest.mark.asyncio

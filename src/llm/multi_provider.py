@@ -82,6 +82,73 @@ def _strip_anthropic_sampling_params(payload: Dict[str, Any]) -> None:
         payload.pop(key, None)
 
 
+_ANTHROPIC_EFFORT_MODELS = frozenset({
+    "claude-opus-5-5",
+    "claude-fable-5-1",
+    "claude-mythos-5-1",
+})
+
+
+def _build_anthropic_payload(
+    model: str,
+    messages: List[Dict[str, Any]],
+    *,
+    max_tokens: int,
+    temperature: Optional[float] = None,
+    stop: Optional[List[str]] = None,
+    system: str = "",
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_choice: Optional[str] = None,
+    stream: bool = False,
+) -> Dict[str, Any]:
+    """Construit un payload Messages selon le contrat exact du modèle Claude."""
+    payload: Dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+    }
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if _anthropic_model_disallows_sampling(model):
+        _strip_anthropic_sampling_params(payload)
+
+    if model in _ANTHROPIC_EFFORT_MODELS:
+        default_effort = "medium" if model == "claude-opus-5-5" else "high"
+        effort = os.getenv("LUMENA_ANTHROPIC_EFFORT", default_effort).strip().lower()
+        if effort not in {"low", "medium", "high", "xhigh", "max"}:
+            effort = default_effort
+        payload["output_config"] = {"effort": effort}
+
+    if stop:
+        payload["stop_sequences"] = stop
+    if system:
+        payload["system"] = system
+    if tools:
+        payload["tools"] = tools
+    if tool_choice is not None:
+        if tool_choice not in {"auto", "none"}:
+            raise ValueError(
+                f"tool_choice={tool_choice!r} incompatible avec {model}; utiliser auto ou none"
+            )
+        payload["tool_choice"] = {"type": tool_choice}
+    if stream:
+        payload["stream"] = True
+    return payload
+
+
+def _raise_for_anthropic_error(response: httpx.Response) -> None:
+    """Normalise les crédits épuisés qu'Anthropic peut retourner en HTTP 400."""
+    if getattr(response, "status_code", 200) == 200:
+        return
+    body = response.text
+    from .provider_quota import marquer_quota_epuise, ressemble_a_un_quota_epuise
+
+    if ressemble_a_un_quota_epuise(body):
+        marquer_quota_epuise(ProviderType.ANTHROPIC, "credit balance exhausted")
+        raise RuntimeError("402 Anthropic API credit quota exhausted")
+    response.raise_for_status()
+
+
 def _is_kimi_k3(model: str) -> bool:
     """Return True only for the official Moonshot Kimi K3 model."""
     return (model or "").strip().lower() == "kimi-k3"
@@ -119,6 +186,30 @@ def _build_moonshot_payload(
     # Kimi K2/K3 sampling values are fixed by Moonshot.
     if temperature is not None and not target_model.lower().startswith(("kimi-k2", "kimi-k3")):
         payload["temperature"] = temperature
+    return payload
+
+
+def _build_zai_payload(
+    model: str,
+    messages: List[Dict[str, Any]],
+    *,
+    max_tokens: int,
+    temperature: Optional[float] = None,
+    stop: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Construit un payload Z.AI en respectant le contrat GLM-5.3."""
+    payload: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }
+    if model == "glm-5.3":
+        payload["thinking"] = {"type": "enabled"}
+        return payload
+    if temperature is not None:
+        payload["temperature"] = temperature
+    if stop:
+        payload["stop"] = stop
     return payload
 
 
@@ -160,6 +251,70 @@ def _xai_supports_stop(model: str) -> bool:
         or model_id == "grok-build-0.1"
         or "reasoning" in model_id
     )
+
+
+def _build_xai_responses_payload(
+    model: str,
+    input_items: List[Dict[str, Any]],
+    *,
+    max_tokens: Optional[int] = 16384,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    reasoning_effort: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Construit le contrat Responses public de Grok 4.7.
+
+    Les reasoning items restent opaques : cette fonction les transporte tels
+    quels mais ne tente jamais de lire ou de journaliser leur contenu.
+    """
+    effort = (
+        reasoning_effort
+        or os.getenv("LUMENA_XAI_REASONING_EFFORT", "high")
+    ).strip().lower()
+    if effort not in {"low", "medium", "high", "xhigh"}:
+        effort = "high"
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "input": input_items,
+        "reasoning_effort": effort,
+        "include": ["reasoning.encrypted_content"],
+    }
+    if max_tokens is not None:
+        payload["max_output_tokens"] = max_tokens
+
+    converted_tools: List[Dict[str, Any]] = []
+    for tool in tools or []:
+        if tool.get("type") != "function":
+            converted_tools.append(dict(tool))
+            continue
+        function = tool.get("function") or tool
+        converted = {
+            "type": "function",
+            "name": function.get("name", ""),
+            "parameters": function.get(
+                "parameters", {"type": "object", "properties": {}}
+            ),
+        }
+        if function.get("description"):
+            converted["description"] = function["description"]
+        converted_tools.append(converted)
+    if converted_tools:
+        payload["tools"] = converted_tools
+    return payload
+
+
+def _xai_responses_text(data: Dict[str, Any]) -> str:
+    """Extrait uniquement le texte public d'une réponse xAI Responses."""
+    if isinstance(data.get("output_text"), str):
+        return data["output_text"]
+    parts: List[str] = []
+    for item in data.get("output") or []:
+        if item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if content.get("type") == "output_text" and content.get("text"):
+                parts.append(str(content["text"]))
+    return "".join(parts)
 
 
 # ── Résolution du contenu assistant (lecture de reasoning_content) ─────────────
@@ -322,9 +477,20 @@ class MultiProviderLLM:
         self.max_failures = int(os.getenv("LUMENA_PROVIDER_MAX_FAILURES", "3"))
         self.cooldown_minutes = int(os.getenv("LUMENA_PROVIDER_COOLDOWN_MIN", "5"))
         
-        # Ordre de fallback : cloud providers d'abord, ollama en dernier recours
-        _default_fallback = "deepseek,mistral,zai,google,moonshot,minimax,nvidia,xai,anthropic,openai,ollama"
-        self.fallback_order = os.getenv("LUMENA_FALLBACK_ORDER", _default_fallback).split(",")
+        # NVIDIA reste le dernier recours texte : les routes NIM disponibles sont
+        # utiles mais sensiblement plus lentes sur cette installation. La contrainte
+        # est aussi appliquee aux ordres personnalises pour eviter une regression
+        # silencieuse via LUMENA_FALLBACK_ORDER.
+        _default_fallback = "deepseek,mistral,zai,google,moonshot,minimax,xai,anthropic,openai,ollama,nvidia"
+        configured_fallbacks = [
+            provider.strip()
+            for provider in os.getenv("LUMENA_FALLBACK_ORDER", _default_fallback).split(",")
+            if provider.strip()
+        ]
+        self.fallback_order = list(dict.fromkeys(
+            [provider for provider in configured_fallbacks if provider != "nvidia"]
+            + (["nvidia"] if "nvidia" in configured_fallbacks else [])
+        ))
         self.max_continuation_steps = int(os.getenv("LUMENA_MAX_CONTINUATION_STEPS", "3"))
         self._last_response_meta: Dict[str, Any] = self._default_response_meta()
         # Private Kimi K3 continuity state, deliberately excluded from UI metadata.
@@ -374,7 +540,7 @@ class MultiProviderLLM:
         2) LUMENA_DEFAULT_MODEL
         3) DEFAULT_MODEL (compat)
         4) LUMENA_MODEL (compat legacy)
-        5) qwen3-8b
+        5) deepseek-flash
         """
         source = "default"
         candidate = (explicit_model_name or "").strip()
@@ -390,17 +556,28 @@ class MultiProviderLLM:
                     break
 
         if not candidate:
-            return "qwen3-8b"
+            return "deepseek-flash"
 
-        if get_model_config(candidate):
+        candidate_config = get_model_config(candidate)
+        if candidate_config:
+            if not candidate_config.is_selectable() and candidate_config.successor:
+                successor = get_model_config(candidate_config.successor)
+                if successor and successor.is_selectable():
+                    logger.warning(
+                        "Modele historique '{}' migre vers '{}' ({})",
+                        candidate,
+                        successor.name,
+                        source,
+                    )
+                    return successor.name
             if source != "argument":
                 logger.info(f"Modele par defaut charge depuis {source}: {candidate}")
             return candidate
 
         logger.warning(
-            f"Modele '{candidate}' ({source}) introuvable, fallback vers qwen3-8b"
+            f"Modele '{candidate}' ({source}) introuvable, fallback vers deepseek-flash"
         )
-        return "qwen3-8b"
+        return "deepseek-flash"
 
     def _load_model_config(self):
         """Charge la configuration du modèle."""
@@ -862,145 +1039,8 @@ class MultiProviderLLM:
 
         return text
 
-    def _maybe_expand_max_tokens_for_model_switch(
-        self,
-        *,
-        requested_model: str,
-        target_model: str,
-        requested_max_tokens: int,
-    ) -> int:
-        """Évite de conserver le cap de sortie du modèle source après un auto-switch.
-
-        Cas réel observé :
-        - CodeAgent boucle sur `deepseek-chat`
-        - passe `llm.max_output_tokens` (= 8192)
-        - `chat()` auto-switch vers `deepseek-reasoner`
-        - mais garde 8192 comme plafond effectif
-
-        On n'élargit automatiquement le budget QUE si le caller a simplement
-        hérité du cap du modèle source (ou moins). Si le caller a déjà demandé
-        explicitement plus, on respecte sa valeur.
-        """
-        try:
-            target_cfg = get_model_config(target_model)
-        except Exception:
-            return requested_max_tokens
-
-        if not target_cfg:
-            return requested_max_tokens
-
-        source_cap = 0
-        if str(requested_model).strip().lower() == str(getattr(self, "model", "")).strip().lower():
-            try:
-                source_cap = int(getattr(self, "max_output_tokens", 0) or 0)
-            except Exception:
-                source_cap = 0
-        if source_cap <= 0:
-            try:
-                source_cfg = get_model_config(requested_model)
-                source_cap = int(getattr(source_cfg, "max_output_tokens", 0) or 0) if source_cfg else 0
-            except Exception:
-                source_cap = 0
-
-        target_cap = int(getattr(target_cfg, "max_output_tokens", 0) or 0)
-        if source_cap <= 0 or target_cap <= source_cap:
-            return requested_max_tokens
-
-        if requested_max_tokens <= source_cap:
-            logger.info(
-                "🔓 Auto-switch budget uplift: {} {} -> {} {}",
-                requested_model,
-                requested_max_tokens,
-                target_model,
-                target_cap,
-            )
-            return target_cap
-
-        return requested_max_tokens
-
     def _is_code_heavy_request(self, messages: List[Dict[str, str]], max_tokens: int) -> tuple[bool, Optional[str]]:
-        auto_switch_raw = str(os.getenv("LUMENA_CODE_AUTOSWITCH_REASONER", "1")).strip().lower()
-        if auto_switch_raw in {"0", "false", "off", "no"}:
-            return False, None
-        if self.provider != ProviderType.DEEPSEEK:
-            return False, None
-        # Auto-switch uniquement depuis deepseek-chat (V3.2 non-thinking) → deepseek-reasoner
-        # Les modèles V4 (deepseek-v4-flash, deepseek-v4-pro) ne doivent pas être redirigés vers V3.2
-        if self.model != "deepseek-chat":
-            return False, None
-
-        raw_user_text = self._last_user_message(messages)
-        user_text = self._extract_effective_user_intent(raw_user_text).lower()
-        if not user_text:
-            return False, None
-
-        # ── Ne pas auto-switch en mode ReAct (le reasoner est mauvais au format THOUGHT/ACTION) ──
-        # Le CodeAgent a son propre swap dans sub_agent.py._iterative_code_loop
-        _all_text = " ".join(str(m.get("content", "") or "") for m in (messages or []))
-        if "THOUGHT:" in _all_text and "ACTION:" in _all_text and "ACTION_INPUT:" in _all_text:
-            return False, None
-
-        greeting = user_text.strip(" \t\r\n!?.")
-        if greeting in {"salut", "bonjour", "hello", "hey", "yo", "hoi", "hoii"}:
-            return False, None
-
-        code_extensions = [
-            ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css",
-            ".json", ".yaml", ".yml", ".toml", ".ini", ".sql",
-            ".sh", ".ps1", ".bat", ".go", ".rs", ".java", ".c", ".cpp", ".cs",
-        ]
-        code_terms = [
-            "code", "python", "javascript", "typescript", "html", "css", "react",
-            "fonction", "classe", "module", "import", "api", "endpoint",
-            "patch", "diff", "refactor", "stack trace", "traceback", "syntaxerror",
-            "exception", "bug", "test", "pytest", "compiler", "compile",
-        ]
-        code_actions = [
-            "corrige", "corriger", "fix", "debug", "modifie", "modifier", "edite",
-            "édite", "met a jour", "mettre a jour", "patch", "refactor",
-            "cree", "crée", "creer", "créer", "generate", "génère",
-        ]
-        doc_only_markers = [
-            ".md", "markdown", "rapport", "résumé", "resume",
-            "présentation", "presentation", "article", "email", "mail",
-        ]
-
-        has_code_extension = any(ext in user_text for ext in code_extensions)
-        has_code_block = "```" in user_text
-        has_code_term = has_code_block or any(term in user_text for term in code_terms)
-        has_code_action = any(action in user_text for action in code_actions)
-        looks_doc_only = (
-            any(marker in user_text for marker in doc_only_markers)
-            and not has_code_extension
-            and not has_code_block
-            and not any(term in user_text for term in ("python", "javascript", "typescript", "react", "api", "bug", "patch", "refactor"))
-        )
-
-        if looks_doc_only:
-            return False, None
-        if not (has_code_extension or has_code_term):
-            return False, None
-
-        token_pressure = max_tokens >= 12000
-        text_size = sum(len(str(m.get("content", "") or "")) for m in (messages or []))
-        context_pressure = text_size > 18000
-        strong_debug_intent = any(term in user_text for term in ("stack trace", "traceback", "syntaxerror", "exception"))
-
-        # ── Auto-switch agressif comme le CodeAgent ──
-        # Si action de code + terme/extension code → switch direct (pas besoin de pression tokens)
-        if has_code_action and (has_code_term or has_code_extension):
-            return True, "code_task"
-
-        # Debug long → switch si pression
-        if strong_debug_intent and (token_pressure or context_pressure):
-            reason = "code_debug_long_context" if context_pressure else "code_debug_high_tokens"
-            return True, reason
-
-        # Extension/terme code seul → switch uniquement sous pression tokens (évite surcoût)
-        if (has_code_extension or has_code_term) and (token_pressure or context_pressure):
-            reason = "code_context_pressure"
-            return True, reason
-
+        """Compatibilité API : l'ancien auto-switch DeepSeek V3 est retiré."""
         return False, None
 
     def _merge_text_segments(self, base: str, continuation: str, max_overlap: int = 1200) -> str:
@@ -1029,7 +1069,46 @@ class MultiProviderLLM:
         model: Optional[str] = None,
         stop: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        async with _get_provider_semaphore(provider.value):
+        # ── LOT 10 — l'attente au plafond provider devient VISIBLE ───────────
+        # Ce sémaphore est le plafond qui bride le plus une mission à plusieurs
+        # workers, et le seul des quatre qui n'émettait aucune trace : monter
+        # « workers en parallèle » sans monter celui-ci n'accélère rien, et rien
+        # ne le disait. Modèle repris à l'identique de `codeagent_wait_start`
+        # (`sub_agent.py:914`) : on ne trace QUE si l'appel est réellement mis en
+        # file, jamais le cas passant. Défensif de bout en bout — aucune de ces
+        # émissions ne peut empêcher l'appel LLM.
+        import time as _t_pw
+        _sema_pw = _get_provider_semaphore(provider.value)
+        _en_file_pw = _sema_pw.locked()
+        _t0_pw = _t_pw.perf_counter()
+        if _en_file_pw:
+            try:
+                from ..telemetry.provider_wait import entrer_en_attente
+                entrer_en_attente()
+            except Exception:
+                pass
+            try:
+                publish_trace(
+                    stage="provider_wait_start", status="start",
+                    provider=provider.value, model=model,
+                )
+            except Exception:
+                pass
+        async with _sema_pw:
+            if _en_file_pw:
+                try:
+                    from ..telemetry.provider_wait import sortir_d_attente
+                    sortir_d_attente()
+                except Exception:
+                    pass
+                try:
+                    publish_trace(
+                        stage="provider_wait_end", status="ok",
+                        provider=provider.value, model=model,
+                        duration_ms=(_t_pw.perf_counter() - _t0_pw) * 1000,
+                    )
+                except Exception:
+                    pass
             result = await self._chat_provider_result_with_retry(provider, messages, temperature, max_tokens, model, stop=stop)
             # Defensive: garantir que le résultat est toujours un dict
             if isinstance(result, str):
@@ -1104,6 +1183,11 @@ class MultiProviderLLM:
                 raise
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code
+                if code == 429:
+                    from .provider_quota import ressemble_a_un_quota_epuise
+
+                    if ressemble_a_un_quota_epuise(exc.response.text):
+                        raise
                 if code in (429, 500, 502, 503) and attempt < self._TRANSIENT_RETRIES:
                     delay = self._RETRY_DELAYS[attempt]
                     logger.info(
@@ -1397,42 +1481,35 @@ class MultiProviderLLM:
         auto_switch_reason: Optional[str] = None
         fallback_attempts: list[ModelAttemptTrace] = []
 
-        should_switch, switch_reason = self._is_code_heavy_request(messages, max_tokens=max_tokens)
-        deepseek_chat_primary = (
-            provider_for_call is ProviderType.DEEPSEEK
-            and str(model_for_call or "").strip().lower() == "deepseek-chat"
-        )
-        if should_switch and not no_upgrade and deepseek_chat_primary:
-            reasoner_cfg = get_model_config("deepseek-reasoner")
-            reasoner_model = reasoner_cfg.model_id if reasoner_cfg else "deepseek-reasoner"
-            if str(model_for_call).lower() != str(reasoner_model).lower():
-                auto_switch_used = True
-                auto_switch_reason = switch_reason or "code_task"
-                model_for_call = reasoner_model
-                max_tokens_for_call = self._maybe_expand_max_tokens_for_model_switch(
-                    requested_model=requested_model,
-                    target_model=model_for_call,
-                    requested_max_tokens=max_tokens,
-                )
-                logger.info(
-                    "🔁 Auto-switch model for this turn: {} -> {} ({})",
-                    requested_model,
-                    model_for_call,
-                    auto_switch_reason,
-                )
-                if TELEMETRY_AVAILABLE:
-                    try:
-                        publish_trace(
-                            stage="model_auto_switch",
-                            status="ok",
-                            mode="chat",
-                            provider=requested_provider,
-                            model=model_for_call,
-                            summary=auto_switch_reason,
-                        )
-                    except Exception:
-                        pass  # auto-switch trace best-effort
-        
+        def terminal_fallback_response(
+            error: BaseException,
+            failure_kind: ModelFailureKind,
+            used_provider: ProviderType,
+            used_model: str,
+        ) -> str:
+            """Publie un échec terminal rencontré pendant une cascade et l'arrête."""
+            self._set_last_response_meta(
+                provider_requested=requested_provider,
+                provider_used=used_provider.value,
+                model_requested=requested_model,
+                model_used=used_model,
+                auto_switch_used=auto_switch_used,
+                auto_switch_reason=auto_switch_reason,
+                fallback_used=True,
+                fallback_reason=f"{requested_provider}: {error_msg}",
+                continuation_used=False,
+                continuation_steps=0,
+                finish_reason=failure_kind.value,
+                continuation_warning=None,
+                access_source_requested=(
+                    "local" if provider is ProviderType.OLLAMA else "api"
+                ),
+                **self._access_meta_for_provider(used_provider),
+                fallback_attempts=serialise_attempts(fallback_attempts),
+            )
+            prefix = "[Refus]" if failure_kind is ModelFailureKind.REFUSAL else "[Erreur]"
+            return f"{prefix} {error}"
+
         try:
             result = await self._chat_provider_result(
                 provider=provider_for_call,
@@ -1454,50 +1531,6 @@ class MultiProviderLLM:
             if isinstance(result, str):
                 logger.warning("⚠️ chat(): result est str au lieu de dict — wrapping")
                 result = {"text": result, "finish_reason": "stop"}
-            # deepseek-chat tronqué (4096 tokens) → retry automatique avec deepseek-reasoner
-            # Uniquement pour deepseek-chat (V3.2 non-thinking) — pas les modèles V4
-            if (
-                not auto_switch_used
-                and not no_upgrade
-                and result.get("truncated")
-                and str(model_for_call).lower() == "deepseek-chat"
-            ):
-                reasoner_cfg = get_model_config("deepseek-reasoner")
-                _reasoner_mdl = reasoner_cfg.model_id if reasoner_cfg else "deepseek-reasoner"
-                logger.warning(
-                    "⚠️ deepseek-chat tronqué ({} tokens) → retry avec deepseek-reasoner",
-                    result.get("completion_tokens", "?"),
-                )
-                try:
-                    _retry_max_tokens = self._maybe_expand_max_tokens_for_model_switch(
-                        requested_model=requested_model,
-                        target_model=_reasoner_mdl,
-                        requested_max_tokens=max_tokens,
-                    )
-                    _retry_result = await self._chat_provider_result(
-                        provider=provider_for_call,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=_retry_max_tokens,
-                        model=_reasoner_mdl,
-                        stop=stop,
-                    )
-                    _retry_result = await self._continue_if_needed(
-                        provider=provider_for_call,
-                        base_messages=messages,
-                        temperature=temperature,
-                        max_tokens=_retry_max_tokens,
-                        initial_result=_retry_result,
-                        model=_reasoner_mdl,
-                    )
-                    if isinstance(_retry_result, str):
-                        _retry_result = {"text": _retry_result, "finish_reason": "stop"}
-                    result = _retry_result
-                    auto_switch_used = True
-                    auto_switch_reason = "truncation_upgrade"
-                    model_for_call = _reasoner_mdl
-                except Exception as _trunc_retry_err:
-                    logger.warning("⚠️ Retry deepseek-reasoner après troncature échoué: {}", _trunc_retry_err)
             self._set_last_response_meta(
                 provider_requested=requested_provider,
                 provider_used=result.get("provider_used", requested_provider),
@@ -1523,7 +1556,26 @@ class MultiProviderLLM:
             return result.get("text", "")
         except Exception as e:
             error_msg = str(e) or f"{type(e).__name__}"
+            primary_failure_kind = classify_model_failure(e)
             logger.error(f"❌ Erreur {provider.value} ({type(e).__name__}): {error_msg}")
+            # LOT PROV-1 — un fournisseur definitivement refuse cesse d'etre retente.
+            #
+            # Mesure du 24-25/09, sur les DEUX machines : xAI 403 sept fois, NVIDIA NIM
+            # 410 sept fois cote A, deux et deux cote B. Tout le mecanisme de
+            # desarmement existait (`provider_quota`) et `choisir_escalade` le consulte —
+            # mais `marquer_quota_epuise` n'etait appelee par PERSONNE.
+            #
+            # 403 et 410 seulement : le 429 peut n'etre qu'une limitation de debit,
+            # transitoire, et desarmer dessus couperait un fournisseur sain.
+            try:
+                from .provider_quota import (
+                    marquer_quota_epuise,
+                    ressemble_a_un_acces_definitivement_refuse,
+                )
+                if ressemble_a_un_acces_definitivement_refuse(error_msg):
+                    marquer_quota_epuise(provider, error_msg[:200])
+            except Exception:
+                pass  # le desarmement est un confort : il ne doit jamais casser l'appel
             primary_source = (
                 ModelAccessSource.LOCAL
                 if provider is ProviderType.OLLAMA
@@ -1539,9 +1591,34 @@ class MultiProviderLLM:
                     ),
                     status="failed",
                     reason=error_msg,
-                    failure_kind=classify_model_failure(e),
+                    failure_kind=primary_failure_kind,
                 )
             )
+
+            # Une requête mal formée ou un refus de politique est terminal :
+            # changer de modèle masquerait un bug ou contournerait une décision.
+            if not failure_allows_fallback(primary_failure_kind):
+                self._set_last_response_meta(
+                    provider_requested=requested_provider,
+                    provider_used=requested_provider,
+                    model_requested=requested_model,
+                    model_used=requested_model,
+                    auto_switch_used=auto_switch_used,
+                    auto_switch_reason=auto_switch_reason,
+                    fallback_used=False,
+                    fallback_reason=None,
+                    continuation_used=False,
+                    continuation_steps=0,
+                    finish_reason=primary_failure_kind.value,
+                    continuation_warning=None,
+                    access_source_requested=(
+                        "local" if provider is ProviderType.OLLAMA else "api"
+                    ),
+                    **self._access_meta_for_provider(provider),
+                    fallback_attempts=serialise_attempts(fallback_attempts),
+                )
+                prefix = "[Refus]" if primary_failure_kind is ModelFailureKind.REFUSAL else "[Erreur]"
+                return f"{prefix} {error_msg}"
             
             # Si c'est une erreur d'authentification, donner un conseil
             if "401" in error_msg or "Unauthorized" in error_msg:
@@ -1552,8 +1629,8 @@ class MultiProviderLLM:
             # Déterminer la variable pour _mark_failure
             provider_name = provider.value if hasattr(provider, 'value') else str(provider)
 
-            # Un refus modèle Anthropic (ex: Fable) est un résultat policy, pas une panne provider.
-            is_model_refusal = error_msg.startswith("anthropic_refusal:")
+            # Un refus modèle est un résultat policy, pas une panne provider.
+            is_model_refusal = error_msg.startswith(("anthropic_refusal:", "model_refusal:"))
             if not is_model_refusal:
                 self._mark_failure(provider_name)
 
@@ -1581,6 +1658,20 @@ class MultiProviderLLM:
                     continue
                 fb_config = get_model_config(fb_model_name)
                 if not fb_config:
+                    continue
+                if (
+                    primary_failure_kind
+                    in {ModelFailureKind.AUTH, ModelFailureKind.QUOTA, ModelFailureKind.RATE_LIMIT}
+                    and fb_config.provider is provider
+                ):
+                    continue
+                if not self._is_healthy(fb_config.provider.value):
+                    continue
+                # Les routes NVIDIA sont volontairement réservées à la fin de la
+                # cascade provider globale. Sans ce filtre, une liste propre au
+                # modèle (notamment deepseek-flash) court-circuite tous les autres
+                # fournisseurs et part immédiatement sur NIM.
+                if fb_config.provider is ProviderType.NVIDIA:
                     continue
                 if not (fb_config.is_local() or check_api_key(fb_config.provider)):
                     if fb_config.provider is ProviderType.OPENAI:
@@ -1679,7 +1770,7 @@ class MultiProviderLLM:
                     return fallback_result.get("text", "")
                 except Exception as fallback_error:
                     logger.error(f"Fallback modele {fb_model_name} echoue: {fallback_error}")
-                    self._mark_failure(fb_config.provider.value)
+                    fallback_failure_kind = classify_model_failure(fallback_error)
                     fallback_attempts.append(
                         ModelAttemptTrace(
                             candidate=ModelAccessRef(
@@ -1694,9 +1785,17 @@ class MultiProviderLLM:
                             ),
                             status="failed",
                             reason=str(fallback_error),
-                            failure_kind=classify_model_failure(fallback_error),
+                            failure_kind=fallback_failure_kind,
                         )
                     )
+                    if not failure_allows_fallback(fallback_failure_kind):
+                        return terminal_fallback_response(
+                            fallback_error,
+                            fallback_failure_kind,
+                            fb_config.provider,
+                            fb_config.model_id,
+                        )
+                    self._mark_failure(fb_config.provider.value)
                     if fb_config.provider is ProviderType.OPENAI:
                         rescue = await self._try_codex_subscription_rescue(
                             messages=messages,
@@ -1790,8 +1889,8 @@ class MultiProviderLLM:
                     return fallback_result.get("text", "")
                 except Exception as fallback_error:
                     logger.error(f"❌ Fallback {fallback_provider_name} échoué: {fallback_error}")
-                    self._mark_failure(fallback_provider_name)
                     fallback_errors.append(f"{fallback_provider_name}: {fallback_error}")
+                    fallback_failure_kind = classify_model_failure(fallback_error)
                     fallback_attempts.append(
                         ModelAttemptTrace(
                             candidate=ModelAccessRef(
@@ -1808,9 +1907,17 @@ class MultiProviderLLM:
                             ),
                             status="failed",
                             reason=str(fallback_error),
-                            failure_kind=classify_model_failure(fallback_error),
+                            failure_kind=fallback_failure_kind,
                         )
                     )
+                    if not failure_allows_fallback(fallback_failure_kind):
+                        return terminal_fallback_response(
+                            fallback_error,
+                            fallback_failure_kind,
+                            fb_provider,
+                            fb_model,
+                        )
+                    self._mark_failure(fallback_provider_name)
                     if fb_provider is ProviderType.OPENAI:
                         rescue = await self._try_codex_subscription_rescue(
                             messages=messages,
@@ -1969,13 +2076,24 @@ class MultiProviderLLM:
     def _is_gpt5_model(model_id: str) -> bool:
         """Détecte si le modèle est un modèle OpenAI moderne (GPT-5.x ou reasoning o3/o4)."""
         m = (model_id or "").lower()
-        return m.startswith("gpt-5") or m.startswith("o3") or m.startswith("o4")
+        return m.startswith("gpt-5") or m.startswith("gpt-6") or m.startswith("o3") or m.startswith("o4")
 
     @staticmethod
     def _is_reasoning_model(model_id: str) -> bool:
         """Détecte si le modèle est un reasoning model pur (o3, o4-mini)."""
         m = (model_id or "").lower()
         return m.startswith("o3") or m.startswith("o4")
+
+    @staticmethod
+    def _openai_uses_responses(model_id: str) -> bool:
+        """Décide le transport depuis la capacité catalogue, pas le nom codé en dur."""
+        cfg = get_model_config(model_id)
+        if cfg is None:
+            cfg = next(
+                (item for item in AVAILABLE_MODELS.values() if item.model_id == model_id),
+                None,
+            )
+        return bool(cfg and "responses_api" in cfg.capabilities)
 
     @staticmethod
     def _prepare_openai_messages(messages: List[Dict[str, str]], model_id: str) -> List[Dict[str, str]]:
@@ -2041,6 +2159,74 @@ class MultiProviderLLM:
 
         return payload
 
+    @staticmethod
+    def _build_openai_responses_payload(
+        model: str,
+        messages: List[Dict[str, Any]],
+        *,
+        max_tokens: Optional[int] = 16384,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Construit un payload OpenAI Responses pour les modèles compatibles."""
+        prepared = MultiProviderLLM._prepare_openai_messages(messages, model)
+        payload: Dict[str, Any] = {"model": model, "input": prepared}
+        if max_tokens is not None:
+            payload["max_output_tokens"] = max_tokens
+
+        default_effort = "low" if model == "gpt-6-astra" else "medium"
+        effort = (
+            reasoning_effort
+            or os.getenv("LUMENA_OPENAI_REASONING_EFFORT", default_effort)
+        ).strip().lower()
+        allowed = {"none", "low", "medium", "high", "xhigh", "max"}
+        if effort not in allowed:
+            effort = default_effort
+        if model == "gpt-6-astra" and effort == "none":
+            effort = "low"
+        payload["reasoning"] = {"effort": effort}
+
+        response_tools: List[Dict[str, Any]] = []
+        for tool in tools or []:
+            if tool.get("type") != "function":
+                response_tools.append(dict(tool))
+                continue
+            function = tool.get("function") or tool
+            converted = {
+                "type": "function",
+                "name": function.get("name", ""),
+                "parameters": function.get("parameters", {"type": "object", "properties": {}}),
+            }
+            if function.get("description"):
+                converted["description"] = function["description"]
+            response_tools.append(converted)
+        if response_tools:
+            payload["tools"] = response_tools
+        return payload
+
+    @staticmethod
+    def _openai_responses_text(data: Dict[str, Any]) -> str:
+        if isinstance(data.get("output_text"), str):
+            return data["output_text"]
+        parts: List[str] = []
+        for item in data.get("output") or []:
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content") or []:
+                if content.get("type") == "output_text" and content.get("text"):
+                    parts.append(str(content["text"]))
+        return "".join(parts)
+
+    @staticmethod
+    def _openai_responses_refusal(data: Dict[str, Any]) -> str:
+        for item in data.get("output") or []:
+            if item.get("type") != "message":
+                continue
+            for content in item.get("content") or []:
+                if content.get("type") == "refusal":
+                    return str(content.get("refusal") or content.get("text") or "refused")
+        return ""
+
     async def _chat_openai_result(
         self,
         messages: List[Dict[str, str]],
@@ -2054,17 +2240,27 @@ class MultiProviderLLM:
         if not api_key:
             raise ValueError("OPENAI_API_KEY non configurée")
         
-        url = "https://api.openai.com/v1/chat/completions"
+        effective_model = model or self.model
+        use_responses = self._openai_uses_responses(effective_model)
+        url = (
+            "https://api.openai.com/v1/responses"
+            if use_responses
+            else "https://api.openai.com/v1/chat/completions"
+        )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
-        effective_model = model or self.model
-        
-        payload = self._build_openai_payload(
-            effective_model, messages,
-            temperature=temperature, max_tokens=max_tokens, stop=stop,
+        payload = (
+            self._build_openai_responses_payload(
+                effective_model, messages, max_tokens=max_tokens,
+            )
+            if use_responses
+            else self._build_openai_payload(
+                effective_model, messages,
+                temperature=temperature, max_tokens=max_tokens, stop=stop,
+            )
         )
         
         response = await self._http.post(url, headers=headers, json=payload)
@@ -2074,9 +2270,32 @@ class MultiProviderLLM:
                 body = response.text[:1000]
             except Exception:
                 pass
+            # LOT ESC-1a : une cle valide sans credit n'est pas une panne
+            # passagere. Desarmer le fournisseur evite que chaque escalade y
+            # revienne, puis chute plus bas que son point de depart.
+            if response.status_code in (401, 402, 429):
+                from .provider_quota import (
+                    marquer_quota_epuise, ressemble_a_un_quota_epuise,
+                )
+                if ressemble_a_un_quota_epuise(body):
+                    marquer_quota_epuise(ProviderType.OPENAI, body[:160])
             logger.error(f"OpenAI {response.status_code}: {body}")
             response.raise_for_status()
         data = response.json()
+        if use_responses:
+            refusal = self._openai_responses_refusal(data)
+            if refusal:
+                raise ValueError(f"model_refusal:openai:{effective_model}")
+            usage = data.get("usage") or {}
+            return {
+                "text": self._openai_responses_text(data),
+                "finish_reason": data.get("status"),
+                "provider_used": ProviderType.OPENAI.value,
+                "model_used": data.get("model") or effective_model,
+                "prompt_tokens": usage.get("input_tokens"),
+                "completion_tokens": usage.get("output_tokens"),
+                "_response_output_items": list(data.get("output") or []),
+            }
         choice = data["choices"][0]
         _usage = data.get("usage") or {}
         return {
@@ -2128,21 +2347,17 @@ class MultiProviderLLM:
             else:
                 chat_messages.append(msg)
         
-        payload = {
-            "model": model or self.model,
-            "max_tokens": max_tokens,
-            "messages": chat_messages,
-            "temperature": temperature
-        }
-        if _anthropic_model_disallows_sampling(payload["model"]):
-            _strip_anthropic_sampling_params(payload)
-        if stop:
-            payload["stop_sequences"] = stop
-        if system:
-            payload["system"] = system
+        payload = _build_anthropic_payload(
+            model or self.model,
+            chat_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=stop,
+            system=system,
+        )
         
         response = await self._http.post(url, headers=headers, json=payload)
-        response.raise_for_status()
+        _raise_for_anthropic_error(response)
         data = response.json()
         stop_reason = data.get("stop_reason")
         if stop_reason == "refusal":
@@ -2388,27 +2603,37 @@ class MultiProviderLLM:
     ) -> Dict[str, Any]:
         """Chat via xAI API (Grok) with unified metadata payload.
         
-        xAI utilise un format compatible OpenAI.
-        URL : https://api.x.ai/v1/chat/completions
+        Grok 4.7 utilise Responses afin de préserver son raisonnement chiffré.
+        Les modèles xAI antérieurs gardent le chemin Chat Completions historique.
         """
         api_key = get_api_key(ProviderType.XAI)
         if not api_key:
             raise ValueError("XAI_API_KEY non configurée")
 
         target_model = model or self.model
-        url = "https://api.x.ai/v1/chat/completions"
+        use_responses = target_model == "grok-4.7"
+        url = (
+            "https://api.x.ai/v1/responses"
+            if use_responses
+            else "https://api.x.ai/v1/chat/completions"
+        )
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
-        payload = {
-            "model": target_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if stop:
-            payload["stop"] = stop
+        if use_responses:
+            payload = _build_xai_responses_payload(
+                target_model, messages, max_tokens=max_tokens,
+            )
+        else:
+            payload = {
+                "model": target_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if stop:
+                payload["stop"] = stop
         # grok-4-1-fast-reasoning : le thinking interne est géré côté API,
         # pas besoin de paramètre spécial (pas de temperature fixée comme Kimi)
 
@@ -2416,6 +2641,19 @@ class MultiProviderLLM:
             response = await self._http.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
+            if use_responses:
+                usage = data.get("usage") or {}
+                return {
+                    "text": _xai_responses_text(data),
+                    "finish_reason": data.get("status"),
+                    "provider_used": ProviderType.XAI.value,
+                    "model_used": data.get("model") or target_model,
+                    "prompt_tokens": usage.get("input_tokens"),
+                    "completion_tokens": usage.get("output_tokens"),
+                    # Interne uniquement : chat() ne copie pas ce champ dans
+                    # les traces publiques. La boucle outils le rejoue intact.
+                    "_opaque_output_items": list(data.get("output") or []),
+                }
             choice = data["choices"][0]
             _usage = data.get("usage") or {}
             return {
@@ -2775,14 +3013,13 @@ class MultiProviderLLM:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
-        payload: Dict[str, Any] = {
-            "model": model_id,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if stop:
-            payload["stop"] = stop
+        payload = _build_zai_payload(
+            model_id,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stop=stop,
+        )
 
         try:
             response = await self._http.post(url, headers=headers, json=payload)
@@ -2810,6 +3047,9 @@ class MultiProviderLLM:
             # Code 1113 = solde insuffisant (erreur permanente — désactiver pour la session)
             if e.response.status_code == 429 and '"code":"1113"' in error_detail:
                 self.__class__._zai_balance_exhausted = True
+                # LOT ESC-1a : meme fait, registre commun a tous les fournisseurs.
+                from .provider_quota import marquer_quota_epuise
+                marquer_quota_epuise(ProviderType.ZAI, error_detail[:160])
                 logger.warning("⚠️ Z.AI solde épuisé (code 1113) — provider désactivé pour cette session")
                 raise ValueError("Z.AI désactivé (solde épuisé) — rechargez votre compte Z.AI") from e
             logger.error(f"❌ Erreur Z.AI HTTP {e.response.status_code}: {error_detail[:1000]}")
@@ -3295,15 +3535,26 @@ class MultiProviderLLM:
                 async for chunk in self._stream_ollama(messages, model, temperature):
                     yield chunk
             elif provider == ProviderType.OPENAI:
-                async for chunk in self._stream_openai_compat(
-                    messages, temperature, min(max_tokens, 16384),
-                    url="https://api.openai.com/v1/chat/completions",
-                    api_key=get_api_key(ProviderType.OPENAI),
-                    model=model,
-                    max_tokens_key="max_completion_tokens",
-                    is_openai=True,
-                ):
-                    yield chunk
+                if self._openai_uses_responses(model):
+                    async for chunk in self._stream_responses_api(
+                        messages,
+                        url="https://api.openai.com/v1/responses",
+                        api_key=get_api_key(ProviderType.OPENAI),
+                        model=model,
+                        max_tokens=min(max_tokens, self._config.max_output_tokens),
+                        payload_builder=self._build_openai_responses_payload,
+                    ):
+                        yield chunk
+                else:
+                    async for chunk in self._stream_openai_compat(
+                        messages, temperature, min(max_tokens, 16384),
+                        url="https://api.openai.com/v1/chat/completions",
+                        api_key=get_api_key(ProviderType.OPENAI),
+                        model=model,
+                        max_tokens_key="max_completion_tokens",
+                        is_openai=True,
+                    ):
+                        yield chunk
             elif provider == ProviderType.DEEPSEEK:
                 async for chunk in self._stream_openai_compat(
                     messages, temperature, min(max_tokens, 8192),
@@ -3313,13 +3564,24 @@ class MultiProviderLLM:
                 ):
                     yield chunk
             elif provider == ProviderType.XAI:
-                async for chunk in self._stream_openai_compat(
-                    messages, temperature, min(max_tokens, 131072),
-                    url="https://api.x.ai/v1/chat/completions",
-                    api_key=get_api_key(ProviderType.XAI),
-                    model=model,
-                ):
-                    yield chunk
+                if model == "grok-4.7":
+                    async for chunk in self._stream_responses_api(
+                        messages,
+                        url="https://api.x.ai/v1/responses",
+                        api_key=get_api_key(ProviderType.XAI),
+                        model=model,
+                        max_tokens=min(max_tokens, 131072),
+                        payload_builder=_build_xai_responses_payload,
+                    ):
+                        yield chunk
+                else:
+                    async for chunk in self._stream_openai_compat(
+                        messages, temperature, min(max_tokens, 131072),
+                        url="https://api.x.ai/v1/chat/completions",
+                        api_key=get_api_key(ProviderType.XAI),
+                        model=model,
+                    ):
+                        yield chunk
             elif provider == ProviderType.MOONSHOT:
                 api_key = get_api_key(ProviderType.MOONSHOT)
                 async for chunk in self._stream_openai_compat(
@@ -3461,6 +3723,44 @@ class MultiProviderLLM:
                 },
             )
 
+    async def _stream_responses_api(
+        self,
+        input_items: List[Dict[str, Any]],
+        *,
+        url: str,
+        api_key: str,
+        model: str,
+        max_tokens: int,
+        payload_builder: Any,
+    ) -> AsyncIterator[str]:
+        """Stream OpenResponses en n'exposant que les deltas de texte public."""
+        if not api_key:
+            raise ValueError("Clé API non configurée pour le streaming Responses")
+        payload = payload_builder(model, input_items, max_tokens=max_tokens)
+        payload["stream"] = True
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        async with self._http.stream("POST", url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                event_type = event.get("type")
+                if event_type == "response.output_text.delta" and event.get("delta"):
+                    yield str(event["delta"])
+                elif event_type == "response.refusal.done":
+                    raise ValueError(f"model_refusal:responses:{model}")
+
     async def _stream_anthropic(
         self,
         messages: List[Dict[str, str]],
@@ -3485,20 +3785,19 @@ class MultiProviderLLM:
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
-        payload = {
-            "model": self.model,
-            "max_tokens": max_tokens,
-            "messages": chat_messages,
-            "temperature": temperature,
-            "stream": True,
-        }
-        if _anthropic_model_disallows_sampling(self.model):
-            _strip_anthropic_sampling_params(payload)
-        if system:
-            payload["system"] = system
+        payload = _build_anthropic_payload(
+            self.model,
+            chat_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            stream=True,
+        )
 
         async with self._http.stream("POST", "https://api.anthropic.com/v1/messages", headers=headers, json=payload) as resp:
-            resp.raise_for_status()
+            if getattr(resp, "status_code", 200) != 200:
+                await resp.aread()
+            _raise_for_anthropic_error(resp)
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line or not line.startswith("data:"):
@@ -3638,6 +3937,10 @@ class MultiProviderLLM:
         elif provider == ProviderType.MOONSHOT:
             # Moonshot (Kimi) utilise le format OpenAI - réutiliser le même handler
             return await self._chat_moonshot_with_tools(
+                messages, tool_system, temperature, max_tokens, max_tool_iterations
+            )
+        elif provider == ProviderType.XAI and self.model == "grok-4.7":
+            return await self._chat_xai_with_tools(
                 messages, tool_system, temperature, max_tokens, max_tool_iterations
             )
         else:
@@ -3848,24 +4151,19 @@ class MultiProviderLLM:
         while iteration < max_iterations:
             iteration += 1
             
-            payload = {
-                "model": self.model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": claude_messages
-            }
-            if _anthropic_model_disallows_sampling(self.model):
-                _strip_anthropic_sampling_params(payload)
-            
-            if system_content:
-                payload["system"] = system_content
-            
-            if tools_def:
-                payload["tools"] = tools_def
+            payload = _build_anthropic_payload(
+                self.model,
+                claude_messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system=system_content,
+                tools=tools_def if tools_def else None,
+                tool_choice="auto" if tools_def else None,
+            )
             
             try:
                 response = await self._http.post(url, headers=headers, json=payload)
-                response.raise_for_status()
+                _raise_for_anthropic_error(response)
                 data = response.json()
 
                 stop_reason = data.get("stop_reason", "")
@@ -3877,6 +4175,7 @@ class MultiProviderLLM:
                 text_response = ""
                 has_tool_use = False
 
+                tool_results = []
                 for block in content_blocks:
                     if block.get("type") == "text":
                         text_response += block.get("text", "")
@@ -3893,19 +4192,25 @@ class MultiProviderLLM:
                         tool_call = ToolCall(name=tool_name, arguments=tool_args, call_id=tool_id)
                         result = await tool_system.execute_tool(tool_call)
 
-                        # Ajouter le résultat
-                        claude_messages.append({
-                            "role": "assistant",
-                            "content": content_blocks
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": result.output if result.success else (
+                                result.output or f"Erreur: {result.error or 'inconnue'}"
+                            ),
                         })
-                        claude_messages.append({
-                            "role": "user",
-                            "content": [{
-                                "type": "tool_result",
-                                "tool_use_id": tool_id,
-                                "content": result.output if result.success else (result.output or f"Erreur: {result.error or 'inconnue'}")
-                            }]
-                        })
+
+                if has_tool_use:
+                    # Préserver tous les blocs (thinking/signature compris) une
+                    # seule fois, sans les lire ni les journaliser.
+                    claude_messages.append({
+                        "role": "assistant",
+                        "content": content_blocks,
+                    })
+                    claude_messages.append({
+                        "role": "user",
+                        "content": tool_results,
+                    })
 
                 if not has_tool_use:
                     self._update_last_response_meta(finish_reason=last_stop_reason)
@@ -3913,9 +4218,9 @@ class MultiProviderLLM:
                         
             except Exception as e:
                 logger.error(f"❌ Erreur Claude: {e}")
-                return await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+                raise
         
-        return await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        raise RuntimeError("Anthropic: limite d'itérations outils atteinte")
     
     async def _chat_openai_with_tools(
         self,
@@ -3932,7 +4237,8 @@ class MultiProviderLLM:
         if not api_key:
             raise ValueError("OPENAI_API_KEY non configurée")
         
-        url = "https://api.openai.com/v1/chat/completions"
+        use_responses = self._openai_uses_responses(self.model)
+        url = "https://api.openai.com/v1/responses" if use_responses else "https://api.openai.com/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
@@ -3958,17 +4264,54 @@ class MultiProviderLLM:
         
         while iteration < max_iterations:
             iteration += 1
-            
-            payload = self._build_openai_payload(
-                self.model, augmented_messages,
-                temperature=temperature, max_tokens=max_tokens,
-                tools=tools_def if tools_def else None,
-            )
+
+            if use_responses:
+                payload = self._build_openai_responses_payload(
+                    self.model,
+                    augmented_messages,
+                    max_tokens=max_tokens,
+                    tools=tools_def if tools_def else None,
+                )
+            else:
+                payload = self._build_openai_payload(
+                    self.model, augmented_messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools_def if tools_def else None,
+                )
             
             try:
                 response = await self._http.post(url, headers=headers, json=payload)
                 response.raise_for_status()
                 data = response.json()
+
+                if use_responses:
+                    refusal = self._openai_responses_refusal(data)
+                    if refusal:
+                        raise ValueError(f"model_refusal:openai:{self.model}")
+                    function_calls = [
+                        item for item in data.get("output") or []
+                        if item.get("type") == "function_call"
+                    ]
+                    if not function_calls:
+                        self._update_last_response_meta(finish_reason=data.get("status"))
+                        return self._openai_responses_text(data)
+                    augmented_messages.extend(data.get("output") or [])
+                    for call in function_calls:
+                        tool_name = call.get("name", "")
+                        raw_args = call.get("arguments") or "{}"
+                        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                        tool_id = call.get("call_id") or call.get("id", "")
+                        logger.debug(f"🔧 OpenAI Responses appelle: {tool_name}({tool_args})")
+                        from ..tools.tool_system import ToolCall
+                        result = await tool_system.execute_tool(
+                            ToolCall(name=tool_name, arguments=tool_args, call_id=tool_id)
+                        )
+                        augmented_messages.append({
+                            "type": "function_call_output",
+                            "call_id": tool_id,
+                            "output": result.output if result.success else (result.output or f"Erreur: {result.error or 'inconnue'}"),
+                        })
+                    continue
 
                 choice = data["choices"][0]
                 message = choice["message"]
@@ -4003,9 +4346,83 @@ class MultiProviderLLM:
                         
             except Exception as e:
                 logger.error(f"❌ Erreur OpenAI: {e}")
+                if use_responses:
+                    raise
                 return await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
-        
+
+        if use_responses:
+            raise RuntimeError("OpenAI Responses: limite d'itérations outils atteinte")
         return await self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+
+    async def _chat_xai_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tool_system: Any,
+        temperature: float,
+        max_tokens: int,
+        max_iterations: int,
+    ) -> str:
+        """Boucle Responses native de Grok 4.7 avec état chiffré opaque."""
+        api_key = get_api_key(ProviderType.XAI)
+        if not api_key:
+            raise ValueError("XAI_API_KEY non configurée")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        tools_def = tool_system.get_tools_for_provider("openai")
+        input_items: List[Dict[str, Any]] = [dict(item) for item in messages]
+
+        for _iteration in range(max_iterations):
+            payload = _build_xai_responses_payload(
+                self.model,
+                input_items,
+                max_tokens=max_tokens,
+                tools=tools_def if tools_def else None,
+            )
+            response = await self._http.post(
+                "https://api.x.ai/v1/responses", headers=headers, json=payload
+            )
+            response.raise_for_status()
+            data = response.json()
+            output_items = list(data.get("output") or [])
+            function_calls = [
+                item for item in output_items
+                if item.get("type") == "function_call"
+            ]
+            if not function_calls:
+                self._update_last_response_meta(finish_reason=data.get("status"))
+                return _xai_responses_text(data)
+
+            # Les blocs reasoning/encrypted_content et les appels sont rejoués
+            # byte-for-byte. Ils ne sont ni inspectés ni copiés dans les logs.
+            input_items.extend(output_items)
+            for call in function_calls:
+                raw_args = call.get("arguments") or "{}"
+                try:
+                    tool_args = (
+                        json.loads(raw_args)
+                        if isinstance(raw_args, str)
+                        else raw_args
+                    )
+                except json.JSONDecodeError:
+                    tool_args = {}
+                tool_name = call.get("name", "")
+                tool_id = call.get("call_id") or call.get("id", "")
+                from ..tools.tool_system import ToolCall
+                result = await tool_system.execute_tool(
+                    ToolCall(name=tool_name, arguments=tool_args, call_id=tool_id)
+                )
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": tool_id,
+                    "output": result.output if result.success else (
+                        result.output or f"Erreur: {result.error or 'inconnue'}"
+                    ),
+                })
+
+        raise RuntimeError("xAI Grok 4.7: limite d'itérations outils atteinte")
     
     async def _chat_moonshot_with_tools(
         self,

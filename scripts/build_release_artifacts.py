@@ -49,7 +49,9 @@ PAYLOAD_FILES = (
     "run_twitter.py",
     "run_whatsapp.py",
 )
-_IGNORED_NAMES = frozenset({"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"})
+_IGNORED_NAMES = frozenset({
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules",
+})
 _IGNORED_SUFFIXES = (".pyc", ".pyo", ".tmp", ".log")
 
 

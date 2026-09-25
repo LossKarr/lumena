@@ -1,0 +1,463 @@
+{
+  "source_sha256": "18849161fa760ede7b8bd8c66935c4144372a2716b8cbc13568195d52a3aac80",
+  "traces": [
+    {
+      "case": {
+        "name": "read_file",
+        "args": {
+          "path": "workspace/code.py"
+        },
+        "content": "print(1)",
+        "success": true,
+        "exit_code": null,
+        "entry": {
+          "iteration": 3,
+          "action": "read_file",
+          "target": "workspace/code.py",
+          "success": true,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit"
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "read_file",
+        "target": "workspace/code.py",
+        "success": true,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp"
+        }
+      },
+      "successful_tools": [
+        "read_file"
+      ]
+    },
+    {
+      "case": {
+        "name": "write_file",
+        "args": {
+          "path": "workspace/code.py",
+          "content": "x"
+        },
+        "content": "written",
+        "success": true,
+        "exit_code": null,
+        "entry": {
+          "iteration": 3,
+          "action": "write_file",
+          "target": "workspace/code.py",
+          "success": true,
+          "proof": "written",
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit"
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "write_file",
+        "target": "workspace/code.py",
+        "success": true,
+        "proof": "written",
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp"
+        }
+      },
+      "successful_tools": [
+        "write_file"
+      ]
+    },
+    {
+      "case": {
+        "name": "write_file",
+        "args": {
+          "path": "workspace/code.py"
+        },
+        "content": "permission denied",
+        "success": false,
+        "exit_code": null,
+        "entry": {
+          "iteration": 3,
+          "action": "write_file",
+          "target": "workspace/code.py",
+          "success": false,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit"
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "write_file",
+        "target": "workspace/code.py",
+        "success": false,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp"
+        }
+      },
+      "successful_tools": [
+        "write_file"
+      ]
+    },
+    {
+      "case": {
+        "name": "run_command",
+        "args": {
+          "command": "python -m pytest -q"
+        },
+        "content": "3 passed in 0.1s",
+        "success": true,
+        "exit_code": 0,
+        "entry": {
+          "iteration": 3,
+          "action": "run_command",
+          "target": null,
+          "success": true,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit",
+            "command": "python -m pytest -q",
+            "test_outcome": {
+              "is_test_cmd": true,
+              "passed": 3,
+              "failed": 0,
+              "errors": 0,
+              "collection_error": false,
+              "ran_something": true,
+              "used_invented_ignore": false,
+              "exit_code": 0,
+              "green": true
+            }
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "run_command",
+        "target": null,
+        "success": true,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp",
+          "command": "python -m pytest -q",
+          "test_outcome": {
+            "is_test_cmd": true,
+            "passed": 3,
+            "failed": 0,
+            "errors": 0,
+            "collection_error": false,
+            "ran_something": true,
+            "used_invented_ignore": false,
+            "exit_code": 0,
+            "green": true
+          }
+        }
+      },
+      "successful_tools": [
+        "run_command"
+      ]
+    },
+    {
+      "case": {
+        "name": "run_shell",
+        "args": {
+          "command": "python -m pytest -q"
+        },
+        "content": "1 failed, 2 passed in 0.1s",
+        "success": false,
+        "exit_code": 1,
+        "entry": {
+          "iteration": 3,
+          "action": "run_shell",
+          "target": null,
+          "success": false,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit",
+            "command": "python -m pytest -q",
+            "test_outcome": {
+              "is_test_cmd": true,
+              "passed": 2,
+              "failed": 1,
+              "errors": 0,
+              "collection_error": false,
+              "ran_something": true,
+              "used_invented_ignore": false,
+              "exit_code": 1,
+              "green": false
+            }
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "run_shell",
+        "target": null,
+        "success": false,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp",
+          "command": "python -m pytest -q",
+          "test_outcome": {
+            "is_test_cmd": true,
+            "passed": 2,
+            "failed": 1,
+            "errors": 0,
+            "collection_error": false,
+            "ran_something": true,
+            "used_invented_ignore": false,
+            "exit_code": 1,
+            "green": false
+          }
+        }
+      },
+      "successful_tools": [
+        "run_shell"
+      ]
+    },
+    {
+      "case": {
+        "name": "exec_command",
+        "args": {
+          "command": "node --check app.js"
+        },
+        "content": "",
+        "success": true,
+        "exit_code": 0,
+        "entry": {
+          "iteration": 3,
+          "action": "exec_command",
+          "target": null,
+          "success": true,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit",
+            "command": "node --check app.js"
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "exec_command",
+        "target": null,
+        "success": true,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp",
+          "command": "node --check app.js"
+        }
+      },
+      "successful_tools": [
+        "exec_command"
+      ]
+    },
+    {
+      "case": {
+        "name": "run_command",
+        "args": {
+          "command": "python -m pytest --ignore=tests/bad.py"
+        },
+        "content": "5 passed",
+        "success": true,
+        "exit_code": 0,
+        "entry": {
+          "iteration": 3,
+          "action": "run_command",
+          "target": null,
+          "success": true,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit",
+            "command": "python -m pytest --ignore=tests/bad.py",
+            "test_outcome": {
+              "is_test_cmd": true,
+              "passed": 5,
+              "failed": 0,
+              "errors": 0,
+              "collection_error": false,
+              "ran_something": true,
+              "used_invented_ignore": true,
+              "exit_code": 0,
+              "green": false
+            }
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "run_command",
+        "target": null,
+        "success": true,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp",
+          "command": "python -m pytest --ignore=tests/bad.py",
+          "test_outcome": {
+            "is_test_cmd": true,
+            "passed": 5,
+            "failed": 0,
+            "errors": 0,
+            "collection_error": false,
+            "ran_something": true,
+            "used_invented_ignore": true,
+            "exit_code": 0,
+            "green": false
+          }
+        }
+      },
+      "successful_tools": [
+        "run_command"
+      ]
+    },
+    {
+      "case": {
+        "name": "run_command",
+        "args": {
+          "command": "python -m pytest"
+        },
+        "content": "no tests ran",
+        "success": true,
+        "exit_code": 0,
+        "entry": {
+          "iteration": 3,
+          "action": "run_command",
+          "target": null,
+          "success": true,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit",
+            "command": "python -m pytest",
+            "test_outcome": {
+              "is_test_cmd": true,
+              "passed": 0,
+              "failed": 0,
+              "errors": 0,
+              "collection_error": false,
+              "ran_something": false,
+              "used_invented_ignore": false,
+              "exit_code": 0,
+              "green": false
+            }
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "run_command",
+        "target": null,
+        "success": true,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp",
+          "command": "python -m pytest",
+          "test_outcome": {
+            "is_test_cmd": true,
+            "passed": 0,
+            "failed": 0,
+            "errors": 0,
+            "collection_error": false,
+            "ran_something": false,
+            "used_invented_ignore": false,
+            "exit_code": 0,
+            "green": false
+          }
+        }
+      },
+      "successful_tools": [
+        "run_command"
+      ]
+    },
+    {
+      "case": {
+        "name": "discord_send",
+        "args": {
+          "channel_name": "general",
+          "message": "hello"
+        },
+        "content": "sent",
+        "success": true,
+        "exit_code": null,
+        "entry": {
+          "iteration": 3,
+          "action": "discord_send",
+          "target": "general",
+          "success": true,
+          "proof": "sent",
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit"
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "discord_send",
+        "target": "general",
+        "success": true,
+        "proof": "sent",
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp"
+        }
+      },
+      "successful_tools": [
+        "discord_send"
+      ]
+    },
+    {
+      "case": {
+        "name": "parallel_tools",
+        "args": {},
+        "content": "✅ 1. mail_send: sent\n❌ 2. write_file: denied",
+        "success": true,
+        "exit_code": null,
+        "entry": {
+          "iteration": 3,
+          "action": "parallel_tools",
+          "target": null,
+          "success": true,
+          "proof": null,
+          "meta": {
+            "duration_ms": 123.4,
+            "intent": "code_edit"
+          }
+        }
+      },
+      "entry": {
+        "iteration": 0,
+        "action": "parallel_tools",
+        "target": null,
+        "success": true,
+        "proof": null,
+        "meta": {
+          "duration_ms": 123.4,
+          "via": "codex_mcp"
+        }
+      },
+      "successful_tools": [
+        "parallel_tools"
+      ]
+    }
+  ]
+}

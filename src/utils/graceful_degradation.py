@@ -5,6 +5,7 @@ Gère la dégradation gracieuse des dépendances optionnelles.
 Permet à Lumena de fonctionner même si certains modules ne sont pas installés.
 """
 
+import importlib.util
 import os
 import sys
 import threading
@@ -125,18 +126,18 @@ class GracefulDegradation:
             module_name: Nom du module à vérifier
             
         Returns:
-            True si le module est importable
+            True si le module est installé et découvrable. Le contrôle de
+            démarrage ne charge pas les dépendances lourdes optionnelles.
         """
         if module_name in self._module_cache:
             return self._module_cache[module_name]
         
         try:
-            __import__(module_name)
-            self._module_cache[module_name] = True
-            return True
-        except ImportError:
-            self._module_cache[module_name] = False
-            return False
+            available = importlib.util.find_spec(module_name) is not None
+        except (ImportError, AttributeError, ValueError):
+            available = False
+        self._module_cache[module_name] = available
+        return available
     
     def check_all(self) -> DependencyReport:
         """
@@ -148,20 +149,13 @@ class GracefulDegradation:
         modules = []
         
         for module_name, feature in self.MODULE_FEATURES.items():
-            try:
-                __import__(module_name)
-                modules.append(ModuleStatus(
-                    name=module_name,
-                    available=True,
-                    feature=feature
-                ))
-            except ImportError as e:
-                modules.append(ModuleStatus(
-                    name=module_name,
-                    available=False,
-                    feature=feature,
-                    error=str(e)
-                ))
+            available = self.check_module(module_name)
+            modules.append(ModuleStatus(
+                name=module_name,
+                available=available,
+                feature=feature,
+                error=None if available else "module not found",
+            ))
         
         self._report = DependencyReport(modules=modules)
         return self._report

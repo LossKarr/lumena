@@ -214,7 +214,6 @@ class TestChatFeedbackEndpoint:
         from fastapi import FastAPI
         import web.routes.chat as chat
         import web.routes.deps as deps
-        from unittest.mock import patch
         app = FastAPI()
         app.include_router(chat.router)
         return app

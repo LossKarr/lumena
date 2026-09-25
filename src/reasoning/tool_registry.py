@@ -23,6 +23,10 @@ from .react_config import (
     compute_workspace_relative, get_current_runtime_context,
 )
 from .caller_context import CallerContext, UNKNOWN as _CALLER_UNKNOWN
+from .external_tool_view import ExternalToolView
+from .ide_tool_runtime import RegistryIDEProvider
+from .external_effect_cache import observation_cache_epoch
+from ..utils.external_tool_names import is_ide_tool_name
 from .file_categories import requires_codeagent as _requires_codeagent, CONFIG_FILENAMES as _CONFIG_FILENAMES
 from .tool_categories import get_category_contract, get_semantic_category
 from ..documents.document_intent import (
@@ -474,6 +478,42 @@ def _is_local_mission_workspace_write_allowed(
 
 
 
+# Outils renommes : l'ancien nom reste ACCEPTE a l'execution, jamais declare au
+# catalogue. Un nom change casserait les appels qui vivent encore dans les
+# conversations passees, la memoire de Lumena et les logs.
+_NOMS_OUTILS_DEPRECIES = {"cursor_ide_local": "lumena_ide"}
+
+
+# LOT SRV-1 — fermer un serveur ou un processus qu'elle a lance.
+#
+# Run du 25/09 a 02 h 29 : trois tentatives, trois murs, puis abandon. `process_kill` et
+# `stop_website_server` EXISTENT et n'etaient exposes sur AUCUNE des formulations reelles
+# (0 sur 3). Elle a donc improvise avec `run_command taskkill`, que le sanitizer bloque -
+# a juste titre. La porte legitime etait invisible.
+#
+# Le declencheur exige DEUX choses : un verbe d'arret ET une cible de type processus. Le
+# verbe seul ouvrirait la categorie sur « ferme la fenetre » ou « ferme le document ».
+_VERBES_D_ARRET_RE = re.compile(
+    r"\b(ferme|fermer|arrete|arreter|arrête|arrêter|stoppe|stopper|stop|coupe|couper"
+    r"|tue|tuer|kill|termine|terminer|eteins|éteins)\b",
+    re.IGNORECASE,
+)
+_CIBLES_PROCESSUS_RE = re.compile(
+    r"\b(serveur|serveurs|server|servers|port|ports|processus|process|pid|pids"
+    r"|preview|flask|uvicorn|vite|http\.server)\b",
+    re.IGNORECASE,
+)
+
+
+# LOT IDE-7 — mots du champ IDE, en MOT ENTIER (voir `apply_context_filter`).
+# « code » n'y figure pas : il est partout dans les demandes de developpement et
+# ouvrirait computer_use sur presque toutes. « vs code » et « vscode », si.
+_MOTS_DE_L_IDE_RE = re.compile(
+    r"\b(ide|ides|editeur|éditeur|editeurs|éditeurs|vscode|vs\s+code)\b",
+    re.IGNORECASE,
+)
+
+
 class DynamicRegistryError(Exception):
     """Erreur d'enregistrement dynamique de handler (Phase 8)."""
 
@@ -602,6 +642,14 @@ class ToolRegistry:
         # Defaut False = on cache le MCP quand un natif equivalent existe.
         self._mcp_prefer_over_native: Dict[str, bool] = {}
 
+        # The historic facades stay owned by V2, but are never a model catalogue.
+        self._ide_tools = RegistryIDEProvider(self)
+        self.tools = ExternalToolView(self.tools, self._ide_tools.entries)
+        self._tool_modules = ExternalToolView(self._tool_modules, self._ide_tools.modules)
+
+    def get_external_tool_catalog(self):
+        return self._ide_tools.catalog()
+
     # ── Phase 7 + P0: chargement résilient des handlers V2 ────────────────
     def _load_v2_handlers(self) -> None:
         """Charge tous les handlers V2 — résilient aux imports/getters cassés."""
@@ -617,6 +665,7 @@ class ToolRegistry:
         _HANDLER_MODULES = [
             (".handlers.files",          "get_file_handler_defs",          "files"),
             (".handlers.system",         "get_system_handler_defs",        "system"),
+            (".handlers.local_models",   "get_local_model_handler_defs",   "local_models"),
             (".handlers.web",            "get_web_handler_defs",           "web"),
             (".handlers.memory",         "get_memory_handler_defs",        "memory"),
             (".handlers.browser",        "get_browser_handler_defs",       "browser"),
@@ -797,12 +846,30 @@ class ToolRegistry:
                 n_results=min(max_results, 10),
             )
 
+            if isinstance(self.tools, ExternalToolView):
+                native_results = [
+                    (doc, meta) for doc, meta in zip(
+                        (results.get("documents") or [[]])[0], (results.get("metadatas") or [[]])[0],
+                    ) if not is_ide_tool_name(meta.get("name"))
+                ]
+                external = _FallbackToolSearch(self._ide_tools.entries()).query([query], min(max_results, 10))
+                results = {
+                    "documents": [[doc for doc, _ in native_results] + external["documents"][0]],
+                    "metadatas": [[meta for _, meta in native_results] + external["metadatas"][0]],
+                }
+
             if not results["documents"] or not results["documents"][0]:
                 return "Aucun outil trouvé pour cette recherche."
 
             found = []
             for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
                 name = meta["name"]
+                if is_ide_tool_name(name):
+                    if name not in self.tools:
+                        continue
+                    if (getattr(self, "_allowed_tools_hard", False) and self._allowed_tools is not None
+                            and name not in self._allowed_tools):
+                        continue
                 found.append(f"- {name}: {doc[:120]}")
                 if self._allowed_tools is not None:
                     self._allowed_tools.add(name)
@@ -830,7 +897,8 @@ class ToolRegistry:
             import chromadb
         except ImportError:
             logger.warning("[discover_tools] chromadb non installé — fallback keyword")
-            self._tool_collection = _FallbackToolSearch(self.tools)
+            indexed = dict(self.tools.native_items()) if isinstance(self.tools, ExternalToolView) else self.tools
+            self._tool_collection = _FallbackToolSearch(indexed)
             return
 
         client = chromadb.Client()  # In-memory, pas persistent
@@ -840,7 +908,8 @@ class ToolRegistry:
         )
 
         ids, docs, metas = [], [], []
-        for name, tool in self.tools.items():
+        indexed_items = self.tools.native_items() if isinstance(self.tools, ExternalToolView) else self.tools.items()
+        for name, tool in indexed_items:
             if name == "discover_tools":
                 continue
             desc = tool.get("description", name)
@@ -1377,6 +1446,31 @@ class ToolRegistry:
         ),
     ]
 
+    # FILT-1 — ces termes courts sont des commandes utiles quand ils forment un
+    # token, mais produisent beaucoup de faux positifs en sous-chaîne : `pr` dans
+    # « comprends », `repo` dans « réponse », `rt` et `port` dans « important ».
+    # Le pluriel ASCII reste accepté (`ports`, `repos`, `diffs`, `PRs`, `RTs`).
+    _CONTEXT_WHOLE_WORD_KEYWORDS = frozenset({"pr", "diff", "repo", "rt", "port"})
+
+    @classmethod
+    def _mot_cle_present(cls, keyword: str, query_lower: str) -> bool:
+        """Retourne si un mot-clé contextuel est réellement présent.
+
+        Le comportement historique par sous-chaîne reste inchangé pour les
+        expressions et les termes descriptifs (`fichier` doit reconnaître
+        `fichiers`). Seuls les cinq termes courts mesurés comme ambigus exigent
+        une frontière de token, avec un `s` pluriel optionnel.
+        """
+        if keyword not in cls._CONTEXT_WHOLE_WORD_KEYWORDS:
+            return keyword in query_lower
+        return bool(
+            re.search(
+                rf"(?<!\w){re.escape(keyword)}s?(?!\w)",
+                query_lower,
+                re.IGNORECASE,
+            )
+        )
+
     # ── Phase 1.1-1.4: Filtrage contextuel des outils ──────────────────────
     def apply_context_filter(
         self,
@@ -1424,9 +1518,39 @@ class ToolRegistry:
 
         for keywords, categories in self._CONTEXT_RULES:
             for kw in keywords:
-                if kw in query_lower:
+                if self._mot_cle_present(kw, query_lower):
                     matched_categories |= categories
                     break  # un match suffit pour cette règle
+
+        # ── LOT IDE-7 (24/09/2026) — les mots de l'IDE ouvrent l'outil de l'IDE ──
+        #
+        # Run du 24/09 a 20 h 03. Charles : « J'ai besoin que tu mouvre ton ide stp ».
+        # Lumena a mis NEUF iterations a fouiller le disque, lire `LANCER_IDE.bat`,
+        # tenter `npm start`, se faire refuser, contourner par `open_file`, et verifier
+        # par `tasklist`. Elle n'a jamais pense a `lumena_ide` : l'outil n'etait pas
+        # dans sa liste. Un seul appel aurait suffi.
+        #
+        # Mesure : sur 10 formulations reelles et les 5 intents, 148 outils permis sur
+        # 611 et `lumena_ide` dans AUCUN cas. Le pack COMPUTER liste « souris »,
+        # « clavier », « notepad »... et aucun mot du champ IDE.
+        #
+        # POURQUOI UNE REGLE A PART, et non des mots de plus dans le pack : le matching
+        # des packs est une SOUS-CHAINE (`kw in query_lower`). Ajouter « ide » y
+        # ouvrirait computer_use sur « guide », « rapide », « valide », « aide »,
+        # « video », « identifiant » — mesure faite avant d'ecrire. Le mot entier, lui,
+        # capte « ton ide », « l'ide », « mon IDE, » et rien d'autre.
+        demande_ide = bool(_MOTS_DE_L_IDE_RE.search(query_lower))
+        if demande_ide:
+            matched_categories |= {"computer_use", "files"}
+
+        # LOT SRV-1 — `process_kill` vit dans `agents`, `stop_website_server` dans
+        # `website` : il faut les DEUX categories, sinon elle ne voit qu'une moitie de
+        # la porte. `agents` apporte aussi `bg_list`, de quoi REGARDER avant de tuer.
+        demande_arret_processus = bool(
+            _VERBES_D_ARRET_RE.search(query_lower) and _CIBLES_PROCESSUS_RE.search(query_lower)
+        )
+        if demande_arret_processus:
+            matched_categories |= {"agents", "website"}
 
         # ── BDD d'un site IONOS → catégorie ionos ──────────────────────────
         # On expose les outils ionos_db_* dès qu'une intention BDD est claire, pour
@@ -1460,6 +1584,32 @@ class ToolRegistry:
         if intent == "chat":
             if peer_team_query:
                 matched_categories = {"peers", "network", "web", "memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
+                if demande_ide:
+                    # LOT IDE-7 bis — mesure : `_is_peer_team_query` rend True sur
+                    # « ouvre une AUTRE INSTANCE ide avec ton workspace dedans », qui ne
+                    # parle pas de pairs du tout. Ce faux positif privait la demande de
+                    # son outil d'IDE. L'ajout est ADDITIF : une vraie demande de pair
+                    # garde ses outils, et l'IDE cesse d'etre efface par un homonyme.
+                    matched_categories |= {"computer_use", "files"}
+            elif demande_arret_processus:
+                # Meme motif que `peer_team_query` et `demande_ide` : ces demandes
+                # tombent en `chat` (mesure sur les 4 formulations reelles), et ce bloc
+                # les reduisait a memory+system - donc sans aucun moyen d'agir.
+                matched_categories = ({"agents", "website", "memory", "system"}
+                                      | self._ALWAYS_INCLUDE_CATEGORIES)
+            elif demande_ide:
+                # LOT IDE-7 bis (24/09, 23 h 16) — mesure APRES IDE-7 : « ouvre ton ide »
+                # est classe `chat`, et ce bloc ECRASAIT la categorie que la regle des
+                # mots de l'IDE venait d'ajouter. Lumena l'a dit elle-meme : « J'ai
+                # MAINTENANT acces a `lumena_ide` » — apres un `discover_tools`, donc
+                # elle ne l'avait pas. IDE-7 etait vert en test et inoperant en prod.
+                #
+                # Meme motif et meme forme que `peer_team_query` juste au-dessus : une
+                # demande naturelle doit rendre l'outil visible MEME SI le classifier la
+                # voit comme un simple chat. `files` accompagne : le run montre qu'elle a
+                # du redecouvrir de quoi editer juste apres avoir ouvert l'IDE.
+                matched_categories = ({"computer_use", "files", "memory", "system"}
+                                      | self._ALWAYS_INCLUDE_CATEGORIES)
             elif "autonomy" in matched_categories:
                 matched_categories = {"autonomy", "memory", "system"} | self._ALWAYS_INCLUDE_CATEGORIES
             elif structured_document or document_tools_required:
@@ -1624,12 +1774,18 @@ class ToolRegistry:
             provenance: dict optionnel (source_kind, server_name, ts, ...)
 
         Raises:
-            DynamicRegistryError si :
+            DynamicRegistryError si, DANS CET ORDRE :
               - handler_def.name vide ou non-str
-              - name collide avec un handler natif (snapshot boot)
+              - name collide avec un handler natif (snapshot boot) — y compris
+                les noms `ide_*` natifs : la collision est la cause première
+              - name appartient au namespace `ide_*` sans être natif (réservé au
+                fournisseur authentifié)
+              - policy n'est pas une instance MCPPolicy
               - name déjà enregistré comme dynamique
               - name déjà présent dans self.tools (legacy register post-boot)
-              - policy n'est pas une instance MCPPolicy
+
+            L'ordre est un contrat : `tests/reasoning/test_reg1_ordre_des_gardes.py`
+            l'exerce sur TOUS les natifs, donc sans dépendre d'un tirage.
         """
         # Import direct depuis src.mcp.policy (évite cycles + imports lourds)
         from src.mcp.policy import MCPPolicy
@@ -1637,13 +1793,23 @@ class ToolRegistry:
         name = getattr(handler_def, "name", None)
         if not name or not isinstance(name, str):
             raise DynamicRegistryError(f"Invalid handler name: {name!r}")
-        if not isinstance(policy, MCPPolicy):
-            raise DynamicRegistryError(
-                f"policy must be an MCPPolicy instance, got {type(policy).__name__}: {policy!r}"
-            )
+        # REG-1 — la collision native passe AVANT le namespace IDE. Les 33 façades
+        # IDE dépréciées sont natives : quand le garde de namespace tirait le
+        # premier, le refus « native » promis par ce docstring était inatteignable
+        # pour 5,4 % des natifs, et le test qui l'exerce en tirant un nom dans un
+        # frozenset tombait dessus une fois sur dix-huit selon le hash seed.
+        # L'invariant le plus fort — un natif n'est jamais réenregistrable — doit
+        # donc nommer la cause première ; le garde de namespace garde son objet
+        # propre, les noms `ide_*` qui ne sont PAS (encore) natifs.
         if name in self._native_handler_names:
             raise DynamicRegistryError(
                 f"Collision with native handler: {name!r}"
+            )
+        if is_ide_tool_name(name):
+            raise DynamicRegistryError("IDE namespace is reserved for its authenticated provider")
+        if not isinstance(policy, MCPPolicy):
+            raise DynamicRegistryError(
+                f"policy must be an MCPPolicy instance, got {type(policy).__name__}: {policy!r}"
             )
         if name in self._dynamic_handlers:
             raise DynamicRegistryError(
@@ -1967,7 +2133,7 @@ class ToolRegistry:
 
     def get_tools_description(self) -> str:
         """Retourne une description compacte des outils (1 ligne chacun). Résultat mis en cache."""
-        if self._tools_desc_cache is not None:
+        if self._tools_desc_cache is not None and not isinstance(self.tools, ExternalToolView):
             return self._tools_desc_cache
         # Certains tests construisent ToolRegistry via object.__new__ sans appeler __init__.
         # On tolère ce mode pour éviter une régression de compatibilité.
@@ -2022,14 +2188,22 @@ class ToolRegistry:
                 "(table vide ?) via `ionos_db_select` — NE déduis JAMAIS le contenu depuis "
                 "`ionos_db_describe_table` (schéma seulement) ni depuis la mémoire/le contexte. "
                 "Si aucune info BDD n'est requise, réponds avec final_answer.")
-        self._tools_desc_cache = "\n".join(descriptions)
-        return self._tools_desc_cache
+        result = "\n".join(descriptions)
+        # Preserve native/MCP cache invalidation bookkeeping. External views
+        # always render the current run above; this value never pins their scope.
+        self._tools_desc_cache = result
+        return result
     
     def get_tools_schema(self) -> List[Dict[str, Any]]:
         """Retourne le schéma des outils pour l'API."""
         schemas = []
 
         def _append_schema(name: str, tool: Dict[str, Any]) -> None:
+            if is_ide_tool_name(name) and "input_schema" in tool:
+                schemas.append({"type": "function", "function": {
+                    "name": name, "description": tool["description"], "parameters": tool["input_schema"],
+                }})
+                return
             required = tool.get("required", None)
             if required is None:
                 required = list(tool["parameters"].keys())
@@ -2548,6 +2722,30 @@ class ToolRegistry:
         *,
         caller: Optional[CallerContext] = None,
     ) -> Observation:
+        """Expose ce registre pendant l'execution de l'outil (CONN-5D-2).
+
+        CodeAgent, lance pendant `delegate_task` par une tache asyncio qui herite de ce
+        contexte, retrouve ainsi le registre de la mission pour ses outils IDE.
+        """
+        from .tool_call_scope import tool_registry_scope
+
+        # Renommage (24/09/2026) : la traduction des noms deprecies se fait ICI, au
+        # point d'entree — donc AVANT le lease, les gardes de perimetre, le controle
+        # de politique de mission et la resolution d'outil. Tout ce qui suit ne
+        # raisonne que sur le nom canonique ; aucun garde ne peut etre contourne en
+        # appelant l'ancien nom.
+        name = _NOMS_OUTILS_DEPRECIES.get(name, name)
+
+        with tool_registry_scope(self):
+            return await self._execute_leased(name, args, caller=caller)
+
+    async def _execute_leased(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        *,
+        caller: Optional[CallerContext] = None,
+    ) -> Observation:
         """Wrapper d'exécution avec lease de ressource (Lot 0.c / 1.4).
 
         Si l'outil touche une ressource physique EXCLUSIVE (navigateur, Computer Use,
@@ -2562,6 +2760,8 @@ class ToolRegistry:
         # double lease). Liveness vérifiée À L'INSTANT de l'appel : si le MCP a été
         # désactivé entre la découverte et ici, _resolve_readthrough_mcp renvoie None
         # → chemin normal (échec « outil inconnu » propre, jamais d'exécution fantôme).
+        if is_ide_tool_name(name):
+            return await self._execute_inner(name, args, caller=caller)
         if name not in self.tools and getattr(self, "_mcp_readthrough_on", False):
             _rt_name = self._resolve_readthrough_mcp(name)
             _boot = self._mcp_boot_registry
@@ -2605,6 +2805,49 @@ class ToolRegistry:
                 success=False,
             )
 
+    def _garde_execution_mcp(self, name, args):
+        """LOT EXE-1 — un outil MCP qui EXECUTE passe par la meme garde que run_command.
+
+        Journaux du 23 septembre 2026, 21 h 38 : `run_command` refuse, et Lumena
+        ecrit « Je pivote : j'utilise le PowerShell MCP (canal different) » avant
+        qu'un `Start-Process` arbitraire ne passe. Le chantier L2 s'appelait
+        « porte d'execution unique » ; il y en avait deux.
+
+        La reconnaissance porte sur le SUFFIXE de l'outil, jamais sur le serveur :
+        memoire, documentation et messagerie ne sont pas concernees et ne paient
+        rien. Une LECTURE d'etat systeme (`tasklist`, `netstat`) passe - c'est
+        precisement leur refus qui poussait a chercher cette porte.
+
+        Rend une `Observation` de refus, ou None pour laisser passer.
+        """
+        from src.utils.command_sanitizer import is_system_state_read, mcp_tool_executes_commands
+
+        if not mcp_tool_executes_commands(name):
+            return None
+        commande = ""
+        if isinstance(args, dict):
+            for cle in ("command", "cmd", "script", "commandLine"):
+                if isinstance(args.get(cle), str):
+                    commande = args[cle]
+                    break
+        if is_system_state_read(commande):
+            return None
+        ctx = getattr(self, "_v2_context", None)
+        if ctx is None:
+            return None
+        try:
+            from src.reasoning.handlers.files import (
+                PathSecurityError, assert_execution_cwd_allowed, execution_work_dir,
+            )
+            assert_execution_cwd_allowed(execution_work_dir(ctx), ctx, outil=str(name))
+        except PathSecurityError as refus:
+            logger.warning("[EXE-1] execution MCP refusee : outil={} cmd={}",
+                           name, str(commande)[:120])
+            return Observation(content=f"⛔ {refus}", success=False)
+        except Exception:
+            return None  # contexte leger : ne juge pas, ne plante pas (lecon L1c-1)
+        return None
+
     async def _execute_inner(
         self,
         name: str,
@@ -2623,6 +2866,9 @@ class ToolRegistry:
                 les mutations de code projet.
         """
         caller = caller or _CALLER_UNKNOWN
+        _refus_execution = self._garde_execution_mcp(name, args)
+        if _refus_execution is not None:
+            return _refus_execution
 
         # Voice V2 : le wake word/la proximité du micro ne donnent aucun droit.
         # Une session non appairée reste read-only ; les autres canaux conservent
@@ -2707,6 +2953,12 @@ class ToolRegistry:
         _mcp_refusal = self._mcp_policy_check(name, caller)
         if _mcp_refusal is not None:
             return _mcp_refusal
+
+        if is_ide_tool_name(name):
+            provider = getattr(self, "_ide_tools", None)
+            if provider is None:
+                return Observation(content="IDE: external_tool_not_in_snapshot", success=False)
+            return await provider.execute(name, args, caller=caller)
 
         if name not in self.tools:
             # Fix R (Phase I-7) : alias MCP. La convention registre est
@@ -2947,12 +3199,14 @@ class ToolRegistry:
             
             # Cache d'observations : eviter les appels redondants pour les outils de lecture
             cache_key = None
-            if name in self._CACHEABLE_TOOLS:
+            cache_generation = observation_cache_epoch(self)
+            if name in self._CACHEABLE_TOOLS and cache_generation is not None:
                 try:
                     cache_key = f"{name}::{json.dumps(args, sort_keys=True, default=str)}"
                 except Exception:
                     cache_key = f"{name}::{args}"
-                if cache_key in self._observation_cache:
+                cached_observation = self._observation_cache.get(cache_key)
+                if cached_observation is not None:
                     # P2: Compte les hits pour éviter la "boucle du fichier figé"
                     _hits = self._observation_cache_hits.get(cache_key, 0) + 1
                     self._observation_cache_hits[cache_key] = _hits
@@ -2966,7 +3220,7 @@ class ToolRegistry:
                         # Ne pas retourner : laisse tomber vers l'exécution réelle
                     else:
                         logger.debug(f"Cache hit: {name} (#{_hits})")
-                        return Observation(content=self._observation_cache[cache_key], success=True)
+                        return Observation(content=cached_observation, success=True)
             
             try:
                 _phase26_token = None
@@ -3061,6 +3315,8 @@ class ToolRegistry:
                     logger.debug("Cache invalidé: {} entrées (après {})", len(_stale), name)
 
             # Observation structurée directe (ex: parallel_tools avec sub_results)
+            if cache_generation != observation_cache_epoch(self):
+                cache_key = None
             if isinstance(result, Observation):
                 raw = (result.content or "").strip()
                 if (

@@ -31,15 +31,69 @@ def _start_server(host: str, port: int) -> None:
     uvicorn.run(app, host=host, port=port, log_level="info", access_log=False)
 
 
-def _boot_timeout() -> int:
-    """Délai max d'attente du serveur. Augmenté à 90s par défaut car activer
-    les serveurs MCP au démarrage rallonge le boot (chacun = process Node +
-    handshake) et dépassait l'ancien plafond de 30s → Lumena ne démarrait pas.
-    Surchargeable via LUMENA_DESKTOP_BOOT_TIMEOUT."""
+def _mcp_a_demarrer() -> int:
+    """Combien de serveurs MCP seront démarrés au boot — lu sur le disque.
+
+    Le catalogue porte l'information AVANT que le serveur ne démarre : une entrée
+    par fichier, avec son `status`. On ne compte que ce qui sera réellement lancé,
+    donc ni les `removed` ni les états inconnus.
+
+    Volontairement sans import de Lumena : ce module est un point d'entrée, et
+    charger le cœur pour calculer un délai d'attente ferait exactement ce qu'on
+    essaie de mesurer. Vingt-deux petits JSON se lisent en quelques millisecondes,
+    et la moindre anomalie rend 0 — le plancher prend alors le relais.
+    """
     try:
-        return max(10, int(os.getenv("LUMENA_DESKTOP_BOOT_TIMEOUT", "90")))
-    except (ValueError, TypeError):
-        return 90
+        import json
+        from pathlib import Path
+        dossier = Path(__file__).parent / "data" / "mcp_server_catalog" / "servers"
+        if not dossier.is_dir():
+            return 0
+        actifs = 0
+        for fichier in dossier.glob("*.json"):
+            try:
+                entree = json.loads(fichier.read_text(encoding="utf-8")).get("entry") or {}
+            except Exception:
+                continue
+            if entree.get("status") in {"active", "installed"}:
+                actifs += 1
+        return actifs
+    except Exception:
+        return 0
+
+
+# Mesures du 24/09/2026 sur le boot réel (journal de 02:48:05 à 02:49:11) :
+#   boot complet                66 s
+#   dont 9 serveurs MCP         38 s   →  ~4,2 s par serveur
+#   donc le reste (ChromaDB, 611 handlers, 35 skills, canaux)  ~28 s
+# Le plafond de 90 s ne laissait que 24 s de marge : il serait dépassé vers 14 MCP.
+_BOOT_BASE_S = 60          # tout ce qui n'est pas MCP, avec de la marge
+_BOOT_PAR_MCP_S = 10       # ~2x le coût mesuré : disque chargé, démarrage à froid
+_BOOT_PLANCHER_S = 90      # l'ancienne valeur : jamais de régression
+_BOOT_PLAFOND_S = 600      # au-delà, ce n'est plus un boot lent mais un blocage
+
+
+def _boot_timeout() -> int:
+    """Délai max d'attente du serveur, **proportionnel au nombre de MCP**.
+
+    Historique : 30 s à l'origine, relevé à 90 s quand l'activation des MCP au
+    démarrage a commencé à dépasser le plafond — chacun est un process Node plus
+    un handshake. Mais une constante se périme à chaque serveur ajouté, et le
+    symptôme est le pire possible : Lumena ne démarre pas, sans dire pourquoi.
+
+    Le nombre de serveurs est un fait disponible sur le disque. On l'utilise, au
+    lieu de relever un chiffre en attendant le prochain dépassement.
+
+    `LUMENA_DESKTOP_BOOT_TIMEOUT` reste souverain quand il est défini.
+    """
+    impose = os.getenv("LUMENA_DESKTOP_BOOT_TIMEOUT")
+    if impose is not None:
+        try:
+            return max(10, int(str(impose).strip()))
+        except (ValueError, TypeError):
+            pass  # valeur illisible → on calcule, plutôt que de refuser de démarrer
+    calcule = _BOOT_BASE_S + _BOOT_PAR_MCP_S * _mcp_a_demarrer()
+    return max(_BOOT_PLANCHER_S, min(_BOOT_PLAFOND_S, calcule))
 
 
 def _env_flag(name: str, default: bool = False) -> bool:

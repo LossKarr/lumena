@@ -1,7 +1,9 @@
 """Synchronise .env.example depuis web.routes.config._CONFIG_SCHEMA + extras."""
+
 from __future__ import annotations
 
 from collections import defaultdict
+import importlib
 from pathlib import Path
 import sys
 
@@ -11,7 +13,7 @@ TARGET = ROOT / ".env.example"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from web.routes.config import _CONFIG_SCHEMA
+from web.routes.config import _CONFIG_SCHEMA  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Variables utilisées dans le code mais absentes du wizard (_CONFIG_SCHEMA).
@@ -68,14 +70,62 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("ReAct / Outils (avancé)", "LUMENA_MAX_REACT_ITERATIONS_IDE", "35", "Max itérations ReAct mode IDE"),
     ("ReAct / Outils (avancé)", "LUMENA_REACT_TIMEOUT_IDE", "", "Timeout ReAct mode IDE (sec, vide = fallback)"),
     ("ReAct / Outils (avancé)", "LUMENA_REACT_HISTORY_OBS_CHARS_IDE", "12000", "Chars obs historique ReAct IDE"),
-    ("ReAct / Outils (avancé)", "LUMENA_REACT_OBS_LIMIT", "", "Override global budget observation (chars). Vide = auto calibré par modèle"),
-    ("ReAct / Outils (avancé)", "LUMENA_REACT_OBS_CLAMP", "", "Clamp min:max du budget obs (ex '4000:64000'). Vide = pas de clamp"),
-    ("ReAct / Outils (avancé)", "LUMENA_REACT_PROTECT_LAST_READ", "1", "Protège la dernière obs d'un outil lecteur (read_file, grep, web_fetch...) de la microcompaction"),
-    ("ReAct / Outils (avancé)", "LUMENA_OLLAMA_PROBE", "1", "Active le probe /api/show pour auto-détecter context_length réel des modèles Ollama"),
+    (
+        "ReAct / Outils (avancé)",
+        "LUMENA_REACT_OBS_LIMIT",
+        "",
+        "Override global budget observation (chars). Vide = auto calibré par modèle",
+    ),
+    (
+        "ReAct / Outils (avancé)",
+        "LUMENA_REACT_OBS_CLAMP",
+        "",
+        "Clamp min:max du budget obs (ex '4000:64000'). Vide = pas de clamp",
+    ),
+    (
+        "ReAct / Outils (avancé)",
+        "LUMENA_REACT_PROTECT_LAST_READ",
+        "1",
+        "Protège la dernière obs d'un outil lecteur (read_file, grep, web_fetch...) de la microcompaction",
+    ),
+    (
+        "ReAct / Outils (avancé)",
+        "LUMENA_OLLAMA_PROBE",
+        "1",
+        "Active le probe /api/show pour auto-détecter context_length réel des modèles Ollama",
+    ),
     ("ReAct / Outils (avancé)", "LUMENA_OLLAMA_PROBE_TTL", "86400", "TTL (sec) du cache de probes Ollama. 86400 = 24h"),
+    ("Modèles locaux", "LUMENA_OLLAMA_ALLOW_REMOTE", "0", "Autoriser explicitement un daemon Ollama non loopback"),
+    ("Modèles locaux", "LUMENA_LOCAL_MODEL_CATALOG_TTL", "900", "TTL (sec) du cache catalogue Ollama/Hugging Face"),
+    (
+        "Modèles locaux",
+        "LUMENA_LOCAL_MODELS_OLLAMA_LIBRARY",
+        "1",
+        "Recherche best-effort dans l'index public officiel Ollama",
+    ),
+    ("Modèles locaux", "LUMENA_LOCAL_MODEL_MAX_CONCURRENT", "2", "Téléchargements locaux concurrents (max interne 8)"),
+    ("Modèles locaux", "LUMENA_LOCAL_MODEL_MAX_QUEUED", "20", "Maximum de jobs locaux actifs ou en attente"),
+    (
+        "Modèles locaux",
+        "LUMENA_LOCAL_MODEL_MIN_FREE_GB",
+        "2",
+        "Espace disque libre à préserver avant installation (Gio)",
+    ),
+    ("Modèles locaux", "LUMENA_LOCAL_MODEL_STATE_FILE", "", "Chemin alternatif du store d'activation local"),
+    (
+        "Modèles locaux",
+        "LUMENA_LOCAL_MODELS_AUTO_FALLBACK",
+        "0",
+        "Garde contractuelle : aucun fallback communautaire automatique",
+    ),
     ("ReAct / Outils (avancé)", "LUMENA_MODEL", "", "Alias legacy modèle (fallback)"),
     # --- Instance (avancé) ---
-    ("Instance (avancé)", "LUMENA_MAX_CONTEXTS_PER_PLATFORM", "500", "Nombre max de contextes par plateforme (Telegram, Discord, etc.)"),
+    (
+        "Instance (avancé)",
+        "LUMENA_MAX_CONTEXTS_PER_PLATFORM",
+        "500",
+        "Nombre max de contextes par plateforme (Telegram, Discord, etc.)",
+    ),
     # --- Réseau local ---
     ("Réseau local", "NETWORK_KEY", "", "Clé d'authentification pour scans réseau (WMI, SSH, etc.)"),
     ("Réseau local", "NETWORK_PASS", "", "Mot de passe pour scans réseau authentifiés"),
@@ -188,7 +238,7 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     # --- Feature Flags ---
     ("Feature Flags", "LUMENA_RUNTIME_CONTEXT_V2", "False", "Feature flag runtime V2"),
     ("Feature Flags", "LUMENA_WORKSPACE_POLICY_V2", "False", "Feature flag workspace policy V2"),
-    ("Feature Flags", "LUMENA_TASK_ORCHESTRATOR_V1", "False", "Feature flag orchestrateur V1"),
+    ("Feature Flags", "LUMENA_TASK_ORCHESTRATOR_V1", "True", "Feature flag orchestrateur V1"),
     ("Feature Flags", "LUMENA_STREAM_EVENT_V2", "False", "Feature flag stream event V2"),
     ("Feature Flags", "LUMENA_OMNICHANNEL_ENVELOPE_V1", "False", "Feature flag omnichannel V1"),
     ("Feature Flags", "LUMENA_SINGLE_INSTANCE", "True", "Mode instance unique (lock fichier)"),
@@ -201,7 +251,12 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("Clés API (non-wizard)", "DISCORD_PREFIX", "!", "Préfixe commandes Discord"),
     ("Clés API (non-wizard)", "DISCORD_ADMIN_IDS", "", "User IDs admin Discord (CSV)"),
     ("Clés API (non-wizard)", "DISCORD_ADMIN_ROLE_IDS", "", "Role IDs admin Discord (CSV)"),
-    ("Clés API (non-wizard)", "DISCORD_ADMIN_ROLES", "admin,administrateur,moderateur,lumena-admin", "Noms rôles admin Discord (CSV)"),
+    (
+        "Clés API (non-wizard)",
+        "DISCORD_ADMIN_ROLES",
+        "admin,administrateur,moderateur,lumena-admin",
+        "Noms rôles admin Discord (CSV)",
+    ),
     ("Clés API (non-wizard)", "DISCORD_GLOBAL_CHANNEL_ID", "", "Channel ID global Discord (alias)"),
     ("Clés API (non-wizard)", "SHODAN_API_KEY", "", "Clé API Shodan (scan réseau)"),
     ("Clés API (non-wizard)", "TWITTER_BEARER_TOKEN", "", "Bearer token Twitter/X"),
@@ -211,7 +266,12 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("Clés API (non-wizard)", "TWITTER_ACCESS_TOKEN_SECRET", "", "Access token secret Twitter/X"),
     ("Clés API (non-wizard)", "SPOTIFY_REDIRECT_URI", "http://localhost:8888/callback", "URI redirect OAuth Spotify"),
     ("Clés API (non-wizard)", "MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1", "URL base API Moonshot/Kimi"),
-    ("Clés API (non-wizard)", "OLLAMA_HOST", "http://localhost:11434", "URL Ollama (legacy, utiliser LUMENA_OLLAMA_HOST)"),
+    (
+        "Clés API (non-wizard)",
+        "OLLAMA_HOST",
+        "http://localhost:11434",
+        "URL Ollama (legacy, utiliser LUMENA_OLLAMA_HOST)",
+    ),
     ("Clés API (non-wizard)", "GEMINI_API_KEY", "", "Alias GOOGLE_API_KEY (Gemini)"),
     ("Clés API (non-wizard)", "DEFAULT_MODEL", "", "Alias legacy modèle par défaut"),
     # --- PLAN_SUPREME_CODEAGENT — Feature flags (P0-P11) ---
@@ -221,7 +281,12 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("CodeAgent (flags)", "LUMENA_FUZZY_REPLACE", "true", "P1 — Fuzzy matching multi-passes str_replace/apply_patch"),
     ("CodeAgent (flags)", "LUMENA_COMPACTION_PRUNE", "true", "P2 — Compaction progressive avec pruning intelligent"),
     ("CodeAgent (flags)", "LUMENA_PLAN_MODE", "true", "P3 — Mode plan (read-only puis exécution)"),
-    ("CodeAgent (flags)", "LUMENA_TRUNCATION_SAVE", "true", "P4 — Sauvegarde outputs tronqués dans data/logs/codeagent/"),
+    (
+        "CodeAgent (flags)",
+        "LUMENA_TRUNCATION_SAVE",
+        "true",
+        "P4 — Sauvegarde outputs tronqués dans data/logs/codeagent/",
+    ),
     ("CodeAgent (flags)", "LUMENA_MAX_STEPS_GRACEFUL", "true", "P5 — Escalation graceful avant max_iter"),
     ("CodeAgent (flags)", "LUMENA_AUTO_FORMAT", "true", "P6 — Auto-format (ruff/prettier) post-edit"),
     ("CodeAgent (flags)", "LUMENA_REACT_QUALITY_GATES", "true", "P7 — Quality gates ReAct (parité CodeAgent)"),
@@ -233,13 +298,28 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("CodeAgent (flags)", "LUMENA_ENV_CONTEXT", "true", "P8 — Inject OS/shell/cwd dans system prompt"),
     ("CodeAgent (flags)", "LUMENA_SSE_TIMEOUT", "true", "P8 — Timeout adaptatif streaming SSE"),
     ("CodeAgent (flags)", "LUMENA_PROMPT_CACHE", "true", "P8 — Prompt caching Anthropic/DeepSeek"),
-    ("CodeAgent (flags)", "LUMENA_CODING_METRICS", "true", "P10 — Métriques coding -> data/logs/codeagent/metrics.jsonl"),
+    (
+        "CodeAgent (flags)",
+        "LUMENA_CODING_METRICS",
+        "true",
+        "P10 — Métriques coding -> data/logs/codeagent/metrics.jsonl",
+    ),
     ("CodeAgent (flags)", "LUMENA_DESTRUCTIVE_CONFIRM", "false", "P11 — OPT-IN: confirmation rm/git push --force/etc."),
     ("CodeAgent (flags)", "LUMENA_FRENCH_ERRORS", "true", "P11 — Messages d'erreur en français"),
 ]
 
 
-def _comment_lines(entry: dict) -> list[str]:
+def _runtime_ollama_model_names() -> set[str]:
+    """Return machine-specific Ollama entries that must not leak into docs."""
+    catalog = importlib.import_module("src.llm.providers").AVAILABLE_MODELS
+    return {
+        name
+        for name, model in catalog.items()
+        if str(getattr(model, "display_name", "")).endswith("(Local Ollama)")
+    }
+
+
+def _comment_lines(entry: dict, *, excluded_options: set[str]) -> list[str]:
     comments = [f"# {entry['label']}"]
     hint = entry.get("hint")
     if hint:
@@ -247,13 +327,17 @@ def _comment_lines(entry: dict) -> list[str]:
     comments.append(f"# Type: {entry['type']} | Niveau: {entry.get('level', 'avancé')}")
     if entry.get("restart"):
         comments.append("# Redémarrage requis après modification")
-    options = entry.get("options")
+    options = [option for option in entry.get("options", []) if str(option) not in excluded_options]
     if options:
         comments.append("# Options: " + ", ".join(str(option) for option in options))
     return comments
 
 
 def render_env_example() -> str:
+    # The live configuration schema also exposes models discovered on this
+    # machine. Documentation must remain reproducible on computers with a
+    # different Ollama library.
+    excluded_options = _runtime_ollama_model_names()
     # -- Keys already in schema (avoid duplicates in extras) --
     schema_keys = {e["key"] for e in _CONFIG_SCHEMA}
 
@@ -269,7 +353,7 @@ def render_env_example() -> str:
     for group in sorted(groups):
         lines.append(f"# === {group} ===")
         for entry in groups[group]:
-            lines.extend(_comment_lines(entry))
+            lines.extend(_comment_lines(entry, excluded_options=excluded_options))
             lines.append(f"{entry['key']}={entry.get('default', '')}")
             lines.append("")
 

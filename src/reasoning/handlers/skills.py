@@ -412,19 +412,84 @@ async def edit_own_code_handler(
     new_content: str,
     reason: str = "",
 ) -> HandlerResult:
-    """Modifie un fichier de code source de Lumena (auto-amélioration)."""
+    """Modifie un fichier de code source de Lumena (auto-amélioration).
+
+    Lot L1c-2 : SEULE porte vers le code de Lumena (les outils génériques y sont
+    refusés). Jamais en mission (l'autonomie est déjà refusée au registre par le
+    contrat de catégorie `skills`). Cible strictement DANS le dépôt, hors workspace
+    et hors liste noire. Sauvegarde avant (`BACKUPS_DIR/edit_own_code/<horodatage>/`),
+    preuve après (relecture octet à octet, restauration si elle échoue). Les fins de
+    ligne du fichier sont conservées.
+    """
+    name = "edit_own_code"
     try:
-        target = ctx.lumena_root / file_path
-        if not target.exists():
-            target = ctx.lumena_root / "src" / file_path
-        if not target.exists():
-            return HandlerResult.fail(f"❌ Fichier introuvable: {file_path}", handler_name="edit_own_code")
-        text = target.read_text(encoding="utf-8")
+        import shutil
+        from datetime import datetime
+        from pathlib import Path
+
+        from ...tools.file_guardrails import PathSecurityError, check_write_blacklist
+        from ...utils import paths as _paths
+
+        if getattr(ctx, "is_mission_run", False):
+            return HandlerResult.fail(
+                "❌ edit_own_code refusé en mission : le code de Lumena ne se modifie qu'à la "
+                "demande explicite de l'utilisateur, en conversation.",
+                handler_name=name,
+            )
+        root = Path(ctx.lumena_root).resolve()
+        raw = Path(file_path)
+        candidates = [raw] if raw.is_absolute() else [root / raw, root / "src" / raw]
+        target = next((c.resolve() for c in candidates if c.resolve().is_file()), None)
+        if target is None:
+            return HandlerResult.fail(f"❌ Fichier introuvable: {file_path}", handler_name=name)
+        try:
+            rel = target.relative_to(root)
+        except ValueError:
+            return HandlerResult.fail(
+                f"❌ edit_own_code refusé : {file_path} n'est pas dans le code de Lumena.",
+                handler_name=name,
+            )
+        guardrails = getattr(ctx, "file_guardrails", None)
+        workspace = guardrails._workspace_root().resolve() if guardrails is not None else root
+        if workspace != root and (target == workspace or workspace in target.parents):
+            return HandlerResult.fail(
+                f"❌ edit_own_code refusé : {rel.as_posix()} est dans le workspace, pas dans le code "
+                "de Lumena. Utilise edit_file.",
+                handler_name=name,
+            )
+        try:
+            check_write_blacklist(target, root)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(f"❌ {sec_err}", handler_name=name)
+
+        with open(target, "r", encoding="utf-8", newline="") as fh:
+            text = fh.read()
         if old_content not in text:
-            return HandlerResult.fail(f"❌ old_content introuvable dans {file_path}", handler_name="edit_own_code")
-        text = text.replace(old_content, new_content, 1)
-        target.write_text(text, encoding="utf-8")
-        return HandlerResult.ok(f"✅ {file_path} modifié.", handler_name="edit_own_code")
+            return HandlerResult.fail(f"❌ old_content introuvable dans {file_path}", handler_name=name)
+        new_text = text.replace(old_content, new_content, 1)
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        backup = Path(_paths.BACKUPS_DIR) / "edit_own_code" / stamp / rel
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, backup)
+
+        with open(target, "w", encoding="utf-8", newline="") as fh:
+            fh.write(new_text)
+        with open(target, "r", encoding="utf-8", newline="") as fh:
+            relu = fh.read()
+        if relu != new_text:
+            shutil.copy2(backup, target)
+            return HandlerResult.fail(
+                f"❌ edit_own_code : la relecture de {rel.as_posix()} ne correspond pas ; "
+                f"fichier restauré depuis {backup}.",
+                handler_name=name,
+            )
+        motif = f" Motif : {reason}." if reason else ""
+        return HandlerResult.ok(
+            f"✅ {rel.as_posix()} modifié.{motif} Sauvegarde : {backup}. "
+            "Preuve : relecture conforme.",
+            handler_name=name,
+        )
     except Exception as e:
         return HandlerResult.fail(f"❌ Erreur edit_own_code: {e}", handler_name="edit_own_code")
 
@@ -673,6 +738,9 @@ def get_skills_handler_defs() -> List[HandlerDef]:
             name="edit_own_code",
             description=(
                 "⚠️ AUTO-AMÉLIORATION: Modifie un fichier de code source de Lumena elle-même. "
+                "SEULE porte vers le code de Lumena (les outils génériques y sont refusés) : "
+                "uniquement sur demande explicite de l'utilisateur en conversation, jamais en "
+                "mission. Sauvegarde automatique avant, relecture après. "
                 "Remplace old_content par new_content dans le fichier spécifié. "
                 "Toujours vérifier avec read_own_code avant d'utiliser cet outil."
             ),

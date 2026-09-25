@@ -215,6 +215,8 @@ export async function toggleChatDictation(){
 export function setupTextarea(){
   const ta=document.getElementById('message-input');
   if(!ta)return;
+  if(ta.dataset.lumenaTextareaReady==='1')return;
+  ta.dataset.lumenaTextareaReady='1';
   const resize=()=>{
     const maxHeight=Math.min(320, Math.max(180, Math.floor(window.innerHeight*0.34)));
     ta.style.height='36px';
@@ -238,7 +240,7 @@ export function setupTextarea(){
 export function quickSend(msg){document.getElementById('message-input').value=msg;sendMessage()}
 
 export async function sendMessage(){
-  if(isLoading)return;
+  if(isLoading||window.LumenaSteering?.isActive()){await window.LumenaSteering?.submitFromComposer();return;}
   const input=document.getElementById('message-input');
   const message=input.value.trim();if(!message&&!_pendingAttachments.length){input.classList.add('shake');setTimeout(()=>input.classList.remove('shake'),400);return}
 
@@ -447,6 +449,7 @@ export async function sendMessage(){
         if(!line.startsWith('data: '))continue;
         try{
           const data=JSON.parse(line.slice(6));
+          window.LumenaSteering?.observeStreamEvent(data);
           if(data.type!=='heartbeat')_lastEventTs=Date.now();
           if(data.type==='start'||data.type==='thinking'){
             addThinkingStep('⚡',esc(data.content||'Demarrage...'));
@@ -711,15 +714,13 @@ export function cancelStream(){
 function _setSendBtnStop(isStop){
   const btn=document.getElementById('send-btn');
   if(!btn)return;
-  if(isStop){
-    btn.className='btn-stop';
-    btn.title='Arrêter';
-    btn.innerHTML='<i data-lucide="square" style="width:16px;height:16px"></i>';
-  }else{
-    btn.className='btn-send';
-    btn.title='Envoyer';
-    btn.innerHTML='<i data-lucide="arrow-up"></i>';
-  }
+  const stop=document.getElementById('stop-btn');
+  btn.className='btn-send';
+  btn.title=isStop?'Ajouter cette orientation au travail':'Envoyer';
+  btn.innerHTML='<i data-lucide="arrow-up"></i>';
+  if(stop)stop.hidden=!isStop;
+  if(isStop)window.LumenaSteering?.beginWork();
+  else window.LumenaSteering?.setActive(false);
   if(window.lucide)window.lucide.createIcons({nodes:[btn]});
 }
 

@@ -62,7 +62,8 @@ _EXPLORATION_TOOLS_STRICT: frozenset[str] = frozenset({
     "run_command", "run_shell", "exec_command",
     "list_directory", "find_files", "list_files", "list_dir",
     "grep_search", "search_in_code", "search_files", "search_code",
-    "read_file", "view_file_outline", "parallel_tools",
+    # L3-3 : une lecture batch reste une exploration, jamais une preuve d'effet.
+    "read_file", "read_files_batch", "view_file_outline", "parallel_tools",
     "list_document_models",
 })
 
@@ -235,6 +236,7 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "skills":        frozenset({ProofCapability.PROCESS_LAUNCH}),    # iso system (Phase 3 ajustera)
     "custom":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     "website":       frozenset({ProofCapability.FILE_WRITE}),
+    "local_models":  frozenset({ProofCapability.GENERIC_MUTATION}),
 }
 
 
@@ -247,8 +249,16 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "list_missions":         frozenset({ProofCapability.GENERIC_READONLY}),
     "mission_status":        frozenset({ProofCapability.GENERIC_READONLY}),
     "mission_result":        frozenset({ProofCapability.GENERIC_READONLY}),
+    # Catalogue local : les consultations ne prouvent aucune mutation.
+    "search_local_models":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "inspect_local_model":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "list_installed_local_models": frozenset({ProofCapability.GENERIC_READONLY}),
+    "recommend_local_model":       frozenset({ProofCapability.GENERIC_READONLY}),
+    "list_local_model_jobs":       frozenset({ProofCapability.GENERIC_READONLY}),
+    "get_local_model_job":         frozenset({ProofCapability.GENERIC_READONLY}),
     # files category — lecture vs écriture
     "read_file":             frozenset({ProofCapability.FILE_READ}),
+    "read_files_batch":      frozenset({ProofCapability.FILE_READ}),
     "list_files":            frozenset({ProofCapability.GENERIC_READONLY}),
     "list_dir":              frozenset({ProofCapability.GENERIC_READONLY}),
     "list_directory":        frozenset({ProofCapability.GENERIC_READONLY}),
@@ -563,12 +573,33 @@ def _requires_browser_probe_task_desc(task_desc: str) -> bool:
     return any(marker in desc_l for marker in browser_markers)
 
 
+def has_verified_execution_proof(evidence, task_desc: str = "") -> bool:
+    """Structured effects use verified capabilities, never string markers."""
+    from .execution_evidence import VerifiedExecutionEvidence
+
+    if type(evidence) is not VerifiedExecutionEvidence or not evidence.success:
+        return False
+    kind = detect_verification_kind(task_desc)
+    caps = evidence.capabilities - _NON_PROOF_CAPABILITIES
+    if _requires_browser_probe_task_desc(task_desc):
+        return ProofCapability.BROWSER_PROBE in caps
+    if kind in {VerificationKind.WEB_APP, VerificationKind.API}:
+        return bool(caps & {ProofCapability.HTTP_PROBE, ProofCapability.BROWSER_PROBE})
+    if re.search(r"\b(tests?|pytest|vitest|jest)\b", task_desc.lower()):
+        return evidence.green_tests
+    if kind == VerificationKind.GENERIC and is_verify_task(task_desc.lower()):
+        caps = caps - _NON_RUNTIME_GENERIC_VERIFY_CAPABILITIES
+    return bool(caps & _KIND_PROOF_CAPABILITIES[kind])
+
+
 def has_sufficient_proof(
     tool_name: str,
     observation: str,
     task_desc: str = "",
     module_category: str = "",
     semantic_category: str = "",
+    *,
+    execution_evidence=None,
 ) -> bool:
     """Phase 2 — vérification de preuve capability-aware et kind-aware.
 
@@ -586,6 +617,14 @@ def has_sufficient_proof(
     Returns:
         True si la preuve est suffisante, False sinon.
     """
+    from ..utils.external_tool_names import is_ide_tool_name
+
+    if execution_evidence is not None:
+        return getattr(execution_evidence, "tool_name", None) == tool_name and has_verified_execution_proof(
+            execution_evidence, task_desc
+        )
+    if is_ide_tool_name(tool_name):
+        return False
     failed, overridden = classify_observation(observation)
     if failed and not overridden:
         return False

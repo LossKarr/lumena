@@ -207,6 +207,68 @@ class HandlerContext:
                 norm.add(s)
         return frozenset(norm) or None
 
+    def _project_roots(self) -> List[Path]:
+        """Dossiers du projet en cours : dossier de la requete (contexte d'execution du tour,
+        seul mis a jour a CHAQUE requete en production), racine d'execution, dossier IDE."""
+        candidates: List[Any] = []
+        try:
+            from ...runtime.context import get_current_runtime_context
+            current = get_current_runtime_context()
+        except Exception:
+            current = None
+        if current is not None and getattr(current, "channel", "") != "mission":
+            candidates.extend([getattr(current, "workspace_path", None),
+                               getattr(current, "resolved_workspace", None)])
+        candidates.extend([self.runtime_root, (self.ide_context or {}).get("workspace_path")])
+        roots: List[Path] = []
+        for raw in candidates:
+            if not raw:
+                continue
+            try:
+                candidate = Path(raw).resolve()
+            except (OSError, ValueError, RuntimeError):
+                continue
+            if candidate.is_dir() and candidate not in roots:
+                roots.append(candidate)
+        return roots
+
+    def chat_write_grant(self):
+        """Lot L1c-3 — autorisation d'ECRITURE hors depot, en chat seulement.
+
+        Decision de Charles du 15/09/2026 : l'endroit que l'utilisateur designe dans son
+        message (`OutsideAccessGrant.for_chat`) et le projet en cours. None en mission
+        (`is_mission_run`) et en autonomie (autorisation du tour = None).
+        """
+        if self.is_mission_run or self.outside_access_grant is None:
+            return None
+        from ...tools.file_guardrails import OutsideAccessGrant
+        grant = self.outside_access_grant
+        roots: List[Path] = []
+        if getattr(grant, "allow_write", False):
+            roots.extend(getattr(grant, "allowed_roots", None) or [])
+        for root in self._project_roots():
+            if root not in roots:
+                roots.append(root)
+        return OutsideAccessGrant.for_chat(*roots) if roots else None
+
+    def _outside_read_grant(self):
+        """Lecture : libre partout en CONVERSATION (lot L1d-3), bornee sinon.
+
+        Decision de Charles du 15/09/2026 : Lumena doit pouvoir aller lire, auditer ou
+        analyser un projet a cote sans qu'on le lui designe. Les zones secretes restent
+        refusees par `check_secret_zone`, et l'ECRITURE reste bornee (L1c-3). En mission
+        et en autonomie, `chat_write_grant()` rend None : rien ne change.
+        """
+        grant = self.outside_access_grant
+        write_grant = self.chat_write_grant()
+        if write_grant is None:
+            return grant
+        from ...tools.file_guardrails import OutsideAccessGrant
+        roots = list(write_grant.allowed_roots)
+        if grant is not None and getattr(grant, "allow_read", False):
+            roots.extend(r for r in grant.allowed_roots if r not in roots)
+        return OutsideAccessGrant(allowed_roots=roots, allow_read=True, read_anywhere=True)
+
     def resolve_path(self, path: str, *, want_dir: bool = False) -> Path:
         """
         Résout un chemin utilisateur via file_guardrails.
@@ -252,7 +314,7 @@ class HandlerContext:
 
         if self.file_guardrails is not None:
             return self.file_guardrails.resolve_user_path(
-                path, want_dir=want_dir, outside_grant=self.outside_access_grant,
+                path, want_dir=want_dir, outside_grant=self._outside_read_grant(),
                 mission_workspace_subdir=sub,
             )
 

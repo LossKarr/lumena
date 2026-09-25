@@ -595,27 +595,42 @@ class SkillLoader:
             )
 
         # ── Force-injection via applyTo — bypass le seuil de scoring ──────
-        scored_names = {m.name for m in matches}
+        # Un skill peut déjà avoir un score positif mais inférieur au seuil
+        # d'injection. Dans ce cas, `applyTo` doit relever ce match au lieu de
+        # l'ignorer : c'est précisément le contrat "injection forcée".
+        scored_matches = {m.name: m for m in matches}
         for skill in self.skills.values():
-            if not skill.apply_to or skill.name in scored_names:
+            if not skill.apply_to:
                 continue
+            forced_score = 0.0
+            forced_reason = ""
             if "*" in skill.apply_to:
-                matches.append(SkillMatch(
-                    name=skill.name, display_name=skill.display_name,
-                    score=9.5, reasons=["applyTo:*"], description=skill.description,
-                ))
-                scored_names.add(skill.name)
+                forced_score = 9.5
+                forced_reason = "applyTo:*"
             else:
                 apply_tokens = {_normalize_text(t) for t in skill.apply_to}
                 matched = apply_tokens & set(query_tokens)
                 if matched:
-                    matches.append(SkillMatch(
-                        name=skill.name, display_name=skill.display_name,
-                        score=9.0,
-                        reasons=[f"applyTo:{','.join(sorted(matched)[:3])}"],
-                        description=skill.description,
-                    ))
-                    scored_names.add(skill.name)
+                    forced_score = 9.0
+                    forced_reason = f"applyTo:{','.join(sorted(matched)[:3])}"
+
+            if not forced_reason:
+                continue
+            existing = scored_matches.get(skill.name)
+            if existing is not None:
+                existing.score = max(existing.score, forced_score)
+                if forced_reason not in existing.reasons:
+                    existing.reasons.append(forced_reason)
+            else:
+                match = SkillMatch(
+                    name=skill.name,
+                    display_name=skill.display_name,
+                    score=forced_score,
+                    reasons=[forced_reason],
+                    description=skill.description,
+                )
+                matches.append(match)
+                scored_matches[skill.name] = match
 
         matches.sort(key=lambda m: (-m.score, m.name))
         return matches[: max(1, int(max_results))]

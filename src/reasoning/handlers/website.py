@@ -110,6 +110,14 @@ async def write_website_files_handler(
 ) -> HandlerResult:
     if not WEBSITE_BUILDER_AVAILABLE:
         return HandlerResult.fail("❌ Module website_builder non disponible", handler_name="write_website_files")
+    if output_dir and str(output_dir).strip():
+        # L1c-1 : meme garde d'ecriture que les autres portes, sur le dossier REEL
+        # qu'utilisera l'outil. Frontiere non appliquee : elle n'existait pas ici.
+        from .files import PathSecurityError, assert_write_allowed
+        try:
+            assert_write_allowed(Path(str(output_dir).strip()), ctx, is_dir=True, boundary=False)
+        except PathSecurityError as sec_err:
+            return HandlerResult.fail(str(sec_err), handler_name="write_website_files")
     try:
         result = await _write_website_files(
             json_data=json_data,
@@ -269,7 +277,7 @@ _LUMENA_SELF_CONTEXT = """
 ## Contexte factuel sur Lumena (à utiliser si le contenu du site parle de Lumena)
 - Lumena est une IA autonome open-source écrite en **Python 3.12** avec **FastAPI**
 - Stack : Python, FastAPI, ChromaDB, Playwright, Docker, SFTP/SSH
-- LLM : DeepSeek V3 (principal), GPT-5.4, Claude Opus, Gemini, Ollama local
+- LLM : DeepSeek V4.1 Flash (principal), GPT-5.4, Claude Opus, Gemini, Ollama local
 - 466 outils natifs (create_pdf, web_search, mail_send, execute_python, deploy_to_ionos, etc.)
 - Canaux : Web UI, Telegram, Discord, Twitter/X, WhatsApp
 - Mémoire : ChromaDB vectorielle + BM25, persistante entre sessions

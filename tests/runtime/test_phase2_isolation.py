@@ -305,7 +305,6 @@ def test_bm25_search_no_cross_contamination(tmp_path):
 def test_apply_workspace_policy_isolates_users_in_multi_mode(tmp_path):
     """local:owner et telegram:42 doivent obtenir des workspaces différents."""
     from unittest.mock import patch, MagicMock
-    import os
 
     with patch("src.runtime.user_profile.MULTI_USER_ENABLED", True), \
          patch("src.utils.paths.DATA_DIR", tmp_path):

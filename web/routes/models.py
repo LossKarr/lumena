@@ -123,7 +123,7 @@ def _find_best_available_fallback(requested_name: str):
     FALLBACK_PRIORITY = ["deepseek", "mistral", "zai", "google", "moonshot", "minimax", "nvidia", "xai", "anthropic", "openai", "ollama"]
 
     def _is_available(name: str, m_cfg) -> bool:
-        return m_cfg.is_local() or check_api_key(m_cfg.provider)
+        return m_cfg.is_selectable() and (m_cfg.is_local() or check_api_key(m_cfg.provider))
 
     for name in get_model_fallbacks(requested_name):
         m_cfg = get_model_config(name)
@@ -156,6 +156,8 @@ async def get_models():
 
     models = []
     for name, config in AVAILABLE_MODELS.items():
+        if not config.is_selectable():
+            continue
         has_key = True
         if config.provider.value != "ollama":
             has_key = check_api_key(config.provider)
@@ -171,6 +173,11 @@ async def get_models():
             "supports_vision": config.supports_vision,
             "supports_image_generation": config.supports_image_generation,
             "context_window": config.context_window,
+            "max_output_tokens": config.max_output_tokens,
+            "lifecycle": config.lifecycle.value,
+            "fallback_eligible": config.is_fallback_eligible(),
+            "pricing": config.pricing.as_dict() if config.pricing else None,
+            "successor": config.successor,
             "available": has_key,
             "current": name == current_model
         })
@@ -197,6 +204,12 @@ async def switch_model(request: ModelSwitchRequest):
     config = get_model_config(request.model_name)
     if not config:
         raise HTTPException(status_code=400, detail=f"Modele '{request.model_name}' non trouve")
+    if not config.is_selectable():
+        migration = f" Migrez vers '{config.successor}'." if config.successor else ""
+        raise HTTPException(
+            status_code=409,
+            detail=f"Modele '{request.model_name}' retire et non selectionnable.{migration}",
+        )
 
     if deps.lumena and deps.lumena.llm and deps.lumena.llm.model_name == request.model_name:
         return {

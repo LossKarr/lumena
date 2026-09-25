@@ -9,8 +9,6 @@ editer, naviguer, executer une commande terminal, voir un diff.
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +22,11 @@ logger = logging.getLogger("lumena.handlers.ide")
 def _get_bridge():
     from ...tools.ide_bridge import get_ide_bridge
     return get_ide_bridge()
+
+
+def _get_launcher():
+    from ...tools.ide_launcher import get_ide_launcher
+    return get_ide_launcher()
 
 
 def _resolve_path(path: str) -> str:
@@ -234,47 +237,27 @@ async def _handle_ide_diff(ctx: HandlerContext, **kwargs) -> HandlerResult:
 # ── ide_launch ───────────────────────────────────────────────────
 
 async def _handle_ide_launch(ctx: HandlerContext, **kwargs) -> HandlerResult:
-    """Lance l'IDE Lumena (Electron) en arriere-plan."""
+    """Reutilise ou lance l'IDE, puis attend un handshake observable."""
     workspace = kwargs.get("workspace", "").strip()
-
-    lumena_root = Path(__file__).parent.parent.parent.parent
-    ide_dir = lumena_root / "ide"
-    if not ide_dir.exists():
-        # Fallback: chercher cursor-ide-local a cote
-        candidates = list(lumena_root.parent.glob("cursor-ide-local"))
-        if candidates:
-            ide_dir = candidates[0]
-        else:
-            return HandlerResult(
-                success=False, output="",
-                error="Dossier ide/ introuvable dans le projet Lumena.",
-                handler_name="ide_launch",
-            )
-
-    ide_dir = ide_dir.resolve()
-    cmd = ["npm.cmd" if sys.platform == "win32" else "npm", "run", "start"]
-    if workspace:
-        # Pass workspace via env
-        env = {**__import__("os").environ, "CURSOR_IDE_WORKSPACE": workspace}
-    else:
-        env = None
-
-    try:
-        subprocess.Popen(
-            cmd,
-            cwd=str(ide_dir),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-        return HandlerResult(
-            success=True,
-            output=f"IDE Lumena lance depuis {ide_dir}" + (f" (workspace: {workspace})" if workspace else ""),
+    # IDE-2 : une instance de PLUS, avec son propre profil. `dedicated` existe depuis
+    # L5-3b-bis et ne servait qu'aux missions ; le chat n'avait aucun moyen de le
+    # demander, d'ou trente iterations perdues dans le run du 24/09.
+    nouvelle = bool(kwargs.get("nouvelle_instance") or kwargs.get("dedicated"))
+    result = await _get_launcher().ensure_ready(workspace or None, dedicated=nouvelle)
+    if not result.available:
+        return HandlerResult.fail(
+            result.error or f"Lumena IDE indisponible ({result.state}).",
             handler_name="ide_launch",
         )
-    except Exception as e:
-        return HandlerResult(success=False, output="", error=f"Echec lancement IDE: {e}", handler_name="ide_launch")
+
+    # « reutilise » serait faux pour une instance dediee : elle n'en reutilise aucune.
+    origin = "instance dediee lancee" if nouvelle else ("reutilise" if result.reused else "lance")
+    trust = "authentifie" if result.authenticated else "transport v2 non authentifie"
+    active_workspace = str(result.workspace) if result.workspace else "aucun"
+    return HandlerResult.ok(
+        f"IDE Lumena {origin}; handshake confirme; {trust}; workspace: {active_workspace}.",
+        handler_name="ide_launch",
+    )
 
 
 # ── OS Control : état global ─────────────────────────────────────
@@ -700,11 +683,37 @@ HANDLERS: List[HandlerDef] = [
     ),
     HandlerDef(
         name="ide_launch",
-        description="Lance l'IDE Lumena (Electron) en arriere-plan. Utiliser 'workspace' pour ouvrir directement un dossier au demarrage.",
+        description=(
+            "Lance l'IDE Lumena (Electron) en arriere-plan. Utiliser 'workspace' pour "
+            "ouvrir directement un dossier au demarrage, et 'nouvelle_instance' pour "
+            "obtenir une FENETRE DE PLUS au lieu de reutiliser celle qui est ouverte."
+        ),
         handler=_handle_ide_launch,
         parameters={
             "properties": {
                 "workspace": {"type": "string", "description": "Chemin du dossier workspace a ouvrir."},
+                # LOT IDE-2 — le mecanisme existait, il n'etait pas atteignable.
+                #
+                # Run reel du 24/09/2026 : Charles demande une seconde instance. Lumena
+                # remonte toute la chaine seule — verrou d'instance unique, son lien au
+                # repertoire `userData`, les deux variables d'environnement, l'exe
+                # package — puis passe TRENTE iterations a tenter de lancer un processus
+                # a la main, bloquee tour a tour par le sanitizer et par les gardes
+                # d'ecriture. Elle a fini par dire « pas de 2e instance ouverte, je ne
+                # vais pas te raconter le contraire ».
+                #
+                # Or `ensure_ready(dedicated=True)` fait exactement cela depuis L5-3b-bis :
+                # profil `LUMENA_IDE_USER_DATA` distinct — donc verrou contourne — et
+                # lancement meme si une IDE est deja connectee. Il servait aux missions
+                # (voie A) et n'etait expose a personne d'autre.
+                "nouvelle_instance": {
+                    "type": "boolean",
+                    "description": (
+                        "Vrai pour ouvrir une instance SUPPLEMENTAIRE, avec son propre "
+                        "profil, sans toucher a la fenetre deja ouverte. Faux (defaut) "
+                        "pour reutiliser l'instance existante."
+                    ),
+                },
             },
             "required": [],
         },

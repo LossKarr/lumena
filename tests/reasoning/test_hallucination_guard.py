@@ -192,7 +192,7 @@ class TestMCPGenericProof:
 
 # ── Temps 2 — familles complètes (carte) + claims vagues + anti-dérive ───────
 
-from src.reasoning.react import _HC_TOOLS_ANY_ACTION, _HC_TOOLS_READONLY, _HC_TOOLS_OPEN_APP
+from src.reasoning.react import _HC_TOOLS_ANY_ACTION, _HC_TOOLS_READONLY
 from src.reasoning.hallucination_guard import (
     _HC_TOOLS_MEDIA, _HC_TOOLS_EXEC,
     _HC_TOOLS_IDE, _HC_TOOLS_BROWSER_TECH, _HC_TOOLS_DEPLOY, _HC_TOOLS_DB,

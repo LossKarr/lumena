@@ -60,6 +60,22 @@ from src.utils.paths import DATA_DIR  # noqa: E402
 
 _ETAT = DATA_DIR / "task_orchestrator_state.json"
 
+def _corpus_exploitable() -> bool:
+    """Vrai seulement si l'etat des taches contient VRAIMENT quelque chose.
+
+    LOT ORCH-1 (23/09/2026) : `_ETAT.exists()` ne suffit pas. Apres la corruption
+    mesuree ce jour-la - 12 270 771 octets de zeros, puis un etat remis a vide -
+    le fichier EXISTAIT sans rien contenir, et ces tests echouaient en affirmant
+    qu'une fonctionnalite avait disparu. **Un corpus vide ne prouve rien** : il ne
+    dit pas que le runtime a cesse de persister, seulement qu'il n'a rien a dire.
+    """
+    try:
+        import json as _json
+        return bool(_json.loads(_ETAT.read_text(encoding="utf-8")).get("tasks"))
+    except Exception:
+        return False
+
+
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="node indisponible")
 
 
@@ -188,8 +204,26 @@ def test_une_mission_VIVANTE_n_est_ni_l_un_ni_l_autre():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _racines_reelles():
-    ts = [t for t in json.loads(_ETAT.read_text(encoding="utf-8"))["tasks"]
+_FIXTURE = _ROOT / "tests" / "fixtures" / "mission-panel-corpus-2026-09-23.json"
+
+
+def _racines_depuis(chemin):
+    """Le modele applique a UN corpus donne — fige ou vivant.
+
+    REG-2 (24/09/2026) : cette fonction ne lisait que l'etat VIVANT. Deux tests en
+    dependaient pour prouver que le correctif portait sur un defaut reel, et ils
+    sont tombes des que le corpus a change - sans qu'une seule ligne de code n'ait
+    regresse. Or le corpus du 23/09 (199 racines, dont 43 closes affichees comme
+    vivantes) a ete DETRUIT par l'incident ORCH-1 : le fichier mis de cote fait
+    12 270 771 octets et ne contient que des zeros. La mesure n'est plus rejouable.
+
+    D'ou la separation : la PREUVE du comportement se fait sur un corpus fige
+    (`_FIXTURE`), reproductible pour toujours ; le CONSTAT sur le reel reste, mais
+    il se skippe en disant pourquoi au lieu d'echouer. Un test qui depend d'un etat
+    non maitrise n'est pas un test - meme lecon que le tirage dans un frozenset
+    ferme par REG-1 le meme jour.
+    """
+    ts = [t for t in json.loads(Path(chemin).read_text(encoding="utf-8"))["tasks"]
           if isinstance(t, dict)]
     enf = {}
     for t in ts:
@@ -207,7 +241,18 @@ def _racines_reelles():
     return rac, out
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
+def _racines_reelles():
+    """Le corpus VIVANT — il change, et c'est normal."""
+    return _racines_depuis(_ETAT)
+
+
+def _racines_figees():
+    """Le corpus de PREUVE — il ne change pas, et c'est tout son intérêt."""
+    assert _FIXTURE.exists(), f"corpus de preuve absent : {_FIXTURE}"
+    return _racines_depuis(_FIXTURE)
+
+
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
 def test_AUCUNE_mission_close_du_corpus_ne_passe_pour_vivante():
     """La preuve du correctif, sur les 199 missions racines reelles. Avant :
     43 d'entre elles s'affichaient « échéance dépassée » avec un bouton
@@ -218,24 +263,46 @@ def test_AUCUNE_mission_close_du_corpus_ne_passe_pour_vivante():
     assert not faux, f"{len(faux)} missions closes montrees comme vivantes : {faux[:3]}"
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
 def test_AUCUN_decompte_ne_tourne_sur_du_terminal():
     rac, out = _racines_reelles()
     qui = [rac[i]["task_id"] for i, x in enumerate(out) if x["terminal"] and x["deadlineLabel"]]
     assert not qui, f"{len(qui)} decomptes tournent sur des missions terminees"
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
-def test_les_ECHECS_du_corpus_restent_DEPLIES():
-    """Ils sont terminaux, mais ce sont eux qu'il faut voir."""
-    _rac, out = _racines_reelles()
+def test_les_ECHECS_restent_DEPLIES():
+    """Ils sont terminaux, mais ce sont eux qu'il faut voir. PREUVE, corpus fige.
+
+    Version d'origine : elle exigeait un echec dans l'etat VIVANT. Le 24/09 il n'y
+    en avait plus un seul, et le test tombait en annoncant une regression qui
+    n'existait pas.
+    """
+    _rac, out = _racines_figees()
     echecs = [x for x in out if x["aggregate"] == "failed"]
-    assert echecs, "aucun echec au corpus : le test ne prouverait rien"
+    assert echecs, "le corpus de preuve ne porte plus d'echec : la fixture est a refaire"
     assert all(not x["closed"] for x in echecs)
 
 
-@pytest.mark.skipif(not _ETAT.exists(), reason="corpus absent de cette machine")
-def test_le_modele_digere_les_199_racines_sans_broncher():
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
+def test_les_ECHECS_du_corpus_reel_restent_DEPLIES_si_le_corpus_en_a():
+    """Le meme invariant, CONSTATE sur le reel — opportuniste, jamais bloquant.
+
+    S'il n'y a pas d'echec en base, il n'y a rien a constater : on le DIT. Ne pas
+    avoir de cas a examiner n'est pas un echec, et confondre les deux est le travers
+    que tout ce chantier combat.
+    """
+    _rac, out = _racines_reelles()
+    echecs = [x for x in out if x["aggregate"] == "failed"]
+    if not echecs:
+        pytest.skip("aucun echec dans le corpus vivant — rien a constater ici")
+    assert all(not x["closed"] for x in echecs)
+
+
+@pytest.mark.skipif(not _corpus_exploitable(), reason="corpus absent ou vide sur cette machine")
+def test_le_modele_digere_toutes_les_racines_du_corpus_sans_broncher():
+    # Nom d'origine : « les_199_racines ». Ces 199 n'existent plus — le corpus qui
+    # les portait a ete detruit par ORCH-1. Un nom de test qui cite un chiffre
+    # perime affirme une mesure qu'il ne fait plus.
     rac, out = _racines_reelles()
     assert len(out) == len(rac)
     assert all(x["aggregate"] for x in out), "un agregat vide quelque part"

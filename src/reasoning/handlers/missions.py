@@ -17,7 +17,7 @@ import asyncio
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, List
+from typing import Any, List, Optional
 
 from loguru import logger
 
@@ -311,10 +311,17 @@ async def create_mission_handler(
     meta: dict = {"depth": depth + 1}
     try:
         from src.runtime.context import get_current_runtime_context
+        from src.subagents.mission_identity import capture_requester
         _runtime_ctx = get_current_runtime_context()
-        if _runtime_ctx is not None and getattr(_runtime_ctx, "channel", "") == "voice":
-            meta["source_channel"] = "voice"
+        # CONN-5D-1 — l'identite du demandeur, relevee ici et jamais depuis les
+        # arguments : la mission tournera hors de toute requete (worker du lifespan).
+        _requester = capture_requester(_runtime_ctx)
+        if _requester is not None:
+            meta["requester"] = _requester
+        if _runtime_ctx is not None:
+            meta["source_channel"] = getattr(_runtime_ctx, "channel", None)
             meta["source_conversation_id"] = getattr(_runtime_ctx, "conversation_id", None)
+            meta["owner_user_id"] = getattr(_runtime_ctx, "owner_user_id", None)
     except Exception:
         pass
     try:
@@ -440,6 +447,152 @@ async def list_missions_handler(ctx: HandlerContext) -> HandlerResult:
     head = "Missions (de la plus RÉCENTE à la plus ancienne) :"
     tail = f"\n… et {hidden} mission(s) plus ancienne(s)." if hidden else ""
     return HandlerResult.ok(head + "\n" + "\n".join(lines) + tail, handler_name="list_missions")
+
+
+# ── LOT 4 (2026-09-02) — LES WORKERS LISENT CE QUE LES AUTRES ONT DÉCIDÉ ─────────
+#
+# L'invariant du dépôt dit qu'« un worker lit le contrat ET les fichiers des autres ».
+# C'est vrai : ils ne sont pas aveugles au DISQUE. Mais `get_children()` n'est appelé
+# qu'aux deux endroits où c'est le LEAD qui regarde (`runner.py:628`,
+# `missions.py:953`) — jamais par un worker. Ce qui manque n'est donc pas le contenu
+# des fichiers, c'est le RAISONNEMENT : ce qu'un frère a tenté, abandonné, ou constaté
+# impossible. Rien de tout cela ne vit dans un fichier.
+#
+# Le journal (posé le 01/09) contient exactement ça — `thought`, `tool_name`, `status`,
+# `error` — et personne ne le lit. Encore un fait produit, persisté, et jamais consulté.
+#
+# CHOIX DE CONCEPTION : lecture d'un JOURNAL, pas un bus de messages. Un bus rendrait
+# les runs non rejouables (deux exécutions du même objectif divergeraient selon l'ordre
+# d'arrivée), et tout ce dépôt repose sur « ça s'est passé, voici la trace ».
+
+_JOURNAL_LIMIT_DEFAUT = 25
+_JOURNAL_LIMIT_MAX = 100
+
+
+def _famille_de_mission(ctx: HandlerContext) -> tuple:
+    """(lead_id, {task_id: nom lisible}) pour la mission où l'on tourne.
+
+    PÉRIMÈTRE : un worker ne voit QUE sa propre famille — son lead et ses frères.
+    Jamais une autre mission. La famille est résolue depuis `runtime_task_id`, jamais
+    depuis un argument du modèle : un identifiant passé en paramètre serait une porte
+    ouverte sur le journal de n'importe quelle mission."""
+    rt_id = str(getattr(ctx, "runtime_task_id", "") or "").strip()
+    if not rt_id:
+        return "", {}
+    core = _core(ctx)
+    orch = getattr(core, "task_orchestrator", None) if core else None
+    if orch is None:
+        return "", {}
+    try:
+        moi = orch.get_task(rt_id) or {}
+    except Exception:
+        return "", {}
+    meta = moi.get("metadata") or {}
+    lead_id = str(meta.get("parent_id") or "").strip() or rt_id
+    noms = {lead_id: "lead"}
+    try:
+        for enfant in (orch.get_children(lead_id) or []):
+            tid = str((enfant or {}).get("task_id") or "").strip()
+            if not tid:
+                continue
+            emeta = (enfant or {}).get("metadata") or {}
+            noms[tid] = str(emeta.get("delegation_owner") or "").strip() or tid[:8]
+    except Exception:
+        pass
+    return lead_id, noms
+
+
+def _ligne_journal(nom: str, e: dict) -> str:
+    """Une ligne COMPACTE. Le prompt d'un worker fait déjà ~16 k tokens : servir le
+    journal brut le noierait. On garde ce qui aide à décider — la pensée, l'outil,
+    l'échec — et on jette le reste."""
+    pensee = str(e.get("thought") or "").strip()
+    outil = str(e.get("tool_name") or "").strip()
+    statut = str(e.get("status") or "").strip()
+    erreur = str(e.get("error") or "").strip()
+    if erreur:
+        return f"[{nom}] ⚠ {outil or e.get('stage') or 'échec'} → {erreur[:160]}"
+    if pensee:
+        return f"[{nom}] pense : {pensee[:220]}"
+    if outil:
+        marque = "✗" if statut in ("error", "failed") else "·"
+        resume = str(e.get("summary") or "").strip()
+        return f"[{nom}] {marque} {outil}" + (f" — {resume[:90]}" if resume else "")
+    return ""
+
+
+async def mission_journal_read_handler(
+    ctx: HandlerContext,
+    depuis: int = 0,
+    worker: str = "",
+    limit: int = _JOURNAL_LIMIT_DEFAUT,
+) -> HandlerResult:
+    """LOT 4 — ce que les AUTRES workers de ma mission ont décidé et rencontré."""
+    _H = "mission_journal_read"
+    lead_id, noms = _famille_de_mission(ctx)
+    if not lead_id:
+        return HandlerResult.fail(
+            "mission_journal_read s'utilise DANS une mission : il sert à voir ce que "
+            "les autres workers de TA mission ont décidé. Au chat, le panneau missions "
+            "affiche déjà ce journal.",
+            handler_name=_H,
+        )
+    try:
+        from src.telemetry import mission_journal
+    except Exception:
+        return HandlerResult.fail("Journal de mission indisponible.", handler_name=_H)
+
+    try:
+        borne = max(1, min(int(limit or _JOURNAL_LIMIT_DEFAUT), _JOURNAL_LIMIT_MAX))
+    except (TypeError, ValueError):
+        borne = _JOURNAL_LIMIT_DEFAUT
+    try:
+        seuil = max(0, int(depuis or 0))
+    except (TypeError, ValueError):
+        seuil = 0
+    vise = str(worker or "").strip().lower()
+    moi = str(getattr(ctx, "runtime_task_id", "") or "").strip()
+
+    lignes: List[tuple] = []
+    for tid, nom in noms.items():
+        # On ne se relit pas soi-même : un worker sait ce qu'il vient de faire, et
+        # ces lignes prendraient la place de celles des autres.
+        if tid == moi:
+            continue
+        if vise and vise not in nom.lower():
+            continue
+        for e in mission_journal.lis(tid, limit=_JOURNAL_LIMIT_MAX * 4):
+            try:
+                seq = int(e.get("seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            if seuil and seq <= seuil:
+                continue
+            txt = _ligne_journal(nom, e)
+            if txt:
+                lignes.append((str(e.get("ts") or ""), seq, txt))
+
+    if not lignes:
+        return HandlerResult.ok(
+            "Journal vide pour l'instant : aucun autre worker de cette mission n'a "
+            "encore publié de décision. Continue ton travail — ce n'est pas une erreur.",
+            handler_name=_H,
+        )
+
+    lignes.sort(key=lambda x: (x[0], x[1]))
+    dernier = lignes[-1][1]
+    gardees = lignes[-borne:]
+    corps = "\n".join(t for _, _, t in gardees)
+    entete = (
+        f"📓 Journal de la mission — {len(gardees)} événement(s) "
+        f"sur {len(lignes)} (les plus récents)."
+    )
+    pied = (
+        f"\n\n(rappelle mission_journal_read(depuis={dernier}) pour ne voir que la "
+        f"suite — ces lignes sont un CONSTAT de ce que les autres ont fait, elles ne "
+        f"remplacent ni le CONTRAT.md ni ton périmètre.)"
+    )
+    return HandlerResult.ok(entete + "\n" + corps + pied, handler_name=_H)
 
 
 async def mission_status_handler(ctx: HandlerContext, mission_id: str) -> HandlerResult:
@@ -778,7 +931,7 @@ def _contract_delegation_specs(contract_data: Any) -> tuple[List[dict], str]:
         import hashlib
         import json
         from src.subagents.mission_contract import (
-            effects_map, owners_map, worker_objectives,
+            _role_declared_for, effects_map, owners_map, worker_objectives,
         )
 
         # H4 (TEST RÉEL veille_python_313) — `owners_map` ne connaît que les
@@ -793,14 +946,24 @@ def _contract_delegation_specs(contract_data: Any) -> tuple[List[dict], str]:
         canonical = worker_objectives(contract_data)
         if not owners or len(owners) != len(canonical):
             return [], ""
-        specs = [
-            {
+        # LOT 0 — le MÉTIER voyage avec la spec. Le déduire plus loin à partir des
+        # seuls `allowed_files` se tromperait sur un worker d'EFFETS PURS (liste vide
+        # → `general` au lieu de `action`) : ici on a encore le contrat complet, donc
+        # les effets et le `role` déclaré.
+        from src.subagents.mission_contract import role_of_worker as _role_of
+        _grouped = owners_map(contract_data)
+        _effets = effects_map(contract_data)
+        specs = []
+        for owner, item in zip(owners, canonical):
+            _entries = _grouped.get(owner, [])
+            _eff = _effets.get(owner) or []
+            _files = list(item.get("allowed_files") or [])
+            specs.append({
                 "text": str(item.get("objective") or "").strip(),
-                "allowed_files": list(item.get("allowed_files") or []),
+                "allowed_files": _files,
                 "owner": str(owner),
-            }
-            for owner, item in zip(owners, canonical)
-        ]
+                "role": _role_of(_files, _eff, _role_declared_for(_entries, _eff)),
+            })
         raw = json.dumps(
             contract_data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
@@ -970,8 +1133,26 @@ async def delegate_and_wait_handler(
             )
             # LOT 2.2 — consigne contrat en préfixe (sauf si l'objectif la porte déjà,
             # cas des objectifs générés par write_mission_contract).
+            #
+            # LOT 0 — le préambule dépend du MÉTIER. Figé au préambule du code, il
+            # aurait ramené par cette porte le défaut que le lot vient de fermer : un
+            # rédacteur dont le lead a réécrit l'objectif recevait « signatures
+            # EXACTES … NE modifie JAMAIS une signature », en contradiction directe
+            # avec son propre stub (« Remplace INTÉGRALEMENT ce contenu »). Le
+            # préambule du code reste identique au bit près.
             if _contract_preamble and "CONTRAT DE MISSION" not in _txt:
-                _txt = _contract_preamble + _txt
+                try:
+                    from src.subagents.mission_contract import (
+                        contract_preamble_for_role, role_of_worker,
+                    )
+                    # `role` posé par `_contract_delegation_specs` (il connaissait les
+                    # effets) ; sinon repli sur les extensions.
+                    _r_worker = st.get("role") or role_of_worker(
+                        st.get("allowed_files") or [],
+                    )
+                    _txt = contract_preamble_for_role(_r_worker) + "\n\n" + _txt
+                except Exception:
+                    _txt = _contract_preamble + _txt
             # A1 (run FitLog) — règle chemins RELATIFS injectée DÉTERMINISTIQUEMENT
             # par enfant : le lead paraphrase les objectifs et y remet le chemin long
             # missions/<id>/ (id de 32 hex → hallucination afee→af1e). Idempotent.
@@ -1009,6 +1190,11 @@ async def delegate_and_wait_handler(
             # ne s'applique qu'au TEXTE (jamais aux allowed_files).
             obj = apply_parallel_browser_steering(_txt, worker_count=_wc)
             meta = {"depth": depth + 1}
+            # CONN-5D-1 — un worker agit pour le demandeur de son lead, et pour personne d'autre.
+            from src.subagents.mission_identity import requester_for_worker
+            _requester = requester_for_worker(orch, lead_id)
+            if _requester is not None:
+                meta["requester"] = _requester
             if _routing_objective:
                 meta["routing_objective"] = _routing_objective[:4000]
             if lead_id:
@@ -1025,6 +1211,9 @@ async def delegate_and_wait_handler(
                 meta["delegation_contract_fingerprint"] = _contract_fingerprint
                 meta["delegation_owner"] = owner
             cid = mgr.create_mission(obj, metadata=meta)
+            if lead_id:
+                from src.runtime.mission_steering import fanout_to_new_worker
+                fanout_to_new_worker(orch, lead_id, cid)
             mgr.launch(cid, obj)
             child_ids.append(cid)
     except Exception as e:
@@ -1326,7 +1515,7 @@ async def write_mission_contract_handler(
         CONTRACT_JSON, CONTRACT_MD, derive_project_name, parse_contract,
         validate_contract, generate_stub, render_contract_md, worker_objectives,
         web_root_route_warning, flask_static_root_warning,
-        missing_shared_stylesheet_warning,
+        missing_shared_stylesheet_warning, unknown_role_warning,
     )
     # LOT 2.10 (run StockPilot) — erreur GUIDANTE : le modèle avait passé un
     # tableau MARKDOWN, reçu « contrat illisible » sec, et BYPASSÉ l'outil (contrat
@@ -1461,6 +1650,13 @@ async def write_mission_contract_handler(
     _css_warn = missing_shared_stylesheet_warning(data)
     if _css_warn:
         parts.append(_css_warn)
+    # LOT 0 (2026-09-02) — un `role` mal orthographié retombait sur la déduction par
+    # extension EN SILENCE : le lead écrivait « redacteur », obtenait `document` par
+    # hasard, et n'apprenait jamais que son mot n'avait pas été compris. Additif,
+    # jamais bloquant — le repli fonctionne, la mission doit partir.
+    _role_warn = unknown_role_warning(data)
+    if _role_warn:
+        parts.append(_role_warn)
     # LOT L2 (run MemoNest) — les trois avertissements ci-dessus regardent le
     # CONTRAT ; aucun ne le compare à ce qui était DEMANDÉ. MemoNest exigeait une
     # page d'accueil et une vérif navigateur, le contrat n'a déclaré que 5 `.py` :
@@ -1628,7 +1824,30 @@ async def publish_mission_workspace_handler(
             "La cible est dans l'arbre des missions — publie vers un dossier public "
             'du workspace, ex. target="fitlog".', handler_name=_H_NAME)
 
-    _EXCLUDED_DIRS = {".backups", "__pycache__", ".pytest_cache"}
+    # LOT 14 (2026-09-03) — `missions` rejoint la liste, et c'est le lot 13 qui rend
+    # cette ligne nécessaire.
+    #
+    # Un dossier de mission ne contient JAMAIS un sous-dossier `missions/` de plein
+    # droit : l'invariant du dépôt dit qu'« une mission ne crée pas une nouvelle
+    # mission, elle utilise ses workers ». Quand ce dossier existe, c'est un chemin
+    # recopié depuis un listing — la famille Z25.
+    #
+    # Mesuré sur les 117 dossiers du disque : 4 missions (3 %) portent cette
+    # imbrication, et 6 portent le même livrable à deux endroits. Le run du 02/09 en
+    # est l'exemple : `index.php` à la racine (22 689 o, du CodeAgent) ET
+    # `missions/construis-budgetbuddy…/index.php` (8 906 o, réécrit par le lead).
+    #
+    # Ces missions n'avaient JAMAIS publié — le défaut était donc inoffensif. Le lot
+    # 13 vient de les pousser à publier : sans cette exclusion, le livrable partirait
+    # avec DEUX versions du même fichier, et l'utilisateur ne saurait pas laquelle
+    # est la sienne. Le correctif d'un lot ne doit pas ouvrir la porte du suivant.
+    _EXCLUDED_DIRS = {".backups", "__pycache__", ".pytest_cache", "missions"}
+
+    # Artefacts de redirection shell ratée : `2>$null` sous PowerShell crée un
+    # FICHIER nommé `$null` (0 octet) — vu au run du 02/09. Jamais un livrable.
+    # On ne touche pas aux fichiers vides en général : `__init__.py` et `.gitkeep`
+    # sont légitimes et doivent survivre.
+    _NOMS_PARASITES = {"$null", "nul", "2>&1", "2>", ">", "$env:null"}
 
     # 2.8.4 (run VentesReport) — chemins DÉCLARÉS au contrat : sert à distinguer un
     # vrai livrable d'un fichier POUBELLE que le CodeAgent a semé en luttant contre
@@ -1684,7 +1903,9 @@ async def publish_mission_workspace_handler(
         return ".bak" in low or low.endswith(".tmp") or low.endswith(".swp")
 
     def _ignore(dirpath: str, names: List[str]) -> List[str]:
-        out = [n for n in names if n in _EXCLUDED_DIRS or _is_excluded_file(n)]
+        out = [n for n in names
+               if n in _EXCLUDED_DIRS or _is_excluded_file(n)
+               or n.lower() in _NOMS_PARASITES]        # LOT 14
         # 2.8.4 — junk 0 octet hors contrat (relpath calculé depuis src_dir).
         for n in names:
             full = Path(dirpath) / n
@@ -1735,6 +1956,20 @@ async def publish_mission_workspace_handler(
                     _ecrases.append(str(_rel).replace("\\", "/"))
         except Exception as _exc_z17:
             logger.debug("[Z17] archivage avant publication ignoré : {}", _exc_z17)
+        # LOT 14 — RECENSER ce qu'on écarte AVANT de copier. Exclure en silence
+        # remplacerait un doublon par une disparition, c'est-à-dire le défaut que
+        # ce dépôt combat depuis soixante lots. Le lead a écrit dans ce sous-dossier :
+        # il doit apprendre que ça ne part pas, et pourquoi.
+        _ecartes: List[str] = []
+        try:
+            _imbrique = src_dir / "missions"
+            if _imbrique.is_dir():
+                for _f in sorted(_imbrique.rglob("*")):
+                    if _f.is_file():
+                        _ecartes.append(str(_f.relative_to(src_dir)).replace("\\", "/"))
+        except Exception as _exc_l14:
+            logger.debug("[LOT 14] recensement des écartés ignoré : {}", _exc_l14)
+
         shutil.copytree(src_dir, dest, dirs_exist_ok=True, ignore=_ignore)
     except Exception as e:
         return HandlerResult.fail(f"Erreur de publication: {e}", handler_name=_H_NAME)
@@ -1823,6 +2058,19 @@ async def publish_mission_workspace_handler(
             "rapport — et republie sous un nom distinct avec "
             "`publish_mission_workspace(target='<nom>')`."
             if _ecrases else ""
+        )
+        # LOT 14 — un fichier écarté du livrable doit être DIT. Le lead a écrit
+        # dans ce sous-dossier ; le passer sous silence transformerait un doublon
+        # en disparition.
+        + (
+            f"\n⚠️ **{len(_ecartes)} fichier(s) NON publiés** : ils étaient dans un "
+            f"sous-dossier `missions/` imbriqué — un chemin recopié, pas un "
+            f"livrable. {', '.join(_ecartes[:6])}"
+            + (f" (+{len(_ecartes) - 6})" if len(_ecartes) > 6 else "")
+            + ". Une mission ne contient pas une autre mission. Si l'un d'eux est "
+            "TON travail, déplace-le à la racine de ton dossier de mission et "
+            "republie — sinon dis-le dans ton rapport."
+            if _ecartes else ""
         )
         + _style_note
         + "\n"
@@ -1914,6 +2162,45 @@ def get_missions_handler_defs() -> List[HandlerDef]:
                 "required": ["mission_id"],
             },
             handler=mission_status_handler,
+            category=_H,
+            source_module="handlers.missions",
+        ),
+        HandlerDef(
+            name="mission_journal_read",
+            description=(
+                "DANS une mission : ce que les AUTRES workers de ton équipe ont "
+                "décidé, tenté et rencontré — leurs pensées, leurs outils, leurs "
+                "échecs. Tu peux déjà LIRE leurs fichiers ; ce journal te donne le "
+                "RAISONNEMENT qui n'est écrit nulle part ailleurs. UTILISE-LE quand "
+                "ton travail dépend d'un autre (il a choisi un format, une "
+                "bibliothèque, un nom de route), quand tu es bloqué (un frère a "
+                "peut-être déjà rencontré la même erreur), ou avant de conclure. "
+                "Ne montre QUE ta propre mission, jamais une autre."
+            ),
+            parameters={
+                "properties": {
+                    "depuis": {
+                        "type": "integer",
+                        "description": (
+                            "N'afficher que les événements APRÈS ce numéro de séquence "
+                            "(rendu en pied du précédent appel). 0 = depuis le début."
+                        ),
+                    },
+                    "worker": {
+                        "type": "string",
+                        "description": (
+                            "Filtrer sur un worker précis (ex. 'w_backend'). Vide = "
+                            "toute l'équipe."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Nombre d'événements (défaut 25, max 100).",
+                    },
+                },
+                "required": [],
+            },
+            handler=mission_journal_read_handler,
             category=_H,
             source_module="handlers.missions",
         ),
@@ -2013,7 +2300,16 @@ def get_missions_handler_defs() -> List[HandlerDef]:
                             "`proof` = à QUOI on verra que c'est fait ('id du message', "
                             "'URL qui répond 200', 'accusé d'envoi') — la preuve est "
                             "OBLIGATOIRE, sans elle la mission ne peut être clôturée que "
-                            "sur parole. Un effet = un seul owner. Objet ou JSON."
+                            "sur parole. Un effet = un seul owner. "
+                            "**`role?` sur une entrée `files` ou `effects` = le MÉTIER du "
+                            "worker** : code | document | donnees | recherche | navigateur "
+                            "| media | action. Il décide de la consigne de travail qu'il "
+                            "reçoit — un rédacteur ne doit pas recevoir « exécute les tests "
+                            "après chaque mutation », un chercheur doit recevoir « cite tes "
+                            "sources ». Omis : déduit de l'extension (.py→code, .md→document, "
+                            ".csv→donnees), ce qui suffit pour du code mais devine mal pour "
+                            "la recherche, le navigateur ou les médias — DÉCLARE-LE dès que "
+                            "le métier n'est pas évident. Objet ou JSON."
                         ),
                     },
                     "project": {"type": "string", "description": "Nom du projet (optionnel)."},

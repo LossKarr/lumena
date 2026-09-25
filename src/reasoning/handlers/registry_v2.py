@@ -8,9 +8,8 @@ et les exécute via un HandlerContext unifié.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .context import HandlerContext
@@ -141,10 +140,8 @@ class HandlerRegistryV2:
                 )
 
         # Enrichit le résultat avec la durée et le nom
-        return HandlerResult(
-            success=result.success,
-            output=result.output,
-            error=result.error,
+        return replace(
+            result,
             duration_ms=timer.elapsed_ms,
             handler_name=name,
         )
@@ -175,6 +172,8 @@ class HandlerRegistryV2:
                     content=result.to_legacy_str(),
                     success=result.success,
                     sub_results=result.sub_results,
+                    execution=result.execution,
+                    execution_evidence=result.execution_evidence,
                 )
 
             # Convertir les paramètres V2 (JSON Schema) au format legacy (dict plat)

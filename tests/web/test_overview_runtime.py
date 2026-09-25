@@ -127,6 +127,12 @@ def _payload(path: str) -> dict:
         # Forme prise sur `UpdateService.status()`, src/runtime/update_service.py:124.
         return {"state":"idle","current_version":"1.0.54","installation_type":"git",
                 "rollback_available":False,"settings":{}}
+    # 2026-09-21 — l'Overview appelle desormais cette route : `main.js` initialise
+    # toujours le steering (chantier « orientation du travail »), donc
+    # `discoverActiveTask()` part depuis toute page qui charge main.js. Forme prise
+    # sur la vraie route, `web/routes/steering.py:171`, pas devinee.
+    if path == "/api/work/active":
+        return {"work": []}
     raise AssertionError(f"Overview requested an unmocked API route: {path}")
 
 
