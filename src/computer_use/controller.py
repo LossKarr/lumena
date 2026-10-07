@@ -12,6 +12,7 @@ import asyncio
 import math
 import random
 import re
+import sys
 import time
 from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass
@@ -19,6 +20,15 @@ from pathlib import Path
 from loguru import logger
 
 # Imports optionnels
+#
+# OpenCV's bootstrap temporarily edits ``sys.path``.  Some old OpenCV wheels
+# fail part-way through that bootstrap when used with NumPy 2, and PyScreeze
+# deliberately treats the failure as "OpenCV unavailable".  Without this
+# restoration, the abandoned ``.../site-packages/cv2`` entry can shadow the
+# standard-library ``typing`` module in every later spawned process (Voice TTS
+# was the first visible victim).  Optional dependencies must not mutate the
+# application's interpreter search path, whether their import succeeds or not.
+_IMPORT_PATH_SNAPSHOT = list(sys.path)
 try:
     import pyautogui
     PYAUTOGUI_AVAILABLE = True
@@ -26,6 +36,9 @@ try:
     pyautogui.PAUSE = 0.1  # Pause entre actions
 except ImportError:
     PYAUTOGUI_AVAILABLE = False
+finally:
+    sys.path[:] = _IMPORT_PATH_SNAPSHOT
+    del _IMPORT_PATH_SNAPSHOT
 
 try:
     from PIL import Image

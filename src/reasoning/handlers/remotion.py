@@ -1,7 +1,8 @@
 """
 remotion.py — Handlers V3 pour la génération vidéo via Remotion.
 
-4 outils: generate_video, edit_video, preview_video, list_video_projects
+7 outils: generate_video, edit_video, preview_video, retry_video_render,
+list_video_projects, get_video_job, cancel_video_job
 
 Pattern: async (ctx: HandlerContext, **kwargs) -> HandlerResult
 
@@ -19,8 +20,8 @@ from __future__ import annotations
 import json
 import os
 import re as _re
-import shutil
 import time
+from html import escape
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -40,6 +41,22 @@ try:
         copy_assets_to_project,
         build_assets_prompt_section,
         auto_detect_recent_assets,
+        resolve_video_project_path,
+        VideoCancelledError,
+        VideoInfrastructureError,
+        VideoRenderError,
+    )
+    from ...tools.remotion_spec import (
+        choose_generation_mode,
+        compile_safe_video,
+        normalize_video_spec,
+    )
+    from ...tools.remotion_quality import inspect_rendered_video
+    from ...tools.remotion_jobs import (
+        VideoJobTracker,
+        clear_video_cancel,
+        read_video_job,
+        request_video_cancel,
     )
     from ...tools.remotion_prompts import (
         VIDEO_PLAN_SYSTEM,
@@ -89,6 +106,7 @@ async def generate_video_handler(
     format: str = "landscape",
     output_name: str = "",
     assets: str = "",
+    creation_mode: str = "auto",
 ) -> HandlerResult:
     """Génère une vidéo complète à partir d'une description textuelle.
 
@@ -143,12 +161,15 @@ async def generate_video_handler(
     # ── Résolution des assets utilisateur ──
     from ...utils.paths import WORKSPACE_DIR
     import datetime
+    import uuid
 
     slug = (output_name or "video").lower()
     slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in slug)[:50]
     date_str = datetime.date.today().isoformat()
-    project_dir = WORKSPACE_DIR / date_str / slug
+    _job_suffix = f"{datetime.datetime.now().strftime('%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    project_dir = WORKSPACE_DIR / date_str / f"{slug}-{_job_suffix}"
     project_dir.mkdir(parents=True, exist_ok=True)
+    job_tracker = VideoJobTracker(project_dir, _job_suffix)
 
     _asset_paths_raw: List[str] = []
     if assets:
@@ -179,6 +200,7 @@ async def generate_video_handler(
     # ── Classification du modèle ──
     lumena = ctx.lumena
     if not lumena or not hasattr(lumena, "llm"):
+        job_tracker.update("failed", 100, "Aucun LLM disponible", status="failed")
         return HandlerResult.fail(
             "❌ Pas de LLM disponible pour générer la vidéo.",
             handler_name="generate_video",
@@ -198,6 +220,12 @@ async def generate_video_handler(
     _model_cfg = get_model_config(_effective_model)
     _model_cap = _model_cfg.max_output_tokens if _model_cfg else 8192
     if _model_cap < 4096:
+        job_tracker.update(
+            "failed",
+            100,
+            f"Budget de sortie insuffisant: {_model_cap} tokens",
+            status="failed",
+        )
         return HandlerResult.fail(
             f"❌ Le modèle '{_effective_model}' a un max_output trop faible ({_model_cap} tokens).",
             handler_name="generate_video",
@@ -211,6 +239,8 @@ async def generate_video_handler(
     # ══════════════════════════════════════════════════════════════════════════
 
     _t_plan = time.time()
+    job_tracker.ensure_active()
+    job_tracker.update("planning", 10, "Planification des scènes")
     logger.info("[video] Phase 1 — Planification ({} sec, template: {})...", duration_sec, tpl_name)
 
     # Enrichir avec mémoire vidéo
@@ -270,151 +300,197 @@ async def generate_video_handler(
 
     if not plan:
         _learn_reflexion("plan", "LLM n'a pas produit de JSON valide", "Toujours valider la structure JSON du plan avant de continuer", tpl_name, _model_family)
+        job_tracker.update("failed", 100, "Plan JSON invalide", status="failed")
         return HandlerResult.fail(
             "❌ Le LLM n'a pas retourné un JSON valide pour le plan vidéo.",
             handler_name="generate_video",
         )
 
-    scenes = plan.get("scenes", [])
-    if not scenes:
-        return HandlerResult.fail("❌ Le plan vidéo ne contient aucune scène.", handler_name="generate_video")
+    try:
+        video_spec = normalize_video_spec(
+            plan,
+            total_frames=total_frames,
+            fps=tpl["fps"],
+            width=tpl["width"],
+            height=tpl["height"],
+        )
+        plan = video_spec.to_dict()
+        _last_meta = llm.get_last_response_meta() if hasattr(llm, "get_last_response_meta") else {}
+        if isinstance(_last_meta, dict) and _last_meta.get("model_used"):
+            _effective_model = str(_last_meta["model_used"])
+            _model_family = classify_model_family(_effective_model)
+            telemetry.model = _effective_model
+        _generation_mode = choose_generation_mode(creation_mode, _model_family)
+    except (TypeError, ValueError) as spec_error:
+        _learn_reflexion(
+            "plan",
+            str(spec_error),
+            "Produire un plan conforme au VideoSpec avant de générer du TSX.",
+            tpl_name,
+            _model_family,
+        )
+        job_tracker.update("failed", 100, f"VideoSpec invalide: {spec_error}", status="failed")
+        return HandlerResult.fail(
+            f"❌ Plan vidéo invalide: {spec_error}",
+            handler_name="generate_video",
+        )
+
+    scenes = plan["scenes"]
+    telemetry.generation_mode = _generation_mode
+    logger.info(
+        "[video] VideoSpec v{} validé — mode {} — modèle réel {}",
+        video_spec.schema_version,
+        _generation_mode,
+        _effective_model,
+    )
 
     telemetry.scenes_count = len(scenes)
     telemetry.planning_duration_s = time.time() - _t_plan
     logger.info("[video] ✅ Plan: {} scènes, {} frames @ {}fps ({:.1f}s)",
                 len(scenes), total_frames, tpl["fps"], telemetry.planning_duration_s)
+    job_tracker.update("planning", 30, f"VideoSpec validé: {len(scenes)} scènes")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 2 : Génération TSX itérative avec self-repair
     # ══════════════════════════════════════════════════════════════════════════
 
     _t_tsx = time.time()
-    scenes_code: Dict[str, str] = {}
-    _n_scenes = len(scenes)
-    logger.info("[video] Phase 2 — Génération TSX ({} composants, self-repair activé)...", _n_scenes)
-
-    for _scene_idx, scene in enumerate(scenes, start=1):
-        component_name = scene.get("component_name", scene["id"].title() + "Scene")
-        logger.info("[video] Scène {}/{}: {}...", _scene_idx, _n_scenes, component_name)
-
-        # Construire prompt adapté au modèle + enrichi par mémoire
-        _scene_memory = enrich_prompt_with_memory(
-            "", f"{description} {component_name} {scene.get('text_title', '')}",
-            _effective_model, tpl_name
+    job_tracker.ensure_active()
+    job_tracker.update("composition", 35, f"Composition { _generation_mode }")
+    if _generation_mode == "safe":
+        scenes_code = compile_safe_video(video_spec)
+        telemetry.tsx_generation_duration_s = time.time() - _t_tsx
+        logger.info(
+            "[video] ✅ Phase 2 compilée par le rail sûr ({} scènes, {:.1f}s)",
+            len(video_spec.scenes),
+            telemetry.tsx_generation_duration_s,
         )
-        scene_prompt = build_scene_prompt(
-            scene_json=json.dumps(scene, ensure_ascii=False, indent=2),
-            palette_json=json.dumps(plan.get("palette", {}), ensure_ascii=False),
-            font_family=plan.get("font_family", "Inter"),
-            width=tpl["width"],
-            height=tpl["height"],
-            fps=tpl["fps"],
-            component_name=component_name,
-            model_family=_model_family,
-            has_assets=_has_assets,
-            memory_block=_scene_memory,
-        )
+    else:
+        scenes_code: Dict[str, str] = {}
+        _n_scenes = len(scenes)
+        logger.info("[video] Phase 2 — Génération TSX ({} composants, self-repair activé)...", _n_scenes)
 
-        code = await _generate_scene_with_repair(
-            llm=llm,
-            scene_prompt=scene_prompt,
-            scene_json=json.dumps(scene, ensure_ascii=False, indent=2),
-            palette_json=json.dumps(plan.get("palette", {}), ensure_ascii=False),
-            component_name=component_name,
-            model_family=_model_family,
-            code_model=_code_model,
-            scene_tokens=_scene_tokens,
-            has_assets=_has_assets,
-            tpl=tpl,
-            telemetry=telemetry,
-        )
+        for _scene_idx, scene in enumerate(scenes, start=1):
+            component_name = scene.get("component_name", scene["id"].title() + "Scene")
+            logger.info("[video] Scène {}/{}: {}...", _scene_idx, _n_scenes, component_name)
 
-        # Nettoyage staticFile sans assets
-        if not _assets_map and "staticFile" in code:
-            code = _re.sub(r"import\s*\{\s*staticFile\s*\}\s*from\s*'remotion'\s*;\s*\n?", "", code)
-            code = _re.sub(r",\s*staticFile\s*(?=[,}])", "", code)
-            code = _re.sub(
-                r'staticFile\(["\'][^"\']*["\']\)',
-                '"https://images.unsplash.com/photo-1620712943543-bcc4688e7485?auto=format&fit=crop&w=1600&q=80"',
-                code,
+            # Construire prompt adapté au modèle + enrichi par mémoire
+            _scene_memory = enrich_prompt_with_memory(
+                "", f"{description} {component_name} {scene.get('text_title', '')}",
+                _effective_model, tpl_name
             )
-            telemetry.auto_fixes_applied += 1
+            scene_prompt = build_scene_prompt(
+                scene_json=json.dumps(scene, ensure_ascii=False, indent=2),
+                palette_json=json.dumps(plan.get("palette", {}), ensure_ascii=False),
+                font_family=plan.get("font_family", "Inter"),
+                width=tpl["width"],
+                height=tpl["height"],
+                fps=tpl["fps"],
+                component_name=component_name,
+                model_family=_model_family,
+                has_assets=_has_assets,
+                memory_block=_scene_memory,
+            )
 
-        scenes_code[f"src/scenes/{component_name}.tsx"] = code
-        logger.info("[video] ✅ {}.tsx ({} chars)", component_name, len(code))
+            code = await _generate_scene_with_repair(
+                llm=llm,
+                scene_prompt=scene_prompt,
+                scene_json=json.dumps(scene, ensure_ascii=False, indent=2),
+                palette_json=json.dumps(plan.get("palette", {}), ensure_ascii=False),
+                component_name=component_name,
+                model_family=_model_family,
+                code_model=_code_model,
+                scene_tokens=_scene_tokens,
+                has_assets=_has_assets,
+                tpl=tpl,
+                telemetry=telemetry,
+            )
 
-    # Générer Video.tsx (séquenceur)
-    logger.info("[video] Assemblage Video.tsx...")
-    scenes_list = "\n".join(
-        f"- {s['component_name']} ({s['duration_frames']} frames, from={sum(sc['duration_frames'] for sc in scenes[:i])})"
-        for i, s in enumerate(scenes)
-    )
-    video_tsx = await llm.chat(
-        messages=[
-            {"role": "system", "content": SCENE_COMPONENT_SYSTEM},
-            {"role": "user", "content": VIDEO_SEQUENCER_PROMPT.format(
-                scenes_list=scenes_list,
-                total_frames=total_frames,
-            )},
-        ],
-        temperature=0.3,
-        max_tokens=_sequencer_tokens,
-        model=_code_model,
-    )
-    video_tsx_code = _strip_markdown_fences(video_tsx)
+            # Un asset inventé ne doit jamais devenir un accès réseau silencieux.
+            # Si le modèle utilise staticFile sans manifeste, on publie un composant
+            # déterministe sûr plutôt qu'une URL externe non autorisée.
+            if not _assets_map and "staticFile" in code:
+                logger.warning("[video] staticFile sans asset dans {}; fallback sûr", component_name)
+                code = _fallback_minimal_component(component_name, tpl)
+                telemetry.auto_fixes_applied += 1
 
-    if not any(m in video_tsx_code for m in ("import ", "export ", "Sequence")):
-        logger.warning("[video] ⚠️ Video.tsx invalide, retry...")
+            scenes_code[f"src/scenes/{component_name}.tsx"] = code
+            logger.info("[video] ✅ {}.tsx ({} chars)", component_name, len(code))
+
+        # Générer Video.tsx (séquenceur)
+        logger.info("[video] Assemblage Video.tsx...")
+        scenes_list = "\n".join(
+            f"- {s['component_name']} ({s['duration_frames']} frames, from={sum(sc['duration_frames'] for sc in scenes[:i])})"
+            for i, s in enumerate(scenes)
+        )
         video_tsx = await llm.chat(
             messages=[
                 {"role": "system", "content": SCENE_COMPONENT_SYSTEM},
                 {"role": "user", "content": VIDEO_SEQUENCER_PROMPT.format(
-                    scenes_list=scenes_list, total_frames=total_frames,
+                    scenes_list=scenes_list,
+                    total_frames=total_frames,
                 )},
             ],
-            temperature=0.5, max_tokens=_sequencer_tokens, model=_code_model,
+            temperature=0.3,
+            max_tokens=_sequencer_tokens,
+            model=_code_model,
         )
         video_tsx_code = _strip_markdown_fences(video_tsx)
 
-    # Filet déterministe : les scènes utilisent `export default` (cf prompt),
-    # donc Video.tsx DOIT les importer en default. Un import named `{ X }`
-    # résout à `undefined` → React error #130 au rendu. On normalise chaque
-    # import de scène vers la forme default, quel que soit ce que le LLM a généré.
-    import re as _re_imp
-    for _sc in scenes:
-        _cn = _sc.get("component_name", "")
-        if not _cn:
-            continue
-        video_tsx_code = _re_imp.sub(
-            r"import\s*\{\s*" + _re_imp.escape(_cn) + r"\s*\}\s*from\s*"
-            r"(['\"])([^'\"]*scenes/" + _re_imp.escape(_cn) + r")\1",
-            r"import " + _cn + r" from \1\2\1",
-            video_tsx_code,
-        )
-    scenes_code["src/Video.tsx"] = video_tsx_code
+        if not any(m in video_tsx_code for m in ("import ", "export ", "Sequence")):
+            logger.warning("[video] ⚠️ Video.tsx invalide, retry...")
+            video_tsx = await llm.chat(
+                messages=[
+                    {"role": "system", "content": SCENE_COMPONENT_SYSTEM},
+                    {"role": "user", "content": VIDEO_SEQUENCER_PROMPT.format(
+                        scenes_list=scenes_list, total_frames=total_frames,
+                    )},
+                ],
+                temperature=0.5, max_tokens=_sequencer_tokens, model=_code_model,
+            )
+            video_tsx_code = _strip_markdown_fences(video_tsx)
 
-    telemetry.tsx_generation_duration_s = time.time() - _t_tsx
-    logger.info("[video] ✅ Phase 2 terminée ({:.1f}s)", telemetry.tsx_generation_duration_s)
+        # Filet déterministe : les scènes utilisent `export default` (cf prompt),
+        # donc Video.tsx DOIT les importer en default. Un import named `{ X }`
+        # résout à `undefined` → React error #130 au rendu. On normalise chaque
+        # import de scène vers la forme default, quel que soit ce que le LLM a généré.
+        import re as _re_imp
+        for _sc in scenes:
+            _cn = _sc.get("component_name", "")
+            if not _cn:
+                continue
+            video_tsx_code = _re_imp.sub(
+                r"import\s*\{\s*" + _re_imp.escape(_cn) + r"\s*\}\s*from\s*"
+                r"(['\"])([^'\"]*scenes/" + _re_imp.escape(_cn) + r")\1",
+                r"import " + _cn + r" from \1\2\1",
+                video_tsx_code,
+            )
+        scenes_code["src/Video.tsx"] = video_tsx_code
+
+        telemetry.tsx_generation_duration_s = time.time() - _t_tsx
+        logger.info("[video] ✅ Phase 2 terminée ({:.1f}s)", telemetry.tsx_generation_duration_s)
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 3 : Scaffold projet + écriture fichiers
     # ══════════════════════════════════════════════════════════════════════════
 
     logger.info("[video] Phase 3 — Scaffold projet Remotion...")
-    _plan_title_slug = (plan.get("title", "") or output_name or "video").lower()
-    _plan_title_slug = "".join(c if c.isalnum() or c in "-_" else "-" for c in _plan_title_slug)[:50]
-    if _plan_title_slug and _plan_title_slug != slug:
-        _new_dir = WORKSPACE_DIR / date_str / _plan_title_slug
-        if not _new_dir.exists():
-            try:
-                shutil.move(str(project_dir), str(_new_dir))
-                project_dir = _new_dir
-            except (OSError, shutil.Error) as _rename_err:
-                logger.warning("[video] Rename ignoré: {}", _rename_err)
-            project_dir.mkdir(parents=True, exist_ok=True)
-
+    job_tracker.ensure_active()
+    job_tracker.update("scaffold", 62, "Construction du projet Remotion")
     scaffold_files = scaffold_remotion_project(
         output_dir=project_dir, template=tpl, composition_id="Main",
+    )
+    scaffold_files["lumena-video.json"] = json.dumps(
+        {
+            "video_spec": video_spec.to_dict(),
+            "generation": {
+                "mode": _generation_mode,
+                "model": _effective_model,
+                "template": tpl_name,
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
     )
     for rel_path, content in scaffold_files.items():
         fp = project_dir / rel_path
@@ -431,17 +507,40 @@ async def generate_video_handler(
     if not _validation.valid:
         logger.warning("[video] ⚠️ Validation pré-rendu: {}", _validation.summary())
         telemetry.tsx_validation_failures += _validation.errors_count
+        _learn_reflexion(
+            "validation",
+            _validation.errors_for_llm(),
+            "Corriger toutes les erreurs de validation avant tout rendu.",
+            tpl_name,
+            _model_family,
+        )
+        job_tracker.update(
+            "failed",
+            100,
+            _validation.summary()[:500],
+            status="failed",
+        )
+        return HandlerResult.fail(
+            "❌ Projet Remotion invalide avant rendu.\n"
+            f"{_validation.summary()}\n"
+            f"Projet conservé pour diagnostic: `{project_dir}`",
+            handler_name="generate_video",
+        )
 
     logger.info("[video] ✅ Projet écrit dans {}", project_dir.name)
+    job_tracker.update("validation", 70, "Projet validé avant rendu")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 4 : Rendu Docker/local — boucle error-parse-fix-retry
     # ══════════════════════════════════════════════════════════════════════════
 
     _t_render = time.time()
+    job_tracker.ensure_active()
+    job_tracker.update("render", 75, "Rendu vidéo isolé")
     logger.info("[video] Phase 4 — Rendu MP4 ({}×{} @ {}fps)...", tpl["width"], tpl["height"], tpl["fps"])
 
     video_path: Optional[Path] = None
+    _infrastructure_failure = False
     _render_timeout = int(os.getenv("LUMENA_VIDEO_RENDER_TIMEOUT", "300"))
 
     for _render_attempt in range(1, _MAX_RENDER_RETRIES + 1):
@@ -453,7 +552,28 @@ async def generate_video_handler(
             )
             logger.info("[video] ✅ Rendu réussi (tentative {})", _render_attempt)
             break
-        except RuntimeError as e:
+        except VideoCancelledError as e:
+            _err_str = str(e)
+            telemetry.render_errors.append(_err_str[:300])
+            telemetry.total_duration_s = time.time() - _t0
+            telemetry.failure_reason = _err_str
+            job_tracker.update(
+                "cancelled",
+                job_tracker.job.progress,
+                _err_str[:500],
+                status="cancelled",
+            )
+            return HandlerResult.fail(
+                f"⏹️ Génération vidéo annulée. Projet conservé: `{project_dir}`",
+                handler_name="generate_video",
+            )
+        except VideoInfrastructureError as e:
+            _err_str = str(e)
+            _infrastructure_failure = True
+            logger.warning("[video] Infrastructure de rendu indisponible: {}", _err_str[:300])
+            telemetry.render_errors.append(_err_str[:300])
+            break
+        except VideoRenderError as e:
             _err_str = str(e)
             logger.warning("[video] ❌ Rendu échoué (tentative {}/{}): {}",
                            _render_attempt, _MAX_RENDER_RETRIES, _err_str[:200])
@@ -475,11 +595,40 @@ async def generate_video_handler(
             )
             if _fixed:
                 telemetry.auto_fixes_applied += 1
-                logger.info("[video] 🔧 Correction appliquée, re-tentative rendu...")
+                post_fix_validation = validate_project(
+                    project_dir=str(project_dir),
+                    expected_total_frames=total_frames,
+                    has_assets=_has_assets,
+                )
+                if not post_fix_validation.valid:
+                    telemetry.render_errors.append(post_fix_validation.errors_for_llm()[:300])
+                    logger.warning(
+                        "[video] Correction refusée par la validation: {}",
+                        post_fix_validation.summary(),
+                    )
+                    break
+                logger.info("[video] 🔧 Correction validée, re-tentative rendu...")
             else:
                 logger.warning("[video] Pas de correction trouvée, retry brut...")
 
     telemetry.render_duration_s = time.time() - _t_render
+
+    quality_report = None
+    if video_path and video_path.exists():
+        job_tracker.ensure_active()
+        job_tracker.update("quality", 92, "Contrôle de l'artefact vidéo")
+        quality_report = await inspect_rendered_video(
+            video_path,
+            project_dir=project_dir,
+            expected_duration_sec=float(duration_sec),
+            expected_width=tpl["width"],
+            expected_height=tpl["height"],
+        )
+        if not quality_report.passed:
+            _quality_error = quality_report.summary()
+            telemetry.render_errors.append(_quality_error)
+            logger.warning("[video] Contrôle qualité refusé: {}", _quality_error)
+            video_path = None
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 5 : Apprentissage (succès ou échec)
@@ -499,21 +648,47 @@ async def generate_video_handler(
             model_family=_model_family,
             iterations=telemetry.tsx_generation_attempts,
         )
+        job_tracker.update(
+            "complete",
+            100,
+            "Vidéo rendue et contrôlée",
+            status="complete",
+            output_path=str(video_path),
+        )
     else:
         telemetry.success = False
         telemetry.failure_reason = telemetry.render_errors[-1] if telemetry.render_errors else "unknown"
-        _learn_reflexion(
-            error_type="render",
-            trigger=telemetry.failure_reason[:200],
-            lesson=f"Rendu échoué après {_MAX_RENDER_RETRIES} tentatives pour template={tpl_name}, modèle={_model_family}. Erreur: {telemetry.failure_reason[:100]}",
-            template_type=tpl_name,
-            model_family=_model_family,
+        # Une panne Docker, réseau ou npm n'enseigne rien sur la qualité du TSX.
+        # L'enregistrer comme leçon créative ferait répéter une mauvaise
+        # réparation lors des générations suivantes.
+        if not _infrastructure_failure:
+            _learn_reflexion(
+                error_type="render",
+                trigger=telemetry.failure_reason[:200],
+                lesson=(
+                    f"Rendu échoué après {telemetry.render_attempts} tentative(s) "
+                    f"pour template={tpl_name}, modèle={_model_family}. "
+                    f"Erreur: {telemetry.failure_reason[:100]}"
+                ),
+                template_type=tpl_name,
+                model_family=_model_family,
+            )
+        job_tracker.update(
+            "failed",
+            100,
+            telemetry.failure_reason[:500],
+            status="failed",
         )
         return HandlerResult.fail(
-            f"❌ Rendu vidéo échoué après {_MAX_RENDER_RETRIES} tentatives.\n\n"
+            f"❌ {'Infrastructure vidéo indisponible' if _infrastructure_failure else 'Rendu vidéo échoué'} "
+            f"après {telemetry.render_attempts} tentative(s).\n\n"
             f"**Dernière erreur**: {telemetry.failure_reason[:300]}\n"
             f"**Projet sauvegardé**: `workspace/{project_dir.relative_to(WORKSPACE_DIR)}`\n\n"
-            f"Tu peux corriger manuellement avec `edit_video` puis `preview_video`.",
+            + (
+                "Relance le rendu après correction de Docker ou du réseau ; le code vidéo n'a pas été modifié."
+                if _infrastructure_failure
+                else "Tu peux corriger manuellement avec `edit_video` puis `preview_video`."
+            ),
             handler_name="generate_video",
         )
 
@@ -537,7 +712,9 @@ async def generate_video_handler(
         f"**Durée**: {duration_sec}s @ {tpl['fps']}fps\n"
         f"**Résolution**: {tpl['width']}×{tpl['height']}\n"
         f"**Scènes**: {len(scenes)}\n"
+        f"**Mode de création**: {_generation_mode}\n"
         f"**Modèle**: {_effective_model} ({_model_family})\n"
+        f"**Contrôle qualité**: {quality_report.summary() if quality_report else 'non disponible'}\n"
         f"**Temps total**: {telemetry.total_duration_s:.1f}s (plan: {telemetry.planning_duration_s:.1f}s, TSX: {telemetry.tsx_generation_duration_s:.1f}s, rendu: {telemetry.render_duration_s:.1f}s)\n"
         f"{_assets_info}{_learning_info}"
         f"**Projet Remotion**: `workspace/{project_dir.relative_to(WORKSPACE_DIR)}`\n\n"
@@ -751,11 +928,22 @@ async def _attempt_render_fix(
             target_file = "src/Video.tsx"
 
         # Résoudre le chemin absolu
-        file_path = project_dir / target_file
+        project_root = project_dir.resolve()
+        file_path = (project_root / target_file).resolve()
+        try:
+            file_path.relative_to(project_root)
+        except ValueError:
+            logger.warning("[video] Correction refusée hors projet: {}", target_file)
+            return False
         if not file_path.exists():
             # Chercher dans src/scenes/
             for candidate in project_dir.rglob(Path(target_file).name):
-                file_path = candidate
+                resolved_candidate = candidate.resolve()
+                try:
+                    resolved_candidate.relative_to(project_root)
+                except ValueError:
+                    continue
+                file_path = resolved_candidate
                 break
 
         if not file_path.exists():
@@ -877,10 +1065,11 @@ async def edit_video_handler(
             )
         project_dir = str(candidates[0].parent)
 
-    project_path = Path(project_dir)
-    if not project_path.exists():
+    try:
+        project_path = resolve_video_project_path(project_dir)
+    except ValueError as path_error:
         return HandlerResult.fail(
-            f"❌ Répertoire non trouvé: {project_dir}",
+            f"❌ Projet vidéo refusé: {path_error}",
             handler_name="edit_video",
         )
 
@@ -905,9 +1094,17 @@ async def edit_video_handler(
         )
 
         if output and not output.startswith("❌"):
+            validation = validate_project(str(project_path))
+            if not validation.valid:
+                return HandlerResult.fail(
+                    "❌ Modification appliquée mais validation Remotion refusée.\n"
+                    f"{validation.summary()}",
+                    handler_name="edit_video",
+                )
+            rendered_path, _ = await render_video_in_docker(project_path, timeout_sec=120)
             return HandlerResult.ok(
-                f"✅ Vidéo modifiée.\n{output}\n\n"
-                f"Re-rendre avec `generate_video` ou prévisualiser avec `preview_video`.",
+                f"✅ Vidéo modifiée, validée et rendue.\n{output}\n\n"
+                f"**Fichier**: `{rendered_path}`",
                 handler_name="edit_video",
             )
         return HandlerResult.fail(
@@ -943,18 +1140,155 @@ async def preview_video_handler(
         project_dir = str(candidates[0].parent)
 
     try:
-        video_path, _ = await render_video_in_docker(
-            project_dir=Path(project_dir),
-            timeout_sec=120,
+        project_path = resolve_video_project_path(project_dir)
+        validation = validate_project(str(project_path))
+        if not validation.valid:
+            return HandlerResult.fail(
+                f"❌ Preview refusée: {validation.summary()}",
+                handler_name="preview_video",
+            )
+        existing_output = project_path / "output.mp4"
+        source_mtime = max(
+            (path.stat().st_mtime for path in project_path.rglob("*.tsx")),
+            default=0.0,
+        )
+        if existing_output.exists() and existing_output.stat().st_mtime >= source_mtime:
+            video_path = existing_output
+        else:
+            video_path, _ = await render_video_in_docker(
+                project_dir=project_path,
+                timeout_sec=120,
+            )
+        preview_path = project_path / "preview.html"
+        preview_path.write_text(
+            "<!doctype html><html lang='fr'><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>{escape(project_path.name)} — Lumena</title>"
+            "<style>html,body{margin:0;height:100%;background:#070b12;color:#fff;font-family:system-ui}"
+            "main{height:100%;display:grid;place-items:center}video{max-width:96vw;max-height:92vh;box-shadow:0 24px 80px #000;border-radius:12px}</style>"
+            f"<main><video controls autoplay src='{escape(video_path.name)}'></video></main></html>",
+            encoding="utf-8",
         )
         return HandlerResult.ok(
-            f"✅ Preview rendu: `{video_path}`",
+            f"✅ Prévisualisation prête: `{preview_path}`\n**Vidéo**: `{video_path}`",
             handler_name="preview_video",
         )
-    except RuntimeError as e:
+    except (RuntimeError, ValueError) as e:
         return HandlerResult.fail(
             f"❌ Preview échoué: {e}",
             handler_name="preview_video",
+        )
+
+
+def _video_manifest_expectations(project_path: Path) -> Tuple[Optional[int], float, int, int]:
+    """Lit les dimensions attendues sans faire confiance à des chemins du manifeste."""
+    manifest_path = project_path / "lumena-video.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        spec = payload.get("video_spec", {})
+        fps = max(1, int(spec.get("fps", 30)))
+        total_frames = max(1, int(spec.get("total_frames", 1)))
+        duration_sec = total_frames / fps
+        width = max(1, int(spec.get("width", 1920)))
+        height = max(1, int(spec.get("height", 1080)))
+        return total_frames, duration_sec, width, height
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None, 30.0, 1920, 1080
+
+
+async def retry_video_render_handler(
+    ctx: HandlerContext,
+    project_dir: str = "",
+) -> HandlerResult:
+    """Reprend un rendu échoué sans redemander ni réécrire la création au LLM."""
+    from ...utils.paths import WORKSPACE_DIR
+
+    if not project_dir:
+        candidates = sorted(
+            WORKSPACE_DIR.rglob("render.mjs"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            return HandlerResult.fail(
+                "❌ Aucun projet vidéo à reprendre.",
+                handler_name="retry_video_render",
+            )
+        project_dir = str(candidates[0].parent)
+
+    try:
+        project = resolve_video_project_path(project_dir)
+    except ValueError as exc:
+        return HandlerResult.fail(
+            f"❌ Reprise refusée: {exc}",
+            handler_name="retry_video_render",
+        )
+
+    clear_video_cancel(project)
+    tracker = VideoJobTracker(project, f"retry-{int(time.time())}")
+    total_frames, duration_sec, width, height = _video_manifest_expectations(project)
+    validation = validate_project(
+        str(project),
+        expected_total_frames=total_frames,
+    )
+    if not validation.valid:
+        tracker.update("failed", 100, validation.summary(), status="failed")
+        return HandlerResult.fail(
+            f"❌ Reprise refusée par la validation: {validation.summary()}",
+            handler_name="retry_video_render",
+        )
+
+    try:
+        tracker.update("render", 55, "Reprise du rendu vidéo isolé")
+        output = project / "output.mp4"
+        source_files = list((project / "src").rglob("*.tsx"))
+        source_files.extend((project / "src").rglob("*.ts"))
+        source_files.extend([project / "render.mjs", project / "package-lock.json"])
+        newest_source = max(
+            (path.stat().st_mtime for path in source_files if path.is_file()),
+            default=0.0,
+        )
+        if not output.is_file() or output.stat().st_mtime < newest_source:
+            output, _ = await render_video_in_docker(project)
+
+        tracker.update("quality", 90, "Contrôle du rendu repris")
+        quality = await inspect_rendered_video(
+            output,
+            project_dir=project,
+            expected_duration_sec=duration_sec,
+            expected_width=width,
+            expected_height=height,
+        )
+        if not quality.passed:
+            tracker.update("failed", 100, quality.summary(), status="failed")
+            return HandlerResult.fail(
+                f"❌ Rendu repris mais refusé par le contrôle qualité: {quality.summary()}",
+                handler_name="retry_video_render",
+            )
+
+        tracker.update(
+            "complete",
+            100,
+            "Rendu repris et contrôlé",
+            status="complete",
+            output_path=str(output),
+        )
+        return HandlerResult.ok(
+            f"✅ Rendu repris et contrôlé.\n**Fichier**: `{output}`\n"
+            f"**Qualité**: {quality.summary()}",
+            handler_name="retry_video_render",
+        )
+    except VideoCancelledError:
+        tracker.update("cancelled", tracker.job.progress, "Reprise annulée", status="cancelled")
+        return HandlerResult.fail(
+            "⏹️ Reprise du rendu annulée.",
+            handler_name="retry_video_render",
+        )
+    except (VideoInfrastructureError, VideoRenderError, RuntimeError) as exc:
+        tracker.update("failed", 100, str(exc), status="failed")
+        return HandlerResult.fail(
+            f"❌ Reprise du rendu échouée: {exc}",
+            handler_name="retry_video_render",
         )
 
 
@@ -998,10 +1332,63 @@ async def list_video_projects_handler(
     return HandlerResult.ok("\n".join(lines), handler_name="list_video_projects")
 
 
+async def get_video_job_handler(
+    ctx: HandlerContext,
+    project_dir: str = "",
+) -> HandlerResult:
+    """Retourne la progression persistée d'un projet vidéo."""
+    from ...utils.paths import WORKSPACE_DIR
+
+    if not project_dir:
+        candidates = sorted(WORKSPACE_DIR.rglob(".lumena-video-job.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            return HandlerResult.fail("❌ Aucune tâche vidéo trouvée.", handler_name="get_video_job")
+        project_dir = str(candidates[0].parent)
+    try:
+        project = resolve_video_project_path(project_dir)
+        state = read_video_job(project)
+        if not state:
+            return HandlerResult.fail("❌ Aucun état de tâche pour ce projet.", handler_name="get_video_job")
+        return HandlerResult.ok(
+            "## Tâche vidéo\n"
+            f"- État: **{state.get('status', 'unknown')}**\n"
+            f"- Phase: `{state.get('phase', 'unknown')}`\n"
+            f"- Progression: {state.get('progress', 0)}%\n"
+            f"- Message: {state.get('message', '')}\n"
+            f"- Projet: `{project}`",
+            handler_name="get_video_job",
+        )
+    except ValueError as exc:
+        return HandlerResult.fail(f"❌ Tâche vidéo refusée: {exc}", handler_name="get_video_job")
+
+
+async def cancel_video_job_handler(
+    ctx: HandlerContext,
+    project_dir: str = "",
+) -> HandlerResult:
+    """Demande l'annulation coopérative d'une tâche vidéo en cours."""
+    from ...utils.paths import WORKSPACE_DIR
+
+    if not project_dir:
+        candidates = sorted(WORKSPACE_DIR.rglob(".lumena-video-job.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not candidates:
+            return HandlerResult.fail("❌ Aucune tâche vidéo trouvée.", handler_name="cancel_video_job")
+        project_dir = str(candidates[0].parent)
+    try:
+        project = resolve_video_project_path(project_dir)
+        request_video_cancel(project)
+        return HandlerResult.ok(
+            f"✅ Annulation demandée pour `{project}`. Le moteur s'arrêtera au prochain point sûr.",
+            handler_name="cancel_video_job",
+        )
+    except ValueError as exc:
+        return HandlerResult.fail(f"❌ Annulation refusée: {exc}", handler_name="cancel_video_job")
+
+
 # ── P3.5 — get_video_handler_defs() ────────────────────────────────
 
 def get_video_handler_defs() -> List[HandlerDef]:
-    """Retourne les 4 définitions de handlers vidéo."""
+    """Retourne les définitions de handlers vidéo."""
     return [
         HandlerDef(
             name="generate_video",
@@ -1019,6 +1406,7 @@ def get_video_handler_defs() -> List[HandlerDef]:
                     "format": {"type": "string", "description": "landscape (16:9), portrait (9:16), square (1:1) — défaut: landscape", "default": "landscape"},
                     "output_name": {"type": "string", "description": "Nom de la vidéo (optionnel, déduit)", "default": ""},
                     "assets": {"type": "string", "description": "Assets à intégrer dans la vidéo: chemins fichiers séparés par virgule (images, vidéos, audio). Ex: 'logo.png, fond.jpg'. Accepte aussi les noms de fichiers uploadés récemment.", "default": ""},
+                    "creation_mode": {"type": "string", "enum": ["auto", "safe", "expert"], "description": "auto adapte le rail au modèle; safe compile des composants bornés; expert autorise le TSX libre sandboxé", "default": "auto"},
                 },
                 "required": ["description"],
             },
@@ -1061,6 +1449,38 @@ def get_video_handler_defs() -> List[HandlerDef]:
             description="Liste tous les projets vidéo Remotion dans le workspace avec leur statut de rendu.",
             parameters={"properties": {}, "required": []},
             handler=list_video_projects_handler,
+            category="video",
+            source_module="handlers.remotion",
+        ),
+        HandlerDef(
+            name="retry_video_render",
+            description=(
+                "Reprend le rendu d'un projet Remotion existant après une panne Docker, "
+                "npm ou réseau, sans réécrire les scènes, puis contrôle le MP4."
+            ),
+            parameters={
+                "properties": {
+                    "project_dir": {"type": "string", "description": "Chemin du projet vidéo (optionnel, prend le dernier)", "default": ""},
+                },
+                "required": [],
+            },
+            handler=retry_video_render_handler,
+            category="video",
+            source_module="handlers.remotion",
+        ),
+        HandlerDef(
+            name="get_video_job",
+            description="Affiche l'état et la progression persistée de la dernière tâche vidéo ou d'un projet précis.",
+            parameters={"properties": {"project_dir": {"type": "string", "default": ""}}, "required": []},
+            handler=get_video_job_handler,
+            category="video",
+            source_module="handlers.remotion",
+        ),
+        HandlerDef(
+            name="cancel_video_job",
+            description="Demande l'annulation sûre d'une génération ou d'un rendu vidéo Remotion en cours.",
+            parameters={"properties": {"project_dir": {"type": "string", "default": ""}}, "required": []},
+            handler=cancel_video_job_handler,
             category="video",
             source_module="handlers.remotion",
         ),

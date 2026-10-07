@@ -50,7 +50,7 @@ def test_frontier_profiles_fallbacks_and_provider_defaults_are_stable():
     assert get_model_profile("kimi-k3").retry_on_empty is True
     assert get_model_fallbacks("claude-opus-5")[:2] == [
         "claude-opus-5.5",
-        "claude-sonnet-5",
+        "claude-sonnet-5.5",
     ]
     assert get_model_fallbacks("kimi-k3")[:2] == ["kimi-k2.7-code", "kimi-k2.6"]
     assert get_default_model_for_provider("anthropic").name == "claude-opus-4.8"

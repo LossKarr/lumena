@@ -35,6 +35,10 @@ class FinetuneConfig:
     use_unsloth: bool = True
     system_prompt: str = ""
     hf_token: str = ""
+    resume_from_checkpoint: str | bool | None = None
+    output_dir: str = ""
+    seed: int = 42
+    lora_target_modules: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -44,9 +48,15 @@ class FinetuneConfig:
 class ProgressCallback:
     """Collects training metrics and forwards them to an optional callback."""
 
-    def __init__(self, on_progress: Callable[[dict], None] | None = None):
+    def __init__(
+        self,
+        on_progress: Callable[[dict], None] | None = None,
+        control_signal: Callable[[], str | None] | None = None,
+    ):
         self._on_progress = on_progress
+        self._control_signal = control_signal
         self.logs: list[dict[str, Any]] = []
+        self.interruption: str | None = None
 
     def _emit(self, data: dict) -> None:
         self.logs.append(data)
@@ -66,6 +76,18 @@ class ProgressCallback:
         parent = self
 
         class _Cb(TrainerCallback):
+            def on_step_end(self, args, state, control, **kw):
+                signal = parent._control_signal() if parent._control_signal else None
+                if signal in {"pause", "cancel"} or is_cancelled():
+                    parent.interruption = signal or "cancel"
+                    control.should_save = True
+                    control.should_training_stop = True
+                    parent._emit({
+                        "phase": "pausing" if parent.interruption == "pause" else "cancelling",
+                        "step": state.global_step,
+                    })
+                return control
+
             def on_log(self, args, state, control, logs=None, **kw):
                 if logs:
                     pct = round(100 * state.global_step / max(1, state.max_steps), 1)
@@ -93,6 +115,15 @@ class ProgressCallback:
 # ---------------------------------------------------------------------------
 
 _cancel_event = threading.Event()
+
+
+class TrainingInterrupted(RuntimeError):
+    """Raised after the trainer has stopped and persisted a checkpoint."""
+
+    def __init__(self, reason: str, checkpoint_path: str):
+        super().__init__(f"training_{reason}")
+        self.reason = reason
+        self.checkpoint_path = checkpoint_path
 
 
 def cancel_training() -> None:
@@ -126,7 +157,7 @@ def run_finetuning(
 
     from src.utils.paths import FINETUNED_MODELS_DIR
 
-    output_dir = FINETUNED_MODELS_DIR / f"{config.output_name}_lora"
+    output_dir = Path(config.output_dir).resolve() if config.output_dir else FINETUNED_MODELS_DIR / f"{config.output_name}_lora"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if progress_cb:
@@ -169,7 +200,7 @@ def run_finetuning(
         r=config.lora_r,
         lora_alpha=config.lora_alpha,
         lora_dropout=config.lora_dropout,
-        target_modules=LORA_TARGET_MODULES,
+        target_modules=list(config.lora_target_modules or LORA_TARGET_MODULES),
     )
 
     if is_cancelled():
@@ -192,6 +223,8 @@ def run_finetuning(
         logging_steps=1,
         save_strategy="epoch",
         eval_strategy="epoch" if dataset_eval else "no",
+        seed=config.seed,
+        data_seed=config.seed,
     )
 
     callbacks = []
@@ -210,7 +243,14 @@ def run_finetuning(
     )
 
     # Train
-    trainer.train()
+    trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
+
+    if progress_cb and progress_cb.interruption:
+        checkpoint_dir = output_dir / f"checkpoint-{getattr(trainer.state, 'global_step', 0)}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        trainer.save_model(str(checkpoint_dir))
+        trainer.save_state()
+        raise TrainingInterrupted(progress_cb.interruption, str(checkpoint_dir))
 
     # Save LoRA adapter
     model.save_pretrained(str(output_dir))

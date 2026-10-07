@@ -1,9 +1,10 @@
-"""RealVADProvider — VAD énergétique sur micro (pyaudio + audioop), contrat VADProvider.
+"""RealVADProvider — VAD local hybride, sous le contrat VADProvider.
 
 HARDWARE-LAST : imports PARESSEUX de `pyaudio`/`audioop` (jamais à l'import du
 module). Réservé au chemin gated `LUMENA_VOICE_V2_STT=1`, hors pytest. Pas de
-nouvelle dépendance lourde : RMS énergétique (même approche que `src.voice.stt`),
-pas de webrtcvad/silero (upgrade possible plus tard).
+Le RMS énergétique reste le fallback garanti. Une fonction de probabilité de parole
+locale (Silero ONNX, quand son Voice Pack est présent) peut être injectée sans changer
+la machine à états et sans téléchargement au runtime.
 
 Machine à états simple :
 - énergie > seuil  → `speech_started` (front montant, après silence) ;
@@ -16,6 +17,7 @@ Testable SANS micro : `frames` (itérable de frames PCM16) et `rms_fn` injectabl
 from __future__ import annotations
 
 import asyncio
+import inspect
 import statistics
 from typing import Any, AsyncIterator, Callable, Iterable, List, Optional
 
@@ -64,7 +66,10 @@ class RealVADProvider(VADProvider):
                  partial_every_ms: int = 0,
                  input_device_index: Optional[int] = None,
                  frames: Optional[Iterable[bytes]] = None,
-                 rms_fn: Optional[Callable[[bytes], float]] = None):
+                 rms_fn: Optional[Callable[[bytes], float]] = None,
+                 speech_probability_fn: Optional[Callable[[bytes], float]] = None,
+                 speech_probability_threshold: float = 0.5,
+                 speaking_guard_enabled: bool = True):
         self.energy_threshold = energy_threshold
         self.frame_ms = frame_ms
         self.silence_hangover_ms = silence_hangover_ms
@@ -81,16 +86,28 @@ class RealVADProvider(VADProvider):
         # réentendu par le micro (énergie modérée) ne passe pas, mais une vraie voix
         # nettement plus forte oui. Sans AEC, c'est le durcissement minimal logic-only.
         self.speaking_threshold = speaking_threshold
+        # The guard policy is explicit because ``speaking_threshold=None`` has
+        # historically meant "derive it during calibration".  A headset or an
+        # active AEC disables the guard without changing that public contract.
+        self._speaking_guard_enabled = bool(speaking_guard_enabled)
         self._is_speaking_fn = is_speaking_fn
         self._frames = frames          # None => micro réel (pyaudio) ; sinon source injectée (test)
         self._rms_fn = rms_fn          # None => audioop.rms (lazy) ; sinon injecté (test)
+        self._speech_probability_fn = speech_probability_fn
+        self.speech_probability_threshold = float(
+            _clamp(speech_probability_threshold, 0.05, 0.99)
+        )
+        self.vad_engine = "silero_onnx" if speech_probability_fn is not None else "energy"
+        self.vad_fallback_reason: Optional[str] = None
+        self.last_speech_probability: Optional[float] = None
         self.last_utterance: bytes = b""
         self._buf: List[bytes] = []
         self._stop_requested = False
 
     def _effective_threshold(self) -> float:
         """Seuil courant : relevé à `speaking_threshold` quand Lumena parle."""
-        if self.speaking_threshold is not None and self._is_speaking_fn is not None:
+        if (self._speaking_guard_enabled and self.speaking_threshold is not None
+                and self._is_speaking_fn is not None):
             try:
                 if self._is_speaking_fn():
                     return self.speaking_threshold
@@ -148,15 +165,63 @@ class RealVADProvider(VADProvider):
             noise_floor, noise_mult=noise_mult, energy_min=energy_min,
             energy_max=energy_max, speaking_floor=speaking_floor, speaking_mult=speaking_mult)
         self.energy_threshold = energy
-        self.speaking_threshold = speaking
+        self.speaking_threshold = speaking if self._speaking_guard_enabled else None
         return {"noise_floor": noise_floor, "energy_threshold": energy,
-                "speaking_threshold": speaking, "fallback": False}
+                "speaking_threshold": self.speaking_threshold, "fallback": False}
 
     def _resolve_rms(self) -> Callable[[bytes], float]:
         if self._rms_fn is None:
             import audioop  # noqa: PLC0415 — lazy volontaire
             self._rms_fn = lambda frame: audioop.rms(frame, self.SAMPLE_WIDTH)
         return self._rms_fn
+
+    async def _is_voiced(self, frame: bytes, energy: float) -> bool:
+        """Classe un frame, avec fallback énergétique borné en cas d'échec neuronal.
+
+        Le self-voice guard demeure un garde d'énergie pendant le playback : sans AEC,
+        un classifieur de parole seul ne peut distinguer l'utilisateur du TTS réentendu.
+        """
+        fallback = energy >= self._effective_threshold()
+        if self._speech_probability_fn is None:
+            return fallback
+        try:
+            probability = self._speech_probability_fn(frame)
+            if inspect.isawaitable(probability):
+                probability = await probability
+            probability = float(probability)
+            if not 0.0 <= probability <= 1.0:
+                raise ValueError("speech probability outside [0, 1]")
+            self.last_speech_probability = probability
+            neural_voiced = probability >= self.speech_probability_threshold
+            if (self._speaking_guard_enabled and self.speaking_threshold is not None
+                    and self._is_speaking_fn is not None):
+                try:
+                    if self._is_speaking_fn():
+                        return neural_voiced and energy >= self.speaking_threshold
+                except Exception:
+                    pass
+            return neural_voiced
+        except Exception as exc:
+            # Un moteur optionnel ne doit jamais rendre le micro inutilisable.
+            self.vad_engine = "energy"
+            self.vad_fallback_reason = type(exc).__name__
+            self._speech_probability_fn = None
+            self.last_speech_probability = None
+            return fallback
+
+    def status(self) -> dict:
+        """État sans audio ni texte, destiné au panneau et aux diagnostics."""
+        return {
+            "engine": self.vad_engine,
+            "fallback_reason": self.vad_fallback_reason,
+            "energy_threshold": self.energy_threshold,
+            "speaking_threshold": self.speaking_threshold,
+            "speaking_guard_enabled": self._speaking_guard_enabled,
+            "speech_probability_threshold": (
+                self.speech_probability_threshold
+                if self.vad_engine == "silero_onnx" else None
+            ),
+        }
 
     async def stream(self, audio: Any = None) -> AsyncIterator[VADEvent]:
         """Émet `speech_started`/`speech_ended` ; capture l'énoncé dans `last_utterance`."""
@@ -174,7 +239,7 @@ class RealVADProvider(VADProvider):
 
         async for frame in self._iter_frames():
             energy = rms(frame)
-            voiced = energy >= self._effective_threshold()   # seuil relevé pendant speaking
+            voiced = await self._is_voiced(frame, energy)
 
             if not in_speech:
                 if voiced:

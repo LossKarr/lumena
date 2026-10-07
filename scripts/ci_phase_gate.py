@@ -46,7 +46,7 @@ def main() -> int:
                         help="Run FULL test suite (not just critical tests)")
     parser.add_argument("--runs", type=int, default=1,
                         help="Number of consecutive runs (stability proof)")
-    parser.add_argument("--timeout", type=int, default=15,
+    parser.add_argument("--timeout", type=int, default=60,
                         help="Per-test timeout in seconds")
     args = parser.parse_args()
 

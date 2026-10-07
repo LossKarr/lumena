@@ -13,7 +13,7 @@ def test_catalog_audit_is_green_and_offline():
     assert report["status"] == "ok", report["errors"]
     assert report["network_used"] is False
     assert report["credentials_serialized"] is False
-    assert report["catalog_revision"] == "2026-09-25"
+    assert report["catalog_revision"] == "2026-09-30"
     assert report["text"]["selectable"] > 0
     assert report["image"]["fallbacks"] == report["image"]["auto_eligible"]
 

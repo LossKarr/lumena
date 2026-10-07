@@ -23,12 +23,14 @@ class TestVerifyAdminToken:
             assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_no_token_setup_not_done_passes(self):
-        """Before setup, allow access even without token (wizard needs it)."""
+    async def test_no_token_setup_not_done_fails_closed(self):
+        """Before setup, protected routes stay closed without a token."""
         with patch.dict(os.environ, {"LUMENA_SETUP_COMPLETE": "", "LUMENA_ADMIN_TOKEN": ""}, clear=False):
             os.environ.pop("LUMENA_SETUP_COMPLETE", None)
-            result = await self.verify(authorization=None, )
-            assert result is None  # returns None = allow
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as exc_info:
+                await self.verify(authorization=None, )
+            assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_valid_bearer_token(self):
@@ -88,6 +90,42 @@ class TestSetupCompleteLocalhost:
         with pytest.raises(HTTPException) as exc_info:
             await setup_complete(mock_request)
         assert exc_info.value.status_code == 403
+
+
+class TestSetupLocalDependency:
+    """Le bypass de bootstrap est strictement borné au pair TCP loopback."""
+
+    @staticmethod
+    def _request(host: str):
+        from starlette.requests import Request
+        return Request({"type": "http", "method": "GET", "path": "/api/setup/status",
+                        "headers": [], "client": (host, 50000), "server": ("lumena", 8080),
+                        "scheme": "http", "query_string": b""})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host", ["127.0.0.1", "127.42.0.8", "::1", "localhost"])
+    async def test_loopback_is_allowed(self, host):
+        from web.routes.deps import verify_setup_local_request
+        assert await verify_setup_local_request(self._request(host)) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("host", ["192.168.1.25", "10.0.0.4", "127.0.0.1.evil"])
+    async def test_remote_peer_is_rejected(self, host):
+        from fastapi import HTTPException
+        from web.routes.deps import verify_setup_local_request
+        with pytest.raises(HTTPException) as exc_info:
+            await verify_setup_local_request(self._request(host))
+        assert exc_info.value.status_code == 403
+
+    def test_every_setup_route_uses_the_local_guard(self):
+        from web.routes.deps import verify_setup_local_request
+        from web.routes.setup import router
+
+        setup_routes = [route for route in router.routes if route.path.startswith("/api/setup/")]
+        assert len(setup_routes) == 7
+        for route in setup_routes:
+            guards = {dependency.call for dependency in route.dependant.dependencies}
+            assert verify_setup_local_request in guards, route.path
 
 
 class TestStripeRoutesAuth:

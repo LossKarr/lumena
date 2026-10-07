@@ -98,12 +98,12 @@ def test_new_fallback_chains_are_ordered_bounded_and_keep_nvidia_last():
     from src.llm.providers import get_model_fallbacks
 
     expected_prefixes = {
-        "gpt-6-astra": ["gpt-6-sol", "gpt-5.6-sol", "claude-opus-5.5"],
+        "gpt-6-astra": ["gpt-6.1-sol", "gpt-5.6-sol", "claude-opus-5.5"],
         "gpt-6-sol": ["gpt-6-luna", "gpt-5.6-terra", "claude-sonnet-5"],
         "gpt-6-luna": ["deepseek-flash", "qwen3-8b"],
-        "claude-fable-5.1": ["claude-opus-5.5", "claude-sonnet-5", "gpt-6-sol"],
-        "claude-mythos-5.1": ["claude-fable-5.1", "claude-opus-5.5", "claude-sonnet-5"],
-        "claude-opus-5.5": ["claude-sonnet-5", "gpt-6-sol", "deepseek-flash"],
+        "claude-fable-5.1": ["claude-opus-5.5", "claude-sonnet-5.5", "gpt-6.1-sol"],
+        "claude-mythos-5.1": ["claude-fable-5.1", "claude-opus-5.5", "claude-sonnet-5.5"],
+        "claude-opus-5.5": ["claude-sonnet-5.5", "gpt-6.1-sol", "deepseek-flash"],
     }
     for root, prefix in expected_prefixes.items():
         chain = get_model_fallbacks(root)

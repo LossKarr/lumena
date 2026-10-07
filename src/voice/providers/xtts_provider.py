@@ -1,5 +1,5 @@
 """
-🎙️ XTTS v2 Provider — Coqui TTS (Apache 2.0)
+🎙️ XTTS v2 Provider — Coqui TTS (Coqui Public Model License)
 
 Voix ultra-naturelle 100% locale, qualité proche d'ElevenLabs.
 Supporte le voice cloning français (6 secondes de référence suffisent).
@@ -30,7 +30,11 @@ except ImportError:
 
 class XTTSProvider:
     """
-    Provider TTS XTTS v2 (Coqui, Apache 2.0).
+    Provider TTS XTTS v2 (poids sous Coqui Public Model License).
+
+    Le code d'intégration Lumena conserve sa propre licence, mais les poids
+    XTTS-v2 et leurs sorties sont réservés à un usage non commercial par leur
+    licence. Le provider n'est donc jamais un moteur produit automatique.
 
     Qualité :  quasi-humaine, convenable en temps réel sur GPU (~1-2s/phrase)
     Offline :  100% local, zéro cloud, zéro clé API
@@ -40,6 +44,8 @@ class XTTSProvider:
 
     MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
     LANGUAGE = "fr"
+    MODEL_LICENSE = "Coqui Public Model License 1.0.0"
+    COMMERCIAL_USE_ALLOWED = False
 
     # Noms de speakers FR courants dans XTTS v2
     # (la liste exacte dépend de la version — _load_model() détecte dynamiquement)
@@ -98,6 +104,8 @@ class XTTSProvider:
             "voice_reference": self.voice_reference,
             "gpu": self._cuda_available(),
             "loaded": self._tts is not None,
+            "license": self.MODEL_LICENSE,
+            "commercial_use_allowed": self.COMMERCIAL_USE_ALLOWED,
         }
 
     # ------------------------------------------------------------------
@@ -188,7 +196,7 @@ class XTTSProvider:
 
             ok = output_path.exists() and output_path.stat().st_size > 0
             if ok:
-                logger.debug(f"🎙️ XTTS v2: '{text[:40]}...' → {output_path.name}")
+                logger.debug(f"🎙️ XTTS v2: synthèse terminée → {output_path.name}")
             return ok
 
         except Exception as e:

@@ -65,7 +65,7 @@ def check_port_listening(port: int) -> Dict[str, Any]:
 
 def check_bind_host() -> Dict[str, Any]:
     """Retourne l'adresse de bind et si elle est accessible depuis le réseau."""
-    host = os.getenv("LUMENA_HOST", "0.0.0.0").strip()
+    host = os.getenv("LUMENA_HOST", "127.0.0.1").strip()
     if host in ("0.0.0.0", ""):
         return {"bind": "0.0.0.0", "network_accessible": True}
     if host in ("::", "0:0:0:0:0:0:0:0"):

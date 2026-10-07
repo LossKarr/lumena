@@ -99,6 +99,74 @@ def test_env_preserves_unknown_keys(tmp_path):
     assert "LUMENA_WEB_PORT=3333" in text
 
 
+def test_env_windows_path_round_trip_is_stable(tmp_path):
+    project_root, data_dir, env_path = _configure_env_paths(tmp_path)
+    expected = r"C:\Users\demo\Lumena Data"
+    with patch.object(config_mod, "_PROJECT_ROOT", project_root), \
+         patch.object(config_mod, "_ENV_FILE_LOCK", data_dir / ".env.lock"), \
+         patch.object(config_mod, "_ENV_BACKUP_DIR", data_dir / "env_backups"):
+        config_mod._write_env_values({"LUMENA_DATA_DIR": expected})
+        assert config_mod._read_env_file()["LUMENA_DATA_DIR"] == expected
+        config_mod._write_env_values({"LUMENA_DATA_DIR": config_mod._read_env_file()["LUMENA_DATA_DIR"]})
+        assert config_mod._read_env_file()["LUMENA_DATA_DIR"] == expected
+
+    assert env_path.read_text(encoding="utf-8").count("LUMENA_DATA_DIR=") == 1
+
+
+def test_env_updates_only_last_active_duplicate(tmp_path):
+    project_root, data_dir, env_path = _configure_env_paths(tmp_path)
+    original = (
+        "LUMENA_ADMIN_TOKEN=historical\n"
+        "CUSTOM_KEEP=exactly-this\n"
+        "# LUMENA_ADMIN_TOKEN=commented-history\n"
+        "LUMENA_ADMIN_TOKEN=effective\n"
+    )
+    env_path.write_text(original, encoding="utf-8")
+    with patch.object(config_mod, "_PROJECT_ROOT", project_root), \
+         patch.object(config_mod, "_ENV_FILE_LOCK", data_dir / ".env.lock"), \
+         patch.object(config_mod, "_ENV_BACKUP_DIR", data_dir / "env_backups"):
+        config_mod._write_env_values({"LUMENA_ADMIN_TOKEN": "replacement"})
+        assert config_mod._read_env_file()["LUMENA_ADMIN_TOKEN"] == "replacement"
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == [
+        "LUMENA_ADMIN_TOKEN=historical",
+        "CUSTOM_KEEP=exactly-this",
+        "# LUMENA_ADMIN_TOKEN=commented-history",
+        "LUMENA_ADMIN_TOKEN=replacement",
+    ]
+
+
+def test_env_preserves_bom_crlf_and_commented_history(tmp_path):
+    project_root, data_dir, env_path = _configure_env_paths(tmp_path)
+    original = b"\xef\xbb\xbf# LUMENA_PORT=legacy\r\nLUMENA_PORT=8080\r\nCUSTOM_KEEP=1\r\n"
+    env_path.write_bytes(original)
+    with patch.object(config_mod, "_PROJECT_ROOT", project_root), \
+         patch.object(config_mod, "_ENV_FILE_LOCK", data_dir / ".env.lock"), \
+         patch.object(config_mod, "_ENV_BACKUP_DIR", data_dir / "env_backups"):
+        config_mod._write_env_values({"LUMENA_PORT": "9090"})
+
+    written = env_path.read_bytes()
+    assert written.startswith(b"\xef\xbb\xbf")
+    assert b"# LUMENA_PORT=legacy\r\n" in written
+    assert b"LUMENA_PORT=9090\r\n" in written
+    assert b"CUSTOM_KEEP=1\r\n" in written
+    assert written.replace(b"\r\n", b"").find(b"\n") == -1
+
+
+def test_env_write_failure_restores_original_bytes(tmp_path):
+    project_root, data_dir, env_path = _configure_env_paths(tmp_path)
+    original = env_path.read_bytes()
+    with patch.object(config_mod, "_PROJECT_ROOT", project_root), \
+         patch.object(config_mod, "_ENV_FILE_LOCK", data_dir / ".env.lock"), \
+         patch.object(config_mod, "_ENV_BACKUP_DIR", data_dir / "env_backups"), \
+         patch.object(Path, "replace", side_effect=OSError("simulated replace failure")):
+        with pytest.raises(OSError, match="simulated replace failure"):
+            config_mod._write_env_values({"LUMENA_PORT": "9090"})
+
+    assert env_path.read_bytes() == original
+
+
 def test_env_write_lock(tmp_path):
     project_root, data_dir, env_path = _configure_env_paths(tmp_path)
     with patch.object(config_mod, "_PROJECT_ROOT", project_root), \

@@ -142,7 +142,24 @@ def should_protect_observation(tool_name: str | None) -> bool:
         return False
     if not tool_name:
         return False
-    return tool_name.strip().lower() in READER_TOOLS
+    normalized = tool_name.strip().lower()
+    leaf = (
+        normalized.rsplit("__", 1)[-1]
+        if normalized.startswith("mcp__") and "__" in normalized[5:]
+        else normalized
+    )
+    return (
+        normalized in READER_TOOLS
+        or leaf in READER_TOOLS
+        or leaf.startswith((
+            "read_", "list_", "search_", "find_", "grep_", "inspect_",
+            "describe_", "query_", "fetch_",
+        ))
+        or leaf.endswith((
+            "_read", "_list", "_search", "_find", "_grep", "_inspect",
+            "_query", "_fetch",
+        ))
+    )
 
 
 def split_head_tail(text: str, budget: int, *, head_ratio: float = 0.5) -> str:

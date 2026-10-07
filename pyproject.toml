@@ -50,7 +50,7 @@ version = {attr = "src.version.__version__"}
 
 [tool.setuptools.package-data]
 "web" = ["static/**/*", "index.html"]
-"src.tools" = ["ide_tool_policy.json"]
+"src.tools" = ["ide_tool_policy.json", "remotion_runtime/Dockerfile"]
 
 [tool.setuptools.data-files]
 "assets/templates" = ["assets/templates/*.j2"]

@@ -95,6 +95,15 @@ def create_mcp_client_from_runner(
     if runner is None:
         raise ClientFactoryError("runner_invalid:none")
 
+    # MCP-U4 : un runtime distant expose le même lifecycle sans inventer un
+    # subprocess. Sa factory reste responsable de construire le client HTTP.
+    remote_factory = getattr(runner, "create_client", None)
+    if callable(remote_factory):
+        try:
+            return remote_factory(default_timeout_s=default_timeout_s)
+        except MCPClientError as e:
+            raise ClientFactoryError("client_create_failed") from e
+
     # 2. Runner expose .process ?
     if not hasattr(type(runner), "process") and not hasattr(runner, "process"):
         raise ClientFactoryError("runner_invalid:no_process_property")

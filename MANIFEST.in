@@ -1,6 +1,7 @@
 recursive-include assets/templates *.j2
 recursive-include skills *.md *.yaml *.json
 recursive-include web/static *
+recursive-include src/tools/remotion_runtime *
 include web/index.html
 include .env.example
 include LICENSE

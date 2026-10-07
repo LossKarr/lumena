@@ -41,7 +41,7 @@ def _get_provider_semaphore(provider_name: str) -> asyncio.Semaphore:
 from .providers import (
     ProviderType, ModelConfig, get_model_config,
     get_api_key, check_api_key, AVAILABLE_MODELS,
-    get_default_model_for_provider, get_model_fallbacks,
+    get_default_model_for_provider, get_model_fallbacks, register_ollama_models,
 )
 from .model_access import (
     ModelAccessRef,
@@ -84,6 +84,7 @@ def _strip_anthropic_sampling_params(payload: Dict[str, Any]) -> None:
 
 _ANTHROPIC_EFFORT_MODELS = frozenset({
     "claude-opus-5-5",
+    "claude-sonnet-5-5",
     "claude-fable-5-1",
     "claude-mythos-5-1",
 })
@@ -537,10 +538,11 @@ class MultiProviderLLM:
         """
         Resolve le modele initial avec priorite:
         1) argument explicite
-        2) LUMENA_DEFAULT_MODEL
-        3) DEFAULT_MODEL (compat)
-        4) LUMENA_MODEL (compat legacy)
-        5) deepseek-flash
+        2) modèle personnel explicitement choisi comme défaut
+        3) LUMENA_DEFAULT_MODEL
+        4) DEFAULT_MODEL (compat)
+        5) LUMENA_MODEL (compat legacy)
+        6) deepseek-flash
         """
         source = "default"
         candidate = (explicit_model_name or "").strip()
@@ -548,6 +550,21 @@ class MultiProviderLLM:
         if candidate:
             source = "argument"
         else:
+            try:
+                from src.utils.paths import DATA_DIR
+                from src.utils.persistence import safe_read_json
+                registry = safe_read_json(DATA_DIR / "personal_model" / "lineages" / "registry.json", default={})
+                pointer = registry.get("global_default") if isinstance(registry, dict) else None
+                lineage = registry.get("lineages", {}).get(pointer.get("lineage_id")) if isinstance(pointer, dict) else None
+                record = lineage.get("versions", {}).get(pointer.get("version")) if isinstance(lineage, dict) else None
+                if isinstance(record, dict) and record.get("global_default") and record.get("personal_active") and record.get("artifact_hashes", {}).get("ollama_canary"):
+                    candidate = str(record.get("model_name") or "").strip()
+                    if candidate:
+                        register_ollama_models([candidate])
+                        source = "personal_model_registry"
+            except Exception as exc:
+                logger.debug("Personal model default ignored: {}", type(exc).__name__)
+        if not candidate:
             for env_name in ("LUMENA_DEFAULT_MODEL", "DEFAULT_MODEL", "LUMENA_MODEL"):
                 raw = (os.getenv(env_name, "") or "").strip()
                 if raw:
@@ -2182,8 +2199,8 @@ class MultiProviderLLM:
         allowed = {"none", "low", "medium", "high", "xhigh", "max"}
         if effort not in allowed:
             effort = default_effort
-        if model == "gpt-6-astra" and effort == "none":
-            effort = "low"
+        if model in {"gpt-6-astra", "gpt-6.1-sol"} and effort == "none":
+            effort = default_effort
         payload["reasoning"] = {"effort": effort}
 
         response_tools: List[Dict[str, Any]] = []

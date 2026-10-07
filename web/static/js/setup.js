@@ -1700,6 +1700,8 @@ function _modelToProviderKey(m) {
   if (m.startsWith('kimi-'))    return 'MOONSHOT_API_KEY';
   if (m.startsWith('grok-'))    return 'XAI_API_KEY';
   if (m.startsWith('minimax-'))  return 'MINIMAX_API_KEY';
+  if (m.startsWith('glm-'))     return 'ZAI_API_KEY';
+  if (m.startsWith('mistral-') || m.startsWith('ministral-') || m.startsWith('codestral') || m.startsWith('magistral-')) return 'MISTRAL_API_KEY';
   return null; // Ollama / local / unknown
 }
 
@@ -2189,35 +2191,25 @@ async function _finishSetup() {
       },
       body: JSON.stringify({ config: _config, preview: false }),
     });
-    const data = await res.json();
+    let data = {};
+    try { data = await res.json(); } catch (_) {}
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || `Erreur serveur (HTTP ${res.status})`);
+    }
     if (data.success) {
       // P0.11: Store admin token returned by backend
       if (data.admin_token) {
         window.ADMIN_TOKEN = data.admin_token;
       }
-      localStorage.setItem('lumena_onboarding_pending', '1');
-      // P0.7: Warn if LLM is not ready (no valid API key)
-      if (data.llm_ready === false && !data.restart_needed) {
-        const overlay = document.getElementById('setup-wizard-overlay');
-        const inner = overlay ? overlay.querySelector('.setup-wizard') : null;
-        if (inner) {
-          inner.innerHTML = `
-            <div class="setup-step active" style="text-align:center;padding:2em">
-              <div class="setup-step-icon"><i data-lucide="alert-triangle"></i></div>
-              <h2>Configuration sauvegardée</h2>
-              <p style="margin:.8em 0;color:var(--muted)">Aucun modèle IA n'est accessible pour le moment.<br>
-              Vérifie tes clés API ou installe Ollama pour utiliser un modèle local.</p>
-              <div class="setup-nav" style="margin-top:1.5em;gap:10px">
-                <button class="setup-btn setup-btn-outline" id="llm-warn-retry">Réessayer</button>
-                <button class="setup-btn" id="llm-warn-continue">Continuer quand même</button>
-              </div>
-            </div>`;
-          if (typeof lucide !== 'undefined') lucide.createIcons();
-          inner.querySelector('#llm-warn-retry')?.addEventListener('click', () => location.reload());
-          inner.querySelector('#llm-warn-continue')?.addEventListener('click', () => _closeWizard());
-          return;
-        }
+      // Ne jamais fermer le wizard si le cœur n'est pas prêt. La configuration
+      // reste en mémoire et le backend autorise une nouvelle tentative en mode
+      // récupération : l'utilisateur peut revenir corriger la clé ou le modèle.
+      if (data.llm_ready === false) {
+        _showSetupError(data.runtime_error || 'La configuration est enregistrée, mais le modèle IA n’est pas accessible. Vérifie sa clé ou son installation puis réessaie.');
+        if (btn) { btn.disabled = false; btn.textContent = 'Réessayer le démarrage'; }
+        return;
       }
+      localStorage.setItem('lumena_onboarding_pending', '1');
       if (data.restart_needed) {
         // P4: Channels/services configurés → restart nécessaire
         const overlay = document.getElementById('setup-wizard-overlay');

@@ -105,6 +105,24 @@
   padding: 8px 14px;
 }
 
+.cfg-sidebar-footer .btn.has-changes {
+  box-shadow: 0 0 0 1px rgba(245,159,74,.4), 0 8px 24px rgba(245,159,74,.12);
+}
+
+.cfg-sidebar-footer .btn:disabled {
+  cursor: wait;
+  opacity: .72;
+}
+
+.cfg-nav-item.dirty::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(245,159,74,.55);
+}
+
 /* Main content area */
 .cfg-main {
   flex: 1;
@@ -130,6 +148,40 @@
 .cfg-group-content {
   animation: cfgFadeIn .2s ease;
 }
+
+.cfg-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  transition: background .15s, border-color .15s;
+}
+
+.cfg-field-row.dirty {
+  border-bottom-color: rgba(245,159,74,.4);
+  background: linear-gradient(90deg, rgba(245,159,74,.055), transparent 55%);
+}
+
+.cfg-field-copy { min-width: 240px; }
+.cfg-field-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.cfg-field-key { margin-top: 2px; font: 10px var(--mono); color: var(--muted); }
+.cfg-field-hint { max-width: 520px; margin-top: 5px; font-size: 10px; line-height: 1.45; color: var(--muted); }
+.cfg-field-control { flex-shrink: 0; }
+.cfg-input { min-width: 240px; height: 34px; padding: 0 9px; font-size: 12px; }
+.cfg-number { width: 130px; min-width: 130px; }
+.cfg-restart-badge { display: inline-flex; margin-left: 7px; padding: 2px 6px; border: 1px solid rgba(245,159,74,.24); border-radius: 999px; background: rgba(245,159,74,.1); color: var(--accent); font-size: 9px; font-weight: 600; vertical-align: middle; }
+.cfg-bool { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--muted); font-size: 12px; }
+.cfg-bool input { width: 16px; height: 16px; accent-color: var(--accent); }
+.cfg-secret { display: flex; align-items: center; gap: 6px; }
+.cfg-secret-input { width: 280px; font-family: var(--mono); }
+.cfg-secret-toggle { min-width: 34px; padding: 4px 8px; }
+.cfg-secret-toggle .lucide { width: 14px; height: 14px; pointer-events: none; }
+.cfg-load-error { margin: 20px; padding: 12px 14px; border: 1px solid rgba(231,76,60,.25); border-radius: var(--radius-md); background: rgba(231,76,60,.08); color: var(--danger); font-size: 12px; }
+.cfg-spin { animation: cfgSpin .8s linear infinite; }
+
+@keyframes cfgSpin { to { transform: rotate(360deg); } }
 
 .cfg-empty {
   color: var(--muted);
@@ -183,4 +235,7 @@
   .cfg-main-header {
     padding: 16px;
   }
+  .cfg-field-row { align-items: stretch; flex-direction: column; gap: 9px; }
+  .cfg-field-copy, .cfg-field-control, .cfg-input, .cfg-secret-input { width: 100%; min-width: 0; }
+  .cfg-secret { align-items: stretch; }
 }

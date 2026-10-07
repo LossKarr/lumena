@@ -89,6 +89,7 @@ class Action:
     tool_name: Optional[str] = None
     tool_args: Dict[str, Any] = field(default_factory=dict)
     answer: Optional[str] = None
+    public_update: Optional[str] = field(default=None, repr=False)
 
 
 @dataclass
@@ -294,7 +295,10 @@ _TOOL_COMPLETION_HINTS: Dict[str, List[str]] = {
     "list_image_models": ["modèle", "modele", "model", "image", "provider", "list", "disponible"],
     "edit_video": ["modif", "edit", "chang", "vidéo", "video", "scène", "scene", "animation", "couleur", "texte"],
     "preview_video": ["preview", "prévisual", "previsual", "aperçu", "apercu", "vidéo", "video"],
+    "retry_video_render": ["reprend", "reprendre", "réessa", "reessa", "relance", "rendu", "vidéo", "video", "remotion"],
     "list_video_projects": ["list", "projet", "vidéo", "video", "remotion"],
+    "get_video_job": ["état", "progression", "avancement", "rendu", "vidéo", "video"],
+    "cancel_video_job": ["annul", "arrêt", "stop", "rendu", "vidéo", "video"],
     # Tests / debug
     "test_and_fix": ["test", "tester", "vérifi", "verifi", "corrig", "fix", "bug", "débogu", "debogu"],
     # Délégation CodeAgent (correction de code multi-fichiers, debugging complexe)

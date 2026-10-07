@@ -6,6 +6,7 @@ rms injecté. On prouve : routage transcribe (bytes/chemin), stream un-final, ma
 imports paresseux (aucune lib hardware au niveau module ni à l'import de src.voice.v2).
 """
 import ast
+import asyncio
 import importlib.util
 import sys
 import wave
@@ -54,6 +55,44 @@ async def test_real_stt_stream_empty_yields_nothing():
         async def transcribe_memory(self, audio_bytes, fast=True): return ""
     out = [r async for r in RealSTTAdapter(stt=_Empty()).stream(b"\x00")]
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_multilingual_detailed_result_preserves_detected_language_confidence():
+    class _DetailedEngine:
+        async def transcribe_memory_detailed(self, audio, fast=False, language="fr"):
+            assert audio == b"hola"
+            assert fast is False
+            assert language == "auto"
+            return {
+                "text": "Hola, necesito ayuda.", "segments": [], "status": "ok",
+                "language": "es", "language_probability": 0.97,
+            }
+
+    adapter = RealSTTAdapter(stt=_DetailedEngine(), language="auto")
+    result = await adapter.transcribe_detailed(b"hola", language="auto")
+    assert result["language"] == "es"
+    assert result["language_probability"] == pytest.approx(0.97)
+
+
+@pytest.mark.asyncio
+async def test_micro_source_forwards_only_language_metadata_not_audio():
+    class _DetailedSTT:
+        async def transcribe_detailed(self, _audio, language="auto", strict=False):
+            return {
+                "text": "Hello Lumena", "segments": [], "status": "ok",
+                "language": "en", "language_probability": 0.93,
+            }
+
+    source = MicConversationSource(
+        vad=object(), stt=_DetailedSTT(), tm=object(), language="auto"
+    )
+    text = await source._transcribe(b"private-audio", fast=False)
+    assert text == "Hello Lumena"
+    assert source.last_transcription_detail == {
+        "text": "Hello Lumena", "segments": [], "status": "ok",
+        "language": "en", "language_probability": 0.93,
+    }
 
 
 def test_real_stt_unavailable_when_faster_whisper_absent(monkeypatch):
@@ -126,6 +165,21 @@ async def test_vad_calibrate_applies_thresholds_from_frames():
     assert res["noise_floor"] == 200.0 and res["fallback"] is False
     assert res["energy_threshold"] == 500 and res["speaking_threshold"] == 2000
     assert vad.energy_threshold == 500 and vad.speaking_threshold == 2000
+
+
+@pytest.mark.asyncio
+async def test_vad_calibration_preserves_disabled_playback_guard():
+    vad = RealVADProvider(
+        energy_threshold=300,
+        speaking_threshold=None,
+        speaking_guard_enabled=False,
+        frames=[],
+        rms_fn=lambda _frame: 200.0,
+    )
+    result = await vad.calibrate(frames=[b"quiet"] * 4)
+    assert result["energy_threshold"] == 500
+    assert result["speaking_threshold"] is None
+    assert vad.status()["speaking_guard_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -247,6 +301,42 @@ async def test_stt_prewarm_failure_is_non_blocking():
 
 
 @pytest.mark.asyncio
+async def test_stt_blocking_engine_does_not_freeze_event_loop():
+    import time
+
+    class _Blocking:
+        async def transcribe_memory(self, _audio, fast=True):
+            time.sleep(0.12)
+            return "bonjour"
+
+    adapter = RealSTTAdapter(stt=_Blocking(), timeout_s=1)
+    ticks = []
+
+    async def ticker():
+        await asyncio.sleep(0.02)
+        ticks.append("event-loop-alive")
+
+    text, _ = await asyncio.gather(adapter.transcribe(b"pcm"), ticker())
+    assert text == "bonjour"
+    assert ticks == ["event-loop-alive"]
+
+
+@pytest.mark.asyncio
+async def test_stt_timeout_is_bounded_and_observable():
+    import time
+
+    class _TooSlow:
+        async def transcribe_memory(self, _audio, fast=True):
+            time.sleep(0.2)
+            return "trop tard"
+
+    adapter = RealSTTAdapter(stt=_TooSlow(), timeout_s=0.05)
+    assert await adapter.transcribe(b"pcm") == ""
+    assert adapter.last_status == "timeout"
+    assert adapter.last_latency_ms < 180
+
+
+@pytest.mark.asyncio
 async def test_tts_prewarm_synthesizes_without_playback(monkeypatch):
     monkeypatch.setenv("LUMENA_VOICE_CLOUD_ALLOWED", "0")
     from src.voice.v2 import LocalTTSAdapter
@@ -278,6 +368,18 @@ async def test_tts_prewarm_marks_degraded_on_pyttsx3(monkeypatch):
             return "C:/tmp/x.wav"
     res = await LocalTTSAdapter(tts=_Pyttsx3Engine()).prewarm()
     assert res["ok"] is True and res["degraded"] is True and res["provider"] == "pyttsx3"
+
+
+def test_local_tts_reads_real_wav_format_metadata(tmp_path):
+    from src.voice.v2.providers.local_tts import _audio_metadata
+
+    path = tmp_path / "voice.wav"
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(2)
+        stream.setsampwidth(2)
+        stream.setframerate(48000)
+        stream.writeframes(b"\x00\x00" * 2 * 480)
+    assert _audio_metadata(path) == ("pcm16", 48000, 2, 10)
 
 
 # ── Self-voice guard : seuil relevé pendant que Lumena parle ───────────────────
@@ -399,9 +501,15 @@ async def test_mic_source_skips_short_fragment():
     tm = TurnManager()
     src = MicConversationSource(_ScriptedVAD(short), stt, tm, min_utterance_ms=300)
     await src.run()
-    types = [e.type for e in _drain(tm)]
+    events = _drain(tm)
+    types = [e.type for e in events]
     assert "vad.speech_started" in types and "vad.speech_ended" in types   # timing honnête
-    assert "stt.final" not in types                                        # contenu filtré
+    # Toute transcription commencée se termine explicitement, même quand le
+    # contenu est filtré. Le TurnManager peut ainsi distinguer un vrai silence
+    # d'un Whisper encore en cours et ne reprend jamais la vieille réponse trop tôt.
+    final = next(event for event in events if event.type == "stt.final")
+    assert final.data["text"] == ""
+    assert final.data["terminal_reason"] == "fragment_too_short"
     assert stt.calls == 0                                                   # Whisper jamais appelé
     assert src.fragments_skipped == 1
 
@@ -418,6 +526,27 @@ async def test_mic_source_transcribes_long_enough_utterance():
     assert stt.calls == 1
     assert src.fragments_skipped == 0
     assert tm.state.final_transcript == "contenu transcrit"
+    assert src.vad.last_utterance == b""
+
+
+@pytest.mark.asyncio
+async def test_mic_source_emits_terminal_final_when_stt_times_out():
+    class _SlowSTT:
+        async def transcribe(self, *_args, **_kwargs):
+            await asyncio.sleep(2)
+            return "trop tard"
+
+    tm = TurnManager()
+    src = MicConversationSource(
+        _ScriptedVAD(b"\x00" * 12000), _SlowSTT(), tm,
+        min_utterance_ms=300, stt_timeout_s=0.01,
+    )
+    # Le minimum produit est volontairement borné à une seconde.
+    src.stt_timeout_s = 0.01
+    await src.run()
+    final = next(event for event in _drain(tm) if event.type == "stt.final")
+    assert final.data["text"] == ""
+    assert final.data["terminal_reason"] == "stt_timeout"
 
 
 @pytest.mark.asyncio
@@ -473,6 +602,7 @@ async def test_mic_source_stop_flushes_open_utterance():
     assert "vad.speech_ended" in types
     assert "stt.final" in types
     assert stt.calls == 1
+    assert vad.last_utterance == b""
 
 
 # ── Imports paresseux : aucune lib hardware au niveau module ───────────────────

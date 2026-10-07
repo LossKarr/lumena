@@ -362,9 +362,11 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
     if _obs_count:
         cleaned_response = _obs_pattern.sub("", cleaned_response)
         logger.warning("⚠️ {} fausse(s) OBSERVATION: hallucilée(s) supprimée(s) de la réponse LLM", _obs_count)
+    public_match = re.search(r"(?im)^\s*PUBLIC_UPDATE:\s*([^\r\n]+)", cleaned_response)
+    public_update = public_match.group(1).strip() if public_match else None
     thought_matches = list(
         re.finditer(
-            r"(?is)^\s*THOUGHT:\s*(.+?)(?=^\s*(?:ACTION|THOUGHT):|\Z)",
+            r"(?is)^\s*THOUGHT:\s*(.+?)(?=^\s*(?:PUBLIC_UPDATE|ACTION|THOUGHT):|\Z)",
             cleaned_response,
             re.MULTILINE,
         )
@@ -472,11 +474,11 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
                         final_answer = _val
             except Exception:
                 pass
-        return thought, Action(action_type=ActionType.FINAL_ANSWER, answer=final_answer), halluc_flag, pending_multi_actions
+        return thought, Action(action_type=ActionType.FINAL_ANSWER, answer=final_answer, public_update=public_update), halluc_flag, pending_multi_actions
 
     if action_name.upper() == "CLARIFY":
         clarify_question = action_input if action_input else thought_content
-        return thought, Action(action_type=ActionType.CLARIFY, answer=clarify_question), halluc_flag, pending_multi_actions
+        return thought, Action(action_type=ActionType.CLARIFY, answer=clarify_question, public_update=public_update), halluc_flag, pending_multi_actions
 
     if not action_name:
         # Fallback: si le LLM envoie du JSON brut avec path/content
@@ -509,6 +511,7 @@ def parse_response(response: str) -> Tuple[Thought, Action, bool, list]:
         action_type=ActionType.TOOL_CALL,
         tool_name=action_name,
         tool_args=args,
+        public_update=public_update,
     ), halluc_flag, pending_multi_actions
 
 

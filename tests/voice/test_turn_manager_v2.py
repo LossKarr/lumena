@@ -79,6 +79,103 @@ def test_false_barge_in_resumes():
     assert tm.state.pending_barge_in is False
 
 
+def test_immediate_barge_in_with_empty_transcript_resynthesizes_unheard_tail():
+    tm = TurnManager(barge_in_on_vad=True)
+    _drive_to_speaking(tm)
+    interrupted = tm.state.current_generation_id
+    cmds = tm.feed(VoiceEvent("vad.speech_started", t=260))
+    assert "stop_playback" in _names(cmds)
+    tm.feed(VoiceEvent("vad.speech_ended", t=300))
+    cmds = tm.feed(VoiceEvent(
+        "timer.endpoint", t=600,
+        data={"turn_id": tm.state.current_turn_id, "pause_ms": 300},
+    ))
+    resume = next(cmd for cmd in cmds if cmd.name == "resume_interrupted_speech")
+    assert resume.data["generation_id"] == interrupted
+
+
+def test_endpoint_timer_never_resumes_while_stt_is_pending():
+    """Reproduction du bug réel : le timer expirait avant le retour de Whisper."""
+    tm = TurnManager(barge_in_on_vad=True)
+    _drive_to_speaking(tm)
+    interrupted = tm.state.current_generation_id
+    tm.feed(VoiceEvent("vad.speech_started", t=260))
+    turn_id = tm.state.current_turn_id
+    tm.feed(VoiceEvent("vad.speech_ended", t=300))
+    tm.feed(VoiceEvent("stt.started", t=300, data={"turn_id": turn_id}))
+
+    commands = tm.feed(VoiceEvent(
+        "timer.endpoint", t=600,
+        data={"turn_id": turn_id, "pause_ms": 300},
+    ))
+    assert "resume_interrupted_speech" not in _names(commands)
+    assert tm.state.transcription_pending is True
+
+    commands = tm.feed(VoiceEvent(
+        "stt.final", t=900,
+        data={"turn_id": turn_id, "text": "ouvre google", "terminal_reason": "text"},
+    ))
+    assert "start_llm" in _names(commands)
+    assert "resume_interrupted_speech" not in _names(commands)
+    assert tm.state.interrupted_generation_id is None
+    assert interrupted is not None
+
+
+def test_empty_terminal_transcript_resumes_interrupted_generation_once():
+    tm = TurnManager(barge_in_on_vad=True)
+    _drive_to_speaking(tm)
+    interrupted = tm.state.current_generation_id
+    tm.feed(VoiceEvent("vad.speech_started", t=260))
+    turn_id = tm.state.current_turn_id
+    tm.feed(VoiceEvent("vad.speech_ended", t=300))
+    tm.feed(VoiceEvent("stt.started", t=300, data={"turn_id": turn_id}))
+
+    first = tm.feed(VoiceEvent(
+        "stt.final", t=500,
+        data={"turn_id": turn_id, "text": "", "terminal_reason": "no_speech"},
+    ))
+    second = tm.feed(VoiceEvent(
+        "timer.endpoint", t=600,
+        data={"turn_id": turn_id, "pause_ms": 300},
+    ))
+    resumes = [command for command in first + second
+               if command.name == "resume_interrupted_speech"]
+    assert len(resumes) == 1
+    assert resumes[0].data["generation_id"] == interrupted
+
+
+def test_late_stt_final_from_old_turn_is_ignored():
+    tm = TurnManager()
+    tm.feed(VoiceEvent("vad.speech_started", t=0))
+    old_turn = tm.state.current_turn_id
+    tm.state.current_turn_id = "new-turn"
+    commands = tm.feed(VoiceEvent(
+        "stt.final", t=100,
+        data={"turn_id": old_turn, "text": "commande périmée", "terminal_reason": "text"},
+    ))
+    assert commands == []
+    assert tm.state.final_transcript == ""
+
+
+def test_rejected_activation_resumes_interrupted_generation_once():
+    tm = TurnManager(barge_in_on_vad=True)
+    _drive_to_speaking(tm)
+    interrupted = tm.state.current_generation_id
+    tm.feed(VoiceEvent("vad.speech_started", t=260))
+    turn_id = tm.state.current_turn_id
+    tm.feed(VoiceEvent("vad.speech_ended", t=300))
+    tm.feed(VoiceEvent("stt.started", t=300, data={"turn_id": turn_id}))
+    commands = tm.feed(VoiceEvent(
+        "activation.rejected", t=500,
+        data={"turn_id": turn_id, "reason": "wake_phrase_missing"},
+    ))
+    resumes = [command for command in commands
+               if command.name == "resume_interrupted_speech"]
+    assert len(resumes) == 1
+    assert resumes[0].data["generation_id"] == interrupted
+    assert tm.state.interrupted_generation_id is None
+
+
 # ── 4. Partial contredit par final -> pas d'action sur le partial ─────────────
 def test_partial_never_triggers_action():
     tm = TurnManager()  # speculative OFF par défaut
@@ -136,6 +233,8 @@ def test_ledger_truncation_keeps_only_played():
     assert ps.played_ms == 4120
     assert ps.interrupted is True
     assert "Le deuxieme" not in ps.text_played
+    assert ps.planned_text == full
+    assert ps.heard_until_ms == 4120
 
 
 # ── 9. Endpointing heuristique ────────────────────────────────────────────────

@@ -45,6 +45,12 @@ from loguru import logger
 from src.services.secrets_service import SecretsService, get_secrets_service
 from src.utils.paths import DATA_DIR
 from src.utils.persistence import atomic_write_json, safe_read_json
+from src.mcp.connection_spec import (
+    ConnectionSpecError,
+    DistributionKind,
+    MCPConnectionSpec,
+    TransportKind,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -82,6 +88,26 @@ _PKG_NPM_RE = re.compile(
 _PKG_PYPI_RE = re.compile(r"^pypi:[a-zA-Z][a-zA-Z0-9_\-.]{0,63}$")
 # local : slug seul, jamais de slash
 _PKG_LOCAL_RE = re.compile(r"^local:[a-z0-9][a-z0-9_\-.]{0,63}$")
+_PKG_REMOTE_RE = re.compile(r"^remote:[a-z0-9][a-z0-9_\-.]{0,63}$")
+# LOT MCP-1 — exe : chemin ABSOLU d'un binaire, ecrit avec des SLASHES.
+#
+# Un nombre croissant de MCP sont livres comme executable local plutot que comme
+# paquet de registre : le serveur integre a Roblox Studio en est le premier cas
+# rencontre ici. Aucun transport ne savait les cataloguer — `local:` est mappe vers
+# le runner `uv`, donc prefixe par `python.exe`.
+#
+# La forme est DELIBEREMENT etroite, et aucun garde existant n'est desserre :
+#   - slashes obligatoires ; les caractères de shell restent interdits ;
+#   - les espaces sont acceptés uniquement dans ce transport car un chemin Windows
+#     standard (`Program Files`) est transmis à subprocess sous forme de liste ;
+#   - lettre de lecteur + chemin absolu : pas de binaire relatif ;
+#   - extension `.exe` SEULEMENT. Ni `.bat`, ni `.cmd`, ni `.ps1` : on veut un
+#     binaire, jamais un script shell. La sonde du 01/10 a montre que le `mcp.bat`
+#     de Roblox n'est qu'un wrapper de trois lignes autour de `StudioMCP.exe` — le
+#     binaire se suffit, donc rien ne justifie d'ouvrir la porte aux scripts.
+_PKG_EXE_RE = re.compile(
+    r"^exe:[A-Za-z]:/(?:[A-Za-z0-9._() \-]+/)*[A-Za-z0-9._() \-]+\.exe$"
+)
 
 # Caractères globalement interdits (slash NON inclus — validé par transport)
 _PKG_FORBIDDEN_GLOBAL = (
@@ -169,6 +195,9 @@ class ServerEntry:
     # (ex. windows-mcp → ("serve",)). Appliquée APRÈS le binaire résolu au
     # start. None = entry point direct (cas nominal, pré-AY).
     start_entry_args: Optional[Tuple[str, ...]] = None
+    # MCP-U1 : contrat versionné séparant transport/distribution/auth.
+    # Absent sur les entrées historiques afin de préserver leur HMAC exact.
+    connection_spec: Optional[Dict[str, Any]] = None
 
 
 # Whitelist stricte des sources de décision de catégorisation.
@@ -214,7 +243,10 @@ def _validate_display_name(display_name: Any) -> None:
 def _validate_package_spec(package_spec: Any) -> None:
     if not isinstance(package_spec, str) or not package_spec:
         raise CatalogError("context_invalid:package_spec")
+    is_exe = package_spec.startswith("exe:")
     for ch in _PKG_FORBIDDEN_GLOBAL:
+        if is_exe and ch == " ":
+            continue
         if ch in package_spec:
             raise CatalogError("context_invalid:package_spec_forbidden_char")
     # Drive Windows (lettre + ':' sans transport reconnu)
@@ -239,7 +271,46 @@ def _validate_package_spec(package_spec: Any) -> None:
         if not _PKG_LOCAL_RE.match(package_spec):
             raise CatalogError("context_invalid:package_spec_local")
         return
+    if package_spec.startswith("remote:"):
+        if not _PKG_REMOTE_RE.match(package_spec):
+            raise CatalogError("context_invalid:package_spec_remote")
+        return
+    if package_spec.startswith("exe:"):
+        if not _PKG_EXE_RE.match(package_spec):
+            raise CatalogError("context_invalid:package_spec_exe")
+        return
     raise CatalogError("context_invalid:package_spec_unknown_transport")
+
+
+def _validate_connection_spec(
+    package_spec: str,
+    connection_spec: Optional[Dict[str, Any]],
+) -> None:
+    if connection_spec is None:
+        if package_spec.startswith("remote:"):
+            raise CatalogError("context_invalid:remote_connection_spec_required")
+        return
+    if not isinstance(connection_spec, dict):
+        raise CatalogError("context_invalid:connection_spec_type")
+    try:
+        parsed = MCPConnectionSpec.from_dict(connection_spec)
+    except (ConnectionSpecError, TypeError, ValueError) as exc:
+        raise CatalogError("context_invalid:connection_spec") from exc
+    prefix, _, legacy_locator = package_spec.partition(":")
+    if prefix == "remote":
+        if parsed.transport == TransportKind.STDIO:
+            raise CatalogError("context_invalid:connection_spec_binding")
+        return
+    if parsed.transport != TransportKind.STDIO or parsed.distribution is None:
+        raise CatalogError("context_invalid:connection_spec_binding")
+    expected = {
+        "npm": DistributionKind.NPM,
+        "pypi": DistributionKind.PYPI,
+        "local": DistributionKind.LOCAL_PACKAGE,
+        "exe": DistributionKind.EXECUTABLE,
+    }.get(prefix)
+    if parsed.distribution.kind != expected or parsed.distribution.locator != legacy_locator:
+        raise CatalogError("context_invalid:connection_spec_binding")
 
 
 def _validate_version(version: Any) -> None:
@@ -414,6 +485,8 @@ class MCPServerCatalog:
         # (back-compat HMAC, même pattern que capability_tags).
         if entry.start_entry_args is not None:
             out["start_entry_args"] = list(entry.start_entry_args)
+        if entry.connection_spec is not None:
+            out["connection_spec"] = entry.connection_spec
         return out
 
     @staticmethod
@@ -455,6 +528,11 @@ class MCPServerCatalog:
                 ):
                     return None
                 start_entry_args = tuple(raw_entry_args)
+            connection_spec = d.get("connection_spec")
+            if connection_spec is not None:
+                if not isinstance(connection_spec, dict):
+                    return None
+                _validate_connection_spec(str(d["package_spec"]), connection_spec)
             return ServerEntry(
                 server_id=str(d["server_id"]),
                 display_name=str(d["display_name"]),
@@ -473,8 +551,9 @@ class MCPServerCatalog:
                 config_schema=config_schema,
                 capability_tags=capability_tags,
                 start_entry_args=start_entry_args,
+                connection_spec=connection_spec,
             )
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, CatalogError):
             return None
 
     @staticmethod
@@ -589,6 +668,7 @@ class MCPServerCatalog:
         trust_score: Optional[int] = None,
         notes: Optional[str] = None,
         capability_tags: Optional[Any] = None,
+        connection_spec: Optional[Dict[str, Any]] = None,
     ) -> ServerEntry:
         """Ajoute un server au catalog avec status initial DECLARED.
 
@@ -602,6 +682,7 @@ class MCPServerCatalog:
         _validate_trust_score(trust_score)
         _validate_notes(notes)
         _validate_capability_tags(capability_tags)
+        _validate_connection_spec(package_spec, connection_spec)
 
         if self._server_path(server_id).exists():
             raise CatalogError("server_already_exists")
@@ -622,6 +703,7 @@ class MCPServerCatalog:
             capability_tags=(
                 tuple(capability_tags) if capability_tags else None
             ),
+            connection_spec=connection_spec,
         )
         self._persist(entry)
         self._append_audit(
@@ -644,6 +726,7 @@ class MCPServerCatalog:
         trust_score: Optional[int] = None,
         notes: Optional[str] = None,
         capability_tags: Optional[Any] = None,
+        connection_spec: Optional[Dict[str, Any]] = None,
     ) -> ServerEntry:
         """Phase I-8 (Fix AJ) : re-déclare un server REMOVED.
 
@@ -666,6 +749,7 @@ class MCPServerCatalog:
         _validate_trust_score(trust_score)
         _validate_notes(notes)
         _validate_capability_tags(capability_tags)
+        _validate_connection_spec(package_spec, connection_spec)
 
         existing = self.get_server(server_id)
         if existing is None:
@@ -689,6 +773,7 @@ class MCPServerCatalog:
             capability_tags=(
                 tuple(capability_tags) if capability_tags else None
             ),
+            connection_spec=connection_spec,
         )
         self._persist(entry)
         self._append_audit(
@@ -955,6 +1040,36 @@ class MCPServerCatalog:
             server_id=server_id,
             owner_profile=entry.owner_profile,
             detected_from=detected_from,
+        )
+        return new_entry
+
+    def update_connection_spec(
+        self,
+        server_id: str,
+        connection_spec: Dict[str, Any],
+    ) -> ServerEntry:
+        """Attach or replace a versioned connection contract safely.
+
+        This is an explicit migration step.  Legacy entries remain readable and
+        byte-for-byte HMAC compatible until this method is called.
+        """
+        _validate_server_id(server_id)
+        entry = self.get_server(server_id)
+        if entry is None:
+            raise CatalogError("server_not_found")
+        _validate_connection_spec(entry.package_spec, connection_spec)
+        normalized = MCPConnectionSpec.from_dict(connection_spec).to_dict()
+        now = _now_iso()
+        new_entry = replace(
+            entry,
+            connection_spec=normalized,
+            updated_at=now,
+        )
+        self._persist(new_entry)
+        self._append_audit(
+            "server_connection_spec_updated",
+            server_id=server_id,
+            owner_profile=entry.owner_profile,
         )
         return new_entry
 

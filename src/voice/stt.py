@@ -138,6 +138,11 @@ class LumenaSTT:
         self.temp_dir.mkdir(exist_ok=True)
         
         logger.info(f"STT initialisé (modèle: {model_size}, device: {device})")
+
+    def _effective_language(self, language: Optional[str] = None) -> Optional[str]:
+        """Return None for Whisper auto-detection, otherwise an ISO hint."""
+        value = str(self.language if language is None else language).strip().lower()
+        return None if value in {"", "auto", "detect", "multilingual"} else value
     
     async def calibrate(self, duration: float = 1.0):
         """Calibre le seuil de bruit ambiant."""
@@ -284,7 +289,8 @@ class LumenaSTT:
         }
 
     async def transcribe_file_detailed(
-        self, audio_path: str, *, strict: bool = False
+        self, audio_path: str, *, strict: bool = False,
+        language: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Transcrit un fichier et expose les segments uniquement aux appelants opt-in."""
         energy = self._calculate_energy(audio_path)
@@ -324,7 +330,7 @@ class LumenaSTT:
 
         try:
             segments, _info = self._transcribe_with_runtime_fallback(
-                audio_path, language=self.language, beam_size=5
+                audio_path, language=self._effective_language(language), beam_size=5
             )
             payload = [self._segment_payload(segment) for segment in segments]
             text = self._clean_elite(" ".join(
@@ -336,6 +342,10 @@ class LumenaSTT:
                 "status": "ok" if text else "no_speech",
                 "device": self.device, "compute_type": self.compute_type,
                 "fallback_used": self.runtime_fallback_used,
+                "language": str(getattr(_info, "language", "") or ""),
+                "language_probability": float(
+                    getattr(_info, "language_probability", 0.0) or 0.0
+                ),
             }
         except Exception as exc:
             self.last_error = str(exc)
@@ -351,7 +361,7 @@ class LumenaSTT:
                 "fallback_used": self.runtime_fallback_used,
             }
 
-    async def transcribe_file(self, audio_path: str) -> str:
+    async def transcribe_file(self, audio_path: str, language: Optional[str] = None) -> str:
         """
         Transcrit un fichier audio.
 
@@ -361,33 +371,61 @@ class LumenaSTT:
         Returns:
             Texte transcrit
         """
-        result = await self.transcribe_file_detailed(audio_path, strict=False)
+        result = await self.transcribe_file_detailed(
+            audio_path, strict=False, language=language
+        )
         return str(result.get("text", "") or "")
 
-    async def transcribe_memory(self, audio_bytes: bytes, fast: bool = True) -> str:
-        """Transcrit l'audio directement depuis la mémoire (Vitesse Alpha)."""
-        if not self.load_model(): return ""
+    async def transcribe_memory_detailed(
+        self, audio_bytes: bytes, fast: bool = True,
+        language: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Transcribe memory and expose Whisper's language confidence."""
+        if not self.load_model():
+            return {"text": "", "segments": [], "status": "stt_unavailable"}
         try:
             # Conversion optimisée
             audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             
             # Paramètres Alpha
             beam_size = 1 if fast else 5
+            effective_language = self._effective_language(language)
             initial_prompt = (
                 "Lumena, Luména, Lumi, ouvre, ferme, écris, cherche, "
                 "dis-moi, aide-moi, analyse, joue, arrête, démarre, crée, montre."
-            ) if fast else None
+            ) if fast and effective_language == "fr" else None
             
             segments, _info = self._transcribe_with_runtime_fallback(
-                audio_np, language=self.language, beam_size=beam_size,
+                audio_np, language=effective_language, beam_size=beam_size,
                 initial_prompt=initial_prompt, vad_filter=True,
                 condition_on_previous_text=False,
             )
-            text = " ".join([s.text for s in segments]).strip()
-            return self._clean_elite(text)
+            payload = [self._segment_payload(segment) for segment in segments]
+            text = self._clean_elite(" ".join(
+                item["text"] for item in payload if item["text"]
+            ).strip())
+            return {
+                "text": text, "segments": payload,
+                "status": "ok" if text else "no_speech",
+                "device": self.device, "compute_type": self.compute_type,
+                "fallback_used": self.runtime_fallback_used,
+                "language": str(getattr(_info, "language", "") or ""),
+                "language_probability": float(
+                    getattr(_info, "language_probability", 0.0) or 0.0
+                ),
+            }
         except Exception as e:
             logger.error(f"Erreur transcription mémoire: {e}")
-            return ""
+            return {"text": "", "segments": [], "status": "stt_unavailable", "error": str(e)}
+
+    async def transcribe_memory(
+        self, audio_bytes: bytes, fast: bool = True,
+        language: Optional[str] = None,
+    ) -> str:
+        result = await self.transcribe_memory_detailed(
+            audio_bytes, fast=fast, language=language
+        )
+        return str(result.get("text", "") or "")
 
     def _clean_elite(self, text: str) -> str:
         """Nettoyage Elite des hallucinations Whisper."""
@@ -403,7 +441,7 @@ class LumenaSTT:
         ]
         for h in hallus:
             if h in text_lower:
-                logger.debug(f"⚠️ Hallucination Whisper rejetée: '{text}'")
+                logger.debug("⚠️ Hallucination Whisper rejetée")
                 return ""
         # Texte trop court pour être une vraie commande
         if len(text_lower) < 2:
@@ -594,7 +632,7 @@ class LumenaSTT:
                 
                 final_text = self._clean_elite(text)
                 if final_text:
-                    logger.info(f"📝 Commande entendue: {final_text}")
+                    logger.info(f"📝 Commande entendue ({len(final_text)} caractères)")
                 return final_text
 
         except Exception as e:
@@ -723,7 +761,7 @@ class LumenaSTT:
                 text = await self.transcribe_memory(_raw, fast=True)
                 if not text: continue
                 
-                logger.debug(f"👂 [ALPHA] '{text}'")
+                logger.debug(f"👂 [ALPHA] transcription reçue ({len(text)} caractères)")
                 
                 # Match Elite
                 text_clean = "".join(c for c in text.lower() if c.isalnum() or c.isspace())

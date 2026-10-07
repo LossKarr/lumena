@@ -87,7 +87,7 @@ def test_palette_markup_is_accessible_and_has_no_inline_search_handler():
     assert 'aria-controls="cmd-results"' in index
     assert 'oninput="filterCommands()"' not in index
     assert "/static/css/components.css?v=7" in index
-    assert "/static/js/main.js?v=62" in index
+    assert "/static/js/main.js?v=68" in index
 
 
 def test_palette_only_targets_panels_that_exist():
@@ -148,7 +148,11 @@ def test_palette_runtime_keyboard_search_and_responsive_visuals():
 
         page.keyboard.press("Control+k")
         page.locator("#cmd-palette-overlay.open").wait_for()
-        assert page.locator("#cmd-input").evaluate("el=>el===document.activeElement")
+        # Production moves focus on the next animation frame. Waiting for the
+        # promised state removes a scheduler race without weakening the proof.
+        page.wait_for_function(
+            "document.getElementById('cmd-input') === document.activeElement"
+        )
         assert page.locator(".cmd-palette-item").count() >= 40
         assert page.locator(".cmd-palette-group-title").all_text_contents() == [
             "Essentiel", "Intelligence", "Supervision", "Connexions",

@@ -311,6 +311,7 @@ class MCPActivationService:
         llm_callable: Optional[Callable[[str], str]] = None,
         credentials_service: Optional[Any] = None,
         config_service: Optional[Any] = None,
+        schema_guard: Optional[Any] = None,
     ):
         if catalog is None:
             raise ValueError("catalog must not be None")
@@ -381,6 +382,7 @@ class MCPActivationService:
         # avec les tests existants qui n'utilisent pas ce flow.
         self._credentials_service = credentials_service
         self._config_service = config_service
+        self._schema_guard = schema_guard
 
         self._running_contexts: Dict[str, _RunningContext] = {}
 
@@ -896,6 +898,40 @@ class MCPActivationService:
                 tname = None
             if isinstance(tname, str):
                 tools_by_name[tname] = t
+
+        # Contrôle borné des JSON Schemas + empreinte de supply chain. Une
+        # modification inattendue après la première activation exige une
+        # acceptation explicite avant d'exposer les nouveaux handlers.
+        if self._schema_guard is not None:
+            try:
+                schema_assessment = self._schema_guard.assess(
+                    server_id, tools_by_name.values()
+                )
+            except Exception:
+                schema_assessment = None
+            if schema_assessment is None or not schema_assessment.accepted:
+                self._audit(
+                    "schema_guard_blocked",
+                    server_id=server_id,
+                    reason=(
+                        getattr(schema_assessment, "status", None)
+                        or "schema_invalid"
+                    ),
+                )
+                self._best_effort_client_close(client, server_id)
+                self._best_effort_runner_stop(runner, server_id)
+                return ActivationResult(
+                    server_id=server_id,
+                    success=False,
+                    reason=(
+                        getattr(schema_assessment, "status", None)
+                        or "schema_invalid"
+                    ),
+                    last_step=ActivationStep.DISCOVERY_COMPLETED,
+                    duration_s=time.monotonic() - start_ts,
+                    discovery_proposed_count=report.proposed_count,
+                    discovery_refused_count=report.refused_count,
+                )
 
         # ── Étape 5.5 : cascade catégorie sémantique (Phase C) ───────────
         # Une seule résolution par activation : tous les tools du même

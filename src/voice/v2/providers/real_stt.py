@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import inspect
+import os
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -26,17 +27,58 @@ class RealSTTAdapter(STTProvider):
     name = "real_whisper"
     locality = "local"
 
-    def __init__(self, stt: Any = None, *, language: str = "fr"):
+    def __init__(self, stt: Any = None, *, language: str = "fr", timeout_s: Optional[float] = None):
         # `stt` injectable (LumenaSTT réel OU fake en test). None => résolution paresseuse.
         self._stt = stt
         self.language = language
         self._transcribe_lock = asyncio.Lock()
+        raw_timeout = timeout_s if timeout_s is not None else os.getenv("LUMENA_STT_TIMEOUT_S", "45")
+        try:
+            self.timeout_s = max(0.05, min(300.0, float(raw_timeout)))
+        except (TypeError, ValueError):
+            self.timeout_s = 45.0
+        self.last_latency_ms = 0
+        self.last_status = "idle"
+
+    async def _call_engine(self, method: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run blocking Whisper work outside the application event loop."""
+        def invoke() -> Any:
+            result = method(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return asyncio.run(result)
+            return result
+
+        return await asyncio.wait_for(
+            asyncio.to_thread(invoke), timeout=self.timeout_s
+        )
+
+    def _publish_status(self, *, status: str, started: float, error: str = "") -> None:
+        self.last_latency_ms = int((time.perf_counter() - started) * 1000)
+        self.last_status = status
+        try:
+            from ..observability import get_voice_telemetry  # noqa: PLC0415
+            get_voice_telemetry().update(
+                stt_provider=self.name,
+                stt_locality=self.locality,
+                stt_status=status,
+                stt_latency_ms=self.last_latency_ms,
+                stt_error=error[:240],
+            )
+        except Exception:
+            pass
 
     def _get_stt(self) -> Any:
         if self._stt is None:
             from src.voice.stt import get_stt  # noqa: PLC0415 — import paresseux volontaire
             self._stt = get_stt()
         return self._stt
+
+    @staticmethod
+    def _language_kwargs(method: Any, language: str) -> dict:
+        try:
+            return {"language": language} if "language" in inspect.signature(method).parameters else {}
+        except (TypeError, ValueError):
+            return {}
 
     def is_available(self) -> bool:
         # Léger : présence de faster-whisper sans charger le modèle.
@@ -49,22 +91,38 @@ class RealSTTAdapter(STTProvider):
 
     async def transcribe(self, audio: Any, *, language: str = "fr", fast: bool = True) -> str:
         async with self._transcribe_lock:
+            started = time.perf_counter()
             try:
                 stt = self._get_stt()
-            except Exception:
+                if isinstance(audio, (bytes, bytearray)):
+                    method = stt.transcribe_memory
+                    result = await self._call_engine(
+                        method, bytes(audio), fast=fast,
+                        **self._language_kwargs(method, language or self.language),
+                    )
+                elif isinstance(audio, (str, Path)):
+                    method = stt.transcribe_file
+                    result = await self._call_engine(
+                        method, str(audio),
+                        **self._language_kwargs(method, language or self.language),
+                    )
+                else:
+                    result = ""
+                self._publish_status(status="ok" if result else "no_speech", started=started)
+                return str(result or "")
+            except asyncio.TimeoutError:
+                self._publish_status(status="timeout", started=started, error="timeout")
                 return ""
-            # bytes PCM16 → mémoire ; chemin/str → fichier (réutilise la cascade existante).
-            if isinstance(audio, (bytes, bytearray)):
-                return await stt.transcribe_memory(bytes(audio), fast=fast)
-            if isinstance(audio, (str, Path)):
-                return await stt.transcribe_file(str(audio))
-            return ""
+            except Exception as exc:
+                self._publish_status(status="error", started=started, error=str(exc))
+                return ""
 
     async def transcribe_detailed(
         self, audio: Any, *, language: str = "fr", strict: bool = False
     ) -> dict:
         """Résultat structuré opt-in pour la dictée du compositeur."""
         async with self._transcribe_lock:
+            started = time.perf_counter()
             try:
                 stt = self._get_stt()
             except Exception as exc:
@@ -75,12 +133,34 @@ class RealSTTAdapter(STTProvider):
             if isinstance(audio, (str, Path)):
                 detailed = getattr(stt, "transcribe_file_detailed", None)
                 if callable(detailed):
-                    return await detailed(str(audio), strict=strict)
-                text = await stt.transcribe_file(str(audio))
+                    result = await self._call_engine(
+                        detailed, str(audio), strict=strict,
+                        **self._language_kwargs(detailed, language or self.language),
+                    )
+                    self._publish_status(status=str(result.get("status", "ok")), started=started)
+                    return result
+                method = stt.transcribe_file
+                text = await self._call_engine(
+                    method, str(audio),
+                    **self._language_kwargs(method, language or self.language),
+                )
             elif isinstance(audio, (bytes, bytearray)):
-                text = await stt.transcribe_memory(bytes(audio), fast=False)
+                detailed = getattr(stt, "transcribe_memory_detailed", None)
+                if callable(detailed):
+                    result = await self._call_engine(
+                        detailed, bytes(audio), fast=False,
+                        **self._language_kwargs(detailed, language or self.language),
+                    )
+                    self._publish_status(status=str(result.get("status", "ok")), started=started)
+                    return result
+                method = stt.transcribe_memory
+                text = await self._call_engine(
+                    method, bytes(audio), fast=False,
+                    **self._language_kwargs(method, language or self.language),
+                )
             else:
                 text = ""
+            self._publish_status(status="ok" if text else "no_speech", started=started)
             return {
                 "text": str(text or "").strip(), "segments": [],
                 "status": "ok" if text else "no_speech",
@@ -106,8 +186,7 @@ class RealSTTAdapter(STTProvider):
         try:
             loader = getattr(stt, "load_model", None)
             if callable(loader):
-                res = loader()
-                res = await res if inspect.isawaitable(res) else res
+                res = await self._call_engine(loader)
                 ok = res is not False        # load_model renvoie True/False
             else:
                 await self.transcribe(b"\x00\x00" * 1600)   # silence court → force le chargement

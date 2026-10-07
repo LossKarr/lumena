@@ -69,7 +69,7 @@ export function loadPanelData(p){
     case'local-models':if(window.loadLocalModels)window.loadLocalModels();break;
     case'alerts':loadAlerts();break;
     case'training':loadTraining();break;
-    case'finetuning':loadFinetuning();break;
+    case'finetuning':if(window.loadPersonalModels)window.loadPersonalModels();break;
     case'logs':loadLogsRecent();break;
     case'config':loadConfig();break;
     case'ionos':loadIonosSites();break;
@@ -108,7 +108,7 @@ const cmdItems=[
   {id:'rules',panel:'rules',icon:'scroll-text',label:'Regles',category:'Intelligence',hint:'Consulter les regles actives',keywords:'policy securite comportement'},
   {id:'instincts',panel:'instincts',icon:'zap',label:'Instincts',category:'Intelligence',hint:'Voir les automatismes appris',keywords:'patterns confiance reactions'},
   {id:'training',panel:'training',icon:'graduation-cap',label:'Apprentissage',category:'Intelligence',hint:'Suivre les donnees et evaluations',keywords:'training dataset eval'},
-  {id:'finetuning',panel:'finetuning',icon:'cpu',label:'Fine-tuning',category:'Intelligence',hint:'Piloter les entrainements specialises',keywords:'modele entrainement'},
+  {id:'finetuning',panel:'finetuning',icon:'cpu',label:'Modèle personnel',category:'Intelligence',hint:'Faire évoluer votre modèle local',keywords:'modele personnel entrainement finetuning'},
 
   {id:'trace',panel:'trace',icon:'radio',label:'Live Trace',category:'Supervision',hint:'Observer les evenements en direct',keywords:'sse activite temps reel'},
   {id:'console',panel:'console',icon:'square-terminal',label:'Console',category:'Supervision',hint:'Inspecter les sorties techniques',keywords:'terminal debug'},

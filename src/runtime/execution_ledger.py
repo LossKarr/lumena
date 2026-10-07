@@ -366,7 +366,26 @@ class ExecutionLedger:
             return cls._verified_effect(entry, "FILE_WRITE", "FILESYSTEM_DESTRUCTIVE", "PROCESS_LAUNCH",
                                         "PROCESS_COMPLETION", "TEST_EXECUTION", "GIT_LOCAL_MUTATION",
                                         "DEPLOY_MUTATION", "DESTRUCTIVE_SYSTEM")
-        return entry.success and entry.action in MUTATION_TOOLS
+        if not entry.success:
+            return False
+        if entry.action in MUTATION_TOOLS:
+            return True
+        # Dynamic MCP tools cannot be enumerated in MUTATION_TOOLS. Reuse the
+        # same fail-closed operation classifier as plan progression: known
+        # readers stay readers, every other namespaced MCP operation is a
+        # conservative mutation. This affects reporting only, never permission.
+        try:
+            from ..reasoning.plan_evidence import (
+                is_dynamic_mcp_readonly_tool,
+                split_dynamic_mcp_tool_name,
+            )
+
+            return (
+                split_dynamic_mcp_tool_name(entry.action) is not None
+                and not is_dynamic_mcp_readonly_tool(entry.action)
+            )
+        except Exception:
+            return False
 
     # ── Lecture ───────────────────────────────────────────────────────────────
 

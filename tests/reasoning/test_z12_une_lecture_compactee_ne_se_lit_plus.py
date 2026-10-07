@@ -97,9 +97,8 @@ def test_le_seuil_utilise_la_constante():
 
 
 def test_la_strategie_utilise_la_meme_constante():
-    """Le cœur du lot : c'est ICI que la divergence vivait."""
-    i = _SRC.index("Lectures fichiers : seuil élevé atteint")
-    assert "_OBS_FILE_READ_TOOLS" in _SRC[i - 300 : i]
+    """Le seuil choisi pilote directement la strategie de lecture."""
+    assert "reader = base_limit == 8000" in _SRC
 
 
 def test_plus_aucune_liste_de_lecture_ecrite_en_dur():
@@ -113,15 +112,16 @@ def test_la_constante_est_definie_une_seule_fois():
 
 
 def test_les_deux_sites_sont_bien_deux_sites_distincts():
-    """Un seul usage signifierait qu'un des deux branchements a été perdu."""
-    usages = [
-        m.start() for m in re.finditer(r"in _OBS_FILE_READ_TOOLS", _SRC)
-    ]
-    assert len(usages) == 2
-    seuil = _SRC.index("        return 8000")   # RF-9a
-    strategie = _SRC.index("Lectures fichiers : seuil élevé atteint")
-    assert any(u < seuil for u in usages)
-    assert any(seuil < u < strategie for u in usages)
+    """Un lecteur dynamique suit le meme seuil et la meme strategie."""
+    from src.reasoning.observation_synthesis import (
+        compact_observation_body,
+        observation_compact_limit,
+    )
+
+    outil = "mcp__studio__script_read"
+    assert observation_compact_limit(outil, is_chat_surface=False) == 8000
+    corps = compact_observation_body(outil, "A" * 12000, False)
+    assert corps is not None and len(corps) >= 3000
 
 
 # ── La règle que le lot institue ─────────────────────────────────────────────
@@ -133,25 +133,28 @@ def test_un_outil_protege_par_le_seuil_est_protege_par_la_strategie():
 
     Une seule constante sert aux deux endroits — l'assertion est donc vraie par
     construction, et ce test existe pour que ça le reste."""
-    i = _SRC.index("        return 8000")   # RF-9a : le seuil est un retour
-    bloc_seuil = _SRC[i - 900 : i]
-    j = _SRC.index("Lectures fichiers : seuil élevé atteint")
-    bloc_strategie = _SRC[j - 300 : j]
-    assert "_OBS_FILE_READ_TOOLS" in bloc_seuil
-    assert "_OBS_FILE_READ_TOOLS" in bloc_strategie
+    from src.reasoning.observation_synthesis import compact_observation_body
+
+    for outil in _OBS_FILE_READ_TOOLS:
+        corps = compact_observation_body(outil, "A" * 12000, False)
+        assert corps is not None and len(corps) >= 3000
 
 
 def test_la_strategie_garde_bien_3000_chars():
     """800 chars sur un HTML, c'est le `<head>` et le footer — jamais le corps."""
-    i = _SRC.index("Lectures fichiers : seuil élevé atteint")
-    assert "content[:3000]" in _SRC[i : i + 900]
+    from src.reasoning.observation_synthesis import compact_observation_body
+
+    corps = compact_observation_body("read_file", "A" * 12000, False)
+    assert corps is not None and len(corps) >= 3000
 
 
 def test_le_message_invite_a_relire_par_plage():
     """Tronquer sans dire comment récupérer la suite, c'est ce qui a fait boucler
     le lead : il relisait le fichier entier au lieu d'une plage."""
-    i = _SRC.index("Lectures fichiers : seuil élevé atteint")
-    assert "plage de lignes" in _SRC[i : i + 900]
+    from src.reasoning.observation_synthesis import compact_observation_body
+
+    corps = compact_observation_body("read_file", "A" * 12000, False)
+    assert corps is not None and "plage de lignes" in corps
 
 
 # ── Ce que Z12 ne change pas ─────────────────────────────────────────────────

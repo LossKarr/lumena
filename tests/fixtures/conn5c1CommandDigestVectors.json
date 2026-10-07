@@ -1,0 +1,93 @@
+{
+  "schema": "conn5c1-command-digest",
+  "vectors": [
+    {
+      "nom": "package windows",
+      "source": "package",
+      "id": "package:build",
+      "executable": "cmd.exe",
+      "args": [
+        "/d",
+        "/s",
+        "/c",
+        "call npm run build"
+      ],
+      "cwd_relative": ".",
+      "script": "tsc -p . && vite build",
+      "canonical": "{\"args\":[\"/d\",\"/s\",\"/c\",\"call npm run build\"],\"cwd_relative\":\".\",\"executable\":\"cmd.exe\",\"id\":\"package:build\",\"script\":\"tsc -p . && vite build\",\"source\":\"package\"}",
+      "sha256": "b38bf7daf32b527afc7a936bf50a8dd2311cd59bf4e237597c9e01d748dc0ea9"
+    },
+    {
+      "nom": "pytest chemin windows",
+      "source": "pytest",
+      "id": "pytest:all",
+      "executable": "C:\\Python312\\python.exe",
+      "args": [
+        "-m",
+        "pytest"
+      ],
+      "cwd_relative": ".",
+      "script": null,
+      "canonical": "{\"args\":[\"-m\",\"pytest\"],\"cwd_relative\":\".\",\"executable\":\"C:\\\\Python312\\\\python.exe\",\"id\":\"pytest:all\",\"script\":null,\"source\":\"pytest\"}",
+      "sha256": "429f3ccc763062066c75733929432f970f26692851d1eaf00b1c61c8b2c248b6"
+    },
+    {
+      "nom": "lumena sous-dossier non ascii",
+      "source": "lumena",
+      "id": "lumena:génère",
+      "executable": "/usr/bin/node",
+      "args": [
+        "scripts/é t\"é.mjs",
+        "--flag=a\\b"
+      ],
+      "cwd_relative": "outils/données",
+      "script": null,
+      "canonical": "{\"args\":[\"scripts/é t\\\"é.mjs\",\"--flag=a\\\\b\"],\"cwd_relative\":\"outils/données\",\"executable\":\"/usr/bin/node\",\"id\":\"lumena:génère\",\"script\":null,\"source\":\"lumena\"}",
+      "sha256": "0de4282ac5970b8f03af5c0bf6659acb03e93dc61fdb4a01021bb4f63be49820"
+    },
+    {
+      "nom": "script avec controle",
+      "source": "package",
+      "id": "package:test",
+      "executable": "npm",
+      "args": [
+        "run",
+        "test"
+      ],
+      "cwd_relative": ".",
+      "script": "vitest run\n\techo \u001f fin",
+      "canonical": "{\"args\":[\"run\",\"test\"],\"cwd_relative\":\".\",\"executable\":\"npm\",\"id\":\"package:test\",\"script\":\"vitest run\\n\\techo \\u001f fin\",\"source\":\"package\"}",
+      "sha256": "36b0df4b729a5f15fe639fede1faf7b7969f0893b0c869d62d089435763d4952"
+    },
+    {
+      "nom": "commande windows",
+      "source": "command",
+      "id": "command",
+      "executable": "cmd.exe",
+      "args": [
+        "/d",
+        "/s",
+        "/c",
+        "\"python -m pytest -q\""
+      ],
+      "cwd_relative": ".",
+      "script": null,
+      "canonical": "{\"args\":[\"/d\",\"/s\",\"/c\",\"\\\"python -m pytest -q\\\"\"],\"cwd_relative\":\".\",\"executable\":\"cmd.exe\",\"id\":\"command\",\"script\":null,\"source\":\"command\"}",
+      "sha256": "7e67dbf9b9498a8bd79e5733fd75d39763c15976705f368256823d7daecaef28"
+    },
+    {
+      "nom": "commande posix guillemets",
+      "source": "command",
+      "id": "command",
+      "executable": "/bin/sh",
+      "args": [
+        "-c",
+        "python -c \"print('é')\""
+      ],
+      "cwd_relative": ".",
+      "script": null,
+      "canonical": "{\"args\":[\"-c\",\"python -c \\\"print('é')\\\"\"],\"cwd_relative\":\".\",\"executable\":\"/bin/sh\",\"id\":\"command\",\"script\":null,\"source\":\"command\"}",
+      "sha256": "44d2069ef17018e67592a7938ee5c542fdc4e591872994e6b5d695d95176e240"
+    }
+  ]
+}

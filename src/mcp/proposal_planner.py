@@ -70,7 +70,7 @@ _MIN_PRE_SCORE_FOR_PROPOSAL = 40
 _DOWNLOADS_SATURATION = 50_000
 _RECENT_PUBLISH_DAYS = 365
 
-_PACKAGE_TRANSPORTS: frozenset[str] = frozenset({"npm", "pypi", "local"})
+_PACKAGE_TRANSPORTS: frozenset[str] = frozenset({"npm", "pypi", "local", "remote"})
 _MCP_TRANSPORT_HINTS: frozenset[str] = frozenset(
     {"stdio", "sse", "http", "unknown"}
 )
@@ -161,6 +161,7 @@ _RE_NPM_SCOPED = re.compile(r"^npm:@[a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-\.]+$")
 _RE_NPM_UNSCOPED = re.compile(r"^npm:[a-zA-Z0-9_\-\.]+$")
 _RE_PYPI = re.compile(r"^pypi:[a-zA-Z0-9_\-\.]+$")
 _RE_LOCAL = re.compile(r"^local:[a-zA-Z0-9_\-]+$")
+_RE_REMOTE = re.compile(r"^remote:[a-z0-9][a-z0-9_.\-]{0,63}$")
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _TOKEN_SPLIT_RE = re.compile(r"[^a-z0-9]+")
@@ -261,6 +262,8 @@ def _is_valid_package_spec_phase14(spec: Any) -> bool:
         return True
     if _RE_LOCAL.match(spec):
         return True
+    if _RE_REMOTE.match(spec):
+        return True
     return False
 
 
@@ -330,6 +333,9 @@ def _compute_pre_score(meta: Dict[str, Any]) -> int:
 
     if meta.get("source") == "curated":
         score += 20
+    elif meta.get("source") == "official_registry":
+        # Publication namespacée = provenance, jamais approbation implicite.
+        score += 20
 
     return max(0, min(score, 100))
 
@@ -379,6 +385,7 @@ class MCPSearchResult:
     tools_hint: Tuple[str, ...]
     trust_pre_score: int
     license_id: Optional[str]
+    connection_spec: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -410,6 +417,7 @@ class CatalogProposal:
     rationale_code: str
     requires_approval: bool
     target_status_on_add: str
+    proposed_connection_spec: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -718,6 +726,18 @@ def _normalize_search_entry(entry: Dict[str, Any], source_name: str) -> Optional
         return None
     if not _is_valid_mcp_transport_hint(mth):
         mth = "unknown"
+    connection_spec = entry.get("connection_spec")
+    if pkg_transport == "remote":
+        try:
+            from src.mcp.connection_spec import MCPConnectionSpec, TransportKind
+            parsed_connection = MCPConnectionSpec.from_dict(connection_spec)
+            if parsed_connection.transport == TransportKind.STDIO:
+                return None
+            connection_spec = parsed_connection.to_dict()
+        except (TypeError, ValueError):
+            return None
+    elif connection_spec is not None:
+        return None
     version = entry.get("version", "")
     if not isinstance(version, str):
         version = ""
@@ -755,6 +775,7 @@ def _normalize_search_entry(entry: Dict[str, Any], source_name: str) -> Optional
         "has_repo": entry.get("has_repo") is True,
         "has_license": entry.get("has_license") is True,
         "license_id": license_id,
+        "connection_spec": connection_spec,
     }
 
 
@@ -1217,6 +1238,7 @@ class MCPProposalPlanner:
                 tools_hint=tuple(raw["tools_hint"][:_TOOLS_HINT_MAX]),
                 trust_pre_score=score,
                 license_id=raw.get("license_id"),
+                connection_spec=raw.get("connection_spec"),
             ))
 
         # ── 3. Cascade décisionnelle ──────────────────────────────────────
@@ -1302,6 +1324,7 @@ class MCPProposalPlanner:
                 rationale_code="existing_search_match",
                 requires_approval=requires_approval,
                 target_status_on_add="declared",
+                proposed_connection_spec=selected_sr.connection_spec,
             )
             if requires_approval:
                 decision = MCPProposalDecision.NEEDS_APPROVAL

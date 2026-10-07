@@ -328,11 +328,19 @@ _HC_TOOLS_READONLY = frozenset({
     "get_document_history", "preview_document_edit",
     "search_local_models", "inspect_local_model", "list_installed_local_models",
     "recommend_local_model", "list_local_model_jobs", "get_local_model_job",
+    "personal_model_status", "personal_learning_health", "personal_experience_stats",
+    "personal_training_settings", "personal_training_jobs", "personal_model_versions",
+    "personal_model_recommendations", "personal_model_audit_trail",
+    "get_video_job",
 })
 
 # TOUTE action (341 outils natifs + MCP curatés) — preuve d'une action réelle
 # quelconque (sert aux claims VAGUES « c'est fait » et à l'exonération ledger).
 _HC_TOOLS_ANY_ACTION = frozenset({
+    "update_personal_training_settings", "update_personal_learning_policy",
+    "prepare_personal_dataset", "queue_personal_training", "control_personal_training",
+    "evaluate_personal_model", "request_personal_model_approval",
+    "confirm_personal_model_action",
     "apply_document_edit", "convert_library_document", "download_document",
     "export_library_document", "generate_studio_document", "generate_studio_documents", "import_document",
     "revise_studio_document", "open_file", "open_document_delivery",
@@ -408,7 +416,7 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "notify_critical", "notion_add_to_database", "notion_create_page", "notion_update_page",
     "open_app", "open_url", "orchestrate_peer_request", "parallel_tools", "peer_team_request",
     "place_critical_call", "plan_create", "plan_done", "plan_update", "port_scan_fast",
-    "press_key", "preview_video", "process_input", "process_kill", "process_run",
+    "press_key", "preview_video", "retry_video_render", "process_input", "process_kill", "process_run",
     "propose_peer_knowledge", "protect_pdf", "reload_skills", "remind", "remove_background",
     "replace_background", "reverse_shell_listen", "rollback", "run_command",
     "run_peer_task_sync", "run_tests", "save_template", "schedule_task", "scroll",
@@ -433,6 +441,7 @@ _HC_TOOLS_ANY_ACTION = frozenset({
     "zip_documents", "zoom",
     "install_local_model", "enable_local_model", "disable_local_model", "select_local_model",
     "unload_local_model", "verify_local_model", "prepare_delete_local_model", "confirm_delete_local_model",
+    "cancel_video_job",
 }) | _HC_TOOLS_MCP
 
 # Familles « génériques » : un claim VAGUE (« c'est fait », install…) est prouvé

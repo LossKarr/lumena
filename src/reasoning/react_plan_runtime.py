@@ -77,6 +77,7 @@ from .plan_evidence import (
     classify_observation,
     evaluate_task_proof,
     has_sufficient_proof,
+    is_dynamic_mcp_readonly_tool,
     is_verify_task,
     is_peer_delegation_success as _is_peer_delegation_success,
     task_completion_status,
@@ -183,7 +184,10 @@ def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
         pass
     # Guard 5 pré-calculé : si l'outil est exploratoire, aucune tâche métier
     # ne peut être marquée par aucune voie (sem, seq, auto).
-    _is_exploration_for_guard5 = tool_name in _EXPLORATION_TOOLS_STRICT
+    _is_dynamic_mcp_readonly = is_dynamic_mcp_readonly_tool(tool_name)
+    _is_exploration_for_guard5 = (
+        tool_name in _EXPLORATION_TOOLS_STRICT or _is_dynamic_mcp_readonly
+    )
 
     # #3 (2026-06-30) — RELECTURE D'ARTEFACT : une lecture (read_file/read_document)
     # qui relit un fichier RÉELLEMENT écrit avant (mutation réussie dans le ledger)
@@ -585,7 +589,9 @@ def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
     # Les outils purement info/inspection ne peuvent pas cocher une tâche métier
     # via le fallback séquentiel : "config" dans get_lumena_config matcherait
     # faussement "Configurer les rôles" sans que rien n'ait été fait.
-    _seq_fallback_blocked = tool_name in _SEQ_FALLBACK_BLOCKLIST
+    _seq_fallback_blocked = (
+        tool_name in _SEQ_FALLBACK_BLOCKLIST or _is_dynamic_mcp_readonly
+    )
     if (
         allow_fallback  # GF-1 : désactivé pour les sous-outils parallel_tools
         and not _any_matched
@@ -770,7 +776,7 @@ def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
             observation_content
             and len(observation_content.strip()) >= 10
             and (
-                tool_name not in _TRIVIAL_TOOLS
+                (tool_name not in _TRIVIAL_TOOLS and not _is_dynamic_mcp_readonly)
                 or _trivial_tool_matches_next_task()
                 # Un outil de vérification (health_check, run_command…) avec preuve
                 # réelle n'est pas trivial même s'il figure dans _TRIVIAL_TOOLS.
@@ -780,6 +786,20 @@ def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
                     "",
                     tool_module_category,
                     tool_semantic_category,
+                )
+                # Une sonde MCP read-only peut prouver uniquement la prochaine
+                # tâche de vérification qui lui correspond. La description est
+                # nécessaire au lien lexical server/opération ↔ objectif.
+                or (
+                    _is_dynamic_mcp_readonly
+                    and _next_auto_task is not None
+                    and has_sufficient_proof(
+                        tool_name,
+                        observation_content,
+                        _next_auto_task.description,
+                        tool_module_category,
+                        tool_semantic_category,
+                    )
                 )
                 # #3 : relecture d'un artefact écrit avant = vérification légitime,
                 # même si read_file est « trivial » (le verify-gate ci-dessous tranche).
@@ -848,7 +868,7 @@ def appliquer_progression_plan(e: EntreeProgressionPlan) -> None:
                     # une tâche métier (premier mot = verbe d'action).
                     # Ex : run_command("cd") ne peut pas cocher "Déléguer …".
                     if (
-                        tool_name in _EXPLORATION_TOOLS_STRICT
+                        _is_exploration_for_guard5
                         and any(
                             _normalize_guard_token(desc_lower) == starter
                             or _normalize_guard_token(desc_lower).startswith(starter + " ")

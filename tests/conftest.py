@@ -14,6 +14,10 @@ from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 from typing import Generator, Any
 
+
+_VIDEO_MEMORY_TEST_DIR = Path(tempfile.mkdtemp(prefix="lumena_video_memory_tests_"))
+os.environ.setdefault("LUMENA_VIDEO_MEMORY_DIR", str(_VIDEO_MEMORY_TEST_DIR))
+
 # ── Fix DÉFINITIF: patch pytest-asyncio _provide_clean_event_loop ──────────
 # pytest-asyncio 0.21 appelle _provide_clean_event_loop() à chaque teardown
 # de test async. Elle appelle policy.new_event_loop() → ProactorEventLoop
@@ -120,6 +124,12 @@ def pytest_sessionfinish(session, exitstatus):
     try:
         import src.hooks.hook_system as _hs_mod
         _hs_mod._hook_system = None
+    except Exception:
+        pass
+
+    try:
+        import shutil as _shutil
+        _shutil.rmtree(_VIDEO_MEMORY_TEST_DIR, ignore_errors=True)
     except Exception:
         pass
 

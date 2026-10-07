@@ -29,6 +29,35 @@ def test_verified_sensitive_claim_may_be_spoken():
     assert "tests sont verts" in plan.spoken.lower()
 
 
+def test_long_projection_preserves_the_canonical_conclusion():
+    source = " ".join([
+        "Voici le contexte.", "Premier détail.", "Deuxième détail.",
+        "Troisième détail.", "Quatrième détail.",
+        "La décision finale est de conserver la configuration locale.",
+    ])
+    plan = plan_speech(
+        source, canonical_verified=True, max_sentences=3, max_chars=180,
+    )
+    assert plan.spoken.startswith("Voici le contexte.")
+    assert plan.spoken.endswith(
+        "La décision finale est de conserver la configuration locale."
+    )
+    assert "abridged" in plan.suppressed
+
+
+def test_character_budget_keeps_conclusion_on_sentence_boundary():
+    source = (
+        "Cette introduction contient beaucoup de contexte utile mais secondaire. "
+        "Ce détail intermédiaire peut être omis. "
+        "Conclusion certaine."
+    )
+    plan = plan_speech(
+        source, canonical_verified=True, max_sentences=3, max_chars=75,
+    )
+    assert plan.spoken.endswith("Conclusion certaine.")
+    assert len(plan.spoken) <= 75
+
+
 def test_sentence_committer_waits_for_complete_sentence():
     c = SentenceCommitter()
     assert c.feed("Bonjour, je term") == []

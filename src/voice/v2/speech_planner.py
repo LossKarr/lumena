@@ -13,7 +13,10 @@ from .speech_normalizer import normalize_for_speech
 
 
 _INTERNAL_RE = re.compile(
-    r"(?im)^\s*(?:THOUGHT|ACTION|ACTION_INPUT|OBSERVATION|PLAN)\s*:"
+    r"(?im)^\s*(?:THOUGHT|THINKING|REASONING|PENS[ÉE]E|ACTION|ACTION_INPUT|OBSERVATION|PLAN)\s*:"
+)
+_INTERNAL_BLOCK_RE = re.compile(
+    r"(?is)<(?:thinking|analysis|reasoning)>.*?</(?:thinking|analysis|reasoning)>"
 )
 _CLAIM_RE = re.compile(
     r"(?i)\b(?:"
@@ -32,6 +35,9 @@ _BULLET_RE = re.compile(r"(?m)^\s*(?:[-+*]|\d+[.)])\s+")
 _SPACE_RE = re.compile(r"[ \t]{2,}")
 _SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 _ABBREVIATIONS = ("m.", "mme.", "dr.", "ex.", "etc.", "p.ex.")
+_DETAIL_ONLY_RE = re.compile(
+    r"(?i)^(?:d[eé]tails?|logs?|informations? (?:compl[eé]mentaires?|techniques?))\s*[:\-]"
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,17 @@ def _clean_plain_text(text: str) -> str:
     return s.strip(" ,")
 
 
+def wants_full_voice_detail(text: str) -> bool:
+    """Commande explicite seulement ; une mention ordinaire ne change pas la densité."""
+    value = re.sub(r"\s+", " ", (text or "").strip().lower())
+    return any(phrase in value for phrase in (
+        "donne-moi tous les détails", "donne moi tous les details",
+        "lis-moi tout", "lis moi tout", "explique tout en détail",
+        "give me all the details", "read the full answer",
+        "dame todos los detalles", "lee la respuesta completa",
+    ))
+
+
 def plan_speech(
     canonical_text: str,
     *,
@@ -71,6 +88,9 @@ def plan_speech(
         return SpeechPlan("", set(), canonical_verified)
 
     suppressed: Set[str] = set()
+    if _INTERNAL_BLOCK_RE.search(canonical_text):
+        suppressed.add("internal_reasoning")
+        canonical_text = _INTERNAL_BLOCK_RE.sub(" ", canonical_text)
     if _INTERNAL_RE.search(canonical_text):
         suppressed.add("internal_reasoning")
         lines = [line for line in canonical_text.splitlines() if not _INTERNAL_RE.match(line)]
@@ -80,21 +100,52 @@ def plan_speech(
     suppressed.update(normalized.suppressed)
     plain = _clean_plain_text(normalized.spoken)
 
-    kept: List[str] = []
+    eligible: List[str] = []
     for sentence in _sentences(plain):
         if not canonical_verified and _has_unverified_sensitive_claim(sentence):
             suppressed.add("unverified_claim")
             continue
-        kept.append(sentence)
-        if len(kept) >= max(1, int(max_sentences)):
-            break
+        eligible.append(sentence)
+
+    limit = max(1, int(max_sentences))
+    if len(eligible) <= limit:
+        kept = eligible
+    elif limit == 1:
+        # For a one-sentence projection, the canonical ending carries the
+        # decision/result more reliably than an introductory sentence.
+        kept = [eligible[-1]]
+        suppressed.add("abridged")
+    elif _DETAIL_ONLY_RE.match(eligible[-1]):
+        # A trailing dump/details paragraph is not a conclusion and should not
+        # displace the useful opening summary.
+        kept = eligible[:limit]
+        suppressed.add("abridged")
+    else:
+        # Preserve the answer's own conclusion instead of silently cutting it
+        # after the first N sentences. No canned summary is inserted.
+        kept = eligible[:limit - 1] + [eligible[-1]]
+        suppressed.add("abridged")
 
     spoken = " ".join(kept).strip()
     if not spoken and suppressed:
         spoken = "Le resultat detaille est affiche a l'ecran."
+    while len(spoken) > max_chars and len(kept) > 2:
+        # Drop detail nearest the conclusion first, preserving opening context
+        # and the final decision.
+        kept.pop(-2)
+        suppressed.add("abridged")
+        spoken = " ".join(kept).strip()
+    if len(spoken) > max_chars and len(kept) == 2:
+        conclusion = kept[-1]
+        if len(conclusion) < max_chars:
+            budget = max(0, max_chars - len(conclusion) - 1)
+            opening = kept[0][:budget].rsplit(" ", 1)[0].rstrip(" ,;:")
+            spoken = " ".join(part for part in (opening, conclusion) if part)
+            suppressed.add("abridged")
     if len(spoken) > max_chars:
         cut = spoken[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:")
         spoken = (cut or spoken[:max_chars]).rstrip(". ") + "."
+        suppressed.add("abridged")
     return SpeechPlan(spoken, suppressed, canonical_verified)
 
 

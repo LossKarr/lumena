@@ -297,14 +297,16 @@ class TestAuthWarningStartup:
             assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_empty_token_setup_not_done_allowed(self):
+    async def test_empty_token_setup_not_done_fails_closed(self):
         from web.routes.deps import verify_admin_token
+        from fastapi import HTTPException
 
         env = {"LUMENA_ADMIN_TOKEN": ""}
         with patch.dict(os.environ, env, clear=False):
             os.environ.pop("LUMENA_SETUP_COMPLETE", None)
-            result = await verify_admin_token(authorization=None)
-            assert result is None
+            with pytest.raises(HTTPException) as exc_info:
+                await verify_admin_token(authorization=None)
+            assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_valid_token_required(self):

@@ -67,9 +67,11 @@ class PiperProvider:
 
     async def generate(
         self, text: str, output_path: Path, *, model_name: Optional[str] = None,
+        length_scale: float = 1.0,
     ) -> bool:
         """Génère un fichier audio à partir du texte."""
         selected = self._safe_model_name(model_name or self.model_name)
+        length_scale = max(0.6, min(1.8, float(length_scale)))
         model_path, _ = self.model_paths(selected)
         if not self.is_available(selected):
             logger.warning(f"Piper non disponible ou modèle manquant ({model_path})")
@@ -92,6 +94,7 @@ class PiperProvider:
                 "--model", str(model_path),
                 "--input_file", str(input_path),
                 "--output_file", str(output_path),
+                "--length_scale", f"{length_scale:.3f}",
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE

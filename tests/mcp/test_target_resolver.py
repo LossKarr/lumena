@@ -4,6 +4,7 @@ Couvre les 6 kinds + injection web_fetch + bornes input.
 """
 from __future__ import annotations
 
+import json
 import pytest
 
 from src.mcp.target_resolver import ResolvedTarget, resolve_target
@@ -153,6 +154,16 @@ class TestConfigSnippet:
         assert r.package_spec == "npm:@scope/pkg"
         assert r.version == "latest"
 
+    def test_stdio_snippet_never_reexposes_literal_environment_values(self):
+        snippet = (
+            '{"command":"npx","args":["-y","@scope/pkg"],'
+            '"env":{"API_TOKEN":"literal-secret-must-not-leak"}}'
+        )
+        r = resolve_target(snippet)
+        assert r.kind == "config_snippet"
+        assert r.raw_input == "{stdio_mcp_config}"
+        assert "literal-secret-must-not-leak" not in repr(r)
+
     def test_npm_snippet_picks_first_nonflag_arg(self):
         # `npm` accepte le 1er arg non-flag — sortie deterministe.
         snippet = '{"command": "npm", "args": ["-g", "pkg-bare"]}'
@@ -198,6 +209,90 @@ class TestConfigSnippet:
         r = resolve_target('["not", "a", "snippet"]')
         assert r.kind == "intent"
 
+    def test_remote_streamable_http_config_uses_secret_references_only(self):
+        snippet = (
+            '{"url":"https://mcp.example.com/v1",'
+            '"headers":{"Authorization":"${MCP_TOKEN}"}}'
+        )
+        r = resolve_target(snippet)
+        assert r.kind == "config_snippet"
+        assert r.package_spec.startswith("remote:mcp.example.com-v1-")
+        assert r.connection_spec["transport"] == "streamable_http"
+        assert r.connection_spec["auth"]["kind"] == "bearer"
+        assert r.connection_spec["auth"]["secret_keys"] == ["MCP_TOKEN"]
+        assert r.connection_spec["remote"]["header_names"] == ["Authorization"]
+        assert "${MCP_TOKEN}" not in r.raw_input
+
+    def test_remote_config_rejects_literal_header_secret(self):
+        snippet = (
+            '{"url":"https://mcp.example.com/v1",'
+            '"headers":{"Authorization":"Bearer actual-secret"}}'
+        )
+        r = resolve_target(snippet)
+        assert r.kind == "intent"
+        assert r.connection_spec is None
+
+    def test_legacy_sse_config_is_explicit(self):
+        r = resolve_target(
+            '{"url":"https://mcp.example.com/sse","transport":"sse"}'
+        )
+        assert r.connection_spec["transport"] == "legacy_sse"
+        assert r.connection_spec["remote"]["legacy_sse_url"].endswith("/sse")
+
+    def test_remote_oauth_config_contains_only_public_client_and_secret_name(self):
+        snippet = json.dumps({
+            "url": "https://mcp.example.com/v1",
+            "oauth": {
+                "metadata_url": "https://auth.example.com/.well-known/oauth-authorization-server",
+                "client_id": "lumena-public-client",
+                "scopes": ["files.read"],
+            },
+        })
+        r = resolve_target(snippet)
+        auth = r.connection_spec["auth"]
+        assert auth["kind"] == "oauth2"
+        assert auth["client_id"] == "lumena-public-client"
+        assert auth["secret_keys"] == ["OAUTH_ACCESS_TOKEN"]
+        assert r.connection_spec["remote"]["header_names"] == ["Authorization"]
+
+    def test_host_application_executable_config_is_shell_free(self):
+        snippet = (
+            '{"command":"C:\\\\Program Files\\\\Roblox\\\\StudioMCP.exe",'
+            '"args":["--stdio"],"env":{"ROBLOX_TOKEN":"${ROBLOX_TOKEN}"}}'
+        )
+        r = resolve_target(snippet)
+        assert r.kind == "config_snippet"
+        assert r.package_spec.startswith("exe:C:/Program Files/Roblox/")
+        assert r.connection_spec["distribution"]["args"] == ["--stdio"]
+        assert r.connection_spec["auth"]["secret_keys"] == ["ROBLOX_TOKEN"]
+        assert "ROBLOX_TOKEN" not in r.raw_input
+
+    @pytest.mark.parametrize("command", [
+        r"C:\\Tools\\mcp.bat", r"C:\\Tools\\mcp.cmd", r"C:\\Tools\\mcp.ps1",
+    ])
+    def test_host_application_scripts_are_not_executable_transport(self, command):
+        r = resolve_target(json.dumps({"command": command, "args": []}))
+        assert r.kind == "intent"
+
+
+class TestRemoteUrl:
+    def test_https_endpoint_becomes_versioned_remote_contract(self):
+        r = resolve_target("https://tools.example.com/mcp")
+        assert r.kind == "remote_url"
+        assert r.package_spec.startswith("remote:tools.example.com-mcp-")
+        assert r.connection_spec["transport"] == "streamable_http"
+        assert r.connection_spec["remote"]["url"] == "https://tools.example.com/mcp"
+
+    def test_non_loopback_http_is_not_admitted(self):
+        r = resolve_target("http://tools.example.com/mcp")
+        assert r.kind == "intent"
+        assert r.connection_spec is None
+
+    def test_loopback_http_is_admitted_for_local_daemon(self):
+        r = resolve_target("http://127.0.0.1:8765/mcp")
+        assert r.kind == "remote_url"
+        assert r.connection_spec["remote"]["url"].startswith("http://127.0.0.1")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Section 4 — kind="local_path"
@@ -205,6 +300,32 @@ class TestConfigSnippet:
 
 
 class TestLocalPath:
+    def test_direct_windows_executable_becomes_executable_transport(self):
+        r = resolve_target(
+            r"C:\Users\alice\AppData\Local\Roblox\Versions\v1\StudioMCP.exe"
+        )
+
+        assert r.kind == "config_snippet"
+        assert r.package_spec == (
+            "exe:C:/Users/alice/AppData/Local/Roblox/Versions/v1/StudioMCP.exe"
+        )
+        assert r.version is None
+        assert r.slug.startswith("studiomcp-")
+        assert r.display_name == "StudioMCP"
+        assert r.raw_input == "{local_executable_mcp_config}"
+        assert r.connection_spec["transport"] == "stdio"
+        assert r.connection_spec["distribution"]["kind"] == "executable"
+        assert r.connection_spec["distribution"]["locator"] == (
+            "C:/Users/alice/AppData/Local/Roblox/Versions/v1/StudioMCP.exe"
+        )
+
+    @pytest.mark.parametrize("suffix", ["bat", "cmd", "ps1"])
+    def test_direct_windows_script_never_becomes_executable_transport(self, suffix):
+        r = resolve_target(rf"C:\Tools\StudioMCP.{suffix}")
+
+        assert not (r.package_spec or "").startswith("exe:")
+        assert r.connection_spec is None
+
     @pytest.mark.parametrize("path", [
         "/home/me/my-mcp",
         "C:/Users/me/my-mcp",

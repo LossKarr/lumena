@@ -8,10 +8,11 @@ import os
 import uuid
 import json
 import threading
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 
 # ── Runtime availability flags (set at import time) ──
 try:
@@ -152,22 +153,34 @@ async def verify_admin_token(
     """
     admin_token = os.getenv("LUMENA_ADMIN_TOKEN", "")
     if not admin_token:
-        # P0.3.1: fail-closed — si le token n'est pas configuré après le setup, on refuse
-        setup_done = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
-        if setup_done and not setup_only_mode:
-            raise HTTPException(
-                status_code=401,
-                detail="LUMENA_ADMIN_TOKEN non configuré. Relancez le setup.",
-            )
-        return  # setup pas terminé → accès libre pour le wizard
-    # P0.12: In recovery mode (setup_only), bypass auth to allow re-setup
-    if setup_only_mode:
-        return
+        raise HTTPException(
+            status_code=401,
+            detail="LUMENA_ADMIN_TOKEN non configuré. Utilisez le setup local.",
+        )
     candidate = (authorization or "").replace("Bearer ", "").strip()
     if not candidate:
         raise HTTPException(status_code=401, detail="Authorization header required")
     if candidate != admin_token:
         raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
+async def verify_setup_local_request(request: Request) -> None:
+    """Autorise le bootstrap sans token uniquement depuis la machine locale.
+
+    La décision repose sur le pair TCP observé par ASGI, jamais sur Host ou
+    X-Forwarded-For qui peuvent être fournis par le client.
+    """
+    client_host = request.client.host if request.client else ""
+    normalized = client_host.split("%", 1)[0].strip().lower()
+    try:
+        is_loopback = ip_address(normalized).is_loopback
+    except ValueError:
+        is_loopback = normalized == "localhost"
+    if not is_loopback:
+        raise HTTPException(
+            status_code=403,
+            detail="Setup uniquement accessible depuis localhost.",
+        )
 
 
 def get_lumena() -> Optional[LumenaCore]:

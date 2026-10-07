@@ -684,6 +684,84 @@ class TestBatch1LlmReady:
                 result = await setup_complete(request)
             assert result["success"] is True
             assert result["llm_ready"] is False
+            assert result["runtime_error"]
+            assert "prête" not in result["message"]
+            assert deps.setup_only_mode is True
+        finally:
+            deps.setup_only_mode = old
+            deps.lumena = old_lumena
+
+    @pytest.mark.asyncio
+    async def test_failed_reinit_forces_recovery_even_from_ready_state(self, mock_setup):
+        """A stale False setup_only value must never advertise an unready core."""
+        from web.routes.setup import setup_complete
+        from web.routes import deps
+        from unittest.mock import AsyncMock, MagicMock
+
+        request = AsyncMock()
+        request.client = MagicMock()
+        request.client.host = "127.0.0.1"
+        request.json = AsyncMock(return_value={
+            "preview": False,
+            "config": {"LUMENA_DEFAULT_MODEL": "deepseek-v3"},
+        })
+        mock_core = MagicMock()
+        mock_core.is_initialized = False
+
+        async def _fake_init():
+            return mock_core
+
+        old = deps.setup_only_mode
+        old_lumena = deps.lumena
+        try:
+            deps.setup_only_mode = False
+            deps.lumena = MagicMock(is_initialized=True)
+            with patch.dict(os.environ, {}, clear=False), \
+                 patch("web.routes.setup._is_setup_complete", return_value=False), \
+                 patch("src.core.initialize_lumena", _fake_init):
+                os.environ.pop("LUMENA_SETUP_COMPLETE", None)
+                result = await setup_complete(request)
+
+            assert result["llm_ready"] is False
+            assert result["runtime_error"]
+            assert deps.setup_only_mode is True
+            assert deps.lumena is mock_core
+        finally:
+            deps.setup_only_mode = old
+            deps.lumena = old_lumena
+
+    @pytest.mark.asyncio
+    async def test_successful_reinit_is_the_only_ready_result(self, mock_setup):
+        from web.routes.setup import setup_complete
+        from web.routes import deps
+        from unittest.mock import AsyncMock, MagicMock
+
+        request = AsyncMock()
+        request.client = MagicMock()
+        request.client.host = "127.0.0.1"
+        request.json = AsyncMock(return_value={
+            "preview": False,
+            "config": {"LUMENA_DEFAULT_MODEL": "deepseek-v3"},
+        })
+        mock_core = MagicMock()
+        mock_core.is_initialized = True
+
+        async def _fake_init():
+            return mock_core
+
+        old = deps.setup_only_mode
+        old_lumena = deps.lumena
+        try:
+            deps.setup_only_mode = True
+            with patch.dict(os.environ, {}, clear=False), \
+                 patch("src.core.initialize_lumena", _fake_init):
+                os.environ.pop("LUMENA_SETUP_COMPLETE", None)
+                result = await setup_complete(request)
+
+            assert result["llm_ready"] is True
+            assert result["runtime_error"] == ""
+            assert "prête" in result["message"]
+            assert deps.setup_only_mode is False
         finally:
             deps.setup_only_mode = old
             deps.lumena = old_lumena
@@ -742,13 +820,14 @@ class TestBatch1SetupOnlyReSetup:
 
 
 class TestBatch1AuthBypass:
-    """P0.12 — verify_admin_token bypasses auth in setup_only_mode."""
+    """P0.12 — seul le wizard local contourne le token en mode récupération."""
 
     @pytest.mark.asyncio
-    async def test_verify_admin_token_bypass_in_setup_only(self):
-        """In setup_only_mode with existing ADMIN_TOKEN in .env → no 401."""
+    async def test_verify_admin_token_stays_closed_in_setup_only(self):
+        """Le mode récupération n'ouvre pas les autres routes administrateur."""
         from web.routes.deps import verify_admin_token
         from web.routes import deps
+        from fastapi import HTTPException
 
         old = deps.setup_only_mode
         try:
@@ -757,9 +836,9 @@ class TestBatch1AuthBypass:
                 "LUMENA_SETUP_COMPLETE": "1",
                 "LUMENA_ADMIN_TOKEN": "existing-secret-token",
             }):
-                # No Authorization header → normally would 401, but setup_only bypasses
-                result = await verify_admin_token(authorization=None)
-                assert result is None  # should return without raising
+                with pytest.raises(HTTPException) as exc_info:
+                    await verify_admin_token(authorization=None)
+                assert exc_info.value.status_code == 401
         finally:
             deps.setup_only_mode = old
 

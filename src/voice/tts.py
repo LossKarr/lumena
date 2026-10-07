@@ -9,15 +9,75 @@ Fonctionnalités:
 """
 
 import asyncio
+import hashlib
+import json
 import tempfile
 import os
 import re
 import time
+import uuid
+import wave
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 from datetime import datetime
 from loguru import logger
+
+
+def _audio_cache_key(text: str, provider: str, **identity: Any) -> str:
+    """Content-address audio by text *and* every voice-shaping input."""
+    payload = {
+        "schema": 3,
+        "text": text,
+        "provider": provider,
+        "identity": identity,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _reference_fingerprint(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    candidate = Path(path)
+    try:
+        stat = candidate.stat()
+        return f"{candidate.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        return str(candidate)
+
+
+def _valid_mp3_file(path: Path) -> bool:
+    """Reject empty/partial Edge files before they enter the playback ledger."""
+    try:
+        if not path.is_file() or path.stat().st_size < 512:
+            return False
+        with path.open("rb") as stream:
+            header = stream.read(65536)
+    except OSError:
+        return False
+    # Edge currently writes raw MPEG frames. Accept an optional ID3 prefix, but
+    # require at least one real frame sync so an interrupted ID3-only file fails.
+    return any(
+        header[index] == 0xFF and header[index + 1] & 0xE0 == 0xE0
+        for index in range(max(0, len(header) - 1))
+    )
+
+
+async def _save_edge_audio_atomic(communicate: Any, target: Path) -> Path:
+    """Generate beside the cache entry, validate, then publish with os.replace."""
+    partial = target.with_name(f"{target.name}.{uuid.uuid4().hex}.part")
+    try:
+        await communicate.save(str(partial))
+        if not _valid_mp3_file(partial):
+            raise RuntimeError("Edge-TTS a produit un fichier audio vide ou incomplet")
+        os.replace(partial, target)
+        return target
+    finally:
+        try:
+            partial.unlink(missing_ok=True)
+        except OSError:
+            pass
 try:
     from .providers.piper_provider import PiperProvider
 except ImportError:
@@ -187,14 +247,17 @@ class LumenaTTS:
         self.piper = PiperProvider() if PiperProvider is not None else None
         _piper_avail = self.piper.is_available() if self.piper is not None else False
 
-        # Provider XTTS v2 (Local ultra-naturel — prioritaire en mode premium/offline)
+        # XTTS v2 est local mais ses poids CPML sont non commerciaux. Il ne
+        # peut être utilisé que par un appelant ayant recueilli l'accord
+        # explicite requis ; `_synthesize` le désactive par défaut.
         self.xtts = XTTSProvider() if XTTSProvider is not None else None
         _xtts_avail = self.xtts.is_available() if self.xtts is not None else False
 
         # Mode TTS:
-        #   fast    (défaut) : Edge-TTS → XTTS → Piper → pyttsx3
-        #   premium          : XTTS  → Edge-TTS → Piper → pyttsx3
-        #   offline          : XTTS  → Piper → pyttsx3
+        #   fast    (défaut) : Edge-TTS → Piper → pyttsx3
+        #   premium          : Edge-TTS → Piper → pyttsx3
+        #   offline          : Piper → pyttsx3
+        # XTTS ne rejoint la cascade qu'avec `allow_xtts=True` explicite.
         self._tts_mode = os.getenv("LUMENA_TTS_MODE", "fast")
 
         logger.info(
@@ -240,8 +303,8 @@ class LumenaTTS:
         return audio_file
 
     async def _synthesize(
-        self, text: str, *, local_only: bool = False, allow_xtts: bool = True,
-        piper_model: Optional[str] = None,
+        self, text: str, *, local_only: bool = False, allow_xtts: bool = False,
+        piper_model: Optional[str] = None, prosody: Optional[dict] = None,
     ) -> Optional[Path]:
         """Phase SYNTHÈSE seule (V2) — cascade de providers → fichier audio, SANS playback.
 
@@ -252,28 +315,46 @@ class LumenaTTS:
         if not text or not text.strip():
             return None
         text = self._clean_text(text)
-        import hashlib
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
-
         start_time = time.time()
         success = False
         audio_file = None
         provider = None  # provider effectivement utilisé (pour statut V2 : pyttsx3 -> degraded)
         effective_piper_model = None
+        unsupported_language = piper_model == "unsupported_language"
         if self.piper is not None:
             try:
-                if piper_model and self.piper.is_available(piper_model):
+                if piper_model and not unsupported_language and self.piper.is_available(piper_model):
                     effective_piper_model = piper_model
             except (TypeError, ValueError):
                 effective_piper_model = None
         piper_model_name = effective_piper_model or getattr(self.piper, "model_name", "default")
+        prosody = dict(prosody or {})
+        try:
+            piper_length_scale = 1.0 / max(0.6, min(1.6, float(prosody.get("rate", 1.0))))
+        except (TypeError, ValueError):
+            piper_length_scale = 1.0
         piper_cache_tag = re.sub(r"[^A-Za-z0-9_-]+", "_", str(piper_model_name))
+        xtts_key = _audio_cache_key(
+            text,
+            "xtts-v2",
+            model=getattr(self.xtts, "MODEL_NAME", "xtts_v2"),
+            language=getattr(self.xtts, "LANGUAGE", "fr"),
+            speaker=getattr(self.xtts, "_selected_speaker", None),
+            reference=_reference_fingerprint(getattr(self.xtts, "voice_reference", None)),
+        )
+        piper_key = _audio_cache_key(
+            text, "piper", model=piper_model_name, prosody=prosody,
+        )
+        edge_key = _audio_cache_key(
+            text, "edge-tts", voice=self.voice, rate=self.rate,
+            volume=self.volume, pitch=self.pitch,
+        )
 
         # 0. XTTS v2 — ultra-naturel local (prioritaire si mode premium/offline)
         if (allow_xtts and not success and self._tts_mode in ("premium", "offline")
                 and self.xtts is not None and self.xtts.is_available()):
             provider = "xtts"
-            audio_file = self.cache_dir / f"lumena_xtts_{text_hash}.wav"
+            audio_file = self.cache_dir / f"lumena_xtts_{xtts_key}.wav"
             try:
                 if audio_file.exists() and audio_file.stat().st_size > 0:
                     success = True
@@ -289,15 +370,16 @@ class LumenaTTS:
 
         # 1. Piper (Local ONNX — dernier recours avant pyttsx3, qualité correcte)
         # NOTE: Piper passe APRÈS Edge-TTS en mode premium/fast — uniquement si tout le reste échoue
-        if (not success and self._tts_mode == "offline" and self.piper is not None
+        if (not success and not unsupported_language and self._tts_mode == "offline" and self.piper is not None
                 and self.piper.is_available(effective_piper_model)):
             provider = "piper"
-            audio_file = self.cache_dir / f"lumena_piper_utf8_v2_{piper_cache_tag}_{text_hash}.wav"
+            audio_file = self.cache_dir / f"lumena_piper_utf8_v3_{piper_cache_tag}_{piper_key}.wav"
             try:
                 if audio_file.exists():
                     success = True
-                elif await self.piper.generate(
+                elif await self._generate_piper(
                     text, audio_file, model_name=effective_piper_model,
+                    length_scale=piper_length_scale,
                 ):
                     success = True
                 
@@ -313,11 +395,12 @@ class LumenaTTS:
         #    V2 : interdit si local_only (cloud non autorisé).
         if not success and EDGE_TTS_AVAILABLE and self._tts_mode != "offline" and not local_only:
             provider = "edge-tts"
-            audio_file = self.cache_dir / f"lumena_{text_hash}.mp3"
+            audio_file = self.cache_dir / f"lumena_edge_v3_{edge_key}.mp3"
             try:
-                if audio_file.exists():
+                if _valid_mp3_file(audio_file):
                     success = True
                 else:
+                    audio_file.unlink(missing_ok=True)
                     communicate = edge_tts.Communicate(
                         text,
                         self.voice,
@@ -325,7 +408,7 @@ class LumenaTTS:
                         volume=self.volume,
                         pitch=self.pitch
                     )
-                    await communicate.save(str(audio_file))
+                    await _save_edge_audio_atomic(communicate, audio_file)
                     success = True
                 
                 if success:
@@ -342,7 +425,7 @@ class LumenaTTS:
         if (allow_xtts and not success and self._tts_mode == "fast"
                 and self.xtts is not None and self.xtts.is_available()):
             provider = "xtts"
-            audio_file = self.cache_dir / f"lumena_xtts_{text_hash}.wav"
+            audio_file = self.cache_dir / f"lumena_xtts_{xtts_key}.wav"
             try:
                 if audio_file.exists() and audio_file.stat().st_size > 0:
                     success = True
@@ -357,15 +440,16 @@ class LumenaTTS:
                 self.metrics.record_failure(provider, str(e))
 
         # 2c. Piper (fallback local si Edge-TTS échoue en mode fast/premium)
-        if (not success and self._tts_mode != "offline" and self.piper is not None
+        if (not success and not unsupported_language and self._tts_mode != "offline" and self.piper is not None
                 and self.piper.is_available(effective_piper_model)):
             provider = "piper"
-            audio_file = self.cache_dir / f"lumena_piper_utf8_v2_{piper_cache_tag}_{text_hash}.wav"
+            audio_file = self.cache_dir / f"lumena_piper_utf8_v3_{piper_cache_tag}_{piper_key}.wav"
             try:
                 if audio_file.exists():
                     success = True
-                elif await self.piper.generate(
+                elif await self._generate_piper(
                     text, audio_file, model_name=effective_piper_model,
+                    length_scale=piper_length_scale,
                 ):
                     success = True
                 if success:
@@ -377,7 +461,8 @@ class LumenaTTS:
                 self.metrics.record_failure(provider, str(e))
 
         # 3. pyttsx3 (dernier recours — voix robotique Windows)
-        if not success and self.enable_fallback and PYTTSX3_AVAILABLE:
+        if (not success and not unsupported_language
+                and self.enable_fallback and PYTTSX3_AVAILABLE):
             provider = "pyttsx3"
             self.metrics.record_fallback()
             # Start time resetté pour le fallback
@@ -396,11 +481,23 @@ class LumenaTTS:
                 self.metrics.record_failure(provider, error_msg)
         
         if not success:
-            logger.error(f"❌ TTS: Aucun provider disponible pour le texte: {text[:50]}...")
+            logger.error(f"❌ TTS: aucun provider disponible ({len(text)} caractères)")
             return None
 
         self._last_provider = provider  # exposé pour le statut V2 (LocalTTSAdapter)
         return audio_file
+
+    async def _generate_piper(
+        self, text: str, audio_file: Path, *, model_name: Optional[str],
+        length_scale: float,
+    ) -> bool:
+        """Apply VoiceProfile pace when supported, preserving old provider fakes."""
+        try:
+            return await self.piper.generate(
+                text, audio_file, model_name=model_name, length_scale=length_scale,
+            )
+        except TypeError:
+            return await self.piper.generate(text, audio_file, model_name=model_name)
 
     async def speak_async(self, text: str) -> Optional[Path]:
         """Alias pour speak(wait=True)."""
@@ -415,8 +512,7 @@ class LumenaTTS:
         if not PYTTSX3_AVAILABLE:
             return None
         
-        import hashlib
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        text_hash = _audio_cache_key(text, "pyttsx3", language="fr")
         audio_file = self.cache_dir / f"lumena_fallback_{text_hash}.wav"
         
         if audio_file.exists():
@@ -451,7 +547,6 @@ class LumenaTTS:
         Returns True si tout a joué, False si interrompu ou erreur.
         """
         import re as _re_sp
-        import hashlib
 
         # Découper en phrases et regrouper les clauses trop courtes (< 25 chars)
         raw = _re_sp.split(r'(?<=[.!?…])\s+', text.strip())
@@ -482,15 +577,19 @@ class LumenaTTS:
                 if not sentence:
                     continue
 
-                h = hashlib.md5(sentence.encode()).hexdigest()[:8]
-                audio_file = self.cache_dir / f"lumena_{h}.mp3"
+                h = _audio_cache_key(
+                    sentence, "edge-tts", voice=self.voice, rate=self.rate,
+                    volume=self.volume, pitch=self.pitch,
+                )
+                audio_file = self.cache_dir / f"lumena_edge_v3_{h}.mp3"
                 try:
-                    if not audio_file.exists():
+                    if not _valid_mp3_file(audio_file):
+                        audio_file.unlink(missing_ok=True)
                         communicate = edge_tts.Communicate(
                             sentence, self.voice, rate=self.rate,
                             volume=self.volume, pitch=self.pitch,
                         )
-                        await communicate.save(str(audio_file))
+                        await _save_edge_audio_atomic(communicate, audio_file)
 
                     if self._stop_speaking:
                         return False
@@ -503,7 +602,7 @@ class LumenaTTS:
                         if self._stop_speaking:
                             pygame.mixer.music.stop()
                             return False
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.01)
 
                 except Exception as e:
                     logger.warning(f"_speak_sentences: {e}")
@@ -615,9 +714,26 @@ class LumenaTTS:
                 warnings.filterwarnings("ignore", message="pkg_resources", category=DeprecationWarning)
                 import pygame
                 import time
-                if not pygame.mixer.get_init():
-                    # Piper = 22050Hz, 16-bit, Mono
-                    pygame.mixer.init(frequency=22050, size=-16, channels=1)
+                requested = (22050, -16, 1)
+                if audio_file.suffix.lower() == ".wav":
+                    try:
+                        with wave.open(str(audio_file), "rb") as stream:
+                            width = int(stream.getsampwidth())
+                            requested = (
+                                int(stream.getframerate()),
+                                -8 * width if width in {1, 2, 4} else -16,
+                                int(stream.getnchannels()),
+                            )
+                    except (OSError, EOFError, wave.Error):
+                        pass
+                current = pygame.mixer.get_init()
+                if current and tuple(current) != requested and not pygame.mixer.music.get_busy():
+                    pygame.mixer.quit()
+                    current = None
+                if not current:
+                    pygame.mixer.init(
+                        frequency=requested[0], size=requested[1], channels=requested[2],
+                    )
                 
                 logger.debug(f"▶️ Lecture audio (pygame): {audio_file.name}")
                 pygame.mixer.music.load(str(audio_file))
@@ -635,7 +751,7 @@ class LumenaTTS:
                         pygame.mixer.music.stop()
                         logger.debug("⏹️ Lecture interrompue (barge-in)")
                         break
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(0.01)
                     
             except ImportError:
                 # Fallback: ffplay (doit être installé)
@@ -720,8 +836,17 @@ class LumenaTTS:
             "is_speaking": self.is_speaking,
             "providers": {
                 "edge_tts": EDGE_TTS_AVAILABLE,
+                "edge_tts_locality": "cloud",
+                "piper": bool(self.piper is not None and self.piper.is_available()),
+                "piper_locality": "local",
+                "xtts": bool(self.xtts is not None and self.xtts.is_available()),
+                "xtts_locality": "local",
+                "xtts_license": "Coqui Public Model License 1.0.0",
+                "xtts_commercial_use_allowed": False,
                 "pyttsx3": PYTTSX3_AVAILABLE,
+                "pyttsx3_locality": "local",
             },
+            "mode": self._tts_mode,
             "fallback_enabled": self.enable_fallback,
             "metrics": self.get_metrics()
         }

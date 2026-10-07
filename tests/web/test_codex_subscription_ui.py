@@ -77,7 +77,7 @@ def test_codex_card_assets_are_loaded_and_responsive():
         encoding="utf-8"
     )
     assert "/static/css/codex-subscription.css?v=2" in index
-    assert "/static/js/main.js?v=62" in index
+    assert "/static/js/main.js?v=68" in index
     assert "@media(max-width:820px)" in css
     assert "@media(max-width:560px)" in css
     assert ".codex-access-segment" in css
@@ -100,7 +100,7 @@ def test_global_picker_keeps_api_catalog_and_adds_namespaced_codex_space():
     assert "/api/model/switch" in startup
     assert "switchCatalogModel" in main
     assert "setModelSource" in main
-    assert "./startup.js?v=2" in main
+    assert "./startup.js?v=3" in main
     assert 'id="model-picker-source"' in index
     assert 'data-source="api"' in index
     assert 'data-source="codex"' in index

@@ -4,7 +4,9 @@ import pytest
 
 from src.core_services.agent_service import _should_auto_speak
 from src.voice.lifecycle import VoiceLifecycleManager, select_voice_backend
-from src.voice.v2.supervisor import VoiceV2Manager, normalize_voice_mode
+from src.voice.v2.supervisor import (
+    VoiceV2Manager, normalize_voice_mode, resolve_voice_runtime_options,
+)
 
 
 class _FakeBackend:
@@ -58,7 +60,11 @@ async def test_v2_manager_starts_official_chat_and_stops_cleanly():
     mgr = VoiceV2Manager(runner=runner, max_restarts=0)
     assert await mgr.start("core", mode="direct") is True
     await asyncio.wait_for(entered.wait(), timeout=1)
-    assert calls == [("core", {"disable_tools": False, "llm_mode": "core_chat"})]
+    assert calls == [("core", {
+        "disable_tools": False,
+        "llm_mode": "core_chat",
+        **resolve_voice_runtime_options(),
+    })]
     assert mgr.get_status()["mode"] == "chat"
     await mgr.stop()
     assert mgr.running is False
@@ -70,7 +76,11 @@ async def test_v2_manager_routes_agent_without_parallel_direct_path():
     entered = asyncio.Event()
 
     async def runner(_core, **kwargs):
-        assert kwargs == {"disable_tools": False, "llm_mode": "agent"}
+        assert kwargs == {
+            "disable_tools": False,
+            "llm_mode": "agent",
+            **resolve_voice_runtime_options(),
+        }
         entered.set()
         await asyncio.Event().wait()
 
@@ -139,6 +149,45 @@ async def test_lifecycle_v2_on_never_starts_legacy_concurrently(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_interactive_start_explicitly_selects_v2_even_when_auto_is_off(monkeypatch):
+    monkeypatch.setenv("LUMENA_VOICE_V2_AUTO", "0")
+    legacy = _FakeBackend("legacy")
+    v2 = _FakeBackend("v2")
+    v2.task = asyncio.create_task(asyncio.Event().wait())
+    mgr = VoiceLifecycleManager(legacy=legacy, v2=v2)
+    assert await mgr.start("core", backend="v2") is True
+    assert legacy.start_calls == []
+    assert len(v2.start_calls) == 1
+    assert mgr.get_status()["requested_backend"] == "v2"
+    await mgr.stop()
+    v2.task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_keeps_single_audio_owner(monkeypatch):
+    monkeypatch.setenv("LUMENA_VOICE_V2_AUTO", "1")
+    legacy = _FakeBackend("legacy")
+    v2 = _FakeBackend("v2")
+    v2.task = asyncio.create_task(asyncio.Event().wait())
+    mgr = VoiceLifecycleManager(legacy=legacy, v2=v2)
+    results = await asyncio.gather(
+        mgr.start("core", backend="v2"), mgr.start("core", backend="v2")
+    )
+    assert results == [True, True]
+    assert len(v2.start_calls) == 1
+    assert legacy.start_calls == []
+    await mgr.stop()
+    v2.task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_invalid_explicit_backend_is_rejected():
+    mgr = VoiceLifecycleManager(legacy=_FakeBackend("legacy"), v2=_FakeBackend("v2"))
+    with pytest.raises(ValueError, match="Unsupported voice backend"):
+        await mgr.start("core", backend="cloud")
+
+
+@pytest.mark.asyncio
 async def test_lifecycle_fallback_waits_for_terminal_v2_failure(monkeypatch):
     monkeypatch.setenv("LUMENA_VOICE_V2_AUTO", "1")
     monkeypatch.setenv("LUMENA_VOICE_V2_FALLBACK_LEGACY", "1")
@@ -188,3 +237,38 @@ def test_voice_runtime_owns_voice_audio_without_changing_other_channels():
     assert _should_auto_speak(True, "web") is True
     assert _should_auto_speak(True, "telegram") is True
     assert _should_auto_speak(False, "web") is False
+
+
+def test_runtime_options_follow_saved_stt_configuration(monkeypatch):
+    monkeypatch.setenv("LUMENA_STT_DEVICE", "cpu")
+    monkeypatch.setenv("LUMENA_STT_COMPUTE", "int8_float32")
+    monkeypatch.setenv("LUMENA_STT_LANGUAGE", "fr")
+    monkeypatch.setenv("LUMENA_VOICE_INPUT_DEVICE", "4")
+    # LOT VOICE-3 (29/09) : `model` rejoint les options resolues. Il manquait, si bien que
+    # `LumenaSTT` retombait sur son defaut fige A L'IMPORT (`small`) malgre un `.env`
+    # demandant `large-v3-turbo` — mesure du 28/09 : `STT initialise (modele: small)`.
+    # Ce gel est mis a jour A DESSEIN : il fige le contrat complet, et le contrat change.
+    monkeypatch.setenv("LUMENA_STT_MODEL", "large-v3-turbo")
+    assert resolve_voice_runtime_options() == {
+        "device": "cpu",
+        "compute": "int8_float32",
+        "language": "fr",
+        "model": "large-v3-turbo",
+        "input_device_index": 4,
+    }
+
+
+def test_runtime_options_reject_invalid_hardware_values(monkeypatch):
+    monkeypatch.setenv("LUMENA_STT_DEVICE", "remote")
+    monkeypatch.setenv("LUMENA_STT_COMPUTE", "magic")
+    monkeypatch.setenv("LUMENA_VOICE_INPUT_DEVICE", "-2")
+    options = resolve_voice_runtime_options()
+    assert options["device"] == "cpu"
+    assert options["compute"] == "int8"
+    assert options["input_device_index"] is None
+
+
+def test_runtime_options_never_use_float16_on_cpu(monkeypatch):
+    monkeypatch.setenv("LUMENA_STT_DEVICE", "cpu")
+    monkeypatch.setenv("LUMENA_STT_COMPUTE", "float16")
+    assert resolve_voice_runtime_options()["compute"] == "int8"

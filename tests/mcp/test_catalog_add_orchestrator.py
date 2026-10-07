@@ -14,6 +14,7 @@ from src.mcp.catalog_add_orchestrator import (
     MCPCatalogAddOrchestrator,
 )
 from src.mcp.policy import MCPPolicy
+from src.mcp.connection_spec import MCPConnectionSpec, RemoteSpec, TransportKind
 
 
 class FakeQueue:
@@ -95,6 +96,81 @@ def test_live_propose_creates_local_write_ticket():
     assert call["risk_summary"] == CATALOG_ADD_RISK_SUMMARY
     assert call["args"]["action"] == "catalog_add"
     assert call["args"]["package_spec"] == "npm:@stripe/mcp"
+
+
+def _remote_connection():
+    return MCPConnectionSpec(
+        transport=TransportKind.STREAMABLE_HTTP,
+        remote=RemoteSpec(url="https://mcp.example.com/v1"),
+    ).to_dict()
+
+
+def test_remote_connection_contract_survives_approval_and_catalog_write():
+    q = FakeQueue()
+    cat = FakeCatalog()
+    orch = MCPCatalogAddOrchestrator(catalog=cat, approval_queue=q)
+    proposal = CatalogAddProposalInput(
+        server_id="remote-example",
+        display_name="Remote Example",
+        package_spec="remote:remote-example",
+        version=None,
+        trust_score=80,
+        connection_spec=_remote_connection(),
+    )
+    ticket = orch.propose_catalog_add(proposal, dry_run=False)
+    args = q.calls[0]["args"]
+    assert args["connection_spec"] == _remote_connection()
+    approval = SimpleNamespace(
+        decision=ApprovalDecision.APPROVED,
+        args=args,
+        reason=None,
+    )
+    result = orch.execute_approved_catalog_add(
+        ticket.server_id, approval, dry_run=False
+    )
+    assert result.success is True
+    assert cat.add_calls[0]["connection_spec"] == _remote_connection()
+
+
+def test_invalid_connection_contract_is_rejected_before_ticket():
+    q = FakeQueue()
+    orch = MCPCatalogAddOrchestrator(catalog=FakeCatalog(), approval_queue=q)
+    with pytest.raises(CatalogAddError, match="connection_spec_invalid"):
+        orch.propose_catalog_add(
+            _proposal(connection_spec={"transport": "shell"}), dry_run=False
+        )
+    assert q.calls == []
+
+
+def test_connection_contract_accepts_unscored_target_until_human_approval():
+    q = FakeQueue()
+    orch = MCPCatalogAddOrchestrator(catalog=FakeCatalog(), approval_queue=q)
+    proposal = CatalogAddProposalInput(
+        server_id="remote-unscored",
+        display_name="Remote unscored",
+        package_spec="remote:remote-unscored",
+        version=None,
+        trust_score=None,
+        connection_spec=_remote_connection(),
+    )
+
+    ticket = orch.propose_catalog_add(proposal, dry_run=False)
+
+    assert ticket.approval_ticket_id is not None
+    assert q.calls[0]["args"]["trust_score"] is None
+
+
+@pytest.mark.parametrize("trust_score", [-1, 101])
+def test_trust_score_bounds_apply_without_connection_contract(trust_score):
+    q = FakeQueue()
+    orch = MCPCatalogAddOrchestrator(catalog=FakeCatalog(), approval_queue=q)
+
+    with pytest.raises(CatalogAddError, match="trust_score_invalid"):
+        orch.propose_catalog_add(
+            _proposal(trust_score=trust_score), dry_run=False
+        )
+
+    assert q.calls == []
 
 
 def test_execute_dry_run_does_not_add_server():

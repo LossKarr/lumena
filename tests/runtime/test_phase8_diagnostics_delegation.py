@@ -121,6 +121,11 @@ class TestNetworkDiagnosticsModule:
         r = nd.check_bind_host()
         assert r["network_accessible"] is False
 
+    def test_check_bind_host_defaults_to_loopback(self, monkeypatch):
+        from src.runtime import network_diagnostics as nd
+        monkeypatch.delenv("LUMENA_HOST", raising=False)
+        assert nd.check_bind_host() == {"bind": "127.0.0.1", "network_accessible": False}
+
     def test_check_port_listening_closed_port(self):
         from src.runtime.network_diagnostics import check_port_listening
         r = check_port_listening(1)  # port 1 est fermé

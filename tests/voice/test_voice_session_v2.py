@@ -1,4 +1,5 @@
 import json
+import asyncio
 
 import pytest
 
@@ -121,6 +122,48 @@ async def test_runtime_context_is_always_popped_after_failure():
     router = VoiceSessionRouter(_Boom())
     with pytest.raises(RuntimeError, match="boom"):
         await router.respond_chat("test")
+    assert get_current_runtime_context() is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_voice_sessions_keep_user_contexts_isolated():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _ConcurrentCore:
+        def __init__(self):
+            self.seen = {}
+
+        async def chat(self, text, source_channel="web"):
+            ctx = get_current_runtime_context()
+            self.seen[text] = (ctx.user_id, ctx.user_role, ctx.conversation_id)
+            if len(self.seen) == 2:
+                entered.set()
+            await release.wait()
+            current = get_current_runtime_context()
+            assert (current.user_id, current.user_role, current.conversation_id) == self.seen[text]
+            return text
+
+    core = _ConcurrentCore()
+    guest = VoiceSessionRouter(
+        core, conversation_id="voice-guest",
+        identity=VoiceSessionIdentity("guest:1", "owner:1", "guest", None, False),
+    )
+    owner = VoiceSessionRouter(
+        core, conversation_id="voice-owner",
+        identity=VoiceSessionIdentity("owner:1", "owner:1", "owner", None, True),
+    )
+    tasks = [
+        asyncio.create_task(guest.respond_chat("guest-turn")),
+        asyncio.create_task(owner.respond_chat("owner-turn")),
+    ]
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    release.set()
+    assert await asyncio.gather(*tasks) == ["guest-turn", "owner-turn"]
+    assert core.seen == {
+        "guest-turn": ("guest:1", "guest", "voice-guest"),
+        "owner-turn": ("owner:1", "owner", "voice-owner"),
+    }
     assert get_current_runtime_context() is None
 
 

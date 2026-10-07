@@ -240,6 +240,27 @@ async def test_wrapped_handler_returns_fail_on_is_error():
 
 
 @pytest.mark.asyncio
+async def test_wrapped_handler_rejects_unflagged_error_envelope():
+    client = _FakeMCPClient(
+        call_result=MCPCallResult(content="Error: Script not found at path")
+    )
+    tool = MCPTool(name="script_read", description="d", input_schema={})
+    hdef = adapt_tool(client=client, server_name="studio", mcp_tool=tool)
+    result = await hdef.handler(MagicMock())
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_wrapped_handler_does_not_treat_nil_or_embedded_error_as_failure():
+    for output in ("nil", "Source code:\nlocal error = 'expected value'"):
+        client = _FakeMCPClient(call_result=MCPCallResult(content=output))
+        tool = MCPTool(name="execute_luau", description="d", input_schema={})
+        hdef = adapt_tool(client=client, server_name="studio", mcp_tool=tool)
+        result = await hdef.handler(MagicMock())
+        assert result.success is True
+
+
+@pytest.mark.asyncio
 async def test_wrapped_handler_catches_timeout_as_fail():
     client = _FakeMCPClient(raise_exc=MCPTimeoutError("timeout!"))
     tool = MCPTool(name="t", description="d", input_schema={})

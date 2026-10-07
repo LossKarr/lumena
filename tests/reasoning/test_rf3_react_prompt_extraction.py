@@ -271,16 +271,23 @@ def construire(kw: dict, requete: str) -> tuple[str, int]:
     from src.autonomy import ops_handlers
     from src.reasoning.react import ReActLoop
     from src.runtime import peer_awareness
+    from src.utils import docker_sandbox
 
     _vrai_ops = ops_handlers._load_state
     _vrai_reseau = peer_awareness.build_peer_awareness_context
+    _vrai_docker = docker_sandbox._docker_available
     ops_handlers._load_state = lambda *a, **k: dict(ETAT_OPS_FIGE)
     peer_awareness.build_peer_awareness_context = lambda *a, **k: RESEAU_FIGE
+    # Le prompt ajoute 395 caractères lorsque le daemon Docker a déjà été
+    # détecté dans ce même processus. L'état dépend de l'ordre des tests et de
+    # la machine ; il ne fait pas partie du gabarit RF-3 mesuré ici.
+    docker_sandbox._docker_available = False
     try:
         return _construire_sans_derive(kw, requete)
     finally:
         ops_handlers._load_state = _vrai_ops
         peer_awareness.build_peer_awareness_context = _vrai_reseau
+        docker_sandbox._docker_available = _vrai_docker
 
 
 def _construire_sans_derive(kw: dict, requete: str) -> tuple[str, int]:
@@ -844,6 +851,18 @@ def test_l_empreinte_ne_depend_PAS_du_nombre_d_outils(monkeypatch):
         "passera pas sur une machine ou toutes les dependances optionnelles ne "
         "sont pas installees (cas GitHub Actions du 2026-08-29)."
     )
+
+
+def test_l_empreinte_ne_depend_pas_du_daemon_docker(registre, monkeypatch):
+    """Un probe Docker antérieur ne doit pas faire dériver la matrice RF-3."""
+    from src.utils import docker_sandbox
+
+    kw, requete = scenarios(registre)["01_chat_simple"]
+    monkeypatch.setattr(docker_sandbox, "_docker_available", False)
+    sans_docker = empreinte(construire(kw, requete)[0])
+    monkeypatch.setattr(docker_sandbox, "_docker_available", True)
+    avec_docker = empreinte(construire(kw, requete)[0])
+    assert sans_docker == avec_docker
 
 
 def test_le_catalogue_epingle_active_bien_les_branches_conditionnelles():

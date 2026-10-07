@@ -661,6 +661,16 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
 
         async def handler_weekly_auto_improve():
             """Pipeline d'auto-amélioration hebdomadaire de Lumena."""
+            # Le pipeline historique peut déployer directement un modèle dans
+            # Ollama. Il reste disponible pour migration/diagnostic, mais il ne
+            # doit plus s'exécuter automatiquement sans opt-in explicite.
+            from ..training.personal.legacy_gate import legacy_auto_retrain_enabled
+            if not legacy_auto_retrain_enabled():
+                return {
+                    "success": True,
+                    "status": "disabled",
+                    "reason": "legacy_auto_retrain_requires_explicit_opt_in",
+                }
             retrain_lock = None
             try:
                 pipeline_script = (
@@ -1446,6 +1456,29 @@ Réponds UNIQUEMENT en JSON: {{"name":"kebab-case","description":"...","content"
         # ── TÂCHES OPS PRODUCTION CONTINUE ──
 
         self._setup_ops_tasks()
+
+        # Arbitrage léger du modèle personnel. Le handler reste inerte tant
+        # que l'utilisateur n'a pas activé l'entraînement automatique.
+        try:
+            t = self.schedule(
+                name="Personal Model Training",
+                description="Démarre, suspend ou reprend un entraînement personnel selon les ressources et l'activité",
+                handler_name="personal_training_tick",
+                frequency=TaskFrequency.EVERY_5_MINUTES,
+            )
+            t.timeout_seconds = HANDLER_TIMEOUTS.get("personal_training_tick", 30)
+        except Exception as e:
+            logger.debug(f"Personal Model Training non planifié : {e}")
+        try:
+            t = self.schedule(
+                name="Personal Learning Curation",
+                description="Trie et juge un lot borné d'expériences personnelles autorisées",
+                handler_name="personal_learning_cycle",
+                frequency=TaskFrequency.EVERY_15_MINUTES,
+            )
+            t.timeout_seconds = HANDLER_TIMEOUTS.get("personal_learning_cycle", 600)
+        except Exception as e:
+            logger.debug(f"Personal Learning Curation non planifiée : {e}")
 
         logger.info("✅ Tâches par défaut configurées (profil production continue)")
 

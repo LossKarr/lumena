@@ -153,6 +153,101 @@ _SUCCESS_OVERRIDE: tuple = (
 )
 
 
+# ── Outils MCP dynamiques : sémantique de l'opération terminale ──────────────
+#
+# La catégorie d'un serveur MCP décrit son domaine (IDE, fichiers, web, custom…)
+# mais pas l'effet de chacun de ses outils. Deux outils d'un même serveur peuvent
+# être radicalement différents : `get_studio_state` est une sonde en lecture,
+# `execute_luau` est une mutation. Le plan doit donc regarder le dernier segment
+# du nom namespacé `mcp__<server>__<tool>` avant d'appliquer ses fallbacks.
+_MCP_READONLY_PREFIXES: tuple[str, ...] = (
+    "get_", "list_", "read_", "search_", "find_", "inspect_",
+    "describe_", "query_", "fetch_", "lookup_", "check_", "verify_",
+    "validate_", "test_", "ping_", "health_", "status_",
+)
+_MCP_READONLY_EXACT: frozenset[str] = frozenset({
+    "ping", "health", "status", "state", "info", "version",
+})
+_MCP_READONLY_SUFFIXES: tuple[str, ...] = (
+    "_read", "_status", "_state", "_info", "_details", "_version",
+)
+_MCP_PROOF_STOPWORDS: frozenset[str] = frozenset({
+    "mcp", "tool", "outil", "server", "serveur", "get", "list", "read",
+    "search", "find", "inspect", "describe", "query", "fetch", "lookup",
+    "check", "verify", "validate", "test", "ping", "health", "status",
+    "state", "info", "details", "current", "available", "mode", "session",
+    "verifier", "verification", "confirmer", "confirme", "connecte",
+    "connectee", "connected", "etat", "fonctionne", "fonctionnel",
+})
+
+
+def split_dynamic_mcp_tool_name(tool_name: str) -> Optional[tuple[str, str]]:
+    """Retourne ``(server_id, operation)`` pour un outil MCP namespacé valide."""
+    parts = (tool_name or "").split("__", 2)
+    if len(parts) != 3 or parts[0] != "mcp" or not parts[1] or not parts[2]:
+        return None
+    return parts[1].lower(), parts[2].lower()
+
+
+def is_dynamic_mcp_readonly_tool(tool_name: str) -> bool:
+    """True si l'opération MCP annoncée est une lecture/sonde sans mutation.
+
+    Fail-closed : une opération inconnue n'est pas déclarée read-only ici. Elle
+    reste soumise aux politiques MCP et aux autres gardes d'exécution existants.
+    """
+    parsed = split_dynamic_mcp_tool_name(tool_name)
+    if parsed is None:
+        return False
+    operation = parsed[1]
+    return (
+        operation in _MCP_READONLY_EXACT
+        or operation.startswith(_MCP_READONLY_PREFIXES)
+        or operation.endswith(_MCP_READONLY_SUFFIXES)
+    )
+
+
+def _mcp_proof_tokens(value: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", normalized)
+        if len(token) >= 3 and token not in _MCP_PROOF_STOPWORDS
+    }
+
+
+def has_dynamic_mcp_verify_proof(
+    tool_name: str,
+    observation: str,
+    task_desc: str,
+) -> bool:
+    """Valide une sonde MCP qui répond directement à une vérification générique.
+
+    La preuve reste bornée : outil MCP en lecture explicite, tâche réellement de
+    vérification, observation substantielle sans marqueur d'échec, et lien lexical
+    avec le serveur ou l'opération. Les vérifications typées (web, API, tests,
+    livraison, paiement…) gardent leurs preuves spécialisées existantes.
+    """
+    parsed = split_dynamic_mcp_tool_name(tool_name)
+    if parsed is None or not is_dynamic_mcp_readonly_tool(tool_name):
+        return False
+    if not is_verify_task((task_desc or "").lower()):
+        return False
+    if detect_verification_kind(task_desc) != VerificationKind.GENERIC:
+        return False
+    failed, overridden = classify_observation(observation)
+    if failed and not overridden:
+        return False
+    obs = (observation or "").strip()
+    if len(obs) < 8 or obs.lower() in {"{}", "[]", "null", "none", "ok"}:
+        return False
+
+    server_id, operation = parsed
+    identity_tokens = _mcp_proof_tokens(f"{server_id} {operation}")
+    task_tokens = _mcp_proof_tokens(task_desc)
+    return bool(identity_tokens & task_tokens)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Phase 2 — Proof Capabilities
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -237,6 +332,7 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "custom":        frozenset({ProofCapability.PROCESS_LAUNCH}),
     "website":       frozenset({ProofCapability.FILE_WRITE}),
     "local_models":  frozenset({ProofCapability.GENERIC_MUTATION}),
+    "personal_models": frozenset({ProofCapability.GENERIC_MUTATION}),
 }
 
 
@@ -256,6 +352,16 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "recommend_local_model":       frozenset({ProofCapability.GENERIC_READONLY}),
     "list_local_model_jobs":       frozenset({ProofCapability.GENERIC_READONLY}),
     "get_local_model_job":         frozenset({ProofCapability.GENERIC_READONLY}),
+    # Modèle personnel : les lectures ne doivent jamais compter comme preuve
+    # d'une mutation. Les autres commandes héritent du contrat de catégorie.
+    "personal_model_status":          frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_learning_health":       frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_experience_stats":      frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_training_settings":     frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_training_jobs":         frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_model_versions":        frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_model_recommendations": frozenset({ProofCapability.GENERIC_READONLY}),
+    "personal_model_audit_trail":     frozenset({ProofCapability.GENERIC_READONLY}),
     # files category — lecture vs écriture
     "read_file":             frozenset({ProofCapability.FILE_READ}),
     "read_files_batch":      frozenset({ProofCapability.FILE_READ}),
@@ -628,6 +734,8 @@ def has_sufficient_proof(
     failed, overridden = classify_observation(observation)
     if failed and not overridden:
         return False
+    if has_dynamic_mcp_verify_proof(tool_name, observation, task_desc):
+        return True
     # P2P : une délégation de mission à un pair est prouvée par l'ACCUSÉ du pair
     # (« ✅ Mission lancée, réf. ta-… »), indépendamment du kind détecté. Le travail
     # s'exécute à distance/async : on ne peut pas exiger une preuve d'exécution

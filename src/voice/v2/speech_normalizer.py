@@ -39,6 +39,7 @@ _CODE_EXT = (
 
 _RE_FENCE = re.compile(r"```.*?```", re.DOTALL)
 _RE_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_RE_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\(https?://[^)]+\)", re.IGNORECASE)
 _RE_WIN_PATH = re.compile(r"[A-Za-z]:\\[^\s]+")
 _RE_FILE = re.compile(r"\b[\w./\\-]+\.(?:" + _CODE_EXT + r")\b", re.IGNORECASE)
 _RE_SECRET = re.compile(
@@ -107,11 +108,13 @@ def normalize_for_speech(text: str) -> SpeechText:
     s = _collapse_tables(s, suppressed)
     # 4) Secrets (clé=valeur) — masqués, jamais prononcés.
     s = _RE_SECRET.sub(lambda m: _mark(suppressed, "secret"), s)
-    # 5) URLs, chemins Windows, fichiers de code.
+    # 5) Liens Markdown : conserver le libellé prononçable, supprimer la cible.
+    s = _RE_MARKDOWN_LINK.sub(lambda match: match.group(1), s)
+    # 6) URLs, chemins Windows, fichiers de code.
     s = _RE_URL.sub(lambda m: _mark(suppressed, "url"), s)
     s = _RE_WIN_PATH.sub(lambda m: _mark(suppressed, "path"), s)
     s = _RE_FILE.sub(lambda m: _mark(suppressed, "path"), s)
-    # 6) Hash longs puis identifiants longs (l'ordre évite de couper un hash en deux).
+    # 7) Hash longs puis identifiants longs (l'ordre évite de couper un hash en deux).
     s = _RE_HASH.sub(lambda m: _mark(suppressed, "hash"), s)
     s = _RE_LONG_IDENT.sub(lambda m: _mark(suppressed, "ident"), s)
 
@@ -122,7 +125,7 @@ def normalize_for_speech(text: str) -> SpeechText:
 
 
 def prepare_for_tts(text: str) -> str:
-    """Return the canonical French text actually sent to a TTS engine.
+    """Return the canonical, language-safe text sent to every V2 TTS engine.
 
     This projection never changes the displayed answer. It removes formatting
     that Piper pronounces literally and recomposes combining accents before
@@ -145,8 +148,17 @@ def prepare_for_tts(text: str) -> str:
     s = re.sub(r"\n", ". ", s)
     s = re.sub(r"\s+([,.!?;:])", r"\1", s)
     s = re.sub(r"\.\s*,", ", ", s)
-    s = re.sub(r"([?!:;])\s*\.", r"\1", s)
-    s = re.sub(r"\.{4,}", "...", s)
+    s = re.sub(r"([?!:;])\s*[.,]+", r"\1", s)
+    # Les suites de points faisaient prononcer plusieurs pauses par Edge/Piper.
+    # Au milieu d'une phrase elles deviennent une courte respiration ; à la fin,
+    # une seule terminaison. Les ponctuations espagnoles inversées sont préservées.
+    s = re.sub(r"(?<=\w)\s*\.{2,}\s*(?=\w)", ", ", s)
+    s = re.sub(r"\.{2,}", ".", s)
+    s = re.sub(r"\?{2,}", "?", s)
+    s = re.sub(r"!{2,}", "!", s)
+    s = re.sub(r"([?!])\s*[?!]+", r"\1", s)
     s = re.sub(r"(?:,\s*){2,}", ", ", s)
+    s = re.sub(r"([,;:])\s*[,;:]+", r"\1", s)
     s = re.sub(r"[ \t]{2,}", " ", s)
-    return re.sub(r"^[\s,]+", "", s).strip()
+    s = re.sub(r"^[\s,]+", "", s).strip()
+    return re.sub(r"\s+([,.!?;:])", r"\1", s)

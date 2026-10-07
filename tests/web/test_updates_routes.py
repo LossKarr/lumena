@@ -46,7 +46,7 @@ class FakeUpdateService:
         return {"state": "rolling_back", "busy_reasons": kwargs["busy_reasons"]}
 
 
-def _client(monkeypatch):
+def _client(monkeypatch, *, authenticated: bool = True):
     fake = FakeUpdateService()
     monkeypatch.setenv("LUMENA_ADMIN_TOKEN", "")
     monkeypatch.setenv("LUMENA_SETUP_COMPLETE", "0")
@@ -54,6 +54,8 @@ def _client(monkeypatch):
     monkeypatch.setattr(deps, "_UPDATE_SERVICE_SINGLETON", fake)
     app = FastAPI()
     app.include_router(updates.router)
+    if authenticated:
+        app.dependency_overrides[deps.verify_admin_token] = lambda: None
     return TestClient(app), fake
 
 
@@ -72,7 +74,7 @@ def test_update_routes_expose_only_real_catalog_and_download_operations(monkeypa
 
 
 def test_update_mutations_require_admin_token(monkeypatch) -> None:
-    client, _ = _client(monkeypatch)
+    client, _ = _client(monkeypatch, authenticated=False)
     monkeypatch.setenv("LUMENA_ADMIN_TOKEN", "secret")
 
     assert client.post("/api/updates/check").status_code == 401

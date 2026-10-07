@@ -125,6 +125,50 @@ class TestGuard5BusinessTaskNotCompletedByExploration:
         )
         assert not loop._task_plan[0].completed
 
+    def test_dynamic_mcp_read_cannot_mark_business_build_task(self):
+        loop = self._make_loop_with_plan([
+            "Construire le système de location complet",
+        ])
+        loop._last_auto_advance_iter = -1
+        loop._update_plan_progress(
+            tool_name="mcp__studiomcp-d714304e__script_read",
+            tool_args={"target_file": "game.ServerScriptService.RentalGame.RentService"},
+            observation_content="local RentService = {}\nreturn RentService",
+            iteration=3,
+        )
+        assert not loop._task_plan[0].completed
+
+    def test_dynamic_mcp_state_probe_completes_matching_verify_task(self):
+        loop = self._make_loop_with_plan([
+            "Vérifier l'état de la session Studio (place connectée)",
+        ])
+        loop._last_auto_advance_iter = -1
+        loop._update_plan_progress(
+            tool_name="mcp__studiomcp-d714304e__get_studio_state",
+            tool_args={"studio_id": "704bc905"},
+            observation_content=(
+                "Current Studio Mode: Edit\n"
+                "Available DataModels: Edit\n"
+                "Focused DataModel in the viewport: Edit"
+            ),
+            iteration=2,
+        )
+        assert loop._task_plan[0].completed
+        assert loop._task_plan[0].completion_status == "verified"
+
+    def test_dynamic_mcp_mutation_can_advance_matching_business_task(self):
+        loop = self._make_loop_with_plan([
+            "Construire le système de location complet",
+        ])
+        loop._last_auto_advance_iter = -1
+        loop._update_plan_progress(
+            tool_name="mcp__studiomcp-d714304e__execute_luau",
+            tool_args={"code": "-- create RentalGame"},
+            observation_content="SERVER_OK config=true rent=true main=true remotes=5",
+            iteration=4,
+        )
+        assert loop._task_plan[0].completed
+
     def test_delegate_report_without_urls_cannot_credit_sourced_research(self):
         loop = self._make_loop_with_plan([
             "Étape 3: Rechercher 2 recommandations énergétiques sourcées"

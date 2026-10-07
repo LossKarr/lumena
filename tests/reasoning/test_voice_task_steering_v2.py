@@ -17,6 +17,25 @@ def _voice_task(orch):
     return rec.task_id
 
 
+def test_voice_corrections_and_short_resume_are_classified_semantically():
+    from src.runtime.work_registry import classify_work_turn
+
+    assert classify_work_turn("Non pardon, je voulais dire voiture") == "steer"
+    assert classify_work_turn("remplace par la version locale") == "steer"
+    assert classify_work_turn("continue") == "resume"
+
+
+def test_multiple_voice_orientations_remain_ordered():
+    orch = TaskOrchestrator(persistence_path=None)
+    task_id = _voice_task(orch)
+    for text in ("ajoute les tests", "retire le cloud", "privilégie le local"):
+        queue_steering(orch, task_id, "add_constraint", {"text": text})
+    commands = orch.get_task(task_id)["metadata"]["steering_commands"]
+    assert [command["payload"]["text"] for command in commands] == [
+        "ajoute les tests", "retire le cloud", "privilégie le local",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_react_consumes_voice_steering_once_before_prompt():
     orch = TaskOrchestrator(persistence_path=None)

@@ -548,16 +548,28 @@ class LumenaCore:
                 logger.error("❌ LLM non disponible !")
             return False
         
-        # Vérifier le modèle (seulement pour Ollama)
+        # Vérifier le modèle (seulement pour Ollama). Le serveur Ollama peut
+        # répondre alors que le modèle choisi n'est pas installé. Dans ce cas
+        # le cœur doit rester non initialisé : basculer silencieusement vers le
+        # premier tag retourné rendrait le catalogue et le runtime incohérents.
         if hasattr(self.llm, 'provider'):
             from .llm.providers import ProviderType
             if self.llm.provider == ProviderType.OLLAMA:
                 models = await self.llm.list_models()
-                if not any("qwen3" in m.lower() or "qwen2.5" in m.lower() for m in models):
-                    logger.warning(f"⚠️ Modèle Qwen pas trouvé. Modèles disponibles: {models}")
-                    if models:
-                        self.llm.model = models[0]
-                        logger.info(f"📌 Utilisation de {self.llm.model} comme fallback")
+                requested = str(getattr(self.llm, "model", "") or "").strip()
+
+                def _canonical_ollama_id(value: str) -> str:
+                    value = str(value or "").strip().lower()
+                    return value if ":" in value.rsplit("/", 1)[-1] else f"{value}:latest"
+
+                installed = {_canonical_ollama_id(model) for model in models}
+                if not requested or _canonical_ollama_id(requested) not in installed:
+                    logger.error(
+                        "❌ Modèle Ollama configuré absent: {}. Modèles installés: {}",
+                        requested or "inconnu",
+                        models,
+                    )
+                    return False
             else:
                 logger.info(f"☁️ Provider cloud: {self.llm.provider.value}, modèle: {self.llm.model}")
 

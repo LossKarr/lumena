@@ -2351,6 +2351,38 @@ async def mcp_install_propose(
             detail={"error": True, "error_code": "server_id_not_declared"},
         )
 
+    # Compatibilite avec les entrees creees avant la prise en charge directe
+    # des executables MCP. Un chemin `.../StudioMCP.exe` etait autrefois
+    # degrade en `local:studiomcp.exe`; proposer puis approuver cette entree ne
+    # peut que finir en `local_package_missing` et consommer inutilement le
+    # marker one-shot. On bloque avant de creer le ticket et on donne au panel
+    # un code d'action explicite. Aucun chemin local n'est expose dans l'API.
+    package_spec = getattr(entry, "package_spec", None)
+    if (
+        isinstance(package_spec, str)
+        and package_spec.lower().startswith("local:")
+        and package_spec.lower().endswith(".exe")
+    ):
+        _audit_ui_install_action(
+            event="ui_action_failed",
+            action="install_propose",
+            target_server_id=server_id,
+            target_action_id=None,
+            caller_kind=caller_kind,
+            live_mode=live,
+            confirmation_received=True,
+            actor_token_hash=actor_hash,
+            outcome="error",
+            error_code="legacy_executable_target_invalid",
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": True,
+                "error_code": "legacy_executable_target_invalid",
+            },
+        )
+
     if not live:
         _audit_ui_install_action(
             event="ui_action_simulated",
@@ -2958,6 +2990,11 @@ def _build_install_spec_from_entry(entry: Any) -> Any:
             trust_score=getattr(entry, "trust_score", None),
             require_wheels_only=False,
         )
+    elif raw.startswith("exe:"):
+        chosen_transport = "exe"
+        package = raw[len("exe:"):]
+    elif raw.startswith("remote:"):
+        raise ValueError("transport_remote_runtime")
     else:
         raise ValueError("transport_unsupported:unknown")
 
@@ -2994,6 +3031,21 @@ def _build_install_spec_from_entry(entry: Any) -> Any:
     entry_args = (
         [str(a) for a in raw_entry_args] if raw_entry_args else []
     )
+    # Les configurations importées d'applications hôtes portent leurs
+    # arguments et noms de secrets dans le contrat versionné, jamais dans
+    # une ligne de commande shell ou une valeur persistée en clair.
+    connection_spec = getattr(entry, "connection_spec", None)
+    if isinstance(connection_spec, dict):
+        try:
+            from src.mcp.connection_spec import MCPConnectionSpec
+            parsed_connection = MCPConnectionSpec.from_dict(connection_spec)
+            if parsed_connection.distribution is not None:
+                entry_args = list(parsed_connection.distribution.args)
+            for key in parsed_connection.auth.secret_keys:
+                if key not in env_allowlist:
+                    env_allowlist.append(key)
+        except Exception:
+            pass
 
     return MCPInstallSpec(
         name=getattr(entry, "server_id", None),
@@ -3017,6 +3069,13 @@ def _build_runner_factory(install_root: Any):
     from src.mcp.sandbox_runner import MCPSandboxRunner
 
     def _factory(server_id: Any, entry: Any):
+        connection_spec = getattr(entry, "connection_spec", None)
+        if isinstance(connection_spec, dict):
+            from src.mcp.connection_spec import MCPConnectionSpec, TransportKind
+            parsed = MCPConnectionSpec.from_dict(connection_spec)
+            if parsed.transport != TransportKind.STDIO:
+                from src.mcp.remote_runtime import RemoteMCPRuntime
+                return RemoteMCPRuntime(str(server_id), connection_spec)
         spec = _build_install_spec_from_entry(entry)
         return MCPSandboxRunner(
             spec=spec,
@@ -3025,6 +3084,8 @@ def _build_runner_factory(install_root: Any):
         )
 
     return _factory
+
+
 
 
 class _MCPHandlerAdapterFacade:
@@ -3162,6 +3223,10 @@ def _build_activation_service(
             dry_run=dry_run,
             credentials_service=_creds_singleton,
             config_service=_config_singleton,
+            schema_guard=(
+                __import__("src.mcp.schema_guard", fromlist=["MCPSchemaGuard"])
+                .MCPSchemaGuard(DATA_DIR / "mcp_schema_guard")
+            ),
         )
     except Exception as _build_act_err:
         # Fix V : ne plus avaler silencieusement — ce except a masqué un

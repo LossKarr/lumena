@@ -40,6 +40,10 @@ from src.mcp.network_sources import (
     NpmRegistrySearchSource,
     PyPIProjectLookupSource,
 )
+from src.mcp.official_registry import (
+    OfficialMCPRegistryClient,
+    OfficialRegistrySearchSource,
+)
 
 
 CAPABILITY_TOOL_NAME = "request_mcp_capability"
@@ -1028,6 +1032,18 @@ class MCPReActIntegration:
         local_root = Path(os.getenv("LUMENA_MCP_LOCAL_SEARCH_ROOT", "")).expanduser()
         if str(local_root) not in ("", ".") and local_root.exists():
             sources.append(LocalFilesystemSource(local_root))
+        network_enabled = _is_network_search_enabled()
+        sources.append(
+            OfficialRegistrySearchSource(
+                OfficialMCPRegistryClient(
+                    cache_path=Path(os.getenv("LUMENA_DATA_DIR", "data"))
+                    / "mcp_registry"
+                    / "official_cache.json",
+                    timeout_s=5.0,
+                ),
+                network_enabled=network_enabled,
+            )
+        )
         sources.append(
             NpmRegistrySearchSource(
                 network_enabled=_is_network_search_enabled(),
@@ -1040,7 +1056,6 @@ class MCPReActIntegration:
                 timeout_s=4.0,
             )
         )
-        network_enabled = _is_network_search_enabled()
         sources.append(
             MCPDirectorySearchSource(
                 name="smithery_directory",
@@ -1961,6 +1976,7 @@ class MCPReActIntegration:
                 display_name=resolved.display_name,
                 version=resolved.version,
                 trust_score=resolved.trust_score,
+                connection_spec=resolved.connection_spec,
             )
         except Exception:  # noqa: BLE001
             return _blocked(handler_name, "mcp_action_failed")

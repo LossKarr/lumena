@@ -19,7 +19,7 @@ def test_deprecated_image_models_are_not_auto_routed():
     retired = {
         "gpt-image-1.5", "gpt-image-1-mini",
         "imagen-4-ultra", "imagen-4", "imagen-4-fast",
-        "grok-imagine-image-pro",
+        "grok-imagine-image-pro", "grok-imagine-image-quality",
     }
     assert retired.isdisjoint(_PROVIDER_FALLBACK_ORDER)
     for name in retired & set(_MODEL_CATALOG):

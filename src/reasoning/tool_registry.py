@@ -666,6 +666,7 @@ class ToolRegistry:
             (".handlers.files",          "get_file_handler_defs",          "files"),
             (".handlers.system",         "get_system_handler_defs",        "system"),
             (".handlers.local_models",   "get_local_model_handler_defs",   "local_models"),
+            (".handlers.personal_models","get_personal_model_handler_defs","personal_models"),
             (".handlers.web",            "get_web_handler_defs",           "web"),
             (".handlers.memory",         "get_memory_handler_defs",        "memory"),
             (".handlers.browser",        "get_browser_handler_defs",       "browser"),

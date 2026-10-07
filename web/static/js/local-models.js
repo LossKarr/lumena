@@ -405,7 +405,10 @@ async function mutate(card, action) {
   card.querySelectorAll('button').forEach(button => { button.disabled = true; });
   try {
     if (action === 'install') return await installReference(source, ref, card);
-    if (action === 'select') await api('/select', { method: 'POST', body: JSON.stringify({ source, ref, role: 'primary' }) });
+    if (action === 'select') {
+      await api('/select', { method: 'POST', body: JSON.stringify({ source, ref, role: 'primary' }) });
+      await window.loadModels?.();
+    }
     else await api(`/${action}`, { method: 'POST', body: JSON.stringify({ source, ref }) });
     showNotice(`${ref} : opération ${action} terminée et vérifiée.`, 'success');
     await loadLocalModels({ quiet: true });

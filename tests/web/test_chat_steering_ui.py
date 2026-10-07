@@ -67,7 +67,7 @@ def test_chat_steering_assets_have_explicit_cache_versions():
     assert "/static/css/chat-steering.css?v=2" in html
     assert "./chat.js?v=5" in main
     assert "./chat-steering.js?v=7" in main
-    assert "/static/js/main.js?v=62" in html
+    assert "/static/js/main.js?v=68" in html
 
 
 def test_task_orchestrator_is_enabled_by_default_for_live_steering():

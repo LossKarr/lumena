@@ -58,6 +58,13 @@ _SIGNATURES_QUOTA = (
 # « Client error '403 Forbidden' for url … », le corps reste dans `e.response.text`, lu
 # et jete par le `logger.error` de chaque provider. Le code, lui, EST dans `str(e)`.
 #
+# LOT VOICE-5bis (29/09) : le **402 Payment Required** rejoint la liste. Mesure du
+# 29/09 a 01 h 39, en pleine session vocale : « Erreur deepseek (HTTPStatusError):
+# Client error '402 Payment Required' » puis fallback Mistral — les credits etaient
+# epuises, et rien ne desarmait le fournisseur. « Definitif » s'entend au sens de
+# `marquer_quota_epuise` : desarme POUR CETTE SESSION ; recharger le compte et
+# redemarrer rearme le fournisseur.
+#
 # Le 429 est VOLONTAIREMENT absent : voir `_SIGNATURES_QUOTA` ci-dessus — une limitation
 # de debit arrive aussi en 429 et elle est transitoire. Un 401 peut etre une cle a
 # renouveler, un 400/422 une requete malformee de NOTRE cote, un 404 un modele mal nomme :
@@ -65,7 +72,7 @@ _SIGNATURES_QUOTA = (
 #
 # Le contexte HTTP est EXIGE : « erreur a la ligne 403 du fichier » ne desarme rien.
 _CODES_DEFINITIFS_RE = re.compile(
-    r"(?:HTTP\s+|error\s+')(403|410)\b",
+    r"(?:HTTP\s+|error\s+')(402|403|410)\b",
     re.IGNORECASE,
 )
 

@@ -82,6 +82,7 @@ class EntreePromptReAct:
     _format_budget_notice: Callable[[], str]
     obtenir_identite: Callable[[], str]
     obtenir_route_document: Callable[[], DocumentRoute]
+    public_updates_enabled: bool = False
 
 
 def _document_requested_kinds_guidance(route: DocumentRoute) -> str:
@@ -640,6 +641,12 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
     except Exception:
         pass
 
+    public_update_format = (
+        "PUBLIC_UPDATE: [facultatif : une phrase courte, naturelle et publique sur "
+        "l'etape qui commence ; aucun raisonnement, secret, chemin ou resultat non observe]\n"
+        if e.public_updates_enabled else ""
+    )
+
     return f"""Tu es LUMENA, une IA qui reflechit etape par etape avant d'agir.
 {agent_mode_notice}{_provider_hint_block}
 ## Date actuelle: {_today}
@@ -667,7 +674,7 @@ REGLE ABSOLUE : N'affirme JAMAIS avoir fait quelque chose avant d'avoir recu l'O
 
 ## Format de reponse (strict) :
 THOUGHT: [raisonnement interne, jamais visible par l'utilisateur]
-ACTION: [nom_outil ou FINAL]
+{public_update_format}ACTION: [nom_outil ou FINAL]
 ACTION_INPUT: [si ACTION est un outil -> JSON des parametres ; si FINAL -> ta reponse en TEXTE LIBRE]
 
 IMPORTANT: Quand tu utilises ACTION: FINAL, ACTION_INPUT DOIT contenir ta reponse en texte libre (pas de JSON {{"response":"..."}}).

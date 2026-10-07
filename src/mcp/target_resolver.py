@@ -13,6 +13,7 @@ Aucun appel HTTP direct : web_fetch est INJECTE pour testabilite.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # Phase 14 transports valides : npm:/pypi:/local:
 _PACKAGE_SPEC_RE = re.compile(
     r"^(?:npm|pypi|local):[A-Za-z0-9@/_.\-]+$"
+)
+
+_REMOTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+_SECRET_REF_RE = re.compile(
+    r"^(?:\$\{([A-Za-z_][A-Za-z0-9_.-]{0,127})\}|"
+    r"\$([A-Za-z_][A-Za-z0-9_.-]{0,127})|"
+    r"env:([A-Za-z_][A-Za-z0-9_.-]{0,127}))$"
 )
 
 # GitHub repo URL : https://github.com/<owner>/<repo>[/...]
@@ -69,7 +77,7 @@ _LOCAL_PATH_RE = re.compile(
 
 _VALID_KINDS = frozenset({
     "intent", "github_url", "package_spec", "config_snippet",
-    "local_path", "unknown",
+    "local_path", "remote_url", "unknown",
     "known_mcp",  # Phase I-1 : match curated KNOWN_MCPS
 })
 
@@ -106,6 +114,9 @@ class ResolvedTarget:
     trust_score: Optional[int] = None
     docs_url: Optional[str] = None
     config_schema_dict: Optional[Dict[str, Any]] = None
+    # Contrat versionné sans valeur secrète. Les secrets sont uniquement
+    # référencés par nom et seront lus via le SecretStore au démarrage.
+    connection_spec: Optional[Dict[str, Any]] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -147,10 +158,172 @@ def _extract_from_config_snippet(raw: str) -> Optional[ResolvedTarget]:
             data = next(iter(servers.values()))
     if not isinstance(data, dict):
         return None
+    remote_url = data.get("url")
+    if isinstance(remote_url, str):
+        headers = data.get("headers", {})
+        if not isinstance(headers, dict):
+            return None
+        header_names: List[str] = []
+        secret_keys: List[str] = []
+        for header_name, secret_ref in headers.items():
+            if not isinstance(header_name, str) or not isinstance(secret_ref, str):
+                return None
+            match = _SECRET_REF_RE.fullmatch(secret_ref.strip())
+            if match is None:
+                # Une valeur littérale pourrait être un secret. Elle n'entre
+                # jamais dans le contrat, le ticket ou le catalogue.
+                return None
+            header_names.append(header_name)
+            secret_keys.append(next(group for group in match.groups() if group))
+        oauth = data.get("oauth")
+        if oauth is not None and not isinstance(oauth, dict):
+            return None
+        try:
+            from src.mcp.connection_spec import (
+                AuthKind,
+                AuthSpec,
+                MCPConnectionSpec,
+                RemoteSpec,
+                TransportKind,
+            )
+            transport_raw = str(data.get("transport", "streamable-http")).lower()
+            transport = (
+                TransportKind.LEGACY_SSE
+                if transport_raw in {"sse", "legacy-sse", "legacy_sse"}
+                else TransportKind.STREAMABLE_HTTP
+            )
+            auth_kind = AuthKind.NONE
+            auth_kwargs: Dict[str, Any] = {}
+            if oauth is not None:
+                metadata_url = oauth.get("metadata_url")
+                client_id = oauth.get("client_id")
+                scopes = oauth.get("scopes", [])
+                access_key = oauth.get("access_secret_key", "OAUTH_ACCESS_TOKEN")
+                if (
+                    not isinstance(metadata_url, str)
+                    or not isinstance(client_id, str)
+                    or not isinstance(scopes, list)
+                    or not all(isinstance(scope, str) for scope in scopes)
+                    or not isinstance(access_key, str)
+                ):
+                    return None
+                if header_names and header_names != ["Authorization"]:
+                    return None
+                header_names = ["Authorization"]
+                secret_keys = [access_key]
+                auth_kind = AuthKind.OAUTH2
+                auth_kwargs = {
+                    "metadata_url": metadata_url,
+                    "client_id": client_id,
+                    "scopes": tuple(scopes),
+                    "registration_mode": "pre_registered",
+                }
+            elif secret_keys:
+                auth_kind = (
+                    AuthKind.BEARER
+                    if len(secret_keys) == 1
+                    and header_names[0].lower() == "authorization"
+                    else AuthKind.STATIC_SECRET
+                )
+            connection = MCPConnectionSpec(
+                transport=transport,
+                remote=RemoteSpec(
+                    url=remote_url,
+                    legacy_sse_url=remote_url if transport == TransportKind.LEGACY_SSE else None,
+                    header_names=tuple(header_names),
+                ),
+                auth=AuthSpec(
+                    kind=auth_kind,
+                    secret_keys=tuple(secret_keys),
+                    **auth_kwargs,
+                ),
+            )
+        except (ValueError, TypeError):
+            return None
+        slug = _remote_slug(remote_url)
+        return ResolvedTarget(
+            kind="config_snippet",
+            package_spec=f"remote:{slug}",
+            version=None,
+            source_url=remote_url,
+            raw_input="{remote_mcp_config}",
+            slug=slug,
+            display_name=slug.replace("-", " ").title(),
+            connection_spec=connection.to_dict(),
+        )
     command = data.get("command")
     args = data.get("args")
     if not isinstance(command, str) or not isinstance(args, list):
         return None
+    # Application hôte / binaire MCP local. Le chemin est transmis comme un
+    # argument subprocess exact : aucun shell, aucun .bat/.cmd/.ps1.
+    command_path = Path(command)
+    normalized_path = command.replace("\\", "/")
+    # `Path.is_absolute()` depend de l'OS qui execute Lumena. Les chemins
+    # Windows doivent aussi rester resolvables par les tests/outils lances
+    # depuis un environnement POSIX, sans jamais autoriser un chemin relatif.
+    is_absolute_executable = (
+        command_path.is_absolute()
+        or re.match(r"^[A-Za-z]:/", normalized_path) is not None
+    ) and command_path.suffix.lower() == ".exe"
+    if is_absolute_executable:
+        if any(
+            not isinstance(arg, str)
+            or len(arg) > 512
+            or any(char in arg for char in ("\x00", "\r", "\n"))
+            for arg in args
+        ):
+            return None
+        env = data.get("env", {})
+        if not isinstance(env, dict):
+            return None
+        secret_keys: List[str] = []
+        for env_name, secret_ref in env.items():
+            if not isinstance(env_name, str) or not isinstance(secret_ref, str):
+                return None
+            match = _SECRET_REF_RE.fullmatch(secret_ref.strip())
+            if match is None or env_name != next(
+                group for group in match.groups() if group
+            ):
+                return None
+            secret_keys.append(env_name)
+        try:
+            from src.mcp.connection_spec import (
+                AuthKind,
+                AuthSpec,
+                DistributionKind,
+                DistributionSpec,
+                MCPConnectionSpec,
+                TransportKind,
+            )
+            connection = MCPConnectionSpec(
+                transport=TransportKind.STDIO,
+                distribution=DistributionSpec(
+                    kind=DistributionKind.EXECUTABLE,
+                    locator=normalized_path,
+                    args=tuple(args),
+                ),
+                auth=AuthSpec(
+                    kind=AuthKind.STATIC_SECRET if secret_keys else AuthKind.NONE,
+                    secret_keys=tuple(secret_keys),
+                ),
+            )
+        except (TypeError, ValueError):
+            return None
+        slug = re.sub(r"[^a-z0-9_.-]", "-", command_path.stem.lower()).strip("-.")
+        slug = (slug or "host-app-mcp")[:54]
+        suffix = hashlib.sha256(normalized_path.encode("utf-8")).hexdigest()[:8]
+        slug = f"{slug}-{suffix}"
+        return ResolvedTarget(
+            kind="config_snippet",
+            package_spec=f"exe:{normalized_path}",
+            version=None,
+            source_url=None,
+            raw_input="{local_executable_mcp_config}",
+            slug=slug,
+            display_name=command_path.stem,
+            connection_spec=connection.to_dict(),
+        )
     command_lc = command.strip().lower()
     pkg_name: Optional[str] = None
     if command_lc in ("npx", "npm"):
@@ -165,7 +338,10 @@ def _extract_from_config_snippet(raw: str) -> Optional[ResolvedTarget]:
                 package_spec=f"npm:{pkg_name}",
                 version="latest",
                 source_url=None,
-                raw_input=raw[:_MAX_RAW_LEN],
+                # Le snippet peut contenir des valeurs `env` littérales.
+                # Elles ne doivent jamais survivre dans un ticket, un audit
+                # ou le contexte du modèle.
+                raw_input="{stdio_mcp_config}",
             )
     elif command_lc in ("uvx", "pipx"):
         for a in args:
@@ -178,9 +354,44 @@ def _extract_from_config_snippet(raw: str) -> Optional[ResolvedTarget]:
                 package_spec=f"pypi:{pkg_name}",
                 version="latest",
                 source_url=None,
-                raw_input=raw[:_MAX_RAW_LEN],
+                raw_input="{stdio_mcp_config}",
             )
     return None
+
+
+def _remote_slug(url: str) -> str:
+    """Build a stable, non-secret server id from a validated remote URL."""
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    base = f"{parsed.hostname or 'remote'}-{parsed.path.strip('/').replace('/', '-')}"
+    base = re.sub(r"[^a-z0-9_.-]", "-", base.lower())
+    base = re.sub(r"-+", "-", base).strip("-.") or "remote-mcp"
+    suffix = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+    return f"{base[:54].rstrip('-')}-{suffix}"[:63]
+
+
+def _resolve_remote_url(raw: str) -> Optional[ResolvedTarget]:
+    try:
+        from src.mcp.connection_spec import MCPConnectionSpec, RemoteSpec, TransportKind
+
+        spec = MCPConnectionSpec(
+            transport=TransportKind.STREAMABLE_HTTP,
+            remote=RemoteSpec(url=raw),
+        )
+    except (ValueError, TypeError):
+        return None
+    slug = _remote_slug(raw)
+    return ResolvedTarget(
+        kind="remote_url",
+        package_spec=f"remote:{slug}",
+        version=None,
+        source_url=raw,
+        raw_input=raw,
+        slug=slug,
+        display_name=slug.replace("-", " ").title(),
+        connection_spec=spec.to_dict(),
+    )
 
 
 # Phase I-8 (Fix AS) : noms d'outils génériques qui ne sont JAMAIS le
@@ -463,6 +674,7 @@ def resolve_target(
     # On evite la lookup curated si l'input est deja un package_spec/URL
     # explicite — l'utilisateur l'a deja resolu lui-meme.
     if not _PACKAGE_SPEC_RE.match(raw) and not _GITHUB_URL_RE.match(raw) \
+            and not _REMOTE_URL_RE.match(raw) \
             and not _looks_like_json(raw) and not _LOCAL_PATH_RE.match(raw):
         try:
             from src.mcp.known_mcps import lookup_known_mcp
@@ -532,13 +744,35 @@ def resolve_target(
             raw_input=raw,
         )
 
+    # 2b) Endpoint MCP distant. Les URL non HTTPS sont uniquement admises
+    # sur loopback par le contrat de connexion.
+    if _REMOTE_URL_RE.match(raw):
+        remote = _resolve_remote_url(raw)
+        if remote is not None:
+            return remote
+
     # 3) Snippet JSON
     if _looks_like_json(raw):
         snippet = _extract_from_config_snippet(raw)
         if snippet is not None:
             return snippet
 
-    # 4) Chemin local — on detecte uniquement le pattern, on ne resout pas.
+    # 4) Binaire MCP local direct. C'est la forme qu'un agent utilise apres
+    # avoir trouve un StudioMCP.exe (Roblox, application hote, etc.). Avant ce
+    # garde, le chemin etait degrade en `local:<nom>.exe` : l'approbation etait
+    # valide mais l'orchestrateur cherchait alors un package local inexistant,
+    # consommait le marker one-shot et le panneau reproposait l'installation.
+    # On reutilise volontairement le parseur JSON afin que le contrat, le slug,
+    # la normalisation et la sanitation restent strictement identiques.
+    if _LOCAL_PATH_RE.match(raw) and raw.lower().endswith(".exe"):
+        executable = _extract_from_config_snippet(json.dumps({
+            "command": raw,
+            "args": [],
+        }))
+        if executable is not None:
+            return executable
+
+    # 5) Chemin local — on detecte uniquement le pattern, on ne resout pas.
     if _LOCAL_PATH_RE.match(raw):
         # On essaie de slugifier le nom de dossier pour proposer un local:slug
         try:
@@ -558,7 +792,7 @@ def resolve_target(
             raw_input=raw,
         )
 
-    # 5) fallback intent (boucle autonomy)
+    # 6) fallback intent (boucle autonomy)
     return ResolvedTarget(
         kind="intent",
         package_spec=None,

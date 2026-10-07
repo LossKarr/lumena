@@ -32,7 +32,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-
 # V2.3 fix prod 2026-05-19 : marqueurs d'observation outil "tabulaire riche"
 # qui peut servir de fallback FINAL si le LLM ne fait que des promesses.
 _TABULAR_OBS_MARKERS: tuple = (
@@ -499,7 +498,6 @@ _OBS_FILE_READ_TOOLS: frozenset = frozenset({
     "grep_batch", "find_files", "parallel_tools", "write_mission_contract",
 })
 
-
 def _extract_anchor_facts(text: str) -> str:
     """Extrait les faits structures cles d'une observation avant compaction.
 
@@ -755,14 +753,31 @@ def workspace_path_from_query(query: str, root) -> Optional[str]:
 def observation_compact_limit(tool_name: str, *, is_chat_surface: bool) -> int:
     """Seuil de compaction, par type d'outil.
 
-    Le modele a deja vu l'observation complete — on stocke une version compacte
-    pour que les futures iterations ne soient pas noyees dans du contenu stale.
+    Ce seuil historique est le plancher de protection. La boucle peut fournir
+    en plus le budget reel du modele a ``compact_observation_body``.
     """
     if tool_name == "delegate_and_wait":
         # Les LIVRABLES des workers doivent rester INTACTS pour que le lead
         # fusionne sans re-fouiller le disque (sinon le fix excerpt est gâché).
         return 20000
-    if tool_name in _OBS_FILE_READ_TOOLS:
+    normalized = str(tool_name or "").strip().lower()
+    leaf = (
+        normalized.rsplit("__", 1)[-1]
+        if normalized.startswith("mcp__") and "__" in normalized[5:]
+        else normalized
+    )
+    if (
+        normalized in _OBS_FILE_READ_TOOLS
+        or leaf in _OBS_FILE_READ_TOOLS
+        or leaf.startswith((
+            "read_", "list_", "search_", "find_", "grep_", "inspect_",
+            "describe_", "query_", "fetch_",
+        ))
+        or leaf.endswith((
+            "_read", "_list", "_search", "_find", "_grep", "_inspect",
+            "_query", "_fetch",
+        ))
+    ):
         # B0.3 (run PlantCare) : read_files_batch et parallel_tools étaient
         # ABSENTS de cette liste → compactés à ~830 chars → les workers
         # relisaient les mêmes fichiers en boucle (w_tests mort sans écrire).
@@ -782,6 +797,7 @@ def compact_observation_body(
     is_chat_surface: bool,
     *,
     compact_browser=None,
+    model_visible_limit: int | None = None,
 ) -> Optional[str]:
     """LA decision typee de la feuille : le corps compacte, ou None.
 
@@ -795,9 +811,19 @@ def compact_observation_body(
     if not content:
         return None
     raw_len = len(content)
-    if raw_len <= observation_compact_limit(
-        tool_name, is_chat_surface=is_chat_surface
-    ):
+    base_limit = observation_compact_limit(
+        tool_name, is_chat_surface=is_chat_surface,
+    )
+    reader = base_limit == 8000
+    visible_limit = max(0, int(model_visible_limit or 0))
+    # Le dernier resultat d'un lecteur peut deja occuper 4 x le budget normal
+    # dans history_formatter. On applique la meme regle AVANT stockage, sinon
+    # ce garde arrive trop tard et protege seulement une version deja mutilee.
+    effective_limit = max(
+        base_limit,
+        visible_limit * 4 if reader else visible_limit,
+    )
+    if raw_len <= effective_limit:
         return None
 
     anchor = _extract_anchor_facts(content)
@@ -839,21 +865,31 @@ def compact_observation_body(
             f"{anchor}{head}\n[...sortie tronquée ({raw_len} chars)...]\n{tail}"
         )
 
-    if tool_name in _OBS_FILE_READ_TOOLS:
-        # Lectures fichiers : seuil élevé atteint → garder 3000 chars (début)
-        # Pas d'ancre ici : le contenu brut est déjà préservé intégralement
+    if reader:
+        # Lectures : conserver une tranche adaptee au modele, debut ET fin.
+        # Le nom peut etre natif ou dynamique (`mcp__serveur__script_read`).
         #
         # LOT Z12 — cette liste était écrite EN DUR et ne connaissait que
         # `read_file`/`search_in_code`/`grep_search`/`find_files`. Elle
         # partage désormais `_OBS_FILE_READ_TOOLS` avec le seuil ci-dessus :
         # un outil protégé jusqu'à 8000 chars ne peut plus se retrouver
         # réduit à 800 dès qu'il les dépasse.
+        keep = max(3000, visible_limit)
+        keep = min(keep, raw_len)
+        head_size = max(1, int(keep * 0.7))
+        tail_size = max(1, keep - head_size)
+        omitted = max(0, raw_len - head_size - tail_size)
         return (
-            content[:3000]
-            + f"\n[...{raw_len - 3000} chars omis — relire avec plage de lignes si nécessaire...]"
+            content[:head_size]
+            + f"\n[...{omitted} chars omis — relire avec plage de lignes si nécessaire...]\n"
+            + content[-tail_size:]
         )
 
-    head, tail = content[:500], content[-300:]
+    keep = max(800, visible_limit)
+    keep = min(keep, raw_len)
+    head_size = max(1, int(keep * 0.625))
+    tail_size = max(1, keep - head_size)
+    head, tail = content[:head_size], content[-tail_size:]
     return (
-        f"{anchor}{head}\n[...{raw_len - 800} chars compactés...]\n{tail}"
+        f"{anchor}{head}\n[...{raw_len - head_size - tail_size} chars compactés...]\n{tail}"
     )

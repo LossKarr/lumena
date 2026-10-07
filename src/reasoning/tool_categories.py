@@ -118,6 +118,30 @@ _CONTRACTS: Dict[str, ToolCategoryContract] = {
         delegate_code_threshold=0,
     ),
 
+    "personal_models": ToolCategoryContract(
+        name="personal_models",
+        role="Inspecter et piloter le cycle de vie borné du modèle personnel de l'utilisateur.",
+        preconditions=[
+            "consentement explicite pour toute collecte ou utilisation cloud",
+            "confirmation humaine pour toute activation, export, annulation ou restauration sensible",
+        ],
+        allowed_effects=[
+            "lecture de santé et de lignée",
+            "préparation de dataset autorisé",
+            "création et contrôle d'un entraînement borné",
+            "évaluation, export, activation et rollback prouvés",
+        ],
+        refusal_reasons=[
+            "demande utilisateur non explicite",
+            "ticket absent, expiré ou ne correspondant pas à la ressource",
+            "preuve d'évaluation ou canari local absente",
+            "budget matériel insuffisant",
+        ],
+        autonomy_allowed=True,
+        requires_workspace=False,
+        delegate_code_threshold=0,
+    ),
+
     "web": ToolCategoryContract(
         name="web",
         role="Recherche web, requêtes HTTP, crawling de pages.",
@@ -449,6 +473,7 @@ _MODULE_TO_SEMANTIC: Dict[str, str] = {
     "heartbeat_self": "autonomy",
     "uncategorized": "system",
     "local_models": "local_models",
+    "personal_models": "personal_models",
     # Cohérence — catégories utilisées dans certains HandlerDef.category
     # mais absentes de la table principale.
     "code":               "codebase",

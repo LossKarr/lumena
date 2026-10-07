@@ -151,6 +151,7 @@ python-pptx==1.0.2
 python-telegram-bot==22.7
 pythonnet==3.0.5
 pyttsx3==2.99
+pywebrtc-audio==0.2.0
 pytweening==1.2.0
 pytz==2026.1.post1
 pywebview==6.2.1

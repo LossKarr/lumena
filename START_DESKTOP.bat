@@ -4,6 +4,9 @@ chcp 65001 >nul 2>&1
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
+REM Le navigateur Playwright est embarque par l'installeur Windows.
+if exist "%CD%\playwright-browsers\" set "PLAYWRIGHT_BROWSERS_PATH=%CD%\playwright-browsers"
+
 REM === Relance au double-clic : console masquee par defaut, visible si demande ===
 if "%~1"=="" (
     if not defined LUMENA_DESKTOP_SHOW_CONSOLE set "LUMENA_DESKTOP_SHOW_CONSOLE=0"

@@ -328,6 +328,7 @@ class AutonomousAction:
     # Phase I-8 (Fix AC) : tokens discriminants de l'intent d'origine,
     # propagés jusqu'à l'entrée catalog pour le re-matching futur.
     catalog_capability_tags: Optional[Tuple[str, ...]] = None
+    catalog_connection_spec: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -845,6 +846,9 @@ class AutonomousMCPLoopPlanner:
         cat_package_spec = self._read_str_attr(cat_prop, "proposed_package_spec")
         cat_version = self._read_str_attr(cat_prop, "proposed_version")
         cat_trust_score = getattr(cat_prop, "proposed_trust_score_set", None)
+        cat_connection_spec = getattr(
+            cat_prop, "proposed_connection_spec", None
+        )
         if isinstance(cat_trust_score, bool) or not isinstance(cat_trust_score, int):
             cat_trust_score = None
         elif not (0 <= cat_trust_score <= 100):
@@ -930,6 +934,7 @@ class AutonomousMCPLoopPlanner:
                 catalog_version=cat_version,
                 catalog_trust_score=cat_trust_score,
                 catalog_capability_tags=cat_capability_tags,
+                catalog_connection_spec=cat_connection_spec,
             )
             return (
                 AutonomousMCPLoopDecision.NEEDS_CATALOG_APPROVAL,
@@ -968,6 +973,7 @@ class AutonomousMCPLoopPlanner:
                 catalog_version=cat_version,
                 catalog_trust_score=cat_trust_score,
                 catalog_capability_tags=cat_capability_tags,
+                catalog_connection_spec=cat_connection_spec,
             )
             return (
                 AutonomousMCPLoopDecision.NEEDS_CATALOG_APPROVAL,
@@ -1064,6 +1070,8 @@ class AutonomousMCPLoopPlanner:
                 catalog_package_spec=action.catalog_package_spec,
                 catalog_version=action.catalog_version,
                 catalog_trust_score=action.catalog_trust_score,
+                catalog_capability_tags=action.catalog_capability_tags,
+                catalog_connection_spec=action.catalog_connection_spec,
             )
         if action.proposed_action_kind not in _PROPOSED_ACTION_KIND_WHITELIST:
             action = AutonomousAction(
@@ -1079,6 +1087,8 @@ class AutonomousMCPLoopPlanner:
                 catalog_package_spec=action.catalog_package_spec,
                 catalog_version=action.catalog_version,
                 catalog_trust_score=action.catalog_trust_score,
+                catalog_capability_tags=action.catalog_capability_tags,
+                catalog_connection_spec=action.catalog_connection_spec,
             )
 
         # Validation whitelists blockers

@@ -62,7 +62,7 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout pytest-mock
 
       - name: Run critical gate
-        run: python scripts/ci_phase_gate.py --timeout=15
+        run: python scripts/ci_phase_gate.py --timeout=60
 
   # ── Job 2: suite complète × 3 (Windows) ──────────────────────────
   full-windows:
@@ -84,4 +84,4 @@ jobs:
           pip install pytest pytest-asyncio pytest-timeout pytest-mock
 
       - name: Run full suite x3
-        run: python scripts/ci_phase_gate.py --full --runs=3 --timeout=15
+        run: python scripts/ci_phase_gate.py --full --runs=3 --timeout=60

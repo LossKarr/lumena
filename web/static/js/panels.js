@@ -5,7 +5,7 @@
 /* ============================================================
    JOURNAL
    ============================================================ */
-import { mountCodexSubscriptionCard } from './codex-subscription.js?v=3';
+import { mountCodexSubscriptionCard } from './codex-subscription.js?v=4';
 
 /* Panel Missions — chargement des trois modules du chantier.
  *
@@ -711,6 +711,10 @@ export function renderLogs(){
 let _configData=null;
 let _cfgLevel='simple'; // kept for backward compat
 let _cfgActiveGroup=null; // currently selected group in sidebar
+const _cfgDrafts=new Map();
+const _cfgBaseline=new Map();
+const _cfgMeta=new Map();
+let _cfgSaving=false;
 const _LEVEL_ORDER=['simple','avancé','expert'];
 
 // P5.1 — Ordre et niveau des groupes
@@ -745,26 +749,30 @@ const _GROUP_ORDER=[
 const _INSTANCE_ISOLATED=new Set(['LUMENA_INSTANCE_ID','LUMENA_DATA_DIR','LUMENA_WORKSPACE_DIR','LUMENA_UPLOADS_DIR','LUMENA_LOGS_DIR']);
 
 function _renderCfgRow(it){
-  const val=it.value||'';
+  const hasDraft=_cfgDrafts.has(it.key);
+  const val=hasDraft?_cfgDrafts.get(it.key):(it.value||'');
   let input='';
   if(it.type==='bool'){
     const on=val==='1'||val==='true'||val==='True';
-    input=`<label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" data-cfg="${esc(it.key)}" ${on?'checked':''} style="width:16px;height:16px;accent-color:var(--accent)"><span style="font-size:12px;color:var(--muted)">${on?'Actif':'Inactif'}</span></label>`;
+    input=`<label class="cfg-bool"><input type="checkbox" data-cfg="${esc(it.key)}" ${on?'checked':''}><span data-cfg-bool-state>${on?'Actif':'Inactif'}</span></label>`;
   }else if(it.type==='select'){
-    const opts=(it.options||[]).map(o=>`<option value="${esc(o)}" ${o===val?'selected':''}>${esc(o)}</option>`).join('');
-    input=`<select data-cfg="${esc(it.key)}" class="input" style="height:32px;font-size:12px;padding:0 8px;min-width:200px">${opts}</select>`;
+    const options=[...(it.options||[])];
+    if(val!==''&&!options.some(option=>String(option)===String(val)))options.unshift(val);
+    const opts=options.map(o=>`<option value="${esc(o)}" ${String(o)===String(val)?'selected':''}>${esc(o)}${!it.options?.some(option=>String(option)===String(o))?' (valeur actuelle)':''}</option>`).join('');
+    input=`<select data-cfg="${esc(it.key)}" class="input cfg-input">${opts}</select>`;
   }else if(it.type==='number'){
-    const minA=it.min!==undefined?` min="${it.min}"`:'';const maxA=it.max!==undefined?` max="${it.max}"`:'';
-    input=`<input type="number" data-cfg="${esc(it.key)}" class="input" style="height:32px;font-size:12px;padding:0 8px;width:120px" value="${esc(val)}"${minA}${maxA}>`;
+    const minA=it.min!==undefined?` min="${it.min}"`:'';const maxA=it.max!==undefined?` max="${it.max}"`:'';const stepA=` step="${esc(it.step||'1')}"`;
+    input=`<input type="number" data-cfg="${esc(it.key)}" class="input cfg-input cfg-number" value="${esc(val)}"${minA}${maxA}${stepA}>`;
   }else if(it.type==='secret'){
     const uid='sec_'+it.key;
     const sbadge=it.has_value?`<span style="color:var(--ok);font-size:10px;margin-left:6px">&#9679; Configuré</span>`:`<span style="color:var(--danger);font-size:10px;margin-left:6px">&#9679; Absent</span>`;
-    input=`<div style="display:flex;align-items:center;gap:6px"><input type="password" id="${uid}" data-cfg="${esc(it.key)}" data-secret="1" class="input" style="height:32px;font-size:12px;padding:0 8px;width:280px;font-family:var(--mono)" value="${esc(val)}" readonly><button type="button" class="btn" style="font-size:12px;padding:4px 8px;min-width:34px" title="Voir / masquer" onclick="toggleSecret('${uid}')"><i data-lucide="eye" style="width:14px;height:14px;pointer-events:none"></i></button>${sbadge}</div>`;
+    input=`<div class="cfg-secret"><input type="password" id="${uid}" data-cfg="${esc(it.key)}" data-secret="1" ${hasDraft?'data-dirty="1"':''} class="input cfg-input cfg-secret-input" value="${esc(val)}" ${hasDraft?'':'readonly'}><button type="button" class="btn cfg-secret-toggle" title="Voir / masquer" onclick="toggleSecret('${uid}')"><i data-lucide="eye"></i></button>${sbadge}</div>`;
   }else{
-    input=`<input type="text" data-cfg="${esc(it.key)}" class="input" style="height:32px;font-size:12px;padding:0 8px;min-width:240px" value="${esc(val)}">`;
+    input=`<input type="text" data-cfg="${esc(it.key)}" class="input cfg-input" value="${esc(val)}">`;
   }
-  const restartBadge=it.restart?`<span style="font-size:9px;background:rgba(255,165,0,.12);color:orange;border-radius:3px;padding:1px 5px;margin-left:4px">restart</span>`:'';
-  return`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)"><div style="min-width:200px"><div style="font-size:13px;font-weight:500">${esc(it.label)}${restartBadge}</div><div style="font-size:10px;color:var(--muted);font-family:var(--mono)">${esc(it.key)}</div></div><div>${input}</div></div>`;
+  const restartBadge=it.restart?`<span class="cfg-restart-badge">Redémarrage</span>`:'';
+  const hint=it.hint?`<div class="cfg-field-hint">${esc(it.hint)}</div>`:'';
+  return`<div class="cfg-field-row${hasDraft?' dirty':''}" data-cfg-row="${esc(it.key)}"><div class="cfg-field-copy"><div class="cfg-field-label">${esc(it.label)}${restartBadge}</div><div class="cfg-field-key">${esc(it.key)}</div>${hint}</div><div class="cfg-field-control">${input}</div></div>`;
 }
 
 function _renderGroupCard(name,items){
@@ -787,7 +795,75 @@ function _renderGroupCard(name,items){
   return rows;
 }
 
+function _cfgItemValue(item){
+  const value=String(item?.value??'');
+  if(item?.type==='bool')return ['1','true','True','yes','on'].includes(value)?'1':'0';
+  return value;
+}
+
+function _cfgElementValue(el){
+  if(el.type==='checkbox')return el.checked?'1':'0';
+  return String(el.value??'');
+}
+
+function _rebuildCfgBaseline(){
+  _cfgBaseline.clear();
+  _cfgMeta.clear();
+  for(const item of _configData?.items||[]){
+    _cfgBaseline.set(item.key,_cfgItemValue(item));
+    _cfgMeta.set(item.key,item);
+  }
+}
+
+function _captureCfgElement(el){
+  if(!el?.dataset?.cfg||el.disabled)return;
+  if(el.dataset.secret==='1'&&el.readOnly&&!el.dataset.dirty)return;
+  const key=el.dataset.cfg;
+  const value=_cfgElementValue(el);
+  const baseline=el.dataset.secret==='1'&&el.dataset.original!==undefined?el.dataset.original:_cfgBaseline.get(key);
+  if(value===baseline){
+    _cfgDrafts.delete(key);
+    delete el.dataset.dirty;
+  }else{
+    _cfgDrafts.set(key,value);
+    el.dataset.dirty='1';
+  }
+  const boolState=el.closest('.cfg-bool')?.querySelector('[data-cfg-bool-state]');
+  if(boolState)boolState.textContent=el.checked?'Actif':'Inactif';
+  el.closest('[data-cfg-row]')?.classList.toggle('dirty',_cfgDrafts.has(key));
+  _updateCfgDirtyUi();
+}
+
+function _captureRenderedConfig(){
+  document.querySelectorAll('#config-groups [data-cfg]').forEach(_captureCfgElement);
+}
+
+function _updateCfgDirtyUi(){
+  document.querySelectorAll('.cfg-nav-item').forEach(node=>{
+    const dirty=[..._cfgDrafts.keys()].some(key=>_cfgMeta.get(key)?.group===node.dataset.group);
+    node.classList.toggle('dirty',dirty);
+  });
+  const button=document.querySelector('[data-action="saveConfig"]');
+  if(button){
+    const count=_cfgDrafts.size;
+    button.classList.toggle('has-changes',count>0);
+    if(!_cfgSaving)button.innerHTML=`<i data-lucide="save"></i> ${count?`Sauvegarder (${count})`:'Sauvegarder'}`;
+  }
+  if(window.lucide)window.lucide.createIcons();
+}
+
+function _setCfgSaving(saving){
+  _cfgSaving=saving;
+  const button=document.querySelector('[data-action="saveConfig"]');
+  if(!button)return;
+  button.disabled=saving;
+  button.innerHTML=saving?'<i data-lucide="loader-circle" class="cfg-spin"></i> Sauvegarde...':'<i data-lucide="save"></i> Sauvegarder';
+  if(!saving)_updateCfgDirtyUi();
+  else if(window.lucide)window.lucide.createIcons();
+}
+
 function _switchCfgGroup(name){
+  if(_cfgActiveGroup&&_cfgActiveGroup!==name)_captureRenderedConfig();
   _cfgActiveGroup=name;
   // Update sidebar active state
   document.querySelectorAll('.cfg-nav-item').forEach(el=>{
@@ -804,7 +880,8 @@ function _switchCfgGroup(name){
   if(title)title.innerHTML=`<i data-lucide="${iconName}"></i> ${esc(name)}`;
   if(name==='Acces OpenAI'){
     box.innerHTML='<div class="cfg-group-content" id="codex-access-mount"></div>';
-    mountCodexSubscriptionCard(document.getElementById('codex-access-mount'),items);
+    const draftItems=items.map(item=>_cfgDrafts.has(item.key)?{...item,value:_cfgDrafts.get(item.key)}:item);
+    mountCodexSubscriptionCard(document.getElementById('codex-access-mount'),draftItems);
   }else if(name==='Mises a jour'){
     box.innerHTML=`<div class="cfg-group-content"><div id="update-center"></div>${_renderGroupCard(name,items)}</div>`;
     if(window.renderUpdateCenter)window.renderUpdateCenter(document.getElementById('update-center'));
@@ -813,6 +890,9 @@ function _switchCfgGroup(name){
   }else{
     box.innerHTML=`<div class="cfg-group-content">${_renderGroupCard(name,items)}</div>`;
   }
+  box.oninput=event=>_captureCfgElement(event.target.closest?.('[data-cfg]'));
+  box.onchange=event=>_captureCfgElement(event.target.closest?.('[data-cfg]'));
+  _updateCfgDirtyUi();
   // Re-init lucide icons
   if(window.lucide)window.lucide.createIcons();
 }
@@ -870,14 +950,33 @@ function _renderConfig(){
 window.switchCfgGroup=function(name){_switchCfgGroup(name);};
 window.toggleSecret=function(uid){toggleSecret(uid);};
 
-export async function loadConfig(){
+async function _cfgResponsePayload(response){
+  const text=await response.text();
+  let payload={};
+  if(text){
+    try{payload=JSON.parse(text);}catch(_error){
+      throw new Error(response.ok?'Réponse serveur invalide':`HTTP ${response.status}: ${text.slice(0,180)}`);
+    }
+  }
+  if(!response.ok)throw new Error(payload.detail||payload.error||`HTTP ${response.status}`);
+  return payload;
+}
+
+export async function loadConfig(options={}){
+  const force=Boolean(options&&options.force===true);
+  const preserveDrafts=Boolean(options&&options.preserveDrafts===true);
+  if(preserveDrafts)_captureRenderedConfig();
+  if(_cfgDrafts.size&&!force&&!preserveDrafts&&!confirm('Abandonner les modifications non sauvegardées ?'))return;
   const box=document.getElementById('config-groups');if(!box)return;
-  box.innerHTML='<div style="color:var(--muted);padding:20px;text-align:center">Chargement...</div>';
+  box.innerHTML='<div class="cfg-loading">Chargement...</div>';
   try{
-    const r=await fetch(`${API_BASE}/api/config`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});if(!r.ok)throw new Error(`HTTP ${r.status}`);
-    _configData=await r.json();
+    const r=await fetch(`${API_BASE}/api/config`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    _configData=await _cfgResponsePayload(r);
+    if(!preserveDrafts)_cfgDrafts.clear();
+    _rebuildCfgBaseline();
+    if(preserveDrafts){for(const[key,value]of _cfgDrafts){if(_cfgBaseline.get(key)===value)_cfgDrafts.delete(key)}}
     _renderConfig();
-  }catch(e){box.innerHTML=`<div style="color:var(--danger);padding:20px">Erreur: ${e.message}</div>`;}
+  }catch(e){box.innerHTML=`<div class="cfg-load-error">Erreur : ${esc(e.message)}</div>`;}
 }
 
 export function setCfgLevel(lvl){
@@ -887,59 +986,51 @@ export function setCfgLevel(lvl){
 export async function toggleSecret(uid){
   const el=document.getElementById(uid);if(!el)return;
   if(el.type==='text'){
-    // Re-masquer
-    el.type='password';el.readOnly=true;
-    loadConfig(); // Recharger les valeurs masquées
+    el.type='password';
+    el.readOnly=!el.dataset.dirty;
+    if(!el.dataset.dirty){el.value=_cfgBaseline.get(el.dataset.cfg)||'';delete el.dataset.original;}
     return;
   }
-  // Demander confirmation
   if(!confirm('Afficher cette clé en clair ? Assurez-vous que personne ne regarde votre écran.'))return;
-  // Appeler l'API reveal
+  if(el.dataset.dirty){el.type='text';el.readOnly=false;return;}
   try{
     const key=el.dataset.cfg;
     const r=await fetch(`${API_BASE}/api/config/reveal?key=${encodeURIComponent(key)}`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
-    if(!r.ok)throw new Error(`HTTP ${r.status}`);
-    const d=await r.json();
+    const d=await _cfgResponsePayload(r);
     if(d.success){
-      el.value=d.value;el.type='text';el.readOnly=false;
+      el.value=d.value;el.dataset.original=d.value;el.type='text';el.readOnly=false;
     }else{alert('Erreur: '+d.error);}
   }catch(e){alert('Erreur: '+e.message);}
 }
 
 export async function saveConfig(){
-  const msg=document.getElementById('config-save-msg');
-  const updates={};
-  document.querySelectorAll('[data-cfg]').forEach(el=>{
-    const key=el.dataset.cfg;
-    if(el.type==='checkbox'){
-      updates[key]=el.checked?'1':'';
-    }else if(el.dataset.secret==='1'){
-      // Ne sauvegarder que si démasqué (modifié)
-      if(el.type==='text'&&!el.readOnly){
-        updates[key]=el.value;
-      }
-    }else{
-      updates[key]=el.value;
-    }
-  });
+  if(_cfgSaving)return;
+  _captureRenderedConfig();
+  const invalid=[...document.querySelectorAll('#config-groups [data-cfg]')].find(el=>_cfgDrafts.has(el.dataset.cfg)&&!el.disabled&&typeof el.checkValidity==='function'&&!el.checkValidity());
+  if(invalid){invalid.reportValidity();showCfgMsg('Corrigez la valeur indiquée avant de sauvegarder.','var(--danger)');return;}
+  const updates=Object.fromEntries(_cfgDrafts.entries());
   if(!Object.keys(updates).length){showCfgMsg('Rien a sauvegarder','var(--muted)');return;}
+  _setCfgSaving(true);
   try{
     const r=await fetch(`${API_BASE}/api/config`,{method:'PUT',headers:{'Content-Type':'application/json','Authorization':`Bearer ${ADMIN_TOKEN}`},body:JSON.stringify({updates})});
-    const d=await r.json();
+    const d=await _cfgResponsePayload(r);
     if(d.success){
       let note=`Sauvegardé: ${(d.updated||[]).join(', ')}.`;
       if(d.needs_restart){note+=' Redémarrage requis pour certains changements.';}
       else if(d.note){note+=` ${d.note}`;}
+      await loadConfig({force:true});
       showCfgMsg(note,'var(--ok)');
     }else{showCfgMsg(`Erreur: ${d.error}`,'var(--danger)');}
   }catch(e){showCfgMsg(`Erreur: ${e.message}`,'var(--danger)');}
+  finally{_setCfgSaving(false);}
 }
 
 export function showCfgMsg(text,color){
   const el=document.getElementById('config-save-msg');if(!el)return;
+  clearTimeout(showCfgMsg._timer);
   el.style.display='block';el.style.color=color;el.style.background=color.includes('ok')?'rgba(39,174,96,0.1)':color.includes('danger')?'rgba(231,76,60,0.1)':'rgba(255,255,255,0.04)';
   el.textContent=text;
-  setTimeout(()=>{el.style.display='none';},5000);
+  showCfgMsg._timer=setTimeout(()=>{el.style.display='none';},8000);
 }
 
 /* ============================================================
@@ -4477,6 +4568,7 @@ export function loadMcpTab(tabKey){
   });
   switch(_mcpCurrentTab){
     case'library':_loadMcpLibrary();break;
+    case'registry':_loadMcpRegistry();break;
     case'catalog':_loadMcpCatalog();break;
     case'approvals':_loadMcpApprovals();break;
     case'watcher':_loadMcpWatcher();break;
@@ -4486,6 +4578,46 @@ export function loadMcpTab(tabKey){
   }
 }
 window.loadMcpTab=loadMcpTab;
+
+let _mcpRegistryQuery='';
+let _mcpRegistryItems=[];
+async function _loadMcpRegistry(){
+  const box=document.getElementById('mcp-tab-content');if(!box)return;
+  box.innerHTML=`<div class="card"><div class="card-content">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="mcp-registry-search" type="search" maxlength="256" value="${esc(_mcpRegistryQuery)}"
+        placeholder="Rechercher dans le registre MCP officiel…" style="flex:1;min-width:240px"
+        oninput="window._mcpRegistrySearch(this.value)"/>
+    </div><div id="mcp-registry-results" style="margin-top:12px;color:var(--muted)">Chargement…</div>
+  </div></div>`;
+  try{
+    const r=await fetch(`${API_BASE}/api/mcp/registry/search?q=${encodeURIComponent(_mcpRegistryQuery)}&limit=30`,{headers:{'Authorization':`Bearer ${ADMIN_TOKEN}`}});
+    if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    const d=await r.json();
+    const host=document.getElementById('mcp-registry-results');if(!host)return;
+    if(!d.available){host.innerHTML='<div>Registre indisponible. Le cache local reste utilisable par Lumena.</div>';return;}
+    const items=Array.isArray(d.items)?d.items:[];
+    _mcpRegistryItems=items;
+    host.innerHTML=items.length?`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:10px">${items.map((item,index)=>`
+      <div class="card" style="margin:0"><div class="card-content">
+        <div style="font-weight:650">${esc(item.display_name||item.name)}</div>
+        <div style="font-size:10px;color:var(--muted);margin:3px 0">${esc(item.publisher||'')} · ${esc(item.transport||'')} · ${esc(item.version||'')}</div>
+        <div style="font-size:12px;line-height:1.45;min-height:34px">${esc(item.description||'Aucune description publiée.')}</div>
+        <div style="margin-top:10px"><button class="btn primary" style="font-size:11px" onclick="window._mcpRegistryAskIndex(${index})">Demander à Lumena</button></div>
+      </div></div>`).join('')}</div>`:'<div>Aucun serveur ne correspond à cette recherche.</div>';
+  }catch(e){const host=document.getElementById('mcp-registry-results');if(host)host.innerHTML=`<span style="color:var(--danger)">Erreur registre : ${esc(e.message)}</span>`;}
+}
+window._mcpRegistrySearch=function(value){
+  _mcpRegistryQuery=String(value||'').slice(0,256);
+  clearTimeout(window._mcpRegistryTimer);
+  window._mcpRegistryTimer=setTimeout(_loadMcpRegistry,300);
+};
+window._mcpRegistryAskIndex=function(index){
+  const item=_mcpRegistryItems[Number(index)];
+  if(!item||typeof item.target!=='string')return;
+  const target=item.target;
+  window._mcpLibraryPrefillChat(`Ajoute ce serveur MCP depuis sa cible exacte : ${target}`);
+};
 
 // ── Phase G : Bibliothèque MCP (user-facing, click → chat draft) ─────────────
 let _mcpLibraryFilter='all';
@@ -5324,7 +5456,10 @@ export async function submitMcpInstallPropose(serverId){
     const d=await r.json().catch(()=>({}));
     if(!r.ok){
       const code=(d&&d.detail&&d.detail.error_code)||(d&&d.error_code)||`http_${r.status}`;
-      throw new Error(code);
+      const message=code==='legacy_executable_target_invalid'
+        ? 'Cette ancienne entrée .exe a perdu son chemin complet. Supprimez-la, puis demandez à Lumena d’ajouter de nouveau le chemin absolu du fichier .exe.'
+        : code;
+      throw new Error(message);
     }
     if(d.live_mode&&d.ticket_id&&d.server_id){
       // Stocker le mapping ticket_id → server_id pour pouvoir associer le

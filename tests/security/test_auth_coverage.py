@@ -1,9 +1,9 @@
-"""Test exhaustif: TOUTES les routes non-publiques exigent verify_admin_token.
+"""Test exhaustif: TOUTES les routes non-publiques exigent une garde dédiée.
 
 Ce test empêche l'ajout accidentel de routes sans auth.
 Il scanne les décorateurs FastAPI et vérifie que chaque route a soit:
-- un Depends(verify_admin_token) dans ses dependencies
-- un paramètre _auth=Depends(verify_admin_token) dans sa signature
+- un Depends(verify_admin_token) dans ses dependencies ;
+- ou, uniquement pour le wizard, Depends(verify_setup_local_request).
 - est dans la liste blanche des routes publiques
 """
 
@@ -22,10 +22,6 @@ _PUBLIC_ROUTES = frozenset({
     "GET /",
     # Auth config (needed before login)
     "GET /api/auth/config",
-    # Setup wizard (before token exists)
-    "GET /api/setup/status",
-    "GET /api/setup/schema",
-    "GET /api/setup/ollama-models",
     # Stripe webhook (signature-based auth)
     "POST /api/stripe/webhook",
     # Public documentation
@@ -61,6 +57,10 @@ _PUBLIC_ROUTES = frozenset({
     # de flotte est absente. Le déclencheur /api/peer/fleet-pair reste admin-only.
     "POST /api/peer/fleet-pair-init",
     "POST /api/peer/fleet-pair-confirm",
+    # MCP OAuth redirect: invoked by the authorization server in a browser.
+    # Authentication is the high-entropy, one-use, short-lived PKCE state;
+    # the callback performs no action without a pending matching flow.
+    "GET /api/mcp/oauth/callback",
 })
 
 
@@ -94,12 +94,16 @@ class TestAuthCoverageExhaustive:
                 route_key = f"{method} {path}"
 
                 # Check if auth is present in decorator line (dependencies=[...])
-                has_auth_decorator = "verify_admin_token" in line or "verify_peer_token" in line
+                has_auth_decorator = any(name in line for name in (
+                    "verify_admin_token", "verify_peer_token", "verify_setup_local_request",
+                ))
 
                 # Check next 5 lines for Depends(verify_admin_token|verify_peer_token)
                 has_auth_param = False
                 for j in range(i + 1, min(i + 6, len(lines))):
-                    if "verify_admin_token" in lines[j] or "verify_peer_token" in lines[j]:
+                    if any(name in lines[j] for name in (
+                        "verify_admin_token", "verify_peer_token", "verify_setup_local_request",
+                    )):
                         has_auth_param = True
                         break
 

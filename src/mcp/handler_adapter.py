@@ -111,6 +111,23 @@ def _stringify_content(content: Any) -> str:
         return str(content)
 
 
+_TEXT_ERROR_PREFIX_RE = re.compile(
+    r"^\s*(?:\[[^\]\r\n]{0,24}\]\s*)?"
+    r"(?:error|erreur|exception|traceback|failed|failure)\s*(?::|\b)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_unflagged_mcp_error(output: str) -> bool:
+    """Detect a conventional error envelope when a server forgot isError.
+
+    Only the beginning of the payload is considered. This deliberately avoids
+    treating source code, search results, ``nil`` returns, or a later mention
+    of an error as an execution failure.
+    """
+    return bool(output and _TEXT_ERROR_PREFIX_RE.match(output[:500]))
+
+
 def _make_wrapped_handler(
     *,
     client: MCPClient,
@@ -158,6 +175,8 @@ def _make_wrapped_handler(
             return HandlerResult.fail(message, handler_name=handler_name)
 
         output = _stringify_content(result.content)
+        if _looks_like_unflagged_mcp_error(output):
+            return HandlerResult.fail(output[:2000], handler_name=handler_name)
         if result.structured_content is not None:
             # Optionnel : annexe la version structurée si présente
             try:

@@ -1406,7 +1406,30 @@ def is_bg_agent_active(task_id: str) -> bool:
     return t is not None and not t.done()
 
 
-_CODE_AGENT_MAX_ITER = int(os.environ.get("LUMENA_CODE_AGENT_MAX_ITER", "50"))
+def _resolve_code_agent_max_iter() -> int:
+    """Read the current user budget without imposing an arbitrary ceiling."""
+    try:
+        return max(5, int(os.environ.get("LUMENA_CODE_AGENT_MAX_ITER", "50")))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _resolve_code_agent_iteration_budget(model_name: str) -> int:
+    """Honor an explicit user budget; keep model profiles as defaults only."""
+    configured = _resolve_code_agent_max_iter()
+    if "LUMENA_CODE_AGENT_MAX_ITER" in os.environ:
+        return configured
+    try:
+        from ..llm.model_profile import get_model_profile
+
+        profile_cap = get_model_profile(model_name).sub_agent_iter_cap
+        if profile_cap > 0:
+            return min(configured, profile_cap)
+    except Exception:
+        pass
+    return configured
+
+
 _CODE_AGENT_MAX_OUTER_RETRIES = int(os.environ.get("LUMENA_CODE_AGENT_MAX_OUTER_RETRIES", "3"))  # Boucle externe
 
 # ── Classification structurée des outcomes d'appels outils ───────────────────
@@ -2061,7 +2084,7 @@ class CodeAgent(SubAgent):
         """
         Boucle externe (retry si bloqué) + boucle interne (LLM->action->obs).
         Outer loop jusqu'à _CODE_AGENT_MAX_OUTER_RETRIES,
-        boucle interne jusqu'à _CODE_AGENT_MAX_ITER.
+        boucle interne jusqu'au budget CodeAgent configure.
         """
         import time as _time_metrics
         _metrics_start = _time_metrics.perf_counter()
@@ -2073,22 +2096,15 @@ class CodeAgent(SubAgent):
         # Les anciens endpoints DeepSeek Chat/Reasoner sont retirés et ne doivent
         # plus être réintroduits par un auto-switch interne au CodeAgent.
         _model = getattr(llm, "model_name", "") or ""
-        # P5 — cap d'itérations adapté au profil comportemental du modèle
-        try:
-            from ..llm.model_profile import get_model_profile as _get_profile
-            _model_profile = _get_profile(_model)
-            _profile_iter_cap = _model_profile.sub_agent_iter_cap
-            if _profile_iter_cap > 0:
-                _effective_max_iter = min(_CODE_AGENT_MAX_ITER, _profile_iter_cap)
-                if _effective_max_iter < _CODE_AGENT_MAX_ITER:
-                    logger.debug(
-                        "[P5] iter cap profil '{}': {} → {} iters max",
-                        _model, _CODE_AGENT_MAX_ITER, _effective_max_iter,
-                    )
-            else:
-                _effective_max_iter = _CODE_AGENT_MAX_ITER
-        except Exception:
-            _effective_max_iter = _CODE_AGENT_MAX_ITER
+        _configured_max_iter = _resolve_code_agent_max_iter()
+        # P5 — le profil fournit un defaut prudent. Une valeur saisie par
+        # l'utilisateur reste toutefois souveraine, meme au-dessus de 100/200.
+        _effective_max_iter = _resolve_code_agent_iteration_budget(_model)
+        if _effective_max_iter < _configured_max_iter:
+            logger.debug(
+                "[P5] iter cap profil '{}': {} → {} iters max",
+                _model, _configured_max_iter, _effective_max_iter,
+            )
         prior_failures: list[str] = []
         last_result: AgentResult | None = None
         # P7 — telemetry : début de tâche CodeAgent
@@ -5053,7 +5069,7 @@ class CodeAgent(SubAgent):
                 or ('"write_file"' in raw_text[:300])
                 or ('"edit_file"' in raw_text[:300])
             )
-            if _looks_truncated and iteration < _CODE_AGENT_MAX_ITER:
+            if _looks_truncated and iteration < _resolve_code_agent_max_iter():
                 report.append(f"[iter {iteration}] JSON tronqué, retry shorter")
                 logger.warning("[CodeAgent] JSON tronqué à l'iter {} — demande plus court", iteration)
                 messages.append({"role": "assistant", "content": raw_text[:500] + "..."})

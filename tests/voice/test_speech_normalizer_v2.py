@@ -1,5 +1,8 @@
 """Voice V2 — SpeechNormalizer (ne jamais lire l'imprononçable)."""
+import pytest
+
 from src.voice.v2 import normalize_for_speech
+from src.voice.v2.speech_normalizer import prepare_for_tts
 
 
 def test_file_path_not_spelled():
@@ -54,3 +57,38 @@ def test_normal_prose_with_numbers_and_dates_preserved():
 def test_empty_text():
     r = normalize_for_speech("")
     assert r.spoken == "" and r.suppressed == set()
+
+
+@pytest.mark.parametrize("source", [
+    "Attends...... je vérifie.",
+    "D'accord.. je continue.",
+    "Terminé., Je passe à la suite.",
+    "Vraiment ?.. Oui !!.",
+    "Bonjour 😊. Tout va bien.",
+])
+def test_canonical_punctuation_never_sends_repeated_stops(source):
+    spoken = prepare_for_tts(source)
+    assert ".." not in spoken
+    assert ".," not in spoken
+    assert "!." not in spoken
+    assert "?." not in spoken
+    assert "😊" not in spoken
+
+
+@pytest.mark.parametrize("source", [
+    "Bonjour...... je reprends.",
+    "¿Cómo estás? ¡Muy bien!",
+    "How are you.. I am ready.",
+    "Le 2026-09-28, cela coûte 12,50 €.",
+    "Consulte [la documentation](https://example.org/docs) maintenant.",
+])
+def test_prepare_for_tts_is_idempotent_and_language_safe(source):
+    once = prepare_for_tts(source)
+    assert prepare_for_tts(once) == once
+    if "¿" in source:
+        assert "¿" in once and "¡" in once
+
+
+def test_markdown_link_keeps_label_without_reading_url():
+    spoken = prepare_for_tts("Ouvre [le guide](https://example.org/guide?q=1).")
+    assert spoken == "Ouvre le guide."

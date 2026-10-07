@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="/static/css/thinking.css?v=3">
 <link rel="stylesheet" href="/static/css/setup.css?v=10">
 <link rel="stylesheet" href="/static/css/product-docs.css?v=1">
-<link rel="stylesheet" href="/static/css/config-panel.css?v=1">
+<link rel="stylesheet" href="/static/css/config-panel.css?v=2">
 <link rel="stylesheet" href="/static/css/codex-subscription.css?v=2">
 <link rel="stylesheet" href="/static/css/missions.css?v=1">
 <link rel="stylesheet" href="/static/css/document-studio.css?v=9">
@@ -24,6 +24,8 @@
 <link rel="stylesheet" href="/static/css/updates.css?v=2">
 <link rel="stylesheet" href="/static/css/onboarding.css?v=3">
 <link rel="stylesheet" href="/static/css/local-models.css?v=3">
+<link rel="stylesheet" href="/static/css/voice-panel.css?v=3">
+<link rel="stylesheet" href="/static/css/personal-models.css?v=1">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
 <body>
@@ -193,7 +195,7 @@
           </div>
           <div class="nav-item" data-panel="finetuning">
             <span class="nav-item-icon"><i data-lucide="cpu"></i></span>
-            <span class="nav-item-label">Fine-tuning</span>
+            <span class="nav-item-label">Modèle personnel</span>
           </div>
         </div>
       </div>
@@ -624,31 +626,39 @@
 
     <!-- ======= VOICE ======= -->
     <div class="panel" id="panel-voice">
-      <div class="card">
-        <div class="card-title"><i data-lucide="mic"></i> Controle Vocal</div>
-        <div class="card-content">
-          <p>Activez l'ecoute continue pour parler a Lumena.</p>
-          <p style="margin-top:8px;font-size:12px;color:var(--muted)">Dites <strong>"Lumena"</strong> pour activer, puis enoncez votre commande.</p>
-          <div style="margin-top:20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <header class="voice-hero">
+        <div><div class="voice-kicker"><span class="status-dot" id="voice-dot"></span> Dialogue local</div><h2>Voix Lumena</h2><p id="voice-status-text">Desactive</p></div>
+        <div class="voice-actions">
             <button class="btn primary" id="voice-toggle-btn" data-action="toggleVoiceAssistant" style="padding:12px 24px;font-weight:600">Demarrer l'ecoute</button>
             <button class="btn" data-action="stopVoiceAudio" title="Couper la voix sans arrêter le travail"><i data-lucide="volume-x"></i> Couper</button>
             <button class="btn" id="voice-mute-btn" data-action="toggleVoiceMute" title="Activer ou lever le mute global"><i data-lucide="mic-off"></i> Mute</button>
-            <button class="btn" data-action="testVoiceOutput" title="Tester la synthèse et la sortie audio"><i data-lucide="audio-lines"></i> Tester</button>
-            <div style="display:flex;align-items:center;gap:8px;color:var(--muted)">
-              <div class="status-dot" id="voice-dot"></div>
-              <span id="voice-status-text">Desactive</span>
-            </div>
-          </div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:18px;font-size:12px">
+            <span id="voice-control-message" class="voice-setting-message" role="status" aria-live="polite"></span>
+        </div>
+      </header>
+      <div class="voice-summary" aria-label="État du pipeline vocal">
             <div><div class="stat-label">Pipeline</div><div id="voice-pipeline">—</div></div>
             <div><div class="stat-label">Mode / rôle</div><div id="voice-mode-role">—</div></div>
             <div><div class="stat-label">Provider</div><div id="voice-provider">—</div></div>
             <div><div class="stat-label">Premier audio</div><div id="voice-first-audio">—</div></div>
             <div><div class="stat-label">Tâche active</div><div id="voice-task">—</div></div>
             <div><div class="stat-label">Confidentialité</div><div id="voice-privacy">—</div></div>
-          </div>
-        </div>
       </div>
+      <div class="voice-tabs" role="tablist" aria-label="Réglages voix">
+        <button class="active" role="tab" aria-selected="true" data-voice-tab="conversation">Conversation</button><button role="tab" aria-selected="false" data-voice-tab="voice">Voix</button><button role="tab" aria-selected="false" data-voice-tab="listen">Écoute</button><button role="tab" aria-selected="false" data-voice-tab="languages">Langues</button><button role="tab" aria-selected="false" data-voice-tab="models">Modèles</button><button role="tab" aria-selected="false" data-voice-tab="diagnostic">Diagnostic</button>
+      </div>
+      <div class="voice-page active" data-voice-page="conversation" role="tabpanel">
+        <div class="card voice-profile-picker"><div class="card-title"><i data-lucide="gauge"></i> Profil de performance</div><p class="voice-help">Choisissez selon la puissance de ce PC. Le profil change uniquement les moteurs STT, TTS et VAD ; votre langue, votre micro, votre mode et vos droits restent intacts.</p><div id="voice-performance-profiles" class="voice-profile-grid" aria-live="polite"><p>Analyse du matériel…</p></div><p id="voice-profile-message" class="voice-setting-message" aria-live="polite"></p></div>
+        <div class="card"><div class="card-title"><i data-lucide="messages-square"></i> Conversation</div><p class="voice-help">Choisissez comment Lumena écoute et répond. Si l'écoute tourne, Enregistrer redémarre automatiquement le pipeline vocal pour appliquer les changements.</p><div class="voice-form"><label>Mode<select id="voice-setting-mode"><option value="chat">Chat</option><option value="agent">Agent</option></select></label><label>Activation<select id="voice-setting-activation"><option value="wake_phrase">Phrase « Lumena »</option><option value="push_to_talk">Appuyer pour parler</option><option value="open_mic">Micro ouvert</option></select></label><label>Langue principale<select id="voice-setting-language"><option value="auto">Détection locale</option><option value="fr">Français</option><option value="en">English</option><option value="es">Español</option></select></label><label>Phrase d'activation<input id="voice-setting-wake" maxlength="80" value="Lumena"></label></div><div class="voice-row"><button class="btn primary" id="voice-settings-save" data-action="saveVoiceSettings">Enregistrer</button><button class="btn" id="voice-ptt-button" data-action="armVoicePushToTalk">Appuyer pour parler</button><span id="voice-settings-message" class="voice-setting-message" role="status" aria-live="polite"></span></div></div>
+      </div>
+      <div class="voice-page" data-voice-page="voice" role="tabpanel" hidden>
+        <div class="card"><div class="card-title"><i data-lucide="audio-lines"></i> Voix de Lumena</div><div class="voice-facts"><div><span>Moteur effectif</span><strong id="voice-effective-provider">—</strong></div><div><span>Profil</span><strong id="voice-profile">—</strong></div><div><span>Langue TTS</span><strong id="voice-tts-language">—</strong></div><div><span>Localité</span><strong id="voice-locality">—</strong></div></div><button class="btn" data-action="testVoiceOutput"><i data-lucide="play"></i> Écouter un aperçu</button></div>
+      </div>
+      <div class="voice-page" data-voice-page="listen" role="tabpanel" hidden>
+        <div class="card"><div class="card-title"><i data-lucide="ear"></i> Écoute et acoustique</div><div class="voice-facts"><div><span>Micro</span><strong id="voice-micro">—</strong></div><div><span>VAD</span><strong id="voice-vad">—</strong></div><div><span>AEC</span><strong id="voice-aec">—</strong></div><div><span>Wake word</span><strong id="voice-wake-engine">—</strong></div></div><button class="btn" data-action="testVoiceMicro"><i data-lucide="mic"></i> Tester le micro</button><span id="voice-micro-result" aria-live="polite"></span></div>
+      </div>
+      <div class="voice-page" data-voice-page="languages" role="tabpanel" hidden><div class="card"><div class="card-title"><i data-lucide="languages"></i> Langues</div><p class="voice-help">Lumena garde la langue de session. Une traduction ponctuelle ne modifie pas ce choix.</p><div class="voice-facts"><div><span>Entrée détectée</span><strong id="voice-input-language">—</strong></div><div><span>Réponse</span><strong id="voice-response-language">—</strong></div><div><span>Portée</span><strong id="voice-language-scope">—</strong></div><div><span>Garde</span><strong id="voice-language-guard">—</strong></div></div></div></div>
+      <div class="voice-page" data-voice-page="models" role="tabpanel" hidden><div class="card"><div class="card-title"><i data-lucide="package-check"></i> Modèles vocaux</div><div id="voice-models-list" class="voice-models-list"><p>Chargement…</p></div><p class="voice-help">Les Voice Packs doivent être signés, hashés et accompagnés de leurs licences et consentements.</p></div></div>
+      <div class="voice-page" data-voice-page="diagnostic" role="tabpanel" hidden><div class="card"><div class="card-title"><i data-lucide="activity"></i> Diagnostic expurgé</div><div class="voice-facts"><div><span>Profil matériel</span><strong id="voice-hardware-profile">—</strong></div><div><span>STT effectif</span><strong id="voice-stt-effective">—</strong></div><div><span>Endpoint p95</span><strong id="voice-endpoint-p95">—</strong></div><div><span>Trou audio p95</span><strong id="voice-gap-p95">—</strong></div></div><pre id="voice-diagnostic-json" class="voice-diagnostic">—</pre><div class="voice-diagnostic-actions"><button class="btn" data-action="exportVoiceDiagnostic"><i data-lucide="download"></i> Exporter le diagnostic</button><button class="btn voice-danger" data-action="deleteVoiceData"><i data-lucide="trash-2"></i> Effacer les données vocales</button></div><p id="voice-delete-message" class="voice-setting-message" aria-live="polite"></p></div></div>
     </div>
 
     <!-- ======= HOOKS ======= -->
@@ -877,139 +887,108 @@
 
     <!-- ======= FINE-TUNING ======= -->
     <div class="panel" id="panel-finetuning">
-      <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-          <span><i data-lucide="cpu"></i> Fine-tuning Local</span>
-          <button class="btn" style="font-size:11px;padding:4px 10px" data-action="loadFinetuning">Rafraichir</button>
+      <section class="pm-shell" aria-labelledby="pm-title">
+        <header class="pm-hero">
+          <div>
+            <div class="pm-eyebrow"><i data-lucide="sparkles"></i> Intelligence personnelle locale</div>
+            <h2 id="pm-title">Mon modèle Lumena</h2>
+            <p>Lumena construit une lignée personnelle à partir des expériences que vous autorisez. Votre modèle principal reste disponible et rien ne devient actif sans preuve.</p>
+          </div>
+          <div class="pm-actions">
+            <button type="button" class="btn" id="pm-refresh"><i data-lucide="refresh-cw"></i> Actualiser</button>
+            <button type="button" class="btn accent" data-pm-tab="training"><i data-lucide="play"></i> Préparer une version</button>
+          </div>
+        </header>
+
+        <div class="pm-summary" id="pm-summary" aria-live="polite">
+          <article class="pm-stat"><span>Chargement</span><strong>Lecture de l’état réel…</strong></article>
         </div>
-      </div>
 
-      <!-- Section 1: Hardware Status -->
-      <div id="ft-hardware" class="ft-hardware-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:12px 0">
-        <div class="card" id="ft-gpu-card"><div class="card-content"><p style="color:var(--muted);font-size:12px">Detection GPU...</p></div></div>
-        <div class="card" id="ft-deps-card"><div class="card-content"><p style="color:var(--muted);font-size:12px">Verification deps...</p></div></div>
-        <div class="card" id="ft-data-card"><div class="card-content"><p style="color:var(--muted);font-size:12px">Analyse dataset...</p></div></div>
-      </div>
-      <div id="ft-alert-banner" style="display:none;padding:10px 16px;border-radius:var(--radius);margin-bottom:12px;font-size:13px"></div>
+        <nav class="pm-tabs" role="tablist" aria-label="Modèle personnel">
+          <button type="button" class="pm-tab active" role="tab" aria-selected="true" data-pm-tab="overview">Vue générale</button>
+          <button type="button" class="pm-tab" role="tab" aria-selected="false" data-pm-tab="heritage">Patrimoine</button>
+          <button type="button" class="pm-tab" role="tab" aria-selected="false" data-pm-tab="training">Entraînements</button>
+          <button type="button" class="pm-tab" role="tab" aria-selected="false" data-pm-tab="versions">Versions</button>
+          <button type="button" class="pm-tab" role="tab" aria-selected="false" data-pm-tab="judging">Jugement</button>
+          <button type="button" class="pm-tab" role="tab" aria-selected="false" data-pm-tab="data">Données</button>
+          <button type="button" class="pm-tab" role="tab" aria-selected="false" data-pm-tab="advanced">Avancé</button>
+        </nav>
 
-      <!-- Section 2: Configuration -->
-      <div class="card" id="ft-config-section">
-        <div class="card-title"><i data-lucide="settings"></i> Configuration du Job</div>
-        <div class="card-content">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-            <div>
-              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Modele de base</label>
-              <div id="ft-model-select" class="ft-custom-select">
-                <div class="ft-select-trigger"><span class="ft-select-text">Chargement...</span><svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
-                <div class="ft-select-dropdown"></div>
-              </div>
-            </div>
-            <div>
-              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Nom du modele fine-tune</label>
-              <input id="ft-output-name" class="input" style="width:100%;height:36px" placeholder="lumena-qwen3-8b-v1">
-            </div>
+        <section class="pm-page active" data-pm-page="overview">
+          <div class="pm-callout" id="pm-recommendation" aria-live="polite"><div><strong>Analyse en cours</strong><p>Lumena relit les preuves locales.</p></div></div>
+          <div class="pm-grid" style="margin-top:12px">
+            <article class="pm-card"><h3><i data-lucide="database"></i> Ce que Lumena conserve</h3><p>Comptes issus du store personnel, sans exposer le contenu privé.</p><div class="pm-list" id="pm-data-overview"></div></article>
+            <article class="pm-card"><h3><i data-lucide="shield-check"></i> Prêt à apprendre</h3><p>Dépendances et ressources mesurées sur cette machine.</p><div class="pm-list" id="pm-health-overview"></div></article>
           </div>
+        </section>
 
-          <!-- Simple params -->
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
-            <div>
-              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Epochs</label>
-              <input id="ft-epochs" type="number" class="input" style="width:100%;height:36px" value="3" min="1" max="10">
-            </div>
-            <div>
-              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">Quantization sortie</label>
-              <select id="ft-quant" class="input" style="width:100%;height:36px">
-                <option value="Q2_K">Q2_K (plus leger)</option>
-                <option value="Q4_K_M" selected>Q4_K_M (recommande)</option>
-                <option value="Q5_K_M">Q5_K_M (meilleure qualite)</option>
-                <option value="Q8_0">Q8_0 (quasi lossless)</option>
-              </select>
-            </div>
-            <div>
-              <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">HuggingFace Token</label>
-              <input id="ft-hf-token" type="password" class="input" style="width:100%;height:36px" placeholder="Optionnel (modeles gates)">
-            </div>
+        <section class="pm-page" data-pm-page="heritage">
+          <article class="pm-card"><h3><i data-lucide="library"></i> Patrimoine d’apprentissage</h3><p>Les expériences restent séparées par propriétaire, redacted avant écriture et dédupliquées.</p><div id="pm-heritage-note" class="pm-empty">Les compteurs détaillés sont visibles dans la vue générale. Aucun exemple privé n’est affiché ici.</div></article>
+        </section>
+
+        <section class="pm-page" data-pm-page="training">
+          <div class="pm-grid">
+            <article class="pm-card">
+              <h3><i data-lucide="calendar-clock"></i> Quand Lumena peut apprendre</h3>
+              <p>Ces limites donnent toujours la priorité au chat, à Voice, aux missions et au travail interactif.</p>
+              <div class="pm-form">
+                <label class="pm-check"><input id="pm-learning-enabled" type="checkbox"> Apprentissage personnel</label>
+                <label class="pm-check"><input id="pm-capture-enabled" type="checkbox"> Collecte locale</label>
+                <label class="pm-check"><input id="pm-training-enabled" type="checkbox"> Entraînement autorisé</label>
+                <label class="pm-check"><input id="pm-auto-enabled" type="checkbox"> Automatique</label>
+                <div class="pm-field"><label for="pm-trigger">Déclenchement</label><select id="pm-trigger"><option value="manual">Manuel</option><option value="idle">PC inactif</option><option value="scheduled">Horaires</option><option value="auto">Automatique borné</option></select></div>
+                <div class="pm-field"><label for="pm-profile">Profil</label><select id="pm-profile"><option value="light">Léger</option><option value="balanced">Équilibré</option><option value="quality">Qualité</option><option value="expert">Expert</option></select></div>
+                <div class="pm-field"><label for="pm-window-start">Début</label><input id="pm-window-start" type="time"></div>
+                <div class="pm-field"><label for="pm-window-end">Fin</label><input id="pm-window-end" type="time"></div>
+                <div class="pm-field pm-field-wide"><span class="pm-help">Jours autorisés</span><div class="pm-days" role="group" aria-label="Jours d’entraînement"><label><input type="checkbox" data-pm-day="0"> Lun</label><label><input type="checkbox" data-pm-day="1"> Mar</label><label><input type="checkbox" data-pm-day="2"> Mer</label><label><input type="checkbox" data-pm-day="3"> Jeu</label><label><input type="checkbox" data-pm-day="4"> Ven</label><label><input type="checkbox" data-pm-day="5"> Sam</label><label><input type="checkbox" data-pm-day="6"> Dim</label></div></div>
+                <div class="pm-field"><label for="pm-idle">Inactivité minimale (min)</label><input id="pm-idle" type="number" min="0" max="1440"></div>
+                <div class="pm-field"><label for="pm-min-experiences">Nouvelles expériences minimales</label><input id="pm-min-experiences" type="number" min="1"></div>
+                <div class="pm-field"><label for="pm-frequency">Fréquence maximale (jours)</label><input id="pm-frequency" type="number" min="1" max="3650"></div>
+                <div class="pm-field"><label for="pm-duration">Durée maximale (min)</label><input id="pm-duration" type="number" min="1" max="10080"></div>
+                <div class="pm-field"><label for="pm-cpu">CPU maximal (%)</label><input id="pm-cpu" type="number" min="1" max="100"></div>
+                <div class="pm-field"><label for="pm-ram">RAM maximale (%)</label><input id="pm-ram" type="number" min="1" max="100"></div>
+                <div class="pm-field"><label for="pm-vram">VRAM maximale (%)</label><input id="pm-vram" type="number" min="1" max="100"></div>
+                <div class="pm-field"><label for="pm-disk">Espace libre à conserver (Go)</label><input id="pm-disk" type="number" min="1"></div>
+                <label class="pm-check"><input id="pm-battery" type="checkbox"> Autoriser sur batterie</label>
+                <label class="pm-check"><input id="pm-pause-voice" type="checkbox"> Pause pendant Voice</label>
+                <label class="pm-check"><input id="pm-pause-work" type="checkbox"> Pause pendant Agent, missions et rendu</label>
+                <div class="pm-field-wide"><button type="button" class="btn accent" id="pm-save-settings">Enregistrer les réglages</button></div>
+              </div>
+            </article>
+            <article class="pm-card">
+              <h3><i data-lucide="brain-circuit"></i> Préparer la prochaine version</h3>
+              <p>Le lancement construit un dataset reproductible puis démarre le worker séparé si les ressources le permettent.</p>
+              <div class="pm-form">
+                <div class="pm-field pm-field-wide"><label for="pm-base-model">Modèle de base Hugging Face</label><input id="pm-base-model" autocomplete="off" placeholder="unsloth/Qwen3-8B-bnb-4bit"><span class="pm-help">Identifiant exact et révision verrouillée recommandés.</span></div>
+                <div class="pm-field pm-field-wide"><label for="pm-model-prefix">Nom personnel</label><input id="pm-model-prefix" autocomplete="off" value="lumena" maxlength="48"><span class="pm-help">Lumena ajoutera automatiquement <code>-model-1.0.0</code> puis fera évoluer la version.</span></div>
+                <div class="pm-field"><label for="pm-version-bump">Évolution</label><select id="pm-version-bump"><option value="patch">Patch</option><option value="minor">Mineure</option><option value="major">Majeure</option></select></div>
+                <div class="pm-field"><label for="pm-epochs">Epochs</label><input id="pm-epochs" type="number" value="1" min="1" max="10"></div>
+                <div class="pm-field pm-field-wide"><label for="pm-lr">Learning rate</label><input id="pm-lr" type="number" value="0.0002" step="0.00001" min="0.000001" max="0.01"></div>
+                <div class="pm-field-wide"><button type="button" class="btn accent" id="pm-start-training"><i data-lucide="play"></i> Créer et lancer</button></div>
+              </div>
+            </article>
           </div>
+          <article class="pm-card" style="margin-top:12px"><h3><i data-lucide="activity"></i> Jobs</h3><div class="pm-list" id="pm-jobs"></div></article>
+        </section>
 
-          <div style="margin-bottom:12px">
-            <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px">System Prompt</label>
-            <textarea id="ft-system-prompt" class="input" style="width:100%;height:60px;resize:vertical" placeholder="Tu es Lumena, mon assistant IA personnel."></textarea>
-          </div>
-
-          <!-- Advanced params -->
-          <details style="margin-bottom:12px">
-            <summary style="cursor:pointer;font-size:13px;color:var(--accent);margin-bottom:8px">Parametres avances</summary>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">LoRA r</label>
-                <select id="ft-lora-r" class="input" style="width:100%;height:32px"><option>8</option><option selected>16</option><option>32</option><option>64</option></select>
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">LoRA alpha</label>
-                <input id="ft-lora-alpha" type="number" class="input" style="width:100%;height:32px" value="32" min="1" max="128">
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Learning rate</label>
-                <input id="ft-lr" type="number" class="input" style="width:100%;height:32px" value="0.0002" step="0.00001" min="0.000001" max="0.01">
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Max seq length</label>
-                <select id="ft-seq-len" class="input" style="width:100%;height:32px"><option>512</option><option>1024</option><option selected>2048</option><option>4096</option></select>
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Batch size</label>
-                <select id="ft-batch" class="input" style="width:100%;height:32px"><option>1</option><option selected>2</option><option>4</option><option>8</option></select>
-              </div>
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">Grad accumulation</label>
-                <select id="ft-grad-acc" class="input" style="width:100%;height:32px"><option>1</option><option>2</option><option selected>4</option><option>8</option><option>16</option></select>
-              </div>
-            </div>
-          </details>
-
-          <!-- Expert params -->
-          <details style="margin-bottom:12px">
-            <summary style="cursor:pointer;font-size:13px;color:var(--muted);margin-bottom:8px">Parametres expert</summary>
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
-              <div>
-                <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:4px">LoRA dropout</label>
-                <input id="ft-lora-dropout" type="number" class="input" style="width:100%;height:32px" value="0.0" step="0.05" min="0" max="0.5">
-              </div>
-              <div style="display:flex;align-items:center;gap:6px;padding-top:18px">
-                <input id="ft-4bit" type="checkbox" checked><label for="ft-4bit" style="font-size:11px;color:var(--muted)">Load in 4-bit</label>
-              </div>
-              <div style="display:flex;align-items:center;gap:6px;padding-top:18px">
-                <input id="ft-unsloth" type="checkbox" checked><label for="ft-unsloth" style="font-size:11px;color:var(--muted)">Use Unsloth</label>
-              </div>
-            </div>
-          </details>
-
-          <button id="ft-start-btn" class="btn accent" style="width:100%;height:40px;font-size:14px" data-action="_startFinetuning" disabled>
-            <i data-lucide="play" style="width:16px;height:16px;vertical-align:-3px"></i> Lancer le Fine-tuning
-          </button>
-        </div>
-      </div>
-
-      <!-- Section 3: Progress -->
-      <div class="card" id="ft-progress-section" style="display:none;margin-top:12px">
-        <div class="card-title"><i data-lucide="activity"></i> Progression</div>
-        <div class="card-content">
-          <div style="background:var(--border);border-radius:var(--radius);height:24px;overflow:hidden;margin-bottom:12px">
-            <div id="ft-progress-bar" style="height:100%;background:var(--accent);width:0%;transition:width 0.5s;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:600">0%</div>
-          </div>
-          <div id="ft-phase-timeline" class="ft-phase-timeline" style="margin-bottom:12px"></div>
-          <div id="ft-log" style="background:rgba(0,0,0,0.2);border-radius:var(--radius);padding:10px;font-family:var(--mono);font-size:11px;max-height:200px;overflow-y:auto;line-height:1.6"></div>
-          <button id="ft-cancel-btn" class="btn" style="margin-top:10px;background:var(--danger);color:#fff" data-action="_cancelFinetuning">Annuler</button>
-        </div>
-      </div>
-
-      <!-- Section 4: My Models -->
-      <div class="card" style="margin-top:12px">
-        <div class="card-title"><i data-lucide="box"></i> Mes Modeles Fine-tunes</div>
-        <div id="ft-models-list" class="card-content"><p style="color:var(--muted);font-size:12px">Aucun modele fine-tune pour l'instant.</p></div>
-      </div>
+        <section class="pm-page" data-pm-page="versions"><article class="pm-card"><h3><i data-lucide="git-branch"></i> Lignée et versions</h3><p>Une version ne peut être activée qu’après évaluation et approbation contextualisée.</p><div class="pm-list" id="pm-versions"></div></article></section>
+        <section class="pm-page" data-pm-page="judging"><article class="pm-card"><h3><i data-lucide="scale"></i> Juge isolé</h3><p>Le juge travaille dans un contexte dédié. Le cloud reste soumis à un consentement séparé et aucune auto-évaluation ne peut s’auto-valider seule.</p><div class="pm-form"><div class="pm-field"><label for="pm-judge-mode">Mode</label><select id="pm-judge-mode"><option value="auto">Automatique sûr</option><option value="default">Modèle principal</option><option value="specific">Modèle précis</option><option value="personal">Modèle personnel certifié</option><option value="local_only">Local uniquement</option><option value="double">Double jugement</option></select></div><div class="pm-field"><label for="pm-judge-model">Modèle juge précis</label><input id="pm-judge-model" autocomplete="off" placeholder="Laisser vide pour le principal"></div><div class="pm-field"><label for="pm-judge-threshold">Seuil d’acceptation / 10</label><input id="pm-judge-threshold" type="number" min="0" max="10" step="0.1"></div><label class="pm-check"><input id="pm-cloud-judge" type="checkbox"> Autoriser un juge cloud</label><div class="pm-field-wide"><button type="button" class="btn accent" id="pm-save-judge">Enregistrer le juge</button></div></div></article></section>
+        <section class="pm-page" data-pm-page="data"><div class="pm-grid">
+          <article class="pm-card"><h3><i data-lucide="archive"></i> Sauvegardes vérifiées</h3><p>L’archive conserve la lignée et les preuves autorisées, sans tickets d’approbation ni journal d’audit.</p><div class="pm-row-actions"><button class="btn accent" id="pm-create-backup"><i data-lucide="archive"></i> Créer</button><select id="pm-backup-select" aria-label="Sauvegarde à restaurer"><option value="">Aucune sauvegarde</option></select><button class="btn" id="pm-restore-backup" disabled><i data-lucide="history"></i> Restaurer</button></div><div id="pm-backup-result" class="pm-empty">Aucun contenu privé n’est affiché.</div></article>
+          <article class="pm-card"><h3><i data-lucide="import"></i> Migration guidée</h3><p>Lumena détecte uniquement les anciens jeux JSON/JSONL autorisés dans son dossier de données. La prévisualisation ne modifie rien.</p><div id="pm-migration-sources" class="pm-selection"></div><div class="pm-row-actions"><button class="btn accent" id="pm-import-history" disabled><i data-lucide="import"></i> Prévisualiser et importer</button></div></article>
+          <article class="pm-card pm-field-wide"><h3><i data-lucide="trash-2"></i> Effacer les données d’apprentissage</h3><p>Supprime les expériences, datasets, quarantaine et cache du juge. Les versions entraînées, réglages, sauvegardes et le modèle principal restent disponibles.</p><button class="btn danger" id="pm-delete-learning-data"><i data-lucide="trash-2"></i> Effacer les données</button></article>
+        </div></section>
+        <section class="pm-page" data-pm-page="advanced"><article class="pm-card"><h3><i data-lucide="sliders-horizontal"></i> Options avancées</h3><p>LoRA est le parcours actif. DPO reste disponible uniquement avec de vraies paires choisie/rejetée prouvées. Le mode from-scratch exige un corpus licencié, un tokenizer versionné et un préflight matériel réussi.</p><div id="pm-advanced-status" class="pm-empty">Lumena relit les dépendances et ressources réelles avant chaque opération lourde.</div></article></section>
+      </section>
     </div>
 
+    <div id="pm-toast" class="pm-toast" role="status" aria-live="polite" hidden></div>
+    <div id="pm-modal" class="pm-modal-backdrop" aria-hidden="true">
+      <div class="pm-modal" role="dialog" aria-modal="true" aria-labelledby="pm-modal-title" aria-describedby="pm-modal-message">
+        <h3 id="pm-modal-title">Confirmer l’action</h3><p id="pm-modal-message"></p>
+        <div class="pm-modal-actions"><button type="button" class="btn" id="pm-modal-close">Annuler</button><button type="button" class="btn accent" id="pm-modal-confirm">Confirmer</button></div>
+      </div>
+    </div>
     <!-- ======= LOGS ======= -->
     <div class="panel" id="panel-logs">
       <div class="card">
@@ -1487,18 +1466,18 @@
           </div>
           <div class="cfg-sidebar-nav" id="cfg-nav"></div>
           <div class="cfg-sidebar-footer">
-            <button class="btn primary" style="width:100%;font-size:12px;padding:8px 0" data-action="saveConfig"><i data-lucide="save" style="width:14px;height:14px"></i> Sauvegarder</button>
+            <button class="btn primary" id="config-save-button" style="width:100%;font-size:12px;padding:8px 0" data-action="saveConfig"><i data-lucide="save" style="width:14px;height:14px"></i> Sauvegarder</button>
           </div>
         </nav>
         <main class="cfg-main" id="cfg-main">
           <div class="cfg-main-header">
             <div>
               <h2 id="cfg-group-title" style="margin:0;font-size:20px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:10px">Configuration Lumena</h2>
-              <p style="color:var(--muted);font-size:12px;margin:4px 0 0">Modifiez les paramètres du .env en temps réel.</p>
+              <p style="color:var(--muted);font-size:12px;margin:4px 0 0">Les changements compatibles sont appliqués immédiatement. Les autres prennent effet au prochain démarrage.</p>
             </div>
             <button class="btn" style="font-size:11px;padding:4px 10px;flex-shrink:0" data-action="loadConfig"><i data-lucide="refresh-cw" style="width:12px;height:12px"></i> Rafraichir</button>
           </div>
-          <div id="config-save-msg" style="display:none;margin:0 32px;padding:8px 14px;border-radius:8px;font-size:12px"></div>
+          <div id="config-save-msg" role="status" aria-live="polite" style="display:none;margin:0 32px;padding:8px 14px;border-radius:8px;font-size:12px"></div>
           <div id="config-groups" class="cfg-content">
             <div class="cfg-loading">Chargement de la configuration...</div>
           </div>
@@ -1634,6 +1613,7 @@
 
       <div class="tabs" style="margin-top:8px">
         <button class="tab active" data-action="loadMcpTab" data-arg="library" data-test-id="mcp-tab-library"><i data-lucide="library" style="width:12px;height:12px"></i> Bibliothèque</button>
+        <button class="tab" data-action="loadMcpTab" data-arg="registry"><i data-lucide="search" style="width:12px;height:12px"></i> Registre officiel</button>
         <button class="tab" data-action="loadMcpTab" data-arg="catalog">Serveurs</button>
         <button class="tab" data-action="loadMcpTab" data-arg="approvals">Approbations</button>
         <button class="tab" data-action="loadMcpTab" data-arg="watcher">État runtime</button>
@@ -1815,10 +1795,10 @@
 window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
-  <script type="module" src="/static/js/main.js?v=62"></script>
+  <script type="module" src="/static/js/main.js?v=68"></script>
 <script type="module" src="/static/js/updates.js?v=2"></script>
 <script type="module">
-import { initSetupWizard } from '/static/js/setup.js?v=21';
+import { initSetupWizard } from '/static/js/setup.js?v=22';
 import { initContextMenu } from '/static/js/contextmenu.js?v=1';
 document.addEventListener('DOMContentLoaded', () => { initSetupWizard(); initContextMenu(); });
 </script>

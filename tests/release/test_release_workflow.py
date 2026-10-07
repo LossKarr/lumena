@@ -47,6 +47,16 @@ def test_full_windows_regression_allows_cold_lsp_startup() -> None:
     assert "python -m pytest tests/ --timeout=15" not in text
 
 
+def test_every_full_ci_suite_allows_document_render_runtime() -> None:
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    phase_gate = (ROOT / ".github" / "workflows" / "phase-gate.yml").read_text(encoding="utf-8")
+    phase_script = (ROOT / "scripts" / "ci_phase_gate.py").read_text(encoding="utf-8")
+
+    assert "python -m pytest tests/ --timeout=60 --tb=short -q" in ci
+    assert "--full --runs=3 --timeout=60" in phase_gate
+    assert 'parser.add_argument("--timeout", type=int, default=60' in phase_script
+
+
 def test_lint_gate_covers_updater_without_being_blocked_by_unrelated_legacy_debt() -> None:
     text, _ = _workflow()
     assert "Lint certified updater surface" in text

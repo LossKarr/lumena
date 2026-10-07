@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+import re
 from typing import Deque, Dict, List, Optional
 
 
@@ -77,6 +78,11 @@ class PlayedSpeech:
     text_unplayed: str = ""
     played_ms: int = 0
     interrupted: bool = False
+    planned_text: str = ""
+    synthesized_sequences: List[int] = field(default_factory=list)
+    played_sequences: List[int] = field(default_factory=list)
+    partially_played_sequences: List[int] = field(default_factory=list)
+    heard_until_ms: int = 0
 
 
 class ConversationAudioLedger:
@@ -90,18 +96,61 @@ class ConversationAudioLedger:
         self._by_gen[generation_id] = PlayedSpeech(
             turn_id=turn_id, generation_id=generation_id,
             text_played="", text_unplayed=full_text, played_ms=0,
+            planned_text=full_text,
         )
         self.order.append(generation_id)
 
-    def on_chunk_played(self, generation_id: str, text: str, duration_ms: int) -> None:
+    def on_chunk_played(
+        self, generation_id: str, text: str, duration_ms: int,
+        sequence: Optional[int] = None,
+    ) -> None:
         ps = self._by_gen.get(generation_id)
         if ps is None:
             return
         ps.text_played = (ps.text_played + " " + text).strip() if ps.text_played else text
         ps.played_ms += int(duration_ms)
+        ps.heard_until_ms = ps.played_ms
+        if sequence is not None:
+            ps.played_sequences.append(int(sequence))
         # Recalcule l'imprononcé : ce qui reste après le texte joué.
         if ps.text_unplayed and text and ps.text_unplayed.startswith(text):
             ps.text_unplayed = ps.text_unplayed[len(text):].strip()
+
+    def on_chunk_interrupted(
+        self, generation_id: str, text: str, elapsed_ms: int, duration_ms: int,
+        sequence: Optional[int] = None,
+    ) -> None:
+        """Record the conservative, word-bounded part heard before cancellation.
+
+        Audio backends do not expose an exact playhead.  We therefore use elapsed
+        wall time against the synthesized duration, subtract a small output-buffer
+        margin, and only commit complete words.  This prevents a resumed answer
+        from repeating the whole current sentence while never claiming that a
+        half-played word was heard.
+        """
+        ps = self._by_gen.get(generation_id)
+        if ps is None or not text or duration_ms <= 0:
+            return
+        conservative_ms = max(0, int(elapsed_ms) - 120)
+        fraction = min(1.0, conservative_ms / max(1, int(duration_ms)))
+        tokens = list(re.finditer(r"\S+", text))
+        heard_count = min(len(tokens), int(len(tokens) * fraction))
+        if heard_count <= 0:
+            return
+        boundary = tokens[heard_count - 1].end()
+        heard = text[:boundary].strip()
+        if not heard:
+            return
+        ps.text_played = (
+            (ps.text_played + " " + heard).strip() if ps.text_played else heard
+        )
+        ps.played_ms += conservative_ms
+        ps.heard_until_ms = ps.played_ms
+        ps.interrupted = True
+        if sequence is not None:
+            ps.partially_played_sequences.append(int(sequence))
+        if ps.text_unplayed.startswith(heard):
+            ps.text_unplayed = ps.text_unplayed[len(heard):].strip()
 
     def truncate(self, generation_id: str) -> Optional[PlayedSpeech]:
         """Marque interrompu et renvoie l'état réellement entendu (pour tronquer l'historique)."""
@@ -110,6 +159,11 @@ class ConversationAudioLedger:
             return None
         ps.interrupted = True
         return ps
+
+    def on_chunk_synthesized(self, generation_id: str, sequence: int) -> None:
+        ps = self._by_gen.get(generation_id)
+        if ps is not None:
+            ps.synthesized_sequences.append(int(sequence))
 
     def get(self, generation_id: str) -> Optional[PlayedSpeech]:
         return self._by_gen.get(generation_id)

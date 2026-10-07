@@ -69,7 +69,10 @@ class VoiceRuntime:
         self._play_lock = asyncio.Lock()                  # un seul segment audible à la fois, sans bloquer l'acteur
         self._agent_gen_seq = 0                            # compteur de générations pour speak() hors-bande
         self._generation_started_at: Dict[str, float] = {}
+        self._generation_turn: Dict[str, str] = {}
+        self._generation_language: Dict[str, str] = {}
         self._first_audio_seen: set[str] = set()
+        self._completion_events: Dict[str, asyncio.Event] = {}
         self._metrics: Dict[str, Any] = {
             "llm_ms": None, "first_audio_ms": None, "interrupt_ms": None,
             "queue_depth": 0, "dialogue_act": "explanation",
@@ -95,6 +98,11 @@ class VoiceRuntime:
         if cmd.name == "start_llm":
             gen = d["generation_id"]; turn = d.get("turn_id"); text = d.get("text", "")
             self._generation_started_at[gen] = time.perf_counter()
+            self._generation_turn[gen] = str(turn or "")
+            self._generation_language[gen] = str(
+                d.get("language") or self.voice_profile.language
+            ).strip().lower()
+            self._record_timing("llm.started", generation_id=gen, turn_id=turn)
             old = self._llm_tasks.pop(gen, None)
             if old is not None and not old.done():
                 old.cancel()
@@ -128,6 +136,15 @@ class VoiceRuntime:
 
         elif cmd.name in ("stop_playback", "clear_audio_queue"):
             # Immédiat : stoppe le player ET annule playbacks ET producteurs, sans rien attendre.
+            if cmd.name == "stop_playback":
+                self._record_timing(
+                    "interruption.received",
+                    generation_id=self.player.current_generation_id or "",
+                    turn_id=self._generation_turn.get(
+                        self.player.current_generation_id or "", ""
+                    ),
+                    reason=d.get("reason", "interruption"),
+                )
             self.player.stop()
             pending = self._play_tasks + self._producer_tasks
             if cmd.name == "clear_audio_queue":
@@ -141,11 +158,25 @@ class VoiceRuntime:
                 self._llm_tasks = {}
                 self.player.set_generation("__cleared__")
             self.status = "interrupted"
+            for completion in self._completion_events.values():
+                completion.set()
 
         elif cmd.name == "truncate_conversation":
             gen = d.get("generation_id")
             if gen:
                 self.ledger.truncate(gen)
+
+        elif cmd.name == "resume_interrupted_speech":
+            previous = d.get("generation_id")
+            record = self.ledger.get(previous) if previous else None
+            remainder = str(getattr(record, "text_unplayed", "") or "").strip()
+            if remainder and not self._muted():
+                self._record_timing(
+                    "speech.resumed", generation_id=previous or "",
+                    turn_id=getattr(record, "turn_id", ""),
+                    reason=d.get("reason", "empty_transcript"), result="resynthesized",
+                )
+                await self.speak(remainder, turn=getattr(record, "turn_id", "resume"))
 
         elif cmd.name == "show_status":
             self.status = d.get("state", self.status)
@@ -154,13 +185,23 @@ class VoiceRuntime:
     async def _respond_and_emit(self, gen: str, turn: Any, text: str) -> None:
         """Resolve one response outside the actor, then emit only if still current."""
         try:
-            answer = await _maybe_await(self._respond(text))
+            language = self._generation_language.get(gen, self.voice_profile.language)
+            try:
+                parameters = inspect.signature(self._respond).parameters
+            except (TypeError, ValueError):
+                parameters = {}
+            if "language" in parameters:
+                answer = await _maybe_await(self._respond(text, language=language))
+            else:
+                answer = await _maybe_await(self._respond(text))
             if self._llm_tasks.get(gen) is not asyncio.current_task() or self._muted():
                 return
             started = self._generation_started_at.get(gen)
             if started is not None:
                 self._metrics["llm_ms"] = (time.perf_counter() - started) * 1000.0
-            await self._emit_answer(gen, turn, str(answer or ""), status="thinking")
+            await self._emit_answer(
+                gen, turn, str(answer or ""), status="thinking", language=language
+            )
         except asyncio.CancelledError:
             return
 
@@ -175,14 +216,17 @@ class VoiceRuntime:
             return False
 
     async def _emit_answer(self, gen: str, turn: Any, answer: str, *,
-                           status: str = "speaking") -> None:
+                           status: str = "speaking", language: Optional[str] = None) -> None:
         """Synthétise + joue un texte sous une génération donnée (cœur commun).
 
         Utilisé par `start_llm` (réponse au tour) ET par `speak()` (parole hors-bande
         pilotée par l'orchestrateur task-aware : accusé, jalon, résultat, erreur)."""
         if self._muted() or not (answer or "").strip():
             return
-        answer = prepare_for_tts(apply_pronunciations(answer, self.voice_profile))
+        generation_profile = self.voice_profile.for_language(
+            language or self.voice_profile.language
+        )
+        answer = prepare_for_tts(apply_pronunciations(answer, generation_profile))
         if not answer:
             return
         self._metrics["dialogue_act"] = classify_dialogue_act(answer)
@@ -190,16 +234,20 @@ class VoiceRuntime:
         self.ledger.register_generation(turn, gen, answer)
         self.player.set_generation(gen)
         self._gen_played[gen] = 0
+        self._record_timing(
+            "llm.response_started", generation_id=gen,
+            turn_id=self._generation_turn.get(gen, turn),
+        )
         await self.tm.emit(VoiceEvent("llm.response_started", data={"generation_id": gen}))
         if getattr(self.tts, "supports_streaming", False):
             # CHUNKING : un producteur synthétise segment par segment (pipeline),
             # en tâche de fond pour ne pas bloquer l'acteur.
-            task = asyncio.ensure_future(self._produce_stream(gen, answer))
+            task = asyncio.ensure_future(self._produce_stream(gen, answer, generation_profile))
             self._producer_tasks.append(task)
             self._producer_tasks = [t for t in self._producer_tasks if not t.done()]
         else:
             # Fallback mono-chunk (provider sans streaming).
-            res = await self.tts.synthesize(answer, voice=self.voice_profile)
+            res = await self.tts.synthesize(answer, voice=generation_profile)
             if self._muted() or gen != self.player.current_generation_id:
                 return
             self.last_provider = res.provider
@@ -214,7 +262,9 @@ class VoiceRuntime:
                 }))
             await self._maybe_finish(gen)
 
-    async def speak(self, text: str, *, turn: Any = "agent") -> str:
+    async def speak(
+        self, text: str, *, turn: Any = "agent", language: Optional[str] = None
+    ) -> str:
         """Fait parler Lumena hors-bande (sans passer par `respond_fn`/start_llm).
 
         Réutilisé par l'orchestrateur task-aware pour les jalons vocaux (accusé,
@@ -224,11 +274,25 @@ class VoiceRuntime:
             return ""
         self._agent_gen_seq += 1
         gen = f"agent_{self._agent_gen_seq}"
+        self._completion_events[gen] = asyncio.Event()
         self._generation_started_at[gen] = time.perf_counter()
-        await self._emit_answer(gen, turn, text)
+        self._generation_turn[gen] = str(turn or "")
+        await self._emit_answer(gen, turn, text, language=language)
         return gen
 
-    async def _produce_stream(self, gen: str, answer: str) -> None:
+    async def wait_finished(self, generation_id: str, *, timeout_s: float = 120.0) -> bool:
+        completion = self._completion_events.get(generation_id)
+        if completion is None:
+            return generation_id in self._finished
+        try:
+            await asyncio.wait_for(completion.wait(), timeout=max(0.1, timeout_s))
+            return generation_id in self._finished
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self._completion_events.pop(generation_id, None)
+
+    async def _produce_stream(self, gen: str, answer: str, voice_profile: VoiceProfile) -> None:
         """Producteur de stream TTS (chunking) : synthétise segment par segment.
 
         Émet un `tts.chunk_ready` par segment dès qu'il est prêt (pipeline : le
@@ -238,7 +302,11 @@ class VoiceRuntime:
         """
         count = 0
         try:
-            async for ch in self.tts.stream(answer, voice=self.voice_profile):
+            self._record_timing(
+                "tts.segment_started", generation_id=gen, sequence=0,
+                turn_id=self._generation_turn.get(gen, ""),
+            )
+            async for ch in self.tts.stream(answer, voice=voice_profile):
                 # La génération a pu changer (interruption) → on stoppe la synthèse.
                 if gen != self.player.current_generation_id or self._muted():
                     return
@@ -246,11 +314,23 @@ class VoiceRuntime:
                 if ch.degraded:
                     self.degraded = True
                 self._seg_audio[(gen, ch.sequence)] = ch.audio_path
+                self._record_timing(
+                    "tts.segment_ready", generation_id=gen, sequence=ch.sequence,
+                    turn_id=self._generation_turn.get(gen, ""),
+                )
+                self.ledger.on_chunk_synthesized(gen, ch.sequence)
                 count += 1
                 await self.tm.emit(VoiceEvent("tts.chunk_ready", data={
                     "generation_id": gen, "sequence": ch.sequence,
                     "text": ch.text, "duration_ms": ch.duration_ms,
                 }))
+                # Le playback du segment prêt reçoit le CPU avant que le
+                # générateur commence la synthèse du suivant.
+                await asyncio.sleep(0)
+                self._record_timing(
+                    "tts.segment_started", generation_id=gen, sequence=ch.sequence + 1,
+                    turn_id=self._generation_turn.get(gen, ""),
+                )
                 self._metrics["queue_depth"] = max(
                     int(self._metrics.get("queue_depth") or 0), count - self._gen_played.get(gen, 0)
                 )
@@ -272,12 +352,24 @@ class VoiceRuntime:
         if gen != self.player.current_generation_id or self.player._stopped:
             return  # génération périmée/interrompue → pas de finished
         self._finished.add(gen)
+        completion = self._completion_events.get(gen)
+        if completion is not None:
+            completion.set()
         await self.tm.emit(VoiceEvent("playback.finished", data={"generation_id": gen}))
 
     async def _play_and_report(self, gen: str, seq: int, text: str, dur: int, path: Any) -> None:
         """Joue UN chunk en tâche de fond ; comptabilise et tente finished à la fin."""
         try:
             async with self._play_lock:
+                started = self._generation_started_at.get(gen)
+                if gen not in self._first_audio_seen:
+                    self._first_audio_seen.add(gen)
+                    if started is not None:
+                        self._metrics["first_audio_ms"] = (time.perf_counter() - started) * 1000.0
+                self._record_timing(
+                    "playback.started", generation_id=gen, sequence=seq,
+                    turn_id=self._generation_turn.get(gen, ""),
+                )
                 r = await self.player.play(generation_id=gen, sequence=seq, text=text,
                                            duration_ms=dur, path=path)
         except asyncio.CancelledError:
@@ -286,11 +378,10 @@ class VoiceRuntime:
         if r == "played" and gen == self.player.current_generation_id and not self.player._stopped:
             self.status = "speaking"
             self._gen_played[gen] = self._gen_played.get(gen, 0) + 1
-            if gen not in self._first_audio_seen:
-                self._first_audio_seen.add(gen)
-                started = self._generation_started_at.get(gen)
-                if started is not None:
-                    self._metrics["first_audio_ms"] = (time.perf_counter() - started) * 1000.0
+            self._record_timing(
+                "playback.finished", generation_id=gen, sequence=seq,
+                turn_id=self._generation_turn.get(gen, ""),
+            )
             await self.tm.emit(VoiceEvent("playback.chunk_played",
                                           data={"generation_id": gen, "sequence": seq}))
             await self._maybe_finish(gen)   # finished seulement quand TOUS les segments sont joués
@@ -318,10 +409,27 @@ class VoiceRuntime:
         self._play_tasks = []
         self._producer_tasks = []
         self._llm_tasks = {}
+        for completion in self._completion_events.values():
+            completion.set()
+        self._completion_events = {}
+        closer = getattr(self.tts, "aclose", None)
+        if callable(closer):
+            try:
+                await _maybe_await(closer())
+            except Exception:
+                pass
+
+    @staticmethod
+    def _record_timing(event: str, **context: Any) -> None:
+        try:
+            from .observability import get_voice_telemetry
+            get_voice_telemetry().record_timing(event, **context)
+        except Exception:
+            pass
 
     def status_report(self) -> Dict[str, Any]:
         """Statut pour l'UI : provider, dégradé (pyttsx3), état courant."""
-        return {
+        report = {
             "enabled": self._enabled,
             "state": self.status,
             "provider": self.last_provider,
@@ -334,3 +442,10 @@ class VoiceRuntime:
             "queue_depth": self._metrics.get("queue_depth", 0),
             "identity_degraded": self.last_provider == "pyttsx3",
         }
+        provider_status = getattr(self.tts, "runtime_status", None)
+        if callable(provider_status):
+            try:
+                report.update(provider_status())
+            except Exception:
+                pass
+        return report

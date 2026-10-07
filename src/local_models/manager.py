@@ -63,10 +63,29 @@ class LocalModelManager:
         }
 
     async def installed(self) -> list[dict[str, Any]]:
+        installed = await self.client.list_installed()
+        # Un ``ollama pull`` exécuté hors de Lumena peut arriver après le boot.
+        # La simple ouverture/actualisation du panneau doit alors importer le
+        # modèle dans le registre runtime, tout en respectant un choix durable
+        # précédemment désactivé.
+        for model in installed:
+            entry = self.state_store.entry(model.reference)
+            if (
+                not entry.get("installed")
+                or entry.get("digest") != model.digest
+                or entry.get("size_bytes") != model.size_bytes
+            ):
+                self.state_store.record_installed(
+                    model.reference,
+                    digest=model.digest,
+                    size_bytes=model.size_bytes,
+                )
+        reconcile_registry([model.reference for model in installed], self.state_store)
+
         running = {str(item.get("name")) for item in await self.client.list_running()}
         assignments = self.state_store.load().get("assignments", {})
         result = []
-        for model in await self.client.list_installed():
+        for model in installed:
             entry = self.state_store.entry(model.reference)
             model_key = self.state_store.key(model.reference)
             payload = model.as_dict()
@@ -331,9 +350,10 @@ class LocalModelManager:
             verification = await self.verify(reference, source)
             if verification["verification"]["status"] != "verified":
                 raise LocalModelManagerError("model_not_verified")
-        from .registry import lumena_model_key
-
-        key = lumena_model_key(ref)
+        # Le modèle peut avoir été installé manuellement pendant que Lumena
+        # tournait. L'enregistrer ici rend la sélection atomique même si le
+        # panneau n'a pas encore déclenché de réconciliation.
+        key = register_local_model(ref, self.state_store, verified=True)
         if runtime_llm is None or not hasattr(runtime_llm, "switch_model"):
             raise LocalModelManagerError("runtime_model_switch_unavailable")
         if runtime_llm.switch_model(key) is False:

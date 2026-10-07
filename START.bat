@@ -11,6 +11,9 @@ setlocal EnableExtensions EnableDelayedExpansion
 title LUMENA
 cd /d "%~dp0"
 
+REM Le navigateur Playwright est embarque par l'installeur Windows.
+if exist "%CD%\playwright-browsers\" set "PLAYWRIGHT_BROWSERS_PATH=%CD%\playwright-browsers"
+
 REM === Desactive QuickEdit (empeche le freeze console au clic) ===
 reg add HKCU\Console /v QuickEdit /t REG_DWORD /d 0 /f >nul 2>&1
 

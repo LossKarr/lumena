@@ -77,7 +77,10 @@ async def test_runtime_sends_nfc_french_without_typographic_noise_to_tts():
 
 
 @pytest.mark.asyncio
-async def test_xtts_is_forbidden_without_explicit_reference_consent():
+async def test_xtts_requires_reference_consent_and_restricted_model_opt_in(monkeypatch):
+    # Hermétique : le poste de développement peut avoir explicitement accepté XTTS.
+    # Le test vérifie la transition OFF -> ON et ne doit pas hériter du .env personnel.
+    monkeypatch.setenv("LUMENA_XTTS_ALLOW_RESTRICTED", "0")
     seen = []
 
     class _Engine:
@@ -89,7 +92,9 @@ async def test_xtts_is_forbidden_without_explicit_reference_consent():
     adapter = LocalTTSAdapter(tts=_Engine())
     await adapter.synthesize("bonjour", VoiceProfile(reference_consent_confirmed=False))
     await adapter.synthesize("bonjour", VoiceProfile(reference_consent_confirmed=True))
-    assert seen == [False, True]
+    monkeypatch.setenv("LUMENA_XTTS_ALLOW_RESTRICTED", "1")
+    await adapter.synthesize("bonjour", VoiceProfile(reference_consent_confirmed=True))
+    assert seen == [False, False, True]
 
 
 @pytest.mark.asyncio
@@ -109,6 +114,24 @@ async def test_voice_profile_requests_its_piper_model():
     await adapter.synthesize("bonjour", profile)
     assert profile.local.piper_model == "fr_FR-siwis-medium"
     assert seen == ["fr_FR-siwis-medium"]
+
+
+@pytest.mark.asyncio
+async def test_voice_profile_prosody_is_applied_to_effective_provider_request():
+    seen = []
+
+    class _Engine:
+        _last_provider = "piper"
+        async def _synthesize(
+            self, text, *, local_only=False, piper_model=None, prosody=None,
+        ):
+            seen.append(dict(prosody or {}))
+            return None
+
+    profile = VoiceProfile()
+    adapter = LocalTTSAdapter(tts=_Engine())
+    await adapter.synthesize("Attention au délai", profile)
+    assert seen == [profile.persona.prosody["warning"]]
 
 
 @pytest.mark.asyncio

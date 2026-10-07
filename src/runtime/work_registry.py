@@ -54,7 +54,9 @@ def classify_work_turn(text: str) -> str:
         "met la tache en pause", "pause la tache", "attends",
     )):
         return "pause"
-    if any(x in n for x in ("reprends", "continue la tache", "continue le travail")):
+    if n in {"continue", "vas y", "reprends"} or any(
+        x in n for x in ("reprends", "continue la tache", "continue le travail")
+    ):
         return "resume"
     if any(x in n for x in (
         "tu en es ou", "ou en est", "est ce fini", "est ce que c est fini",
@@ -64,7 +66,11 @@ def classify_work_turn(text: str) -> str:
         return "status"
     if any(x in n for x in (
         "change plutot", "ajoute aussi", "ne touche plus", "privilegie",
-        "priorite a", "fais plutot",
+        "priorite a", "fais plutot", "non pardon", "je voulais dire",
+        "corrige plutot", "remplace par", "enleve aussi", "retire aussi",
+        "non plutot", "ajoute egalement", "tiens compte de", "garde aussi",
+        "instead", "also add", "replace with", "do not touch",
+        "mejor", "tambien agrega", "reemplaza por", "no toques",
     )):
         return "steer"
     return "conversation"

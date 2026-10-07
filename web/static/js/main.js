@@ -39,11 +39,11 @@ import { initChatSteering } from './chat-steering.js?v=7';
 import {
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
-  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput,
+  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput, initVoicePanel, loadVoiceSettings, loadVoicePerformanceProfiles, applyVoicePerformanceProfile, saveVoiceSettings, armVoicePushToTalk, testVoiceMicro, exportVoiceDiagnostic, deleteVoiceData,
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats
-} from './api.js';
+} from './api.js?v=6';
 
 // ── Panels ──
 import {
@@ -75,7 +75,7 @@ import {
   setPeerAlias, setPeerScopesBulk, revokePeerToken, probePeer,
   loadNetworkObservability, cleanupPeerRuntime, sendTeamPromptFromUi, refreshNetworkLive,
   loadMissions, cancelMissionUi, closeMissionStream, toggleMissionCard
-} from './panels.js?v=28';
+} from './panels.js?v=30';
 
 // ── Overview ──
 import { loadOverview, stopOverview } from './overview.js?v=2';
@@ -96,6 +96,7 @@ import {
 import { loadDocumentStudio } from './document-studio.js?v=14';
 import { initOnboarding, replayOnboarding } from './onboarding.js?v=8';
 import { initLocalModelsPanel, loadLocalModels, recommendLocalModels } from './local-models.js?v=3';
+import { initPersonalModelsPanel, loadPersonalModels } from './personal-models.js?v=1';
 
 // ── Tasks ──
 import {
@@ -111,7 +112,7 @@ import {
   toggleModelDropdown, closeModelPicker, setModelFilter, setModelPanel, setModelSource, filterModelSearch,
   loadModels, loadImageModels, switchModel, switchCatalogModel, toggleAgent,
   startLiveRefreshLoops, scheduleStatusRefresh
-} from './startup.js?v=2';
+} from './startup.js?v=3';
 
 // ── Expose ALL public functions on window for onclick compat ──
 Object.assign(window, {
@@ -123,6 +124,7 @@ Object.assign(window, {
   loadPanelData, openCommandPalette, closeCommandPalette, filterCommands,
   loadDocumentStudio,
   initLocalModelsPanel, loadLocalModels, recommendLocalModels,
+  initPersonalModelsPanel, loadPersonalModels,
   // activity
   openSidebar, closeSidebar, toggleSidebar, startActivityFeed, pushActivity,
   updateActivityStats, stopActivityFeed,
@@ -138,7 +140,7 @@ Object.assign(window, {
   // api
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
-  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput,
+  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput, initVoicePanel, loadVoiceSettings, loadVoicePerformanceProfiles, applyVoicePerformanceProfile, saveVoiceSettings, armVoicePushToTalk, testVoiceMicro, exportVoiceDiagnostic, deleteVoiceData,
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats,
@@ -212,6 +214,7 @@ window._shutdownLumena = async function() {
 // ── Init (module scripts are deferred so DOM is ready) ──
 (function _init() {
   initLocalModelsPanel();
+  initPersonalModelsPanel();
   initChatSteering();
   setupTextarea();
   loadStartupModels();
@@ -341,6 +344,10 @@ window._shutdownLumena = async function() {
         d.classList.toggle('selected', d.dataset.value === sel.value);
       });
     }
+
+    // Keep the visible custom trigger aligned when code updates the native
+    // select while loading persisted configuration or applying a profile.
+    sel.addEventListener('change', syncDisplay);
 
     trigger.addEventListener('click', e => {
       e.stopPropagation();

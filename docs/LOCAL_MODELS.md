@@ -16,6 +16,8 @@ Lumena gère les modèles servis par Ollama depuis le panneau **Système → Mod
 
 Lumena recherche l'index public officiel Ollama et complète les résultats avec une sélection curated datée. Ollama ne documente toutefois pas d'API publique stable permettant d'énumérer exhaustivement sa bibliothèque : cet adaptateur HTML reste borné, désactivable et annoncé comme partiel. Un identifiant direct reste installable après validation stricte, même si l'index est indisponible.
 
+Un modèle ajouté directement avec `ollama pull` est détecté à l'ouverture ou à l'actualisation de **Mes modèles**. Lumena l'importe alors dans son registre sans retélécharger ses poids. La sélection vérifie toujours le tag exact auprès d'Ollama et exécute le canari avant d'affecter le modèle au runtime, y compris lorsque le provider actif est encore un modèle cloud.
+
 La recherche Hugging Face interroge l'API officielle avec le filtre GGUF. Les références installables prennent la forme `hf.co/{auteur}/{depot}:{quantification}`. Une taille, une licence ou une capacité inconnue reste affichée comme inconnue.
 
 Pour les dépôts gated ou privés, configurez `HF_TOKEN` localement. Le token est envoyé uniquement au Hub et n'est jamais inclus dans les résultats, audits ou erreurs.

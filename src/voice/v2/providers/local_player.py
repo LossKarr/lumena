@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import time
 from typing import Any, Callable, List, Optional
 
 from ..ledger import ConversationAudioLedger
@@ -17,7 +18,8 @@ from ..ledger import ConversationAudioLedger
 
 class LocalAudioPlayer:
     def __init__(self, ledger: Optional[ConversationAudioLedger] = None,
-                 play_fn: Optional[Callable] = None, stop_fn: Optional[Callable] = None):
+                 play_fn: Optional[Callable] = None, stop_fn: Optional[Callable] = None,
+                 audio_frontend: Any = None):
         self.ledger = ledger or ConversationAudioLedger()
         self._play_fn = play_fn      # async callable(path_or_text) ; None => résolution paresseuse
         self._stop_fn = stop_fn
@@ -27,6 +29,7 @@ class LocalAudioPlayer:
         self.dropped: List[dict] = []
         self._play_lock = asyncio.Lock()   # sérialise les chunks (pas de chevauchement audio)
         self._playback_started = False
+        self.audio_frontend = audio_frontend
 
     def set_generation(self, generation_id: str) -> None:
         self.current_generation_id = generation_id
@@ -34,6 +37,12 @@ class LocalAudioPlayer:
 
     def stop(self) -> None:
         self._stopped = True
+        if self.audio_frontend is not None:
+            end_reference = getattr(
+                self.audio_frontend, "end_playback_reference", None
+            )
+            if callable(end_reference):
+                end_reference()
         if self._stop_fn is None and not self._playback_started:
             return
         sf = self._resolve_stop_fn()
@@ -63,9 +72,31 @@ class LocalAudioPlayer:
                 return "dropped_stale"
             pf = self._resolve_play_fn()
             if pf is not None:
+                if self.audio_frontend is not None:
+                    self.audio_frontend.register_playback_reference(
+                        self._playback_target(path, text)
+                    )
                 self._playback_started = True
-                await pf(self._playback_target(path, text))   # playback réel (ou fake en test)
-            self.ledger.on_chunk_played(generation_id, text, duration_ms)
+                started_at = time.perf_counter()
+                try:
+                    await pf(self._playback_target(path, text))   # playback réel (ou fake en test)
+                except asyncio.CancelledError:
+                    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                    self.ledger.on_chunk_interrupted(
+                        generation_id, text, elapsed_ms, duration_ms,
+                        sequence=sequence,
+                    )
+                    raise
+                finally:
+                    if self.audio_frontend is not None:
+                        end_reference = getattr(
+                            self.audio_frontend, "end_playback_reference", None
+                        )
+                        if callable(end_reference):
+                            end_reference()
+            self.ledger.on_chunk_played(
+                generation_id, text, duration_ms, sequence=sequence,
+            )
             self.played.append({"generation_id": generation_id, "sequence": sequence, "text": text})
             return "played"
 

@@ -231,8 +231,60 @@ from src.mcp.react_integration import (
     make_phase26_snapshot,
     phase26_snapshot_as_dict,
 )
+from src.mcp.connection_spec import (
+    AuthKind,
+    AuthSpec,
+    ConnectionSpecError,
+    DistributionKind,
+    DistributionSpec,
+    MCPConnectionSpec,
+    RemoteSpec,
+    TransportKind,
+    connection_spec_from_legacy,
+)
+from src.mcp.legacy_sse_client import LegacySSEMCPClient
+from src.mcp.oauth_manager import (
+    MCPOAuthError,
+    MCPOAuthManager,
+    OAuthServerMetadata,
+    OAuthStartResult,
+)
+from src.mcp.official_registry import (
+    OfficialMCPRegistryClient,
+    OfficialRegistryError,
+    OfficialRegistrySearchSource,
+)
+from src.mcp.remote_client import RemoteMCPClient
+from src.mcp.remote_runtime import RemoteMCPRuntime
+from src.mcp.schema_guard import (
+    MCPSchemaError,
+    MCPSchemaGuard,
+    SchemaAssessment,
+)
 
 __all__ = [
+    "AuthKind",
+    "AuthSpec",
+    "ConnectionSpecError",
+    "DistributionKind",
+    "DistributionSpec",
+    "MCPConnectionSpec",
+    "RemoteSpec",
+    "TransportKind",
+    "connection_spec_from_legacy",
+    "LegacySSEMCPClient",
+    "MCPOAuthError",
+    "MCPOAuthManager",
+    "OAuthServerMetadata",
+    "OAuthStartResult",
+    "OfficialMCPRegistryClient",
+    "OfficialRegistryError",
+    "OfficialRegistrySearchSource",
+    "RemoteMCPClient",
+    "RemoteMCPRuntime",
+    "MCPSchemaError",
+    "MCPSchemaGuard",
+    "SchemaAssessment",
     "ActivationError",
     "ActivationProposal",
     "ActivationResult",

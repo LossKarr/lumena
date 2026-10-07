@@ -35,8 +35,8 @@ def test_claude_sonnet_5_skills_profile_and_fallbacks():
     assert fallbacks[:2] == ["claude-sonnet-4.6", "claude-opus-4.8"]
     assert "nvidia-nemotron-3-ultra-550b-a55b" in fallbacks
 
-    assert "claude-sonnet-5" in get_model_fallbacks("claude-fable-5")
-    assert "claude-sonnet-5" in get_model_fallbacks("claude-mythos-5")
+    assert "claude-sonnet-5.5" in get_model_fallbacks("claude-fable-5")
+    assert "claude-sonnet-5.5" in get_model_fallbacks("claude-mythos-5")
 
 
 def test_claude_sonnet_5_config_lists_and_not_image_generation():

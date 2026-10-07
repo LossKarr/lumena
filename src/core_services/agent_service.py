@@ -35,6 +35,17 @@ logger = logging.getLogger("lumena.agent_service")
 
 _JOURNAL_LOCK = threading.Lock()
 
+_VOICE_CONVERSATION_PROMPT = """
+## MODE VOCAL TEMPS RÉEL
+La réponse sera prononcée à haute voix. Réponds directement en deux à quatre phrases
+courtes, naturelles et autonomes. Donne l'information essentielle dès la première
+phrase, puis termine réellement l'idée : aucune transition sans sa suite, aucune phrase
+coupée et aucune liste, table, mise en forme Markdown ou emoji. Ton humeur influence
+seulement ton ton : ne lis jamais les métadonnées émotionnelles et n'annonce pas ton
+humeur, sauf si l'utilisateur te la demande explicitement. Si la demande exige un détail
+long, donne d'abord une conclusion orale complète puis propose de développer.
+""".strip()
+
 
 # ── Phase H diagnostic : log explicite du résultat d'attach MCP ──────────────
 _MCP_PHASE_F_TOOLS = (
@@ -244,6 +255,11 @@ def _should_auto_speak(auto_speak: bool, source_channel: str) -> bool:
     return bool(auto_speak) and (source_channel or "").strip().lower() != "voice"
 
 
+def _should_emit_mood_narration(source_channel: str) -> bool:
+    """Voice embodies its mood; it never reads a generated mood-change banner."""
+    return (source_channel or "").strip().lower() != "voice"
+
+
 def _effective_agent_llm_meta(
     api_meta: Optional[Dict[str, Any]],
     codex_meta: Optional[Dict[str, Any]],
@@ -445,8 +461,13 @@ class AgentService:
             "claude opus 5": "claude-opus-5",
             "opus 5.5": "claude-opus-5.5",
             "claude opus 5.5": "claude-opus-5.5",
+            "sonnet 5.5": "claude-sonnet-5.5",
+            "claude sonnet 5.5": "claude-sonnet-5.5",
             "mythos 5.1": "claude-mythos-5.1",
             "claude mythos 5.1": "claude-mythos-5.1",
+            "gpt 6.1": "gpt-6.1-sol",
+            "gpt 6.1 sol": "gpt-6.1-sol",
+            "gpt-6.1 sol": "gpt-6.1-sol",
             "gpt 6 sol": "gpt-6-sol",
             "gpt-6 sol": "gpt-6-sol",
             "gpt 6 luna": "gpt-6-luna",
@@ -1582,6 +1603,9 @@ Conversations et apprentissages de la journée.
                 "C'est le mode naturel pour échanger librement, mais tu peux aussi exécuter des actions."
             )
 
+        if source_channel == "voice":
+            system_prompt += "\n\n" + _VOICE_CONVERSATION_PROMPT
+
         # ── Hint naturel si un fait essentiel manque ─────────────────────────
         identity_hint = self._get_missing_identity_hint()
         if identity_hint:
@@ -1782,6 +1806,8 @@ Conversations et apprentissages de la journée.
                 user_message=user_message, response=response,
                 model_used=llm_meta.get("model_used", "unknown"),
                 provider=llm_meta.get("provider_used", "unknown"),
+                source_surface=source_channel,
+                mode="chat",
             )
         except Exception as e:
             logger.debug(f"Queue conversation: {e}")
@@ -1794,7 +1820,7 @@ Conversations et apprentissages de la journée.
                 for callback in c._on_mood_change_callbacks:
                     callback(mood_change_msg)
 
-        if mood_change_msg:
+        if mood_change_msg and _should_emit_mood_narration(source_channel):
             response = f"{mood_change_msg}\n\n{response}"
 
         if _rename_confirmation:
@@ -1933,7 +1959,8 @@ Conversations et apprentissages de la journée.
             if mood_change_msg:
                 for callback in c._on_mood_change_callbacks:
                     callback(mood_change_msg)
-                yield mood_change_msg + "\n\n"
+                if _should_emit_mood_narration(source_channel):
+                    yield mood_change_msg + "\n\n"
 
         _AGENT_KEYWORDS = [
             "ouvre", "ferme", "lance", "demarre", "arrete", "stop", "kill",
@@ -2235,7 +2262,10 @@ Conversations et apprentissages de la journée.
             from src.learning.conversation_logger import queue_conversation
             _model = getattr(c.llm, "model_name", getattr(c.llm, "model", "unknown"))
             _provider = getattr(getattr(c.llm, "provider", None), "value", "ollama")
-            queue_conversation(user_message=user_message, response=full_response, model_used=_model, provider=_provider)
+            queue_conversation(
+                user_message=user_message, response=full_response, model_used=_model, provider=_provider,
+                source_surface=source_channel, mode="chat",
+            )
         except Exception as e:
             logger.debug(f"Queue conversation: {e}")
 
@@ -2569,6 +2599,8 @@ Conversations et apprentissages de la journée.
                     user_message=query, response=result,
                     model_used=_model, provider=_provider,
                     react_meta=dict(c._last_agent_meta) if c._last_agent_meta else None,
+                    source_surface=source_channel,
+                    mode="agent",
                 )
             except Exception as e:
                 logger.debug(f"Queue conversation agent: {e}")

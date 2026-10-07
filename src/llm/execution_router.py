@@ -907,12 +907,11 @@ def _record_tool_observation(
     )
     react._current_iteration = iteration
     action = Action(ActionType.TOOL_CALL, tool_name=name, tool_args=arguments)
-    step_callback = getattr(react, "step_callback", None)
-    if callable(step_callback):
-        try:
-            step_callback(name, dict(arguments))
-        except Exception as exc:
-            logger.debug("[Agent/Codex] step callback ignore: {}", exc)
+    from src.reasoning.public_activity import notify_step_callback
+    notify_step_callback(
+        getattr(react, "step_callback", None), name, dict(arguments),
+        task_id=getattr(react, "task_id", None), turn_id=iteration,
+    )
     react.history.append(
         ReActStep(
             thought=Thought("Codex a selectionne un outil Lumena expose pour ce run."),

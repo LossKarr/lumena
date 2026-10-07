@@ -274,8 +274,8 @@ async def get_voice_status():
 
 
 @router.post("/api/voice/toggle", dependencies=[Depends(deps.verify_admin_token)])
-async def toggle_voice():
-    """Active ou desactive l'assistant vocal."""
+async def toggle_voice(backend: str = "v2"):
+    """Active ou désactive le backend explicitement demandé par le panneau."""
     if not deps.VoiceManager or not deps.lumena:
         raise HTTPException(status_code=503, detail="VoiceManager not available")
 
@@ -284,11 +284,35 @@ async def toggle_voice():
         await mgr.stop()
         return {"running": False, "message": "Assistant vocal arrêté"}
     else:
-        success = await mgr.start(deps.lumena)
+        requested = str(backend or "v2").strip().lower()
+        if requested not in {"v2", "legacy"}:
+            raise HTTPException(status_code=422, detail="Backend voix invalide")
+        success = await mgr.start(deps.lumena, backend=requested)
         if success:
-            return {"running": True, "message": "Assistant vocal démarré"}
+            status = mgr.get_status()
+            status["message"] = f"Assistant vocal démarré ({status.get('backend', requested)})"
+            return status
         else:
             raise HTTPException(status_code=500, detail="Impossible de démarrer l'assistant vocal")
+
+
+@router.post("/api/voice/restart", dependencies=[Depends(deps.verify_admin_token)])
+async def restart_voice():
+    """Applique atomiquement les réglages Voice au runtime déjà actif."""
+    if not deps.VoiceManager or not deps.lumena:
+        raise HTTPException(status_code=503, detail="VoiceManager not available")
+    mgr = deps.VoiceManager.get_instance()
+    if not mgr.running:
+        status = mgr.get_status()
+        status.update({"restarted": False, "message": "Écoute vocale arrêtée"})
+        return status
+    await mgr.stop()
+    success = await mgr.start(deps.lumena, backend="v2")
+    if not success:
+        raise HTTPException(status_code=500, detail="Impossible de redémarrer l'assistant vocal")
+    status = mgr.get_status()
+    status.update({"restarted": True, "message": "Réglages appliqués, écoute redémarrée"})
+    return status
 
 
 @router.post("/api/voice/stop-audio", dependencies=[Depends(deps.verify_admin_token)])
@@ -322,9 +346,36 @@ async def test_voice_output():
     return {"ok": True}
 
 
+@router.post("/api/voice/push-to-talk", dependencies=[Depends(deps.verify_admin_token)])
+async def arm_voice_push_to_talk():
+    """Autorise exactement le prochain énoncé quand le mode PTT est actif."""
+    from src.voice.v2.observability import get_voice_telemetry
+
+    armed = get_voice_telemetry().arm_push_to_talk()
+    if not armed:
+        raise HTTPException(status_code=409, detail="Voice V2 push-to-talk mode not active")
+    return {"armed": True, "scope": "next_utterance"}
+
+
 @router.post("/api/voice/test-micro", dependencies=[Depends(deps.verify_admin_token)])
 async def test_voice_micro(duration_ms: int = 350):
-    """Ouvre réellement le micro et mesure son bruit, sans conserver l'audio."""
+    """Vérifie le micro actif ou le calibre hors écoute, sans conserver l'audio."""
+    # The live runtime already owns the Windows capture device. Opening a second
+    # PyAudio stream from the panel is unreliable on exclusive-mode devices, so
+    # report the active provider's real calibration instead of competing with it.
+    if deps.VoiceManager:
+        manager = deps.VoiceManager.get_instance()
+        if manager.running:
+            status = manager.get_status()
+            capabilities = status.get("capabilities") or {}
+            if capabilities.get("pyaudio_available") is False:
+                raise HTTPException(status_code=503, detail="Microphone/PyAudio unavailable")
+            return {
+                "ok": True,
+                "active_runtime": True,
+                "calibration": dict(status.get("vad") or {}),
+            }
+
     from src.voice.v2.providers.real_vad import RealVADProvider
 
     raw = os.getenv("LUMENA_VOICE_INPUT_DEVICE", "").strip()
@@ -336,7 +387,29 @@ async def test_voice_micro(duration_ms: int = 350):
     if not vad.is_available():
         raise HTTPException(status_code=503, detail="Microphone/PyAudio unavailable")
     result = await vad.calibrate(duration_ms=max(150, min(int(duration_ms), 2000)))
-    return {"ok": not result.get("fallback", False), "calibration": result}
+    return {
+        "ok": not result.get("fallback", False),
+        "active_runtime": False,
+        "calibration": result,
+    }
+
+
+@router.delete("/api/voice/data", dependencies=[Depends(deps.verify_admin_token)])
+async def delete_voice_data(confirm: str = ""):
+    """Stop Voice V2 then remove only its dedicated local data tree."""
+    if confirm != "DELETE":
+        raise HTTPException(status_code=422, detail="Confirmation DELETE requise")
+    if deps.VoiceManager:
+        manager = deps.VoiceManager.get_instance()
+        if manager.running:
+            await manager.stop()
+    from src.voice.v2.observability import get_voice_telemetry
+    from src.voice.v2.privacy import purge_voice_data
+
+    get_voice_telemetry().reset()
+    result = purge_voice_data(DATA_DIR / "voice", data_dir=DATA_DIR)
+    result["external_profile_preserved"] = True
+    return result
 
 
 @router.post("/api/voice/dictation-state", dependencies=[Depends(deps.verify_admin_token)])

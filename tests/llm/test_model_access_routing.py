@@ -144,7 +144,7 @@ async def test_terminal_failure_inside_fallback_stops_the_whole_cascade(monkeypa
     assert result.startswith("[Erreur] 400 invalid request")
     assert calls == [
         (ProviderType.OPENAI, "gpt-6-astra"),
-        (ProviderType.OPENAI, "gpt-6-sol"),
+        (ProviderType.OPENAI, "gpt-6.1-sol"),
     ]
     meta = llm.get_last_response_meta()
     assert meta["fallback_used"] is True

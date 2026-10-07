@@ -199,20 +199,109 @@ export async function loadHooks(){
 }
 
 export async function loadVoiceStatus(){
+  initVoicePanel();
   try{
     const _vs={};if(ADMIN_TOKEN)_vs['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-    const r=await fetch(`${API_BASE}/api/voice/status`,{headers:_vs});const d=await r.json();updateVoiceUI(d);
+    const r=await fetch(`${API_BASE}/api/voice/status`,{headers:_vs});const d=await r.json();updateVoiceUI(d);await Promise.all([loadVoiceSettings(),loadVoicePerformanceProfiles()]);
   }catch(e){}
 }
 
+let _lastVoiceStatus={};
+function _voiceHeaders(json=false){const h={};if(json)h['Content-Type']='application/json';if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;return h}
+function _setVoiceSettingsMessage(text,type='info'){
+  const msg=document.getElementById('voice-settings-message');if(!msg)return;
+  msg.textContent=text||'';msg.classList.remove('is-info','is-success','is-error');if(text)msg.classList.add(`is-${type}`);
+}
+function _setVoiceControlMessage(text,type='info'){
+  const msg=document.getElementById('voice-control-message');if(!msg)return;
+  msg.textContent=text||'';msg.classList.remove('is-info','is-success','is-error');if(text)msg.classList.add(`is-${type}`);
+}
+async function _voiceResponseJson(response){
+  try{return await response.json()}catch(_e){return {detail:`Réponse serveur invalide (HTTP ${response.status})`}}
+}
+export function initVoicePanel(){
+  const root=document.getElementById('panel-voice');if(!root||root.dataset.ready==='1')return;root.dataset.ready='1';
+  const tabs=[...root.querySelectorAll('[data-voice-tab]')];
+  const activate=(name)=>{tabs.forEach(b=>{const on=b.dataset.voiceTab===name;b.classList.toggle('active',on);b.setAttribute('aria-selected',String(on))});root.querySelectorAll('[data-voice-page]').forEach(p=>{const on=p.dataset.voicePage===name;p.classList.toggle('active',on);p.hidden=!on})};
+  tabs.forEach((button,index)=>{button.addEventListener('click',()=>activate(button.dataset.voiceTab));button.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();const next=(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[next].focus();activate(tabs[next].dataset.voiceTab)})});
+  document.getElementById('voice-setting-activation')?.addEventListener('change',event=>{if(event.detail?.source!=='config-load')_setVoiceSettingsMessage('')});
+}
+
+export async function loadVoiceSettings(){
+  const root=document.getElementById('panel-voice');if(!root)return;
+  try{const r=await fetch(`${API_BASE}/api/config`,{headers:_voiceHeaders()});if(!r.ok)return;const d=await r.json();const values={};(d.items||[]).forEach(item=>values[item.key]=item.value);
+    const assign=(id,key)=>{const el=document.getElementById(id);if(el&&values[key]!==undefined){el.value=values[key];el.dispatchEvent(new CustomEvent('change',{bubbles:true,detail:{source:'config-load'}}))}};assign('voice-setting-mode','LUMENA_VOICE_V2_MODE');assign('voice-setting-activation','LUMENA_VOICE_ACTIVATION_MODE');assign('voice-setting-language','LUMENA_STT_LANGUAGE');assign('voice-setting-wake','LUMENA_VOICE_WAKE_PHRASE');
+  }catch(_e){}
+}
+
+async function _restartVoiceRuntimeIfRunning(){
+  if(!_lastVoiceStatus.running)return {restarted:false};
+  const r=await fetch(`${API_BASE}/api/voice/restart`,{method:'POST',headers:_voiceHeaders()});
+  const d=await _voiceResponseJson(r);
+  if(!r.ok||!d.running)throw new Error(d.detail||d.message||'Redémarrage de l’écoute impossible');
+  updateVoiceUI(d);
+  return d;
+}
+
+async function _refreshVoiceConfigurationSurfaces(){
+  const tasks=[loadVoiceSettings(),loadVoicePerformanceProfiles()];
+  if(typeof window.loadConfig==='function')tasks.push(window.loadConfig({force:true,preserveDrafts:true}));
+  await Promise.all(tasks);
+}
+
+function _voiceProfileDots(value){return `<span class="voice-profile-dots" aria-label="${value} sur 5">${[1,2,3,4,5].map(i=>`<i class="${i<=value?'on':''}"></i>`).join('')}</span>`}
+function _voiceProfileError(detail){if(typeof detail==='string')return detail;if(detail&&typeof detail==='object'){const reasons=Array.isArray(detail.reasons)?detail.reasons.join(' · '):'';return reasons||detail.message||detail.code||'Profil incompatible'}return 'Application impossible'}
+export async function loadVoicePerformanceProfiles(){
+  const root=document.getElementById('voice-performance-profiles');if(!root)return;
+  try{
+    const r=await fetch(`${API_BASE}/api/voice/performance-profiles`,{headers:_voiceHeaders()});const d=await r.json();if(!r.ok)throw new Error(_voiceProfileError(d.detail));
+    const profiles=Array.isArray(d.profiles)?d.profiles:[];
+    root.innerHTML=profiles.map(p=>{const reasons=(p.incompatibility_reasons||[]).join(' · ');return `<article class="voice-profile-card ${p.active?'active':''} ${p.compatible?'':'incompatible'}" data-voice-profile="${esc(p.id)}"><div class="voice-profile-head"><div><div class="voice-profile-rank">Niveau ${Number(p.order)||0}</div><h3>${esc(p.label)}</h3></div><div class="voice-profile-badges">${p.active?'<span class="voice-profile-badge active">Actif</span>':''}${p.recommended?'<span class="voice-profile-badge recommended">Recommandé</span>':''}</div></div><p><strong>${esc(p.tagline)}</strong> · ${esc(p.description)}</p><div class="voice-profile-meters"><div class="voice-profile-meter"><span>Précision</span>${_voiceProfileDots(Number(p.quality)||0)}</div><div class="voice-profile-meter"><span>Réactivité</span>${_voiceProfileDots(Number(p.responsiveness)||0)}</div></div><div class="voice-profile-meta"><span>${esc(p.requirement)}</span><span>${esc(p.privacy)}</span>${reasons?`<span class="voice-profile-warning">${esc(reasons)}</span>`:''}</div><button class="btn ${p.recommended?'primary':''}" data-apply-voice-profile="${esc(p.id)}" ${(!p.compatible||p.active)?'disabled':''}>${p.active?'Profil actif':p.compatible?'Appliquer':'Indisponible'}</button></article>`}).join('')||'<p>Aucun profil disponible.</p>';
+    root.querySelectorAll('[data-apply-voice-profile]').forEach(button=>button.addEventListener('click',()=>applyVoicePerformanceProfile(button.dataset.applyVoiceProfile)));
+  }catch(e){root.innerHTML=`<p class="voice-profile-warning">${esc(e.message)}</p>`}
+}
+
+export async function applyVoicePerformanceProfile(profileId){
+  const msg=document.getElementById('voice-profile-message');const button=document.querySelector(`[data-apply-voice-profile="${CSS.escape(profileId)}"]`);if(button)button.disabled=true;if(msg)msg.textContent='Enregistrement du profil…';
+  try{const r=await fetch(`${API_BASE}/api/voice/performance-profiles/${encodeURIComponent(profileId)}`,{method:'POST',headers:_voiceHeaders()});const d=await r.json();if(!r.ok||!d.success)throw new Error(_voiceProfileError(d.detail||d.error));const restart=await _restartVoiceRuntimeIfRunning();if(msg)msg.textContent=restart.restarted?'Profil appliqué et écoute redémarrée.':(d.note||'Profil enregistré');await _refreshVoiceConfigurationSurfaces()}catch(e){if(msg)msg.textContent=e.message;if(button)button.disabled=false}
+}
+
+export async function saveVoiceSettings(){
+  const value=id=>document.getElementById(id)?.value||'';const button=document.getElementById('voice-settings-save');
+  const updates={LUMENA_VOICE_V2_MODE:value('voice-setting-mode'),LUMENA_VOICE_ACTIVATION_MODE:value('voice-setting-activation'),LUMENA_STT_LANGUAGE:value('voice-setting-language'),LUMENA_VOICE_WAKE_PHRASE:value('voice-setting-wake')};
+  if(button){button.disabled=true;button.textContent='Enregistrement…'}_setVoiceSettingsMessage('Enregistrement des réglages…','info');
+  try{const r=await fetch(`${API_BASE}/api/config`,{method:'PUT',headers:_voiceHeaders(true),body:JSON.stringify({updates})});const d=await _voiceResponseJson(r);if(!r.ok||!d.success)throw new Error(d.error||d.detail||'Enregistrement impossible');const restart=d.needs_restart?await _restartVoiceRuntimeIfRunning():{restarted:false};_setVoiceSettingsMessage(restart.restarted?'Réglages appliqués et écoute redémarrée.':(d.note||'Réglages enregistrés.'),'success');await _refreshVoiceConfigurationSurfaces()}catch(e){_setVoiceSettingsMessage(e.message||'Enregistrement impossible','error')}finally{if(button){button.disabled=false;button.textContent='Enregistrer'}}
+}
+
+export async function armVoicePushToTalk(){
+  const selected=document.getElementById('voice-setting-activation')?.value||'';const button=document.getElementById('voice-ptt-button');
+  if(selected!=='push_to_talk'){_setVoiceSettingsMessage('Choisis « Appuyer pour parler » dans Activation, puis enregistre.','info');return}
+  if(_lastVoiceStatus.activation_mode!=='push_to_talk'){_setVoiceSettingsMessage('Réglage enregistré mais pas encore actif : arrête puis redémarre l’écoute.','info');return}
+  if(!_lastVoiceStatus.running){_setVoiceSettingsMessage('Démarre d’abord l’écoute vocale, puis appuie sur ce bouton.','info');return}
+  if(button){button.disabled=true;button.textContent='Armement…'}_setVoiceSettingsMessage('Préparation du prochain énoncé…','info');
+  try{const r=await fetch(`${API_BASE}/api/voice/push-to-talk`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok||!d.armed)throw new Error(typeof d.detail==='string'?d.detail:'Le mode Appuyer pour parler n’est pas prêt');_setVoiceSettingsMessage('Micro armé : parle maintenant.','success');logC('Prochain énoncé autorisé','success')}catch(e){_setVoiceSettingsMessage(e.message||'Impossible d’armer le micro','error')}finally{if(button){button.disabled=false;button.textContent='Appuyer pour parler'}}
+}
+export async function testVoiceMicro(){const out=document.getElementById('voice-micro-result');if(out)out.textContent='Test en cours…';try{const r=await fetch(`${API_BASE}/api/voice/test-micro`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok||!d.ok)throw new Error(d.detail||'Micro indisponible');const threshold=d.calibration?.energy_threshold;const suffix=Number.isFinite(Number(threshold))?` · seuil ${threshold}`:'';if(out)out.textContent=`Micro prêt${d.active_runtime?' · écoute active':''}${suffix}`}catch(e){if(out)out.textContent=e.message||'Test micro impossible'}}
+
+function _safeVoiceDiagnostic(d){const h=d.hardware_profile||d.capabilities?.hardware||{};return{schema_version:1,backend:d.backend||null,state:d.state||null,mode:d.mode||null,barge_in_mode:d.barge_in_mode||null,runtime_options:d.runtime_options||{},hardware:h,vad:d.vad||{},wake_word:d.wake_word||{},audio_frontend:d.audio_frontend||{},voice_profile_status:d.voice_profile_status||{},timings:d.timings||{},privacy:d.privacy||{},last_error:d.last_error?String(d.last_error).slice(0,240):null}}
+export function exportVoiceDiagnostic(){const payload=_safeVoiceDiagnostic(_lastVoiceStatus);const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='lumena-voice-diagnostic.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),0)}
+
+export async function deleteVoiceData(){
+  const out=document.getElementById('voice-delete-message');
+  if(!window.confirm('Effacer les packs, profils et données vocales locales gérés par Lumena ?'))return;
+  if(out)out.textContent='Suppression en cours…';
+  try{const r=await fetch(`${API_BASE}/api/voice/data?confirm=DELETE`,{method:'DELETE',headers:_voiceHeaders()});const d=await r.json();if(!r.ok)throw new Error(d.detail||'Suppression impossible');if(out)out.textContent=`Données vocales effacées · ${d.files||0} fichier(s)`;await loadVoiceStatus()}catch(e){if(out)out.textContent=e.message}
+}
+
 export async function toggleVoiceAssistant(){
-  const btn=document.getElementById('voice-toggle-btn');btn.disabled=true;btn.textContent='...';
-  try{const vh={};if(ADMIN_TOKEN)vh['Authorization']=`Bearer ${ADMIN_TOKEN}`;const r=await fetch(`${API_BASE}/api/voice/toggle`,{method:'POST',headers:vh});const d=await r.json();updateVoiceUI(d);logC(d.message,d.running?'success':'info')}
-  catch(e){logC(e.message,'error')}finally{btn.disabled=false}
+  const btn=document.getElementById('voice-toggle-btn');if(!btn)return;btn.disabled=true;btn.textContent='...';_setVoiceControlMessage('Changement de l’écoute…','info');
+  try{const r=await fetch(`${API_BASE}/api/voice/toggle?backend=v2`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok)throw new Error(d.detail||'Démarrage vocal impossible');updateVoiceUI(d);_setVoiceControlMessage(d.message||'État vocal mis à jour.','success');logC(d.message,d.running?'success':'info')}
+  catch(e){_setVoiceControlMessage(e.message||'Commande vocale impossible','error');logC(e.message,'error')}finally{btn.disabled=false}
 }
 
 export function updateVoiceUI(status){
   const d=typeof status==='object'&&status?status:{running:!!status};const running=!!d.running;
+  _lastVoiceStatus=d;
   const btn=document.getElementById('voice-toggle-btn');
   const dot=document.getElementById('voice-dot');
   const txt=document.getElementById('voice-status-text');
@@ -226,27 +315,26 @@ export function updateVoiceUI(status){
   set('voice-first-audio',Number.isFinite(d.first_audio_ms)?`${Math.round(d.first_audio_ms)} ms`:'—');
   set('voice-task',d.task_id||'aucune');
   set('voice-privacy',d.cloud_allowed?'cloud autorisé':'local strict');
+  set('voice-effective-provider',d.provider||d.voice_profile_status?.active_provider||'—');set('voice-profile',d.voice_profile||d.voice_profile_status?.profile_id||'Lumena');set('voice-tts-language',d.response_language||d.runtime_options?.language||'—');set('voice-locality',d.cloud_allowed?'Réseau autorisé':'Local strict');
+  set('voice-micro',d.capabilities?.pyaudio_available?'Disponible':'Indisponible');set('voice-vad',d.vad?.engine||d.capabilities?.vad_engine||'—');set('voice-aec',d.audio_frontend?.aec_active?'Actif':d.barge_in_mode==='guarded_no_aec'?'Absent · interruption surveillée':d.capabilities?.server_aec_available?'Disponible':'Non disponible');set('voice-wake-engine',d.wake_word?.engine||d.activation_engine||'—');
+  set('voice-input-language',d.input_language||'—');set('voice-response-language',d.response_language||d.runtime_options?.language||'—');set('voice-language-scope',d.language_scope||'session');set('voice-language-guard',d.language_guard||'—');
+  const hw=d.hardware_profile||d.capabilities?.hardware||{};set('voice-hardware-profile',hw.profile||'—');set('voice-stt-effective',`${d.runtime_options?.device||'—'} / ${d.runtime_options?.compute||'—'}`);set('voice-endpoint-p95',Number.isFinite(d.timings?.endpointing_ms?.p95)?`${d.timings.endpointing_ms.p95} ms`:'—');set('voice-gap-p95',Number.isFinite(d.timings?.playback_gap_ms?.p95)?`${d.timings.playback_gap_ms.p95} ms`:'—');
+  const diag=document.getElementById('voice-diagnostic-json');if(diag)diag.textContent=JSON.stringify(_safeVoiceDiagnostic(d),null,2);
+  const models=document.getElementById('voice-models-list');if(models){const local=d.voice_profile_status?.local||{};const entries=[['Piper',local.piper_model||'Voix locale par défaut'],['Whisper',d.runtime_options?.device?`${d.runtime_options.device} · ${d.runtime_options.compute}`:'Non démarré'],['VAD',d.vad?.engine||d.capabilities?.vad_engine||'energy'],['Wake word',d.wake_word?.available?'Pack local actif':'Phrase STT locale']];models.innerHTML=entries.map(([name,value])=>`<div class="voice-model-chip"><div class="stat-label">${esc(name)}</div><strong>${esc(String(value))}</strong></div>`).join('')}
 }
 
 export async function stopVoiceAudio(){
-  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-  const r=await fetch(`${API_BASE}/api/voice/stop-audio`,{method:'POST',headers:h});const d=await r.json();
-  logC(d.stopped?'Voix coupée, travail conservé':'Aucun audio actif','info');
+  _setVoiceControlMessage('Coupure en cours…','info');
+  try{const r=await fetch(`${API_BASE}/api/voice/stop-audio`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok)throw new Error(d.detail||'Coupure impossible');const text=d.stopped?'Voix coupée. Le travail continue.':'Aucun audio actif à couper.';_setVoiceControlMessage(text,'success');logC(text,'info')}catch(e){_setVoiceControlMessage(e.message||'Coupure impossible','error')}
 }
 
 export async function toggleVoiceMute(){
-  const btn=document.getElementById('voice-mute-btn');const enabled=!btn.classList.contains('active');
-  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-  const r=await fetch(`${API_BASE}/api/voice/mute?enabled=${enabled}`,{method:'POST',headers:h});const d=await r.json();
-  btn.classList.toggle('active',!!d.muted);btn.innerHTML=d.muted?'<i data-lucide="mic"></i> Unmute':'<i data-lucide="mic-off"></i> Mute';
-  if(window.lucide)window.lucide.createIcons();
+  const btn=document.getElementById('voice-mute-btn');if(!btn)return;const enabled=!btn.classList.contains('active');btn.disabled=true;
+  try{const r=await fetch(`${API_BASE}/api/voice/mute?enabled=${enabled}`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok)throw new Error(d.detail||'Mute impossible');btn.classList.toggle('active',!!d.muted);btn.innerHTML=d.muted?'<i data-lucide="mic"></i> Réactiver':'<i data-lucide="mic-off"></i> Mute';_setVoiceControlMessage(d.muted?'Micro et voix rendus silencieux.':'Son vocal réactivé.','success');if(window.lucide)window.lucide.createIcons()}catch(e){_setVoiceControlMessage(e.message||'Mute impossible','error')}finally{btn.disabled=false}
 }
 
 export async function testVoiceOutput(){
-  const h={};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-  const r=await fetch(`${API_BASE}/api/voice/test-output`,{method:'POST',headers:h});
-  if(!r.ok)throw new Error('Voice V2 doit être démarrée pour le test audio');
-  logC('Phrase de test envoyée au moteur vocal','success');
+  try{const r=await fetch(`${API_BASE}/api/voice/test-output`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok||!d.ok)throw new Error(d.detail||'Voice V2 doit être démarrée pour le test audio');_setVoiceControlMessage('Phrase de test envoyée au moteur vocal.','success');logC('Phrase de test envoyée au moteur vocal','success')}catch(e){_setVoiceControlMessage(e.message||'Test audio impossible','error')}
 }
 
 /* ============================================================

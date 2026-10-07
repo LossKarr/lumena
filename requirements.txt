@@ -28,6 +28,7 @@ pyttsx3>=2.90              # TTS fallback offline
 piper-tts>=1.4.1           # Local TTS ONNX
 pathvalidate>=3.2.0        # Dépendance Piper
 pygame>=2.5.2              # Playback audio local
+pywebrtc-audio>=0.2.0      # AEC/NS/AGC WebRTC local pour le mode mains libres
 
 # Scheduler (CRON)
 croniter>=6.0.0            # Support expressions CRON

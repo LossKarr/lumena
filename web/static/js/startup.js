@@ -48,17 +48,30 @@ export function selectStartupModel(name){
   if(item){item.classList.add('selected');selectedModel=name;document.getElementById('startup-btn').disabled=false}
 }
 
+async function _apiErrorMessage(response, fallback){
+  const contentType=(response.headers.get('content-type')||'').toLowerCase();
+  try{
+    if(contentType.includes('application/json')){
+      const payload=await response.json();
+      return payload.detail||payload.error||payload.message||fallback;
+    }
+    const text=(await response.text()).trim();
+    if(text&&text.toLowerCase()!=='internal server error')return text.slice(0,500);
+  }catch(_error){}
+  return `${fallback} (HTTP ${response.status})`;
+}
+
 export async function startLumena(){
   if(!selectedModel)return false;
   const btn=document.getElementById('startup-btn');
   btn.textContent='Initialisation...';btn.disabled=true;
   try{
-    const cur=allModels.find(m=>m.current);
-    if(!cur||cur.name!==selectedModel){
-      const h={'Content-Type':'application/json'};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-      const r=await fetch(`${API_BASE}/api/model/switch`,{method:'POST',headers:h,body:JSON.stringify({model_name:selectedModel})});
-      if(!r.ok){const err=await r.json();throw new Error(err.detail)}
-    }
+    // Toujours demander une activation. Cette opération est idempotente et
+    // permet au backend de terminer un boot resté en mode setup même quand le
+    // modèle sélectionné porte déjà le nom du modèle configuré.
+    const h={'Content-Type':'application/json'};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
+    const r=await fetch(`${API_BASE}/api/model/switch`,{method:'POST',headers:h,body:JSON.stringify({model_name:selectedModel})});
+    if(!r.ok)throw new Error(await _apiErrorMessage(r,'Le serveur n\'a pas pu activer ce modèle'));
     document.getElementById('startup-screen').classList.add('hidden');
     document.getElementById('app-shell').style.display='grid';
     // Restore saved theme
@@ -443,7 +456,7 @@ export async function switchModel(name){
   try{
     const h={'Content-Type':'application/json'};if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;
     const r=await fetch(`${API_BASE}/api/model/switch`,{method:'POST',headers:h,body:JSON.stringify({model_name:name})});
-    if(!r.ok){const err=await r.json();throw new Error(err.detail)}
+    if(!r.ok)throw new Error(await _apiErrorMessage(r,'Le serveur n\'a pas pu activer ce modèle'));
     const d=await r.json();
     document.getElementById('current-model-name').textContent=d.display_name.split(' (')[0];
     logC(d.message,'success');loadStatus();loadModels();

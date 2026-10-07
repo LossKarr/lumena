@@ -53,13 +53,18 @@ def test_catalog_provider_wins_over_ambiguous_model_name(monkeypatch):
 
 def test_current_provider_adapters_are_routed_from_catalog(monkeypatch):
     monkeypatch.setenv("LUMENA_PROVIDER_PROMPTS", "true")
+    assert "OPENAI WORKFLOW" in _load_provider_prompt("gpt-6.1-sol")
     assert "OPENAI WORKFLOW" in _load_provider_prompt("gpt-6-sol")
+    assert "professionnel" in _load_provider_prompt("claude-sonnet-5.5")
     assert "XAI" in _load_provider_prompt("grok-4.7")
     assert "DEEPSEEK V4" in _load_provider_prompt("deepseek-flash")
 
 
 def test_current_models_have_exact_stable_profiles():
-    for name in ("gpt-6-sol", "gpt-6-luna", "claude-opus-5.5", "grok-4.7"):
+    for name in (
+        "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna",
+        "claude-opus-5.5", "claude-sonnet-5.5", "grok-4.7",
+    ):
         profile = get_model_profile(name)
         assert profile.parser_severity == "strict"
         assert profile.tool_call_quality == "excellent"

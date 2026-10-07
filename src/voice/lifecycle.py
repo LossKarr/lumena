@@ -44,6 +44,9 @@ class VoiceLifecycleManager:
         self._monitor_task: Optional[asyncio.Task] = None
         self._stop_requested = False
         self._fallback_used = False
+        self._fallback_reason: Optional[str] = None
+        self._requested_backend = "none"
+        self._transition_lock = asyncio.Lock()
 
     @classmethod
     def get_instance(cls) -> "VoiceLifecycleManager":
@@ -57,12 +60,29 @@ class VoiceLifecycleManager:
     def running(self) -> bool:
         return bool(getattr(self.v2, "running", False) or getattr(self.legacy, "running", False))
 
-    async def start(self, core: Any) -> bool:
+    async def start(self, core: Any, *, backend: Optional[str] = None) -> bool:
+        """Start exactly one backend.
+
+        ``backend=None`` preserves the saved auto-start policy. Interactive product
+        surfaces pass ``v2`` explicitly so the button and the reported pipeline can
+        never silently select the historical stack.
+        """
+        async with self._transition_lock:
+            return await self._start_locked(core, backend=backend)
+
+    async def _start_locked(self, core: Any, *, backend: Optional[str]) -> bool:
         if self.running:
             return True
+        requested = (backend or "").strip().lower()
+        if requested and requested not in {"v2", "legacy"}:
+            raise ValueError(f"Unsupported voice backend: {backend}")
         self._stop_requested = False
         self._fallback_used = False
-        backend = select_voice_backend(v2_enabled=_env_flag("LUMENA_VOICE_V2_AUTO", False))
+        self._fallback_reason = None
+        backend = requested or select_voice_backend(
+            v2_enabled=_env_flag("LUMENA_VOICE_V2_AUTO", False)
+        )
+        self._requested_backend = backend
         if backend == "legacy":
             self.active_backend = "legacy"
             return bool(await self.legacy.start(core))
@@ -73,6 +93,7 @@ class VoiceLifecycleManager:
             if not _env_flag("LUMENA_VOICE_V2_FALLBACK_LEGACY", True):
                 return False
             self._fallback_used = True
+            self._fallback_reason = str(getattr(self.v2, "last_error", "") or "v2_start_failed")[:240]
             self.active_backend = "legacy"
             return bool(await self.legacy.start(core))
         self._monitor_task = asyncio.create_task(
@@ -94,10 +115,17 @@ class VoiceLifecycleManager:
             return
         logger.warning("Voice V2 exhausted restarts; switching to legacy voice backend")
         self._fallback_used = True
+        self._fallback_reason = str(
+            getattr(self.v2, "last_error", "") or "v2_restart_budget_exhausted"
+        )[:240]
         self.active_backend = "legacy"
         await self.legacy.start(core)
 
     async def stop(self) -> None:
+        async with self._transition_lock:
+            await self._stop_locked()
+
+    async def _stop_locked(self) -> None:
         self._stop_requested = True
         monitor = self._monitor_task
         if monitor is not None and not monitor.done():
@@ -117,7 +145,9 @@ class VoiceLifecycleManager:
         status.update({
             "running": self.running,
             "backend": self.active_backend,
+            "requested_backend": self._requested_backend,
             "fallback_used": self._fallback_used,
+            "fallback_reason": self._fallback_reason,
         })
         if self.active_backend == "legacy":
             status.setdefault("state", "running" if self.running else "stopped")

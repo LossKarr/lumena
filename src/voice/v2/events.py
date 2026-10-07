@@ -35,7 +35,7 @@ class VoiceCommand:
 # ── Types d'événements connus (référence ; non exhaustif imposé) ──────────────
 EVENT_TYPES = frozenset({
     "vad.speech_started", "vad.speech_stopped", "vad.speech_ended",
-    "stt.partial", "stt.final",
+    "stt.started", "stt.partial", "stt.final",
     "endpoint.decision",
     "llm.response_started", "llm.response_delta", "llm.response_done",
     "tts.chunk_ready",
@@ -45,6 +45,7 @@ EVENT_TYPES = frozenset({
     "ui.mute", "ui.unmute", "ui.cancel",
     "timer.endpoint", "timer.endpoint_min_elapsed", "timer.endpoint_max_elapsed",
     "timer.false_interruption_timeout", "timer.conversation_idle",
+    "activation.accepted", "activation.rejected",
     "provider.error",
 })
 
@@ -54,6 +55,7 @@ COMMAND_NAMES = frozenset({
     "start_llm", "cancel_llm",
     "start_tts", "cancel_tts",
     "play_audio", "stop_playback", "clear_audio_queue", "resume_playback",
+    "resume_interrupted_speech",
     "truncate_conversation",
     "arm_endpoint_timer", "cancel_endpoint_timer",
     "speak_backchannel",

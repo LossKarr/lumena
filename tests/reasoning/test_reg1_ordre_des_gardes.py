@@ -39,13 +39,32 @@ from src.mcp.policy import MCPPolicy
 from src.reasoning.handlers.contracts import HandlerResult
 from src.reasoning.handlers.registry_v2 import HandlerDef
 from src.reasoning.tool_registry import DynamicRegistryError, ToolRegistry
+from src.tools.ide_capabilities import IDECapabilityService
+from src.tools.ide_discovery import IDEDiscoveryService
 from src.utils.external_tool_names import is_ide_tool_name
+from tests.tools.test_conn1a_ide_discovery import _packaged
+from tests.tools.test_conn3c_ide_snapshot_binding import unit_bridge
 
 
 @pytest.fixture(scope="module")
-def registry() -> ToolRegistry:
-    """Registre reel, tous les handlers V2 charges (couteux -> portee module)."""
-    return ToolRegistry()
+def registry(tmp_path_factory) -> ToolRegistry:
+    """Registre réel avec une installation IDE déterministe et fermée."""
+    root = tmp_path_factory.mktemp("reg1-lumena")
+    runtime = root / "ide" / "win-unpacked"
+    _packaged(runtime)
+    discovery = IDEDiscoveryService(
+        root,
+        environ={},
+        os_install_roots=[],
+        portable_roots=[runtime],
+        which=lambda _: None,
+        platform_id="windows-x64",
+    )
+    bridge = unit_bridge()
+    bridge._connected = False
+    result = ToolRegistry(lumena_root=root)
+    result._ide_tools._service = IDECapabilityService(discovery, bridge)
+    return result
 
 
 def _hdef(name: str) -> HandlerDef:

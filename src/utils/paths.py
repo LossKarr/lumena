@@ -82,6 +82,22 @@ TEMPLATES_DIR: Path = ROOT_DIR / "assets" / "templates"
 DOCUMENT_STUDIO_DIR: Path = _dir_from_env("LUMENA_DOCUMENT_STUDIO_DIR", DATA_DIR / "document_studio")
 UPDATES_DIR: Path = _dir_from_env("LUMENA_UPDATES_DIR", DATA_DIR / "updates")
 
+
+def data_dir_for_root(root: Path | str | None = None) -> Path:
+    """Return the configured data directory for the repository ``root``.
+
+    Production callers normally omit ``root`` and receive ``DATA_DIR`` (which
+    honours ``LUMENA_DATA_DIR``).  Audits and migration previews may operate on
+    an explicit, isolated repository root; those receive its conventional data
+    child without duplicating the path convention outside this module.
+    """
+    if root is None:
+        return DATA_DIR
+    candidate = Path(root).resolve()
+    if candidate == ROOT_DIR.resolve():
+        return DATA_DIR
+    return candidate / "data"
+
 # ── Well-known files ────────────────────────────────────────────────────────
 JOURNAL_JSON: Path = DATA_DIR / "journal.json"
 HEARTBEAT_STATE_JSON: Path = DATA_DIR / "heartbeat_state.json"

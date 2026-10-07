@@ -84,7 +84,10 @@ async def test_active_assignment_blocks_delete(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_select_verifies_before_switching(tmp_path):
+async def test_select_verifies_before_switching(monkeypatch, tmp_path):
+    import src.llm.providers as providers
+
+    monkeypatch.setenv("LUMENA_OLLAMA_PROBE", "0")
     manager = service(tmp_path)
     ref = parse_model_reference("life-test:1b")
     manager.state_store.record_installed(ref, digest="digest", size_bytes=10)
@@ -105,6 +108,31 @@ async def test_select_verifies_before_switching(tmp_path):
             self.model_name = key
             return True
 
-    result = await manager.select("life-test:1b", runtime_llm=Runtime())
-    assert result["selected"] is True
-    assert manager.state_store.entry(ref)["verified"] is True
+    try:
+        result = await manager.select("life-test:1b", runtime_llm=Runtime())
+        assert result["selected"] is True
+        assert manager.state_store.entry(ref)["verified"] is True
+        assert providers.AVAILABLE_MODELS["life-test-1b"].model_id == "life-test:1b"
+    finally:
+        providers.AVAILABLE_MODELS.pop("life-test-1b", None)
+        providers.MODEL_SKILLS.pop("life-test-1b", None)
+
+
+@pytest.mark.asyncio
+async def test_installed_refresh_imports_model_pulled_outside_lumena(monkeypatch, tmp_path):
+    import src.llm.providers as providers
+
+    monkeypatch.setenv("LUMENA_OLLAMA_PROBE", "0")
+    manager = service(tmp_path)
+    ref = parse_model_reference("life-test:1b")
+
+    providers.AVAILABLE_MODELS.pop("life-test-1b", None)
+    try:
+        models = await manager.installed()
+
+        assert models[0]["enabled"] is True
+        assert manager.state_store.entry(ref)["installed"] is True
+        assert providers.AVAILABLE_MODELS["life-test-1b"].model_id == "life-test:1b"
+    finally:
+        providers.AVAILABLE_MODELS.pop("life-test-1b", None)
+        providers.MODEL_SKILLS.pop("life-test-1b", None)

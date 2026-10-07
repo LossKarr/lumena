@@ -19,7 +19,10 @@ def test_text_selectors_only_expose_selectable_text_models():
     assert set(schema["LUMENA_DEFAULT_MODEL"]["options"]) == expected
     assert set(schema["LUMENA_JUDGE_MODEL"]["options"]) == expected
     assert schema["LUMENA_DEFAULT_MODEL"]["default"] == "deepseek-flash"
-    assert {"gpt-6-sol", "gpt-6-luna", "claude-opus-5.5", "grok-4.7"} <= expected
+    assert {
+        "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna",
+        "claude-opus-5.5", "claude-sonnet-5.5", "grok-4.7",
+    } <= expected
     assert "claude-mythos-5.1" not in expected
 
 
@@ -99,7 +102,10 @@ def test_models_api_exposes_catalog_governance_and_pricing(monkeypatch):
     assert astra["pricing"]["input_per_million"] == 10.0
     assert astra["pricing"]["verified_on"] == "2026-09-20"
 
-    for name in ("gpt-6-sol", "gpt-6-luna", "claude-opus-5.5", "grok-4.7"):
+    for name in (
+        "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna",
+        "claude-opus-5.5", "claude-sonnet-5.5", "grok-4.7",
+    ):
         assert entries[name]["lifecycle"] == "stable"
         assert entries[name]["pricing"] is not None
     assert "claude-mythos-5.1" not in entries

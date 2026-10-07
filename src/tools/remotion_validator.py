@@ -128,7 +128,10 @@ def _check_structure(filename: str, content: str) -> List[ValidationIssue]:
     """Vérifie la structure de base d'un composant TSX."""
     issues: List[ValidationIssue] = []
 
-    if not _REMOTION_IMPORTS.search(content):
+    basename = Path(filename).name.lower()
+    is_wrapper = basename in {"root.tsx", "root.jsx", "video.tsx", "video.jsx"}
+
+    if not is_wrapper and not _REMOTION_IMPORTS.search(content):
         issues.append(ValidationIssue(
             file=filename, line=1, severity=Severity.ERROR,
             code="NO_REMOTION_IMPORT",
@@ -136,7 +139,9 @@ def _check_structure(filename: str, content: str) -> List[ValidationIssue]:
             fix_hint="Ajouter: import { useCurrentFrame, useVideoConfig, ... } from 'remotion';",
         ))
 
-    if not _EXPORT_DEFAULT.search(content):
+    # Root.tsx est importé comme export nommé par index.ts. Les scènes et le
+    # séquenceur Video.tsx restent des exports default.
+    if basename not in {"root.tsx", "root.jsx"} and not _EXPORT_DEFAULT.search(content):
         issues.append(ValidationIssue(
             file=filename, line=1, severity=Severity.ERROR,
             code="NO_EXPORT_DEFAULT",
@@ -165,7 +170,7 @@ def _check_imports_coherence(filename: str, content: str, has_assets: bool) -> L
             file=filename, line=1, severity=Severity.WARNING,
             code="STATIC_FILE_NO_ASSETS",
             message="staticFile() utilisé mais aucun asset fourni — le rendu échouera",
-            fix_hint="Remplacer staticFile('...') par une URL externe (Unsplash, placeholder) ou supprimer",
+            fix_hint="Fournir l'asset dans le manifeste ou supprimer proprement l'élément média",
         ))
 
     if _SPRING_USAGE.search(content) and "spring" not in content.split("from")[0] if "from" in content else True:
@@ -315,12 +320,16 @@ def validate_project(
 
     result.files_checked = len(tsx_files)
 
-    # Identifier Root.tsx et les scènes
-    root_content = ""
+    # Identifier le séquenceur Video.tsx. Root.tsx référence uniquement Video et
+    # ne doit pas être utilisé pour décider si chaque scène est assemblée.
+    sequencer_content = ""
     scene_files: Dict[str, str] = {}
     for name, content in tsx_files.items():
-        if "Root" in name or "root" in name or "index" in name.lower():
-            root_content = content
+        basename = Path(name).name.lower()
+        if basename in {"video.tsx", "video.jsx"}:
+            sequencer_content = content
+        elif basename in {"root.tsx", "root.jsx", "index.tsx", "index.jsx"}:
+            continue
         else:
             scene_files[name] = content
 
@@ -340,8 +349,8 @@ def validate_project(
             result.add(issue)
 
     # Valider le séquenceur
-    if root_content and scene_files:
-        for issue in _check_sequencer(root_content, scene_files, expected_total_frames):
+    if sequencer_content and scene_files:
+        for issue in _check_sequencer(sequencer_content, scene_files, expected_total_frames):
             result.add(issue)
 
     return result

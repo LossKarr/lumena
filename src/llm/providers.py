@@ -18,7 +18,7 @@ from typing import Optional, List, Dict, Any, FrozenSet, Mapping, Sequence
 from enum import Enum
 from loguru import logger
 
-MODEL_CATALOG_REVISION = "2026-09-25"
+MODEL_CATALOG_REVISION = "2026-09-30"
 
 # Charger le fichier .env automatiquement
 try:
@@ -447,6 +447,30 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         badge="Frontier",
         source_url="https://platform.claude.com/docs/en/models/opus-5-5/overview",
         verified_on="2026-09-25",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "computer_toolset_20260801", "dom_assist", "reasoning", "long_context", "code_generation"}),
+    ),
+    "claude-sonnet-5.5": ModelConfig(
+        name="claude-sonnet-5.5",
+        display_name="Claude Sonnet 5.5 (Anthropic)",
+        provider=ProviderType.ANTHROPIC,
+        model_id="claude-sonnet-5-5",
+        context_window=1_000_000,
+        max_output_tokens=128_000,
+        supports_vision=True,
+        supports_tools=True,
+        cost_per_million_tokens=2.0,
+        pricing=ModelPricing(
+            input_per_million=2.0,
+            output_per_million=10.0,
+            cached_input_per_million=0.20,
+            cache_write_per_million=2.50,
+            source_url="https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+            verified_on="2026-09-30",
+        ),
+        description="Claude Sonnet 5.5 — modèle Anthropic rapide pour le code, les agents et le travail professionnel, avec adaptive thinking.",
+        badge="Latest",
+        source_url="https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
+        verified_on="2026-09-30",
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "computer_use", "computer_toolset_20260801", "dom_assist", "reasoning", "long_context", "code_generation"}),
     ),
     "claude-opus-5": ModelConfig(
@@ -1759,6 +1783,23 @@ AVAILABLE_MODELS: Dict[str, ModelConfig] = {
         verified_on="2026-09-20", fallback_eligible=False,
         capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation", "responses_api"}),
     ),
+    "gpt-6.1-sol": ModelConfig(
+        name="gpt-6.1-sol", display_name="GPT-6.1 Sol (OpenAI)",
+        provider=ProviderType.OPENAI, model_id="gpt-6.1-sol",
+        context_window=1_050_000, max_output_tokens=128_000,
+        supports_vision=True, supports_tools=True, cost_per_million_tokens=2.0,
+        pricing=ModelPricing(
+            input_per_million=2.0, output_per_million=10.0,
+            cached_input_per_million=0.10, cache_write_per_million=2.50,
+            source_url="https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+            verified_on="2026-09-30", long_context_threshold=272_000,
+            long_context_input_multiplier=2.0, long_context_output_multiplier=1.5,
+        ),
+        description="GPT-6.1 Sol — performances proches d'Astra pour le code complexe, computer use et le travail professionnel à coût réduit.",
+        badge="Latest", source_url="https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+        verified_on="2026-09-30",
+        capabilities=frozenset({"vision_describe", "vision_grounding", "tool_calling", "reasoning", "computer_use", "long_context", "code_generation", "responses_api"}),
+    ),
     "gpt-6-sol": ModelConfig(
         name="gpt-6-sol", display_name="GPT-6 Sol (OpenAI)",
         provider=ProviderType.OPENAI, model_id="gpt-6-sol",
@@ -1973,28 +2014,33 @@ def get_model_config(name: str) -> Optional[ModelConfig]:
 MODEL_FALLBACKS: Dict[str, List[str]] = {
     "claude-fable-5.1": [
         "claude-opus-5.5",
-        "claude-sonnet-5",
-        "gpt-6-sol",
+        "claude-sonnet-5.5",
+        "gpt-6.1-sol",
         "deepseek-flash",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "claude-mythos-5.1": [
         "claude-fable-5.1",
         "claude-opus-5.5",
-        "claude-sonnet-5",
+        "claude-sonnet-5.5",
     ],
     "claude-opus-5.5": [
-        "claude-sonnet-5",
-        "gpt-6-sol",
+        "claude-sonnet-5.5",
+        "gpt-6.1-sol",
         "deepseek-flash",
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "claude-opus-5": [
         "claude-opus-5.5",
-        "claude-sonnet-5",
-        "gpt-6-sol",
+        "claude-sonnet-5.5",
+        "gpt-6.1-sol",
         "deepseek-flash",
         "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "claude-sonnet-5.5": [
+        "gpt-6.1-sol",
+        "deepseek-flash",
+        "nvidia-gpt-oss-20b",
     ],
     "claude-sonnet-5": [
         "claude-sonnet-4.6",
@@ -2061,12 +2107,19 @@ MODEL_FALLBACKS: Dict[str, List[str]] = {
         "nvidia-nemotron-3-ultra-550b-a55b",
     ],
     "gpt-6-astra": [
-        "gpt-6-sol",
+        "gpt-6.1-sol",
         "gpt-5.6-sol",
         "claude-opus-5.5",
-        "claude-sonnet-5",
+        "claude-sonnet-5.5",
         "deepseek-flash",
         "nvidia-nemotron-3-ultra-550b-a55b",
+    ],
+    "gpt-6.1-sol": [
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "claude-sonnet-5.5",
+        "deepseek-flash",
+        "nvidia-gpt-oss-20b",
     ],
     "gpt-6-sol": [
         "gpt-6-luna",
@@ -2794,6 +2847,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     "claude-fable-5.1":            {"code": 96, "speed": 42, "reasoning": 99, "creative": 99, "research": 97, "vision": 97, "web": 94},
     "claude-mythos-5.1":           {"code": 97, "speed": 38, "reasoning": 99, "creative": 99, "research": 98, "vision": 97, "web": 95},
     "claude-opus-5.5":             {"code": 99, "speed": 46, "reasoning": 100, "creative": 99, "research": 99, "vision": 99, "web": 96},
+    "claude-sonnet-5.5":           {"code": 98, "speed": 78, "reasoning": 98, "creative": 97, "research": 97, "vision": 98, "web": 96},
     "claude-opus-5":               {"code": 95, "speed": 44, "reasoning": 99, "creative": 98, "research": 97, "vision": 97, "web": 93},
     "claude-opus-4.8":             {"code": 94, "speed": 45, "reasoning": 98, "creative": 97, "research": 95, "vision": 96, "web": 92},
     "claude-opus-4.7":             {"code": 92, "speed": 45, "reasoning": 96, "creative": 97, "research": 94, "vision": 96, "web": 91},
@@ -2888,6 +2942,7 @@ MODEL_SKILLS: Dict[str, Dict[str, int]] = {
     # ── OpenAI ─────────────────────────────────────────────────────────────
     "gpt-5.5":                     {"code": 98, "speed": 72, "reasoning": 99, "creative": 94, "research": 97, "vision": 98, "web": 96},
     "gpt-6-astra":                 {"code": 100, "speed": 58, "reasoning": 100, "creative": 98, "research": 100, "vision": 100, "web": 100},
+    "gpt-6.1-sol":                 {"code": 99, "speed": 75, "reasoning": 99, "creative": 96, "research": 98, "vision": 99, "web": 98},
     "gpt-6-sol":                   {"code": 99, "speed": 72, "reasoning": 99, "creative": 96, "research": 98, "vision": 99, "web": 98},
     "gpt-6-luna":                  {"code": 92, "speed": 96, "reasoning": 91, "creative": 88, "research": 92, "vision": 94, "web": 92},
     # GPT-5.6 reste en réserve premium jusqu'à validation runtime : sélection
@@ -2931,7 +2986,7 @@ def best_model_for(
     """
     # Modèles réservés aux tâches vraiment complexes : sélectionnés seulement
     # si leur avantage de score > _PREMIUM_THRESHOLD sur le meilleur standard.
-    _PREMIUM_MODELS = {"gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-fable-5.1", "claude-mythos-5.1", "claude-opus-5.5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "kimi-k3", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "grok-4.7", "grok-4.6", "grok-4.5", "grok-build-0.1"}
+    _PREMIUM_MODELS = {"gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-fable-5.1", "claude-mythos-5.1", "claude-opus-5.5", "claude-sonnet-5.5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7", "claude-opus-4.6", "claude-opus-4.5", "claude-sonnet-5", "claude-sonnet-4.6", "claude-sonnet-4.5", "kimi-k3", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "grok-4.7", "grok-4.6", "grok-4.5", "grok-build-0.1"}
     _PREMIUM_THRESHOLD = 10
 
     candidates = preferred_models or list(MODEL_SKILLS.keys())

@@ -15,6 +15,8 @@ from .local_tts import LocalTTSAdapter
 from .local_player import LocalAudioPlayer
 from .real_stt import RealSTTAdapter
 from .real_vad import RealVADProvider, measure_noise_floor, calibrate_thresholds
+from .silero_vad import SileroSpeechProbability, SileroVADStatus
+from .local_wake_word import LocalWakeWordProvider, WakeWordDetection
 
 __all__ = [
     "CancelToken", "TTSAudioChunk", "AudioResult", "VADEvent", "STTResult",
@@ -22,4 +24,6 @@ __all__ = [
     "FakeTTSProvider", "FakeVADProvider", "FakeSTTProvider",
     "LocalTTSAdapter", "LocalAudioPlayer",
     "RealSTTAdapter", "RealVADProvider", "measure_noise_floor", "calibrate_thresholds",
+    "SileroSpeechProbability", "SileroVADStatus",
+    "LocalWakeWordProvider", "WakeWordDetection",
 ]

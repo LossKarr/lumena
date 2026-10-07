@@ -35,7 +35,7 @@ from tests.reasoning.test_conn5b2_ide_mission_scope_envelope import _protocole
 from tests.tools.test_conn3c_ide_capabilities import service as service
 
 ROOT = Path(__file__).resolve().parents[2]
-VECTEURS = ROOT / "ide" / "tests" / "fixtures" / "conn5c1CommandDigestVectors.json"
+VECTEURS = ROOT / "tests" / "fixtures" / "conn5c1CommandDigestVectors.json"
 
 
 @pytest.fixture(autouse=True)

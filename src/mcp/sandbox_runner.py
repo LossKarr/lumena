@@ -127,7 +127,7 @@ class MCPInstallSpec:
 
     Attributes:
         name: identifiant unique (slug ASCII), utilisé comme nom de dossier
-        transport: "npm" ou "uv" (Python via venv isolé)
+        transport: "npm", "uv" (Python via venv isolé) ou "exe"
         package: nom du package (`@modelcontextprotocol/server-postgres`,
                  `mcp-server-filesystem`, ou git+url)
         args: arguments passés au binaire MCP au start
@@ -147,7 +147,7 @@ class MCPInstallSpec:
     """
 
     name: str
-    transport: Literal["npm", "uv"]
+    transport: Literal["npm", "uv", "exe"]
     package: str
     args: List[str] = field(default_factory=list)
     env_keys_allowlist: List[str] = field(default_factory=list)
@@ -254,10 +254,20 @@ class MCPSandboxRunner:
         stdout_mode: str = "client",
     ):
         _validate_name(spec.name)
-        if spec.transport not in ("npm", "uv"):
+        if spec.transport not in ("npm", "uv", "exe"):
             raise MCPSandboxError(
-                f"Unknown transport: {spec.transport!r} (expected 'npm' or 'uv')"
+                f"Unknown transport: {spec.transport!r} "
+                "(expected 'npm', 'uv' or 'exe')"
             )
+        if spec.transport == "exe":
+            executable = Path(spec.package)
+            if not executable.is_absolute() or executable.suffix.lower() != ".exe":
+                raise MCPSandboxError("Invalid exe transport target")
+            if spec.args:
+                raise MCPSandboxError(
+                    "exe transport forbids command replacement through spec.args; "
+                    "use entry_args for argument-only values"
+                )
         # Phase 5.1 v2 : stdout_mode décide qui possède stdout.
         #   "client"  (défaut) : stdout APPARTIENT au MCPClient.
         #                        Le runner NE LIT JAMAIS stdout.
@@ -452,7 +462,15 @@ class MCPSandboxRunner:
             self._server_dir.mkdir(parents=True, exist_ok=True)
             install_env = self._build_install_env()
 
-            if self.spec.transport == "npm":
+            if self.spec.transport == "exe":
+                # LOT MCP-1 : le binaire est deja sur le disque (`exe:<chemin>`).
+                # Toute installation serait au mieux inutile, au pire une sortie
+                # reseau non desiree. On prouve toutefois qu'il existe au moment
+                # de l'admission logique afin de ne jamais produire un faux INSTALLED.
+                executable = Path(self.spec.package)
+                if not executable.is_file():
+                    raise MCPSandboxError("Executable MCP target is missing")
+            elif self.spec.transport == "npm":
                 self._install_npm(install_env)
             else:  # uv
                 self._install_uv(install_env)
@@ -816,6 +834,11 @@ class MCPSandboxRunner:
         # Fix AY : entry_args = arguments ajoutés au binaire RÉSOLU (jamais
         # quand spec.args remplace la commande entière).
         entry_args = list(getattr(self.spec, "entry_args", None) or [])
+        if self.spec.transport == "exe":
+            # LOT MCP-1 : `spec.package` EST le binaire. Aucun prefixe, aucun shell —
+            # c'est ce qui rend ce transport sur : il ne peut pas porter de `&&`, de
+            # tube ni de redirection, la validation du catalogue l'ayant deja exclu.
+            return [str(self.spec.package), *entry_args]
         if self.spec.transport == "npm":
             if self.spec.args:
                 return list(self.spec.args)

@@ -118,6 +118,9 @@ class InstallTransport(Enum):
     NPM   = "npm"
     PYPI  = "pypi"
     LOCAL = "local"
+    # LOT MCP-1 : binaire deja present sur le disque (rien a installer).
+    EXE   = "exe"
+    REMOTE = "remote"
 
 
 @dataclass(frozen=True)
@@ -187,6 +190,17 @@ def _parse_package_spec(
         if not rest:
             return None
         return InstallTransport.LOCAL, rest
+    # LOT MCP-1 : `exe:<chemin absolu>.exe` — le binaire est deja la.
+    if package_spec.startswith("exe:"):
+        rest = package_spec[len("exe:"):]
+        if not rest:
+            return None
+        return InstallTransport.EXE, rest
+    if package_spec.startswith("remote:"):
+        rest = package_spec[len("remote:"):]
+        if not rest:
+            return None
+        return InstallTransport.REMOTE, rest
     return None
 
 
@@ -198,6 +212,15 @@ def _transport_to_runner_transport(transport: InstallTransport) -> str:
         return "uv"
     if transport == InstallTransport.LOCAL:
         return "uv"
+    # LOT MCP-1 — transport runner DISTINCT, et c'est tout l'objet du lot.
+    #
+    # Mapper `exe` sur `uv` prefixerait le binaire par le python du venv ; le mapper
+    # sur `npm` declencherait une installation reseau. Le runner recoit donc son
+    # propre transport, qui n'installe rien et lance le binaire tel quel.
+    if transport == InstallTransport.EXE:
+        return "exe"
+    if transport == InstallTransport.REMOTE:
+        raise InstallError("remote transport has no local runner")
     raise InstallError(f"Transport {transport.value!r} not mappable to runner")
 
 
@@ -663,7 +686,46 @@ class MCPInstallOrchestrator:
                 dry_run=True,
             )
 
-        # 13. Construct MCPInstallSpec + run install via Phase 5
+        # 13. A remote server has no local payload to install.  Its connection
+        # contract was HMAC-validated by the catalog; this step is a logical
+        # admission so the normal activation approval can follow.
+        if transport == InstallTransport.REMOTE:
+            connection_spec = getattr(entry, "connection_spec", None)
+            try:
+                from src.mcp.connection_spec import MCPConnectionSpec, TransportKind
+                parsed_connection = MCPConnectionSpec.from_dict(connection_spec)
+                if parsed_connection.transport == TransportKind.STDIO:
+                    raise ValueError("stdio_not_remote")
+            except Exception:  # noqa: BLE001
+                self._audit(
+                    "install_failed", server_id=server_id,
+                    transport=transport.value, reason="remote_spec_invalid",
+                )
+                return InstallResult(
+                    server_id=server_id, success=False, transport=transport,
+                    target_path_relative=None, reason="remote_spec_invalid",
+                    duration_s=time.monotonic() - start_ts,
+                )
+            try:
+                self._catalog.update_status(server_id, ServerStatus.INSTALLED)
+            except Exception:  # noqa: BLE001
+                return InstallResult(
+                    server_id=server_id, success=False, transport=transport,
+                    target_path_relative=None, reason="catalog_update_failed",
+                    duration_s=time.monotonic() - start_ts,
+                )
+            duration_s = time.monotonic() - start_ts
+            self._audit(
+                "install_completed", server_id=server_id,
+                transport=transport.value, duration_s=duration_s,
+            )
+            return InstallResult(
+                server_id=server_id, success=True, transport=transport,
+                target_path_relative=None, reason="installed_ok",
+                duration_s=duration_s,
+            )
+
+        # 14. Construct MCPInstallSpec + run install via Phase 5
         try:
             runner_transport = _transport_to_runner_transport(transport)
         except InstallError as e:
@@ -689,7 +751,31 @@ class MCPInstallOrchestrator:
                 "package_version": entry.version,
                 "trust_score": entry.trust_score,
             }
-            if transport == InstallTransport.LOCAL:
+            if transport == InstallTransport.EXE:
+                # LOT MCP-1 : `package` EST le chemin du binaire ; rien a telecharger,
+                # rien a versionner, aucune roue a verifier.
+                spec_kwargs.update({
+                    "package": package_name,
+                    "package_version": None,
+                    "require_wheels_only": False,
+                })
+                connection_spec = getattr(entry, "connection_spec", None)
+                if isinstance(connection_spec, dict):
+                    try:
+                        from src.mcp.connection_spec import MCPConnectionSpec
+                        parsed_connection = MCPConnectionSpec.from_dict(
+                            connection_spec
+                        )
+                        if parsed_connection.distribution is not None:
+                            spec_kwargs["entry_args"] = list(
+                                parsed_connection.distribution.args
+                            )
+                            spec_kwargs["env_keys_allowlist"] = list(
+                                parsed_connection.auth.secret_keys
+                            )
+                    except Exception:
+                        raise MCPSandboxError("invalid_executable_connection_spec")
+            elif transport == InstallTransport.LOCAL:
                 local_pkg = resolve_local_mcp_package(server_id)
                 spec_kwargs.update({
                     "package": str(local_pkg.package_dir),

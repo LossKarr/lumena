@@ -378,6 +378,9 @@ def _catalog_add_input_from_phase24(plan: Any) -> Any:
         version=version,
         trust_score=trust_score,
         capability_tags=capability_tags,
+        connection_spec=_read_phase24_action_attr(
+            plan, "catalog_connection_spec"
+        ),
     )
 
 

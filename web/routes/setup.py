@@ -164,7 +164,10 @@ def _is_setup_complete() -> bool:
 
 
 @router.get("/api/setup/status")
-async def setup_status(preview: str = "0"):
+async def setup_status(
+    preview: str = "0",
+    _: None = Depends(deps.verify_setup_local_request),
+):
     """Returns whether the setup wizard should be displayed."""
     is_preview = preview == "1"
     needs = not _is_setup_complete() or deps.setup_only_mode
@@ -175,7 +178,7 @@ async def setup_status(preview: str = "0"):
 
 
 @router.get("/api/setup/schema")
-async def setup_schema():
+async def setup_schema(_: None = Depends(deps.verify_setup_local_request)):
     """Returns the config schema grouped by setup step, with rich help content."""
     steps = []
 
@@ -987,7 +990,7 @@ async def setup_schema():
 
 
 @router.post("/api/setup/complete")
-async def setup_complete(request: Request, _: None = Depends(deps.verify_admin_token)):
+async def setup_complete(request: Request, _: None = Depends(deps.verify_setup_local_request)):
     """Save setup wizard choices to .env. Blocked in preview mode."""
     # P0.3.3: Bootstrap guard — setup_complete only from localhost
     client_host = request.client.host if request.client else ""
@@ -1090,16 +1093,35 @@ async def setup_complete(request: Request, _: None = Depends(deps.verify_admin_t
 
     # P0: Re-init le core LLM pour que le chat web fonctionne immédiatement
     restart_needed = False
+    runtime_error = ""
     try:
         from src.core import initialize_lumena
         deps.lumena = await initialize_lumena()
-        if deps.lumena and deps.lumena.is_initialized:
-            deps.setup_only_mode = False
+        runtime_ready = bool(deps.lumena and deps.lumena.is_initialized)
+        deps.setup_only_mode = not runtime_ready
+        if runtime_ready:
             logger.info("[setup] Lumena core réinitialisée — chat web opérationnel")
         else:
+            runtime_error = (
+                "Le modèle choisi n'est pas accessible. Vérifiez la clé du "
+                "fournisseur ou l'installation du modèle local."
+            )
             logger.warning("[setup] LLM toujours indisponible après setup")
     except Exception as e:
-        logger.error(f"[setup] Réinitialisation core échouée: {e}")
+        # Le singleton peut avoir été créé avant l'exception. Le conserver dans
+        # deps permet à /api/model/switch de retenter proprement l'initialisation.
+        try:
+            from src.core import get_lumena
+
+            deps.lumena = get_lumena()
+        except Exception:
+            deps.lumena = None
+        deps.setup_only_mode = True
+        runtime_error = (
+            "La configuration a été enregistrée, mais le cœur Lumena n'a pas "
+            "pu démarrer. Corrigez le modèle ou sa clé puis réessayez."
+        )
+        logger.exception("[setup] Réinitialisation core échouée: {}", e)
 
     # P0: Détecter si des clés boot-time ont VRAIMENT CHANGÉ
     for k in _RESTART_KEYS:
@@ -1111,7 +1133,11 @@ async def setup_complete(request: Request, _: None = Depends(deps.verify_admin_t
     logger.info(f"[setup] First-launch setup complete. {len(filtered) - 1} params written.")
 
     # P0.7: Report whether LLM is actually available
-    llm_ready = not deps.setup_only_mode
+    llm_ready = bool(
+        not deps.setup_only_mode
+        and deps.lumena is not None
+        and getattr(deps.lumena, "is_initialized", False)
+    )
 
     return {
         "success": True,
@@ -1119,13 +1145,21 @@ async def setup_complete(request: Request, _: None = Depends(deps.verify_admin_t
         "updated": list(filtered.keys()),
         "restart_needed": restart_needed,
         "llm_ready": llm_ready,
+        "runtime_error": runtime_error if not llm_ready else "",
         "admin_token": filtered.get("LUMENA_ADMIN_TOKEN", ""),
-        "message": "Configuration sauvegardée ! Lumena est prête.",
+        "message": (
+            "Configuration sauvegardée ! Lumena est prête."
+            if llm_ready
+            else "Configuration sauvegardée, initialisation du modèle incomplète."
+        ),
     }
 
 
 @router.get("/api/setup/ollama-models")
-async def get_ollama_models(request: Request):
+async def get_ollama_models(
+    request: Request,
+    _: None = Depends(deps.verify_setup_local_request),
+):
     """Liste les modèles Ollama installés + catalogue complet disponible."""
     client_host = request.client.host if request.client else ""
     if client_host not in ("127.0.0.1", "::1", "localhost"):
@@ -1191,7 +1225,7 @@ async def get_ollama_models(request: Request):
 
 
 @router.post("/api/setup/ollama-pull")
-async def pull_ollama_model(request: Request, _: None = Depends(deps.verify_admin_token)):
+async def pull_ollama_model(request: Request, _: None = Depends(deps.verify_setup_local_request)):
     """Lance ollama pull pour un modèle donné. Streaming SSE de la progression."""
     client_host = request.client.host if request.client else ""
     if client_host not in ("127.0.0.1", "::1", "localhost"):
@@ -1242,7 +1276,7 @@ async def pull_ollama_model(request: Request, _: None = Depends(deps.verify_admi
 
 
 @router.post("/api/setup/validate-path")
-async def validate_workspace_path(request: Request, _: None = Depends(deps.verify_admin_token)):
+async def validate_workspace_path(request: Request, _: None = Depends(deps.verify_setup_local_request)):
     """Check if a workspace path is usable — exists, is a directory, and is writable."""
     # P0.3: Guard localhost — empêche l'énumération de chemins depuis le réseau
     client_host = request.client.host if request.client else ""
@@ -1290,7 +1324,7 @@ async def validate_workspace_path(request: Request, _: None = Depends(deps.verif
 
 
 @router.post("/api/setup/test-key")
-async def test_api_key(request: Request, _: None = Depends(deps.verify_admin_token)):
+async def test_api_key(request: Request, _: None = Depends(deps.verify_setup_local_request)):
     """Validate an API key — format check then a real lightweight HTTP probe."""
     # P0.3: Guard localhost — empêche l'énumération de clés depuis le réseau
     client_host = request.client.host if request.client else ""

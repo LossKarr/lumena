@@ -243,6 +243,12 @@ _PROVIDER_DEFAULTS: Dict[str, ModelBehaviorProfile] = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
+    "claude-sonnet-5.5": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,
+        timeout_multiplier=1.0, compact_ctx_threshold=0.82,
+    ),
     "claude-opus-5.5": ModelBehaviorProfile(
         parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
         loop_risk="low", tool_call_quality="excellent", react_stability="stable",
@@ -256,6 +262,12 @@ _MODEL_OVERRIDES: Dict[str, ModelBehaviorProfile] = {
         timeout_multiplier=1.1, compact_ctx_threshold=0.82,
     ),
     "gpt-6-sol": ModelBehaviorProfile(
+        parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
+        loop_risk="low", tool_call_quality="excellent", react_stability="stable",
+        sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,
+        timeout_multiplier=1.0, compact_ctx_threshold=0.82,
+    ),
+    "gpt-6.1-sol": ModelBehaviorProfile(
         parser_severity="strict", thought_leak_risk="low", action_inline_risk="low",
         loop_risk="low", tool_call_quality="excellent", react_stability="stable",
         sub_agent_stability="stable", empty_response_risk="rare", retry_on_empty=False,

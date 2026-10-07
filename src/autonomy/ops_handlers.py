@@ -61,6 +61,8 @@ HANDLER_TIMEOUTS = {
     "discord_morning": 120,  # 2 min max (animation Discord)
     "twitter_engagement": 180,  # 3 min max (tweets + réponses)
     "generate_video": 300,  # 5 min max (rendu vidéo Docker)
+    "personal_training_tick": 30,
+    "personal_learning_cycle": 600,
 }
 
 # ── Max backlog : skip si > N tâches en retard ───────────────────────
@@ -2478,6 +2480,31 @@ async def handler_twitter_engagement() -> Dict[str, Any]:
     return result
 
 
+async def handler_personal_training_tick() -> Dict[str, Any]:
+    """Arbitre un run personnel sans bloquer la boucle asyncio."""
+    try:
+        from src.training.personal.scheduler import PersonalTrainingScheduler
+        result = await asyncio.to_thread(PersonalTrainingScheduler(_DATA / "personal_model").tick)
+    except Exception as exc:
+        result = {"status": "error", "error_code": type(exc).__name__}
+        logger.warning("Personal training scheduler tick failed: {}", type(exc).__name__)
+    await _aappend_metric("personal_training_tick", result)
+    return result
+
+
+async def handler_personal_learning_cycle() -> Dict[str, Any]:
+    """Curate and judge a small batch in a worker thread."""
+    try:
+        from src.training.personal.learning_cycle import PersonalLearningCycle
+        report = await asyncio.to_thread(PersonalLearningCycle(_DATA / "personal_model").run)
+        result = {"status": "completed", **report.to_dict()}
+    except Exception as exc:
+        result = {"status": "error", "error_code": type(exc).__name__}
+        logger.warning("Personal learning cycle failed: {}", type(exc).__name__)
+    await _aappend_metric("personal_learning_cycle", result)
+    return result
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  REGISTRE DES HANDLERS (pour import facile par le scheduler)
 # ═══════════════════════════════════════════════════════════════════════
@@ -2500,6 +2527,8 @@ OPS_HANDLERS = {
     "workspace_archive": handler_workspace_archive,
     "discord_morning": handler_discord_morning,
     "twitter_engagement": handler_twitter_engagement,
+    "personal_training_tick": handler_personal_training_tick,
+    "personal_learning_cycle": handler_personal_learning_cycle,
 }
 # ──────────────────────────────────────────────────────────────────────────────
 # © 2025-2026 LossKarr — Lumena Project

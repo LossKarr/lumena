@@ -433,7 +433,7 @@ def main() -> None:
         print(f"[PORT] Mode auto — port {port} sélectionné")
     else:
         port = int(_raw_port)
-    host = os.getenv("LUMENA_HOST", "0.0.0.0")
+    host = os.getenv("LUMENA_HOST", "127.0.0.1")
 
     # ── Launch server in background ──
     srv = threading.Thread(target=_start_server, args=(host, port), daemon=True)

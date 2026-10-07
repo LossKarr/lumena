@@ -32,7 +32,7 @@ def test_env_defaults_safe():
     from web.routes.config import _CONFIG_SCHEMA
 
     schema = {entry["key"]: entry for entry in _CONFIG_SCHEMA}
-    assert schema["LUMENA_HOST"]["default"] == "0.0.0.0"
+    assert schema["LUMENA_HOST"]["default"] == "127.0.0.1"
     assert schema["LUMENA_PORT"]["default"] == "8080"
     assert schema["LUMENA_SANDBOX_MEMORY"]["default"] == "512m"
     assert schema["LUMENA_SANDBOX_MODE"]["default"] in {"auto", "always", "off"}

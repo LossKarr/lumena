@@ -4,9 +4,11 @@ import json as _json
 import importlib
 import os
 import threading
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
-from pathlib import Path
+from io import StringIO
 
+from dotenv import dotenv_values
 from fastapi import APIRouter, Depends, HTTPException, Request
 from filelock import FileLock
 from loguru import logger
@@ -15,6 +17,11 @@ from web.routes.deps import verify_admin_token
 
 from src.utils.paths import ROOT_DIR, IDENTITY_JSON, MEMORY_MD, DATA_DIR, ALERTS_DIR
 from src.llm.providers import AVAILABLE_MODELS as _AVAILABLE_MODELS
+from src.voice.v2.performance_profiles import (
+    get_voice_performance_profile,
+    profile_compatibility,
+    serialize_voice_performance_profiles,
+)
 
 _TEXT_MODEL_OPTIONS = [
     name for name, model in _AVAILABLE_MODELS.items()
@@ -88,7 +95,7 @@ _CONFIG_SCHEMA: list[dict] = [
      "options": ["", "none", "low", "medium", "high", "xhigh"],
      "default": "",
      "hint": "Option envoyee aux modeles OpenAI modernes (GPT-5.x/o-series). Vide = defaut API, medium pour GPT-5.5."},
-    {"key": "LUMENA_DESKTOP_ZOOM", "label": "Zoom Desktop", "group": "Interface", "type": "number", "default": "0.90", "min": 0.67, "max": 1.25,
+    {"key": "LUMENA_DESKTOP_ZOOM", "label": "Zoom Desktop", "group": "Interface", "type": "number", "default": "0.90", "min": 0.67, "max": 1.25, "step": "0.01",
      "hint": "Zoom applique uniquement a la fenetre pywebview desktop. 0.90 = interface moins grosse, 1.0 = taille navigateur normale."},
     {"key": "LUMENA_DESKTOP_SHOW_CONSOLE", "label": "Console Desktop visible au demarrage", "group": "Interface", "type": "bool", "default": "0",
      "restart": True,
@@ -99,6 +106,7 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "LUMENA_DEFAULT_MODEL", "label": "Modèle par défaut", "group": "LLM", "type": "select",
      "options": _TEXT_MODEL_OPTIONS,
      "default": "deepseek-flash",
+     "restart": True,
      "hint": "Modèle LLM actif utilisé par défaut. DeepSeek Flash offre un bon rapport qualité/prix. Les cerveaux spécialisés ci-dessous peuvent surcharger ce choix."},
     {"key": "LUMENA_CODE_AUTOSWITCH_REASONER", "label": "Compatibilité auto-switch DeepSeek V3 → Reasoner", "group": "LLM", "type": "bool", "default": "0",
      "hint": "Désactivé : DeepSeek Chat et Reasoner V3 sont retirés. Conservé uniquement pour relire une ancienne configuration ; Lumena utilise DeepSeek Flash sans bascule automatique."},
@@ -108,8 +116,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Nombre max de fichiers dont le contenu est donné à l'Architect pour planifier. 4 = rapide, focus (défaut). 8-12 = refactors multi-fichiers."},
     {"key": "LUMENA_ARCHITECT_TIMEOUT", "label": "Architect timeout (sec)", "group": "LLM", "type": "number", "default": "600", "min": 60, "max": 3600,
      "hint": "Timeout max de la phase Architect (plan). 600s = 10 min et couvre les modèles à raisonnement long."},
-    {"key": "LUMENA_CODE_AGENT_MAX_ITER", "label": "CodeAgent max itérations", "group": "LLM", "type": "number", "default": "50", "min": 5, "max": 200,
-     "hint": "Nombre max d'itérations THOUGHT→ACTION→OBSERVATION du CodeAgent avant arrêt forcé. 50 convient pour la majorité. Augmenter pour refactors très longs."},
+    {"key": "LUMENA_CODE_AGENT_MAX_ITER", "label": "CodeAgent max itérations", "group": "LLM", "type": "number", "default": "50", "min": 5,
+     "hint": "Nombre max d'itérations THOUGHT→ACTION→OBSERVATION du CodeAgent avant arrêt forcé. Tout entier à partir de 5 est accepté ; une valeur très élevée augmente la durée et la consommation."},
     {"key": "LUMENA_CODE_AGENT_MAX_OUTER_RETRIES", "label": "CodeAgent retries externes", "group": "LLM", "type": "number", "default": "3", "min": 1, "max": 10,
      "hint": "Nombre de relances complètes du CodeAgent si la boucle interne échoue (budget total ≈ max_iter × max_outer_retries)."},
     {"key": "LUMENA_CODE_AGENT_CONTEXT_WINDOW", "label": "CodeAgent fenêtre contexte (tokens)", "group": "LLM", "type": "number", "default": "65536", "min": 8192, "max": 1048576,
@@ -231,8 +239,8 @@ _CONFIG_SCHEMA: list[dict] = [
      "options": ["1", "0"],
      "default": "1",
      "hint": "Si actif, la dernière observation de read_file / grep_search / web_fetch / list_directory reste intacte (pas de microcompaction). Indispensable pour raisonner sur des contenus longs."},
-    {"key": "LUMENA_MAX_REACT_ITERATIONS", "label": "Max itérations ReAct", "group": "LLM", "type": "number", "default": "25", "min": 1, "max": 100,
-     "hint": "Nombre maximum de cycles THOUGHT→ACTION→OBSERVATION avant arrêt forcé. 25 convient pour la majorité des tâches."},
+    {"key": "LUMENA_MAX_REACT_ITERATIONS", "label": "Max itérations ReAct", "group": "LLM", "type": "number", "default": "25", "min": 1,
+     "hint": "Nombre maximum de cycles THOUGHT→ACTION→OBSERVATION avant arrêt forcé. Tout entier positif est accepté ; une valeur très élevée augmente la durée et la consommation."},
     {"key": "LUMENA_MIN_REACT_ITERATIONS", "label": "Min itérations ReAct", "group": "LLM", "type": "number", "default": "8", "min": 1, "max": 50,
      "hint": "Plancher garanti d'itérations. Empêche les boucles trop courtes même si un appel interne réduit le max."},
     {"key": "LUMENA_REACT_TIMEOUT", "label": "Timeout global ReAct (sec)", "group": "LLM", "type": "number", "default": "3600", "min": 60, "max": 86400,
@@ -267,7 +275,7 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Démarre automatiquement l'écoute micro au lancement. 0 = activation manuelle uniquement."},
     {"key": "LUMENA_VOICE_V2_AUTO", "label": "Voice V2 officielle", "group": "Voix", "type": "bool", "default": "0",
      "hint": "Active Voice V2 derrière un flag. Désactivé = backend vocal historique inchangé."},
-    {"key": "LUMENA_VOICE_V2_MODE", "label": "Mode Voice V2", "group": "Voix", "type": "select", "options": ["chat", "agent"], "default": "chat",
+    {"key": "LUMENA_VOICE_V2_MODE", "label": "Mode Voice V2", "group": "Voix", "type": "select", "options": ["chat", "agent"], "default": "chat", "restart": True,
      "hint": "chat = conversation officielle | agent = ReAct et outils officiels. Le canal voix ne change jamais le mode implicitement."},
     {"key": "LUMENA_VOICE_V2_FALLBACK_LEGACY", "label": "Fallback voix historique", "group": "Voix", "type": "bool", "default": "1",
      "hint": "Après épuisement des reprises Voice V2, bascule vers le backend historique sans chevauchement audio."},
@@ -287,16 +295,50 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Chemin du profil vocal local (diction, prosodie, référence consentie). Vide = profil Lumena intégré. Redémarrage requis."},
     {"key": "LUMENA_VOICE_INPUT_DEVICE", "label": "Micro Voice V2", "group": "Voix", "type": "number", "default": "", "min": 0, "max": 128,
      "hint": "Index PyAudio du micro. Vide = périphérique système par défaut."},
+    {"key": "LUMENA_VOICE_ACOUSTIC_PROFILE", "label": "Profil acoustique", "group": "Voix", "type": "select", "options": ["hands_free", "headset", "push_to_talk"], "default": "hands_free", "restart": True,
+     "hint": "Adapte les gardes d'écho au haut-parleur, au casque ou à l'appui-pour-parler. L'état AEC réel reste visible dans Diagnostic."},
+    {"key": "LUMENA_VOICE_VAD_ENGINE", "label": "Détection de parole", "group": "Voix", "type": "select", "options": ["auto", "silero", "energy"], "default": "auto", "restart": True,
+     "hint": "auto utilise Silero local s'il est installé et revient au seuil énergétique sans téléchargement."},
+    {"key": "LUMENA_VOICE_VAD_SPEECH_THRESHOLD", "label": "Seuil parole VAD", "group": "Voix", "type": "number", "default": "0.5", "min": 0.05, "max": 0.99, "step": 0.01, "restart": True,
+     "hint": "Probabilité minimale pour le VAD neuronal. Sans Silero, ce réglage reste inactif et le panneau l'indique."},
+    {"key": "LUMENA_VOICE_ACTIVATION_MODE", "label": "Activation du micro", "group": "Voix", "type": "select", "options": ["wake_phrase", "push_to_talk", "open_mic"], "default": "wake_phrase", "restart": True,
+     "hint": "wake_phrase = la transcription locale doit contenir la phrase d'activation ; push_to_talk = bouton requis ; open_mic = écoute ambiante explicite."},
+    {"key": "LUMENA_VOICE_WAKE_PHRASE", "label": "Phrase d'activation", "group": "Voix", "type": "text", "default": "Lumena", "restart": True,
+     "hint": "Phrase reconnue localement avant tout envoi au raisonnement. Ce filtre STT local n'est pas une authentification vocale."},
+    {"key": "LUMENA_VOICE_WAKE_MODEL", "label": "Modèle wake-word local", "group": "Voix", "type": "text", "default": "", "restart": True,
+     "hint": "Chemin d'un modèle fourni par un Voice Pack signé. Vide conserve la phrase STT locale."},
+    {"key": "LUMENA_VOICE_WAKE_THRESHOLD", "label": "Seuil wake-word", "group": "Voix", "type": "number", "default": "0.65", "min": 0.05, "max": 0.99, "step": 0.01, "restart": True,
+     "hint": "Seuil du modèle acoustique local lorsqu'un pack compatible est actif."},
+    {"key": "LUMENA_VOICE_CONVERSATION_WINDOW_S", "label": "Fenêtre après activation (sec)", "group": "Voix", "type": "number", "default": "20", "min": 1, "max": 300, "restart": True,
+     "hint": "Durée pendant laquelle les phrases suivantes sont acceptées sans répéter la phrase d'activation."},
     {"key": "LUMENA_TTS_AUTO", "label": "TTS automatique", "group": "Voix", "type": "bool", "default": "0",
      "hint": "Lit automatiquement les réponses à voix haute. 0 = texte uniquement sauf demande explicite."},
-    {"key": "LUMENA_TTS_MODE", "label": "Mode TTS (fast/premium/offline)", "group": "Voix", "type": "select", "options": ["fast", "premium", "offline"], "default": "premium",
-     "hint": "fast = pyttsx3 local rapide | premium = edge-tts Microsoft (meilleure qualité) | offline = Piper ONNX local"},
+    {"key": "LUMENA_TTS_MODE", "label": "Mode TTS (fast/premium/offline)", "group": "Voix", "type": "select", "options": ["fast", "premium", "offline"], "default": "offline",
+     "hint": "Ordre de préférence des moteurs. Voice V2 reste local tant que Moteur TTS réseau est désactivé."},
+    {"key": "LUMENA_VOICE_CLOUD_ALLOWED", "label": "Moteur TTS réseau", "group": "Voix", "type": "bool", "default": "0", "restart": True,
+     "hint": "Désactivé par défaut : la parole Voice V2 reste locale. Activé : Edge-TTS peut être utilisé."},
+    {"key": "LUMENA_VOICE_IMPROVEMENT_OPT_IN", "label": "Partager des données vocales", "group": "Voix", "type": "bool", "default": "0", "restart": True,
+     "hint": "Consentement séparé pour un futur corpus d'amélioration. Aucun audio ni transcript n'est collecté quand cette option est désactivée."},
+    {"key": "LUMENA_XTTS_ALLOW_RESTRICTED", "label": "XTTS-v2 à licence restreinte", "group": "Voix", "type": "bool", "default": "0", "restart": True,
+     "hint": "Usage non commercial uniquement (Coqui Public Model License), avec consentement explicite de la voix de référence."},
+    {"key": "LUMENA_TTS_WORKER_TIMEOUT_S", "label": "Timeout worker TTS (sec)", "group": "Voix", "type": "number", "default": "90", "min": 5, "max": 600, "restart": True,
+     "hint": "Isole le moteur vocal local dans un processus borné. Un timeout arrête le worker sans figer Lumena."},
     {"key": "LUMENA_STT_MODEL", "label": "Modèle Whisper", "group": "Voix", "type": "select", "options": ["tiny", "base", "small", "medium", "large-v3-turbo"], "default": "large-v3-turbo",
      "hint": "Taille du modèle Whisper pour la reconnaissance vocale. Plus gros = plus précis mais plus lent et plus de VRAM."},
     {"key": "LUMENA_STT_DEVICE", "label": "Calcul Whisper", "group": "Voix", "type": "select", "options": ["cuda", "cpu"], "default": "cuda", "restart": True,
      "hint": "cuda = GPU avec fallback CPU automatique si les bibliothèques NVIDIA manquent ; cpu = local CPU uniquement."},
     {"key": "LUMENA_STT_COMPUTE", "label": "Précision Whisper", "group": "Voix", "type": "select", "options": ["float16", "int8", "float32"], "default": "float16", "restart": True,
      "hint": "float16 pour CUDA ; int8 recommandé sur CPU. Le fallback CUDA utilise toujours CPU int8."},
+    # LOT VOICE-1 (29/09) : le defaut etait « auto », introduit par Voice V3 avec le
+    # multilingue. La backup qui fonctionnait forcait `fr`. « auto » reste propose,
+    # mais comme un CHOIX explicite et non plus comme valeur par defaut.
+    {"key": "LUMENA_STT_LANGUAGE", "label": "Langue d'écoute", "group": "Voix", "type": "select", "options": ["auto", "fr", "en", "es"], "default": "fr", "restart": True,
+     "hint": "Langue d'écoute forcée. « auto » fait deviner Whisper à chaque "
+             "énoncé : mesuré le 28/09, « Romance service » au lieu de « Lumena »."},
+    {"key": "LUMENA_STT_PARTIAL_EVERY_MS", "label": "Intervalle partiel STT (ms)", "group": "Voix", "type": "number", "default": "0", "min": 0, "max": 5000, "restart": True,
+     "hint": "0 protège la fluidité en désactivant les transcriptions partielles. Une valeur non nulle est réservée aux diagnostics avancés."},
+    {"key": "LUMENA_STT_TIMEOUT_S", "label": "Timeout STT local (sec)", "group": "Voix", "type": "number", "default": "45", "min": 2, "max": 300, "restart": True,
+     "hint": "Borne chaque transcription locale ; un dépassement reste visible dans le diagnostic et ne bloque pas la boucle événementielle."},
     {"key": "LUMENA_CHAT_DICTATION_MAX_S", "label": "Durée max dictée chat (sec)", "group": "Voix", "type": "number", "default": "60", "min": 5, "max": 300,
      "hint": "Durée maximale d'une prise micro depuis le bouton du compositeur."},
     {"key": "LUMENA_CHAT_DICTATION_SILENCE_MS", "label": "Silence final dictée (ms)", "group": "Voix", "type": "number", "default": "1800", "min": 800, "max": 5000,
@@ -482,7 +524,7 @@ _CONFIG_SCHEMA: list[dict] = [
     {"key": "LUMENA_PORT", "label": "Port du serveur web", "group": "Serveur", "type": "number", "default": "8080", "min": 1024, "max": 65535,
      "restart": True,
      "hint": "Port d'écoute du serveur FastAPI. 8080 par défaut. Nécessite un redémarrage."},
-    {"key": "LUMENA_HOST", "label": "Host du serveur web", "group": "Serveur", "type": "text", "default": "0.0.0.0",
+    {"key": "LUMENA_HOST", "label": "Host du serveur web", "group": "Serveur", "type": "text", "default": "127.0.0.1",
      "restart": True,
      "hint": "Adresse d'écoute. 0.0.0.0 = accessible réseau. 127.0.0.1 = local uniquement. Nécessite un redémarrage."},
     {"key": "LUMENA_CORS_ORIGINS", "label": "CORS origins autorisées", "group": "Serveur", "type": "text", "default": "",
@@ -610,8 +652,11 @@ _CONFIG_SCHEMA: list[dict] = [
      "type": "text", "default": "",
      "hint": "Override de la policy vision (ex: anthropic,google,openai). Vide = policy défaut selon le mode."},
     {"key": "LUMENA_CU_OLLAMA_VISION", "label": "Vision Ollama en mode cloud/hybrid", "group": "Computer Use",
-     "type": "bool", "default": "0",
-     "hint": "Ajoute Ollama en queue de la cascade vision même en mode cloud ou hybrid. Toujours actif en local."},
+     "type": "bool", "default": "1",
+     "hint": "Ajoute Ollama en QUEUE de la cascade vision (jamais devant un cloud disponible). "
+             "Actif par défaut depuis le 29/09 : les clouds étant à sec (429/403), la cascade "
+             "tombait sur l'OCR — qui lit du texte mais ne VOIT rien — alors que minicpm-v "
+             "et llava sont installés et prouvés. Toujours actif en local."},
     {"key": "LUMENA_CU_MAX_ITERATIONS", "label": "Max itérations agent CU", "group": "Computer Use",
      "type": "number", "default": "30", "min": 5, "max": 100,
      "hint": "Nombre maximum de tours de boucle pour l'agent Computer Use autonome."},
@@ -620,10 +665,18 @@ _CONFIG_SCHEMA: list[dict] = [
      "hint": "Timeout global de l'agent Computer Use en secondes (600 = 10 min)."},
     {"key": "REMOTION_LICENSE_KEY", "label": "Remotion License Key", "group": "Vidéo", "type": "secret", "default": "",
      "hint": "Optionnel. Gratuit pour individus et orgas ≤3 personnes. Requis pour entreprises >3. Obtenir sur remotion.pro. Laisser vide = mode gratuit."},
-    {"key": "LUMENA_VIDEO_DOCKER_IMAGE", "label": "Image Docker vidéo", "group": "Vidéo", "type": "text", "default": "node:20-slim",
-     "hint": "Image Docker pour la génération vidéo Remotion. Doit contenir Node.js ≥16 et npm."},
+    {"key": "LUMENA_VIDEO_DOCKER_IMAGE", "label": "Image Docker vidéo", "group": "Vidéo", "type": "text", "default": "lumena-remotion-runtime:4.0.530-node20.19.5-v2",
+     "hint": "Runtime Remotion construit automatiquement par Lumena. Une image personnalisée doit inclure Node, npm et les bibliothèques Chrome Headless Shell."},
     {"key": "LUMENA_VIDEO_RENDER_TIMEOUT", "label": "Timeout rendu vidéo (sec)", "group": "Vidéo", "type": "number", "default": "300",
      "hint": "Timeout maximum pour le rendu d'une vidéo. Augmenter pour les vidéos longues (>60s)."},
+    {"key": "LUMENA_VIDEO_INSTALL_TIMEOUT", "label": "Timeout installation vidéo (sec)", "group": "Vidéo", "type": "number", "default": "900", "min": 60, "max": 3600,
+     "hint": "Délai réservé au premier npm ci Docker. Il est distinct du timeout de rendu."},
+    {"key": "LUMENA_VIDEO_DOCKER_MEMORY", "label": "Mémoire Docker vidéo", "group": "Vidéo", "type": "text", "default": "2g",
+     "hint": "Mémoire du conteneur Remotion. 2g convient au rendu Chromium 1080p."},
+    {"key": "LUMENA_VIDEO_DOCKER_CPUS", "label": "CPU Docker vidéo", "group": "Vidéo", "type": "number", "default": "2", "min": 1, "max": 16,
+     "hint": "Nombre de CPU autorisés pour le rendu vidéo."},
+    {"key": "LUMENA_VIDEO_DOCKER_PIDS_LIMIT", "label": "Processus Docker vidéo", "group": "Vidéo", "type": "number", "default": "512", "min": 64, "max": 2048,
+     "hint": "Limite de processus pour Chromium et Remotion."},
     {"key": "LUMENA_VIDEO_GPU", "label": "Accélération GPU vidéo", "group": "Vidéo", "type": "bool", "default": "0",
      "hint": "Activer le rendu GPU (NVIDIA). Nécessite nvidia-container-toolkit + Docker runtime nvidia. Accélère le rendu 3-5×."},
     # ── WhatsApp (Meta Cloud API) ──
@@ -656,7 +709,7 @@ _CONFIG_SCHEMA: list[dict] = [
      "default": "deepseek-flash",
      "hint": "Modèle LLM actif utilisé pour scorer la qualité des conversations avant fine-tuning. DeepSeek Flash est rapide et économique."},
     {"key": "LUMENA_JUDGE_THRESHOLD", "label": "Seuil de validation judge",
-     "group": "Fine-tuning", "type": "number", "default": "6.5", "min": 0, "max": 10,
+     "group": "Fine-tuning", "type": "number", "default": "6.5", "min": 0, "max": 10, "step": "0.1",
      "hint": "Score minimum (0-10) pour qu'une conversation entre dans le dataset d'entraînement. 6.5 par défaut. Augmenter pour plus de sélectivité."},
     {"key": "LUMENA_FINETUNING_AUTO_JUDGE", "label": "Scoring automatique activé",
      "group": "Fine-tuning", "type": "bool", "default": "1",
@@ -796,6 +849,7 @@ _EXPERT_KEYS: frozenset = frozenset({
     "LUMENA_DATA_DIR", "LUMENA_WORKSPACE_DIR", "LUMENA_PUBLIC_BASE_URL", "LUMENA_UPLOADS_DIR",
     "LUMENA_INSTANCE_ID",
     "LUMENA_SETUP_COMPLETE", "LUMENA_SANDBOX_MODE",
+    "LUMENA_XTTS_ALLOW_RESTRICTED",
 })
 for _e in _CONFIG_SCHEMA:
     if _e["key"] in _SIMPLE_KEYS:
@@ -806,24 +860,18 @@ for _e in _CONFIG_SCHEMA:
         _e["level"] = "avancé"
 
 
+def _parse_env_text(text: str) -> dict[str, str]:
+    """Parse .env values without interpolation, preserving literal user data."""
+    parsed = dotenv_values(stream=StringIO(text), interpolate=False)
+    return {str(key): "" if value is None else str(value) for key, value in parsed.items()}
+
+
 def _read_env_file() -> dict[str, str]:
     env_path = _PROJECT_ROOT / ".env"
-    result: dict[str, str] = {}
     if not env_path.exists():
-        return result
-    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        val = val.strip()
-        # Strip quotes added by _dotenv_quote / python-dotenv
-        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
-            val = val[1:-1]
-        result[key.strip()] = val
-    return result
+        return {}
+    raw = env_path.read_bytes()
+    return _parse_env_text(raw.decode("utf-8-sig"))
 
 
 def _read_rules_fallbacks() -> dict[str, str]:
@@ -892,34 +940,53 @@ def _write_env_values(updates: dict[str, str]) -> None:
         backup_path = _ENV_BACKUP_DIR / f".env.{timestamp}"
         shutil.copy2(env_path, backup_path)
         try:
-            lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            remaining = dict(updates)
-            new_lines: list[str] = []
-            for line in lines:
-                stripped = line.strip()
+            raw = env_path.read_bytes()
+            had_bom = raw.startswith(b"\xef\xbb\xbf")
+            text = raw.decode("utf-8-sig")
+            before = _parse_env_text(text)
+            newline = "\r\n" if "\r\n" in text else "\n"
+            lines = text.splitlines(keepends=True)
+            normalized_updates = {str(key): str(value) for key, value in updates.items()}
+
+            # A duplicate key is legal in dotenv and its last active occurrence wins.
+            # Update that effective line only; every historical/commented line remains byte-stable.
+            target_lines: dict[str, int] = {}
+            for index, line in enumerate(lines):
+                stripped = line.rstrip("\r\n").strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
                     key = stripped.split("=", 1)[0].strip()
-                    if key in remaining:
-                        new_lines.append(f"{key}={_dotenv_quote(remaining.pop(key))}")
-                        continue
-                elif stripped.startswith("#") and "=" in stripped:
-                    # Match commented-out lines like "# KEY=" or "# KEY=value"
-                    uncommented = stripped.lstrip("#").strip()
-                    key = uncommented.split("=", 1)[0].strip()
-                    if key in remaining:
-                        new_lines.append(f"{key}={_dotenv_quote(remaining.pop(key))}")
-                        continue
-                new_lines.append(line)
-            for key, val in remaining.items():
-                new_lines.append(f"{key}={_dotenv_quote(val)}")
-            content = "\n".join(new_lines) + "\n"
+                    if key in normalized_updates:
+                        target_lines[key] = index
+
+            new_lines = list(lines)
+            remaining = dict(normalized_updates)
+            for key, index in target_lines.items():
+                original = lines[index]
+                ending = original[len(original.rstrip("\r\n")):]
+                new_lines[index] = f"{key}={_dotenv_quote(remaining.pop(key))}{ending}"
+
+            if remaining:
+                if new_lines and not new_lines[-1].endswith(("\n", "\r")):
+                    new_lines.append(newline)
+                for key, value in remaining.items():
+                    new_lines.append(f"{key}={_dotenv_quote(value)}{newline}")
+
+            content = "".join(new_lines)
             if not content.strip():
                 raise ValueError("Contenu .env vide après merge — abandon")
-            tmp_path.write_text(content, encoding="utf-8")
-            written = tmp_path.read_text(encoding="utf-8")
-            for k in updates:
-                if k not in written:
-                    raise ValueError(f"Vérification échouée : clé {k} absente du fichier temporaire")
+            payload = content.encode("utf-8")
+            if had_bom:
+                payload = b"\xef\xbb\xbf" + payload
+            tmp_path.write_bytes(payload)
+
+            written = tmp_path.read_bytes().decode("utf-8-sig")
+            after = _parse_env_text(written)
+            for key, expected in normalized_updates.items():
+                if after.get(key) != expected:
+                    raise ValueError(f"Vérification échouée pour la clé {key}")
+            for key, expected in before.items():
+                if key not in normalized_updates and after.get(key) != expected:
+                    raise ValueError(f"Clé non ciblée modifiée : {key}")
             tmp_path.replace(env_path)
             existing = sorted(_ENV_BACKUP_DIR.glob(".env.*"), key=lambda p: p.stat().st_mtime)
             for old in existing[:-10]:
@@ -953,6 +1020,68 @@ async def get_config():
     for item in items:
         groups.setdefault(item["group"], []).append(item)
     return {"success": True, "items": items, "groups": groups}
+
+
+def _voice_performance_hardware() -> dict:
+    """Sonde locale isolée pour les profils ; aucune donnée audio n'est capturée."""
+    from src.voice.v2.prewarm import detect_voice_hardware
+
+    return detect_voice_hardware()
+
+
+@router.get(
+    "/api/voice/performance-profiles",
+    dependencies=[Depends(verify_admin_token)],
+)
+async def get_voice_performance_profiles():
+    """Catalogue ordonné, compatibilité réelle et profil actif sans secret."""
+    return serialize_voice_performance_profiles(
+        _read_env_file(), _voice_performance_hardware()
+    )
+
+
+@router.post(
+    "/api/voice/performance-profiles/{profile_id}",
+    dependencies=[Depends(verify_admin_token)],
+)
+async def apply_voice_performance_profile(profile_id: str):
+    """Applique atomiquement un profil vocal borné et laisse le reste du .env intact."""
+    profile = get_voice_performance_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profil vocal inconnu")
+    compatible, reasons = profile_compatibility(
+        profile, _voice_performance_hardware()
+    )
+    if not compatible:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "voice_profile_incompatible",
+                "message": "Ce profil n'est pas compatible avec ce matériel.",
+                "reasons": reasons,
+            },
+        )
+
+    schema_map = {item["key"]: item for item in _CONFIG_SCHEMA}
+    updates, errors = _validate_config_updates(dict(profile.settings), schema_map)
+    if errors:
+        raise HTTPException(status_code=500, detail=" | ".join(errors))
+    try:
+        _write_env_values(updates)
+    except Exception as exc:
+        logger.error(f"[voice-profile] Écriture .env annulée avec rollback : {exc}")
+        raise HTTPException(
+            status_code=500, detail="Impossible d'enregistrer le profil vocal"
+        ) from exc
+    for key, value in updates.items():
+        os.environ[key] = value
+    return {
+        "success": True,
+        "profile": profile.id,
+        "updated": list(updates.keys()),
+        "needs_restart": True,
+        "note": "Profil enregistré. Redémarre Lumena pour l'appliquer entièrement.",
+    }
 
 
 @router.get("/api/config/reveal", dependencies=[Depends(verify_admin_token)])
@@ -1010,33 +1139,99 @@ def _normalize_voice_pairing_updates(
     return normalized
 
 
+def _validate_config_updates(
+    updates: dict[str, str], schema_map: dict[str, dict],
+) -> tuple[dict[str, str], list[str]]:
+    """Validate only explicitly updated fields and return canonical values."""
+    normalized: dict[str, str] = {}
+    errors: list[str] = []
+    true_values = {"1", "true", "yes", "on"}
+    false_values = {"", "0", "false", "no", "off"}
+
+    for key, raw_value in updates.items():
+        entry = schema_map[key]
+        value = str(raw_value)
+        field_type = entry.get("type")
+
+        if field_type == "number":
+            candidate = value.strip()
+            try:
+                number = Decimal(candidate)
+                if not number.is_finite():
+                    raise InvalidOperation
+            except (InvalidOperation, ValueError):
+                errors.append(f"{key}: valeur non numérique")
+                continue
+
+            step = Decimal(str(entry.get("step", "1")))
+            if step == 1 and number != number.to_integral_value():
+                errors.append(f"{key}: une valeur entière est requise")
+                continue
+            if step > 0 and number % step != 0:
+                errors.append(f"{key}: pas attendu {entry.get('step', '1')}")
+                continue
+            if "min" in entry and number < Decimal(str(entry["min"])):
+                maximum = entry.get("max")
+                bounds = (
+                    f"{entry['min']}–{maximum}"
+                    if maximum is not None
+                    else f"minimum {entry['min']}"
+                )
+                errors.append(f"{key}: valeur hors limites ({bounds})")
+                continue
+            if "max" in entry and number > Decimal(str(entry["max"])):
+                minimum = entry.get("min")
+                bounds = (
+                    f"{minimum}–{entry['max']}"
+                    if minimum is not None
+                    else f"maximum {entry['max']}"
+                )
+                errors.append(f"{key}: valeur hors limites ({bounds})")
+                continue
+            normalized[key] = candidate
+            continue
+
+        if field_type == "select":
+            options = {str(option) for option in entry.get("options", [])}
+            if value not in options:
+                errors.append(f"{key}: option invalide")
+                continue
+
+        if field_type == "bool":
+            lowered = value.strip().lower()
+            if lowered in true_values:
+                value = "1"
+            elif lowered in false_values:
+                value = "0"
+            else:
+                errors.append(f"{key}: booléen invalide")
+                continue
+
+        normalized[key] = value
+
+    return normalized, errors
+
+
 @router.put("/api/config", dependencies=[Depends(verify_admin_token)])
 async def update_config(request: Request):
     body = await request.json()
-    updates: dict[str, str] = body.get("updates", {})
+    updates = body.get("updates", {}) if isinstance(body, dict) else {}
+    if not isinstance(updates, dict):
+        return {"success": False, "error": "Le champ updates doit être un objet"}
     if not updates:
         return {"success": False, "error": "Aucune mise à jour fournie"}
     allowed_keys = {s["key"] for s in _CONFIG_SCHEMA}
-    filtered = {k: str(v) for k, v in updates.items() if k in allowed_keys}
-    if not filtered:
-        return {"success": False, "error": "Aucune clé valide trouvée"}
+    unknown_keys = sorted(str(key) for key in updates if key not in allowed_keys)
+    if unknown_keys:
+        return {"success": False, "error": f"Clé(s) inconnue(s) : {', '.join(unknown_keys)}"}
+    filtered = {str(k): str(v) for k, v in updates.items()}
     current_env = _read_env_file()
     filtered = _normalize_voice_pairing_updates(filtered, current_env)
     pairing_error = _voice_pairing_error(filtered, current_env)
     if pairing_error:
         return {"success": False, "error": pairing_error}
-    # P3.1 — Validation min/max pour les champs number
     schema_map = {s["key"]: s for s in _CONFIG_SCHEMA}
-    errors: list[str] = []
-    for k, v in filtered.items():
-        entry = schema_map.get(k, {})
-        if entry.get("type") == "number" and "min" in entry:
-            try:
-                val = int(v)
-                if not (entry["min"] <= val <= entry["max"]):
-                    errors.append(f"{k}: valeur hors limites ({entry['min']}–{entry['max']})")
-            except (ValueError, TypeError):
-                errors.append(f"{k}: valeur non numérique")
+    filtered, errors = _validate_config_updates(filtered, schema_map)
     if errors:
         return {"success": False, "error": " | ".join(errors)}
     try:

@@ -12,6 +12,7 @@ import pytest
 
 from src.voice.v2 import (
     VoiceProfile, LUMENA_DEFAULT, load_profile, save_profile,
+    get_voice_profile_status,
     FakeTTSProvider, LocalTTSAdapter, CancelToken, AudioResult,
 )
 
@@ -42,6 +43,40 @@ def test_load_profile_corrupt_falls_back(tmp_path):
     p = tmp_path / "bad.json"
     p.write_text("{ not json", encoding="utf-8")
     assert load_profile(p) is LUMENA_DEFAULT
+    status = get_voice_profile_status()
+    assert status["ok"] is False
+    assert status["source"] == "default_corrupt"
+    assert "json" in str(status["error"]).lower() or "expecting" in str(status["error"]).lower()
+
+
+def test_profile_recovers_previous_durable_generation(tmp_path):
+    path = tmp_path / "profile.json"
+    first = VoiceProfile(label="Lumena stable")
+    second = VoiceProfile(label="Lumena nouvelle")
+    save_profile(first, path)
+    save_profile(second, path)
+    path.write_text("{corrompu", encoding="utf-8")
+
+    recovered = load_profile(path)
+
+    assert recovered.label == "Lumena stable"
+    assert get_voice_profile_status()["source"] == "backup"
+    assert get_voice_profile_status()["recovered"] is True
+
+
+def test_failed_profile_save_preserves_live_file(tmp_path, monkeypatch):
+    path = tmp_path / "profile.json"
+    save_profile(VoiceProfile(label="stable"), path)
+    original = path.read_bytes()
+
+    def fail_replace(_src, _dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("src.voice.v2.voice_profile.os.replace", fail_replace)
+    with pytest.raises(OSError, match="disk full"):
+        save_profile(VoiceProfile(label="new"), path)
+    assert path.read_bytes() == original
+    assert not path.with_suffix(".json.tmp").exists()
 
 
 # ── FakeTTSProvider (contrat) ─────────────────────────────────────────────────
@@ -70,9 +105,45 @@ def test_fake_tts_unavailable():
     assert FakeTTSProvider(available=False).is_available() is False
 
 
+@pytest.mark.asyncio
+async def test_default_provider_stream_preserves_named_audio_metadata():
+    from src.voice.v2.providers.base import TTSProvider
+
+    class _One(TTSProvider):
+        def is_available(self): return True
+        async def synthesize(self, text, voice, cancel=None):
+            return AudioResult(
+                ok=True, text=text, audio_path="voice.wav", duration_ms=250,
+                audio_format="pcm16", sample_rate=24000, channels=1,
+                provider="local-test",
+            )
+
+    chunks = [chunk async for chunk in _One().stream("bonjour", LUMENA_DEFAULT)]
+    assert chunks[0].audio_path == "voice.wav"
+    assert chunks[0].duration_ms == 250
+    assert chunks[0].sample_rate == 24000
+    assert chunks[0].provider == "local-test"
+
+
 def test_local_segments_drop_non_speakable_punctuation():
     from src.voice.v2.providers.local_tts import _segments
-    assert _segments("Bonjour ! ... 👀\nOK.") == ["Bonjour !", "OK."]
+    assert _segments("Bonjour ! ... 👀\nOK.") == ["Bonjour ! OK."]
+
+
+def test_local_segments_bundle_short_sentences_to_avoid_synthesis_holes():
+    from src.voice.v2.providers.local_tts import _segments
+    text = "Oui, je regarde. Le fichier est valide. La suite est prête."
+    chunks = _segments(text)
+    assert chunks == [text]
+    assert all(len(chunk) <= 180 for chunk in chunks)
+
+
+def test_local_segments_keep_long_answer_in_bounded_interruption_units():
+    from src.voice.v2.providers.local_tts import _segments
+    parts = [f"Phrase {index} " + ("utile " * 15) + "." for index in range(4)]
+    chunks = _segments(" ".join(parts))
+    assert len(chunks) == 4
+    assert chunks == parts
 
 
 # ── LocalTTSAdapter (tts injecté, jamais le moteur réel) ──────────────────────

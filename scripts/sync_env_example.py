@@ -194,6 +194,12 @@ _EXTRA_ENV_DOCS: list[tuple[str, str, str, str]] = [
     ("Autonomie (avancé)", "LUMENA_AUTONOMY_RESEARCH_TIMEOUT_SEC", "900", "Timeout recherche autonome (sec)"),
     ("Autonomie (avancé)", "LUMENA_AUTONOMY_ACTION_REPEAT_COOLDOWN_SEC", "900", "Cooldown répétition action (sec)"),
     ("Autonomie (avancé)", "LUMENA_RETRAIN_MIN_EXAMPLES", "20", "Min exemples pour retrain"),
+    (
+        "Autonomie (avancé)",
+        "LUMENA_LEGACY_AUTO_RETRAIN_ENABLE",
+        "0",
+        "Réactiver explicitement l'ancien auto-retrain pendant une migration (désactivé par défaut)",
+    ),
     ("Autonomie (avancé)", "LUMENA_AUTONOMY_MIN_FREE_GB", "10", "Seuil disque libre avant blocage actions lourdes"),
     # --- Agents ---
     ("Agents", "LUMENA_SUBAGENT_TIMEOUT", "0", "Timeout sub-agent (sec, 0 = off)"),

@@ -25,7 +25,7 @@ def load_lumena_pool(
     """Load and deduplicate conversations from pool + validated dirs.
 
     Filters out:
-    - quality_flag == "negative_feedback"
+    - quality_flag in {"negative_feedback", "negative_explicit", "incomplete"}
     - user message < min_user_chars OR assistant reply < min_assistant_chars
     - duplicate conversations (by content_hash or computed SHA-256)
     """
@@ -52,8 +52,10 @@ def load_lumena_pool(
 
                     meta = entry.get("metadata", {})
 
-                    # FT-4: Filter: negative feedback
-                    if meta.get("quality_flag") == "negative_feedback":
+                    # FT-4: failed/incomplete answers are never training truth.
+                    if meta.get("quality_flag") in {
+                        "negative_feedback", "negative_explicit", "incomplete",
+                    }:
                         continue
 
                     convs = entry.get("conversations", [])

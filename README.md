@@ -3,7 +3,7 @@
 **Assistant IA personnel autonome, local-first, doté d'une mémoire persistante et capable d'agir réellement.**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.0.56-F28C28)](#état-des-composants)
+[![Version](https://img.shields.io/badge/version-v1.0.57-F28C28)](#état-des-composants)
 [![Tests](https://img.shields.io/badge/tests-23K%2B_passed-22C55E)](#tests)
 [![License](https://img.shields.io/badge/license-AGPL--3.0_%2F_Commercial-2563EB)](#licence)
 [![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#état-des-composants)
@@ -19,7 +19,7 @@ Elle ne se contente pas de proposer une procédure : en **mode Agent**, elle peu
 planifier une demande, appeler ses outils, produire des fichiers, contrôler les
 résultats obtenus et rendre compte des preuves réellement observées.
 
-> **Version bêta v1.0.56**
+> **Version bêta v1.0.57**
 >
 > Lumena est utilisable au quotidien et poursuit sa phase de stabilisation.
 > Certaines fonctions dépendent d'API, de logiciels locaux, d'identifiants ou
@@ -46,9 +46,40 @@ Ces nombres décrivent deux niveaux différents et ne doivent pas être confondu
   le plan déjà construit ni les preuves déjà recueillies ;
 - plus de **590 outils natifs**, répartis dans **37 catégories** ;
 - réponses en streaming, interruption, reprise et suivi des tâches ;
+- dialogue vocal avec activation « Lumena », micro ouvert ou push-to-talk,
+  interruption, orientations successives et réponses adaptées à la langue ;
 - identité, personnalité, humeur et contexte cohérents entre les interfaces ;
 - utilisation depuis le web, le terminal, Discord, Telegram, WhatsApp et
   X/Twitter selon la configuration installée.
+
+### Dialoguer par la voix
+
+Lumena Voice utilise le même cœur que le chat et le mode Agent : identité,
+contexte, mémoire, permissions, outils et travail en cours restent cohérents lorsque
+l'utilisateur passe de l'écrit à la parole. Une interruption vocale peut répondre à
+une question ou orienter le travail actif sans effacer l'objectif initial.
+
+Le pipeline réunit reconnaissance et détection de parole locales, activation par
+« Lumena », micro ouvert, push-to-talk, synthèse progressive et lecture annulable.
+Il sait conduire une conversation en français, anglais ou espagnol, choisir la
+voix correspondant à la langue disponible et empêcher la lecture des métadonnées
+techniques ou des changements d'humeur. Les profils de performance adaptent les
+moteurs au matériel et restent synchronisés avec le panneau Configuration.
+
+Le panneau Voice expose la conversation, la voix, l'écoute, les langues, les
+modèles et un diagnostic expurgé. Les contrôles permettent de démarrer ou arrêter
+l'écoute, couper la parole courante, rendre la sortie muette, tester le micro et
+appliquer un profil. Les enregistrements audio bruts et les transcriptions ne sont
+pas journalisés par défaut. La reconnaissance peut rester locale ; la synthèse
+utilise un moteur local installé ou un fournisseur optionnel explicitement
+autorisé par la configuration.
+
+La qualité du dialogue mains libres dépend du microphone, des haut-parleurs et de
+la présence d'une annulation d'écho acoustique. Sans AEC, Lumena utilise un mode
+protégé pour distinguer autant que possible la voix humaine de sa propre sortie.
+La certification logicielle est disponible, tandis que la campagne d'écoute
+humaine, l'endurance et la validation multi-machines restent nécessaires avant de
+présenter la voix comme universellement certifiée.
 
 ### Réaliser des missions longues
 
@@ -127,15 +158,25 @@ supplémentaire.
 - scheduler, objectifs autonomes, curation et cycles d'apprentissage ;
 - heartbeat, suivi de santé, rapports quotidiens et sauvegardes contrôlées ;
 - micro-évaluations, curation et préparation de jeux de données ;
-- fine-tuning local LoRA vers GGUF et Ollama lorsque l'environnement le permet.
+- modèle personnel local facultatif : collecte consentie, curation, juge isolé,
+  entraînement LoRA en processus séparé, versions `lumena-model-x.y.z`, export
+  GGUF/Ollama, canari avant activation, sauvegarde et rollback ;
+- le modèle principal choisi reste disponible et ne cède la place au modèle
+  personnel qu'après une décision explicite de l'utilisateur.
 
 ### Produire des images et des vidéos
 
 - génération d'images via plusieurs fournisseurs locaux ou distants ;
 - édition, composition, upscale, remplacement ou suppression d'arrière-plan ;
 - création de logos, miniatures et ressources SVG ;
-- génération de vidéos Remotion en MP4/WebM à partir de composants React ;
-- modèles vidéo, prévisualisation, validation et réparation du rendu ;
+- génération de vidéos Remotion en MP4 à partir d'un `VideoSpec` vérifié, avec
+  rail sécurisé pour les petits modèles et TSX libre sandboxé pour les modèles
+  experts ;
+- projets versionnables, preview HTML, progression, annulation, reprise après
+  incident, modification avec nouveau rendu et images de preuve contrôlées avant
+  apprentissage ;
+- runtime Docker Remotion préparé automatiquement au premier rendu, puis rendu
+  du code généré sans accès réseau ;
 - analyse d'images par les modèles vision déclarés compatibles.
 
 ### Travailler avec des données publiques
@@ -182,11 +223,15 @@ jamais les quotas, abonnements, permissions ou politiques de leur fournisseur.
 Lumena intègre le **Model Context Protocol** dans sa boucle conversationnelle :
 
 - découverte et catalogue de serveurs MCP ;
-- installation isolée et activation à chaud ;
+- recherche dans le registre MCP officiel avec cache local ;
+- installation isolée npm, Python et binaire d’application hôte ;
+- connexion aux serveurs distants Streamable HTTP et SSE historique ;
+- authentification distante par secret chiffré ou OAuth avec PKCE ;
+- activation à chaud et détection des changements de schéma avant exposition ;
 - classification des outils et intégration au registre natif ;
 - politiques de confiance, permissions et file d'approbation ;
 - utilisation des outils `mcp__<serveur>__<outil>` depuis le mode Agent ;
-- diagnostic, désactivation et suppression depuis le panneau MCP.
+- recherche, diagnostic, désactivation et suppression depuis le panneau MCP.
 
 Les mutations sensibles restent soumises aux politiques et confirmations de
 Lumena. Un MCP externe reste dépendant de son service, de ses droits et de ses
@@ -264,7 +309,8 @@ fallback. Lumena ne présente pas un modèle texte comme capable de générer un
 image si cette capacité n'est pas déclarée.
 
 Le catalogue texte suit aussi les générations actuelles destinées au code et
-aux agents, dont GPT-6 Astra, Sol et Luna, Claude Opus 5.5 et Grok 4.7. Les
+aux agents, dont GPT-6.1 Sol, GPT-6 Astra, Sol et Luna, Claude Opus 5.5,
+Claude Sonnet 5.5 et Grok 4.7. Les
 modèles à accès restreint, comme Claude Mythos 5.1, restent enregistrés pour la
 compatibilité mais ne sont pas proposés sans preuve d'accès. Les transports,
 outils, efforts de raisonnement et fallbacks sont adaptés au contrat réel de
@@ -351,14 +397,14 @@ une décision, et rien ne change sur la machine tant qu'elle n'est pas prise.
 | CodeAgent | Opérationnel | Développement logiciel uniquement |
 | Mémoire et continuité | Opérationnel | ChromaDB, BM25, Knowledge Graph et sessions |
 | Navigation et vérification web | Opérationnel | La réussite dépend du site et des protections externes |
-| Images et Remotion | Opérationnel selon configuration | Fournisseurs et dépendances optionnels |
+| Images et Remotion | Clôture logicielle | Runtime Docker préparé, rendu hors réseau, reprise et contrôle de l'artefact |
 | Canaux de communication | Opérationnel selon configuration | Tokens, webhooks et droits nécessaires |
 | Intégrations professionnelles | Opérationnel selon configuration | GitHub, Notion, n8n, Stripe, IONOS et autres |
 | Autonomie 24/7 | Opérationnel avec garde-fous | Actions sensibles conditionnées par les flags et permissions |
 | Données publiques et perception | Opérationnel | Services externes et OCR parfois nécessaires |
-| Voix V2 | Certifiée techniquement | Timbre final et validation humaine encore ouverts |
+| Voix V3 (runtime V2) | Clôture logicielle | Campagne humaine, endurance et validation multi-machines encore ouvertes |
 | P2P multi-Lumena | Bêta avancée | Certification complète multi-instance encore ouverte |
-| Fine-tuning local | Expérimental | Dépend fortement du matériel et des modèles |
+| Modèle personnel et fine-tuning local | Bêta avancée selon matériel | Consentement désactivé par défaut, jobs reprenables, juge isolé, versions et activation prouvée |
 | Hooks | Infrastructure disponible | Branchement produit encore partiel |
 
 ---
@@ -377,8 +423,10 @@ rejoue depuis la configuration.
 - Python 3.10 à 3.12 ;
 - Windows, Linux ou macOS ;
 - au moins un fournisseur LLM configuré, ou un modèle Ollama local ;
-- Docker Desktop en option pour l'isolation ;
-- Node.js pour certaines fonctions web et vidéo.
+- Docker Desktop en option pour l'isolation générale et requis pour le rendu
+  Remotion sécurisé ;
+- Node.js pour certaines fonctions web et pour le rendu vidéo local de
+  développement explicitement activé.
 
 ### Installation rapide
 
@@ -527,7 +575,7 @@ src/services/        fournisseurs et intégrations externes
 src/skills/          chargement et sélection des skills
 src/telemetry/       événements, traces et suivi des modifications
 src/training/        préparation, entraînement, export GGUF et Ollama
-src/voice/           STT, TTS et Voice V2
+src/voice/           STT, TTS et runtime événementiel Voice V2/V3
 web/                 API FastAPI et interface utilisateur
 assets/templates/    modèles documentaires intégrés
 tests/               tests unitaires, intégration et non-régression
@@ -549,7 +597,7 @@ python -m pytest tests/ --timeout=15 -q
 python -m pytest tests/reasoning/test_react_plan.py -v
 ```
 
-La dernière exécution complète connue rend **23 278 tests réussis, 14 ignorés, 0 échec**.
+La dernière exécution complète connue rend **23 610 tests réussis, 14 ignorés, 0 échec**.
 Ce nombre n'est pas une promesse permanente :
 chaque modification doit être validée contre la suite correspondant à son
 périmètre.
@@ -561,7 +609,8 @@ périmètre.
 - le projet reste en bêta ;
 - les fournisseurs externes peuvent imposer quotas, pannes et restrictions ;
 - le Computer Use est plus complet sous Windows ;
-- Voice V2 attend encore sa certification humaine finale ;
+- la voix locale attend encore la campagne humaine H1-H15, l'endurance et la
+  validation multi-machines avant sa promotion par défaut ;
 - la certification P2P multi-instance n'est pas entièrement terminée ;
 - les opérations réelles peuvent nécessiter une confirmation ou des identifiants ;
 - aucun agent ne peut garantir la réussite de toutes les demandes imaginables.
@@ -593,4 +642,4 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
 
 ---
 
-**Lumena v1.0.56 — architecture ouverte, actions contrôlées.**
+**Lumena v1.0.57 — architecture ouverte, actions contrôlées.**

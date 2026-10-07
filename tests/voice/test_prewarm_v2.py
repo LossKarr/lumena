@@ -61,9 +61,12 @@ def test_detect_capabilities_import_free():
               "edge_tts_available", "torch_available", "pyaudio_available",
               "xtts_voice_reference_found", "cuda_available", "webrtc_available"):
         assert k in caps
-    # référence absente -> False ; cuda jamais importé -> 'unknown'
+    # Référence absente -> False ; CUDA est sondé sans importer torch et rendu
+    # comme booléen effectif avec le diagnostic matériel associé.
     assert caps["xtts_voice_reference_found"] is False
-    assert caps["cuda_available"] == "unknown"
+    assert isinstance(caps["cuda_available"], bool)
+    assert isinstance(caps["hardware"], dict)
+    assert caps["cuda_available"] == caps["hardware"]["cuda_ready"]
     assert caps["webrtc_available"] == "browser_side"
 
 

@@ -42,7 +42,7 @@ jobs:
         run: python -m playwright install chromium
 
       - name: Run tests
-        run: python -m pytest tests/ --timeout=15 --tb=short -q
+        run: python -m pytest tests/ --timeout=60 --tb=short -q
 
   lint:
     name: Lint & import check

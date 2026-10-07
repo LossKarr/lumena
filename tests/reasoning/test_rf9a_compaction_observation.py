@@ -193,15 +193,54 @@ def test_les_commandes_gardent_debut_ET_fin(outil):
     assert "ENV_HEAD" in corps and "ERREUR_FINALE" in corps
 
 
-def test_les_lectures_fichier_gardent_3000_chars_du_DEBUT():
-    """« Pas d'ancre ici : le contenu brut est deja preserve integralement »."""
+def test_les_lectures_fichier_gardent_3000_chars_debut_et_fin():
+    """Une lecture compactee conserve les declarations et les conclusions."""
     from src.reasoning.observation_synthesis import compact_observation_body
 
-    contenu = _long(12000)
+    contenu = "DEBUT" + _long(11990) + "FIN"
     corps = compact_observation_body("read_file", contenu, False)
     assert corps is not None
-    assert corps.startswith(_long(3000))
+    assert corps.startswith("DEBUT")
+    assert corps.endswith("FIN")
+    assert len(corps) >= 3000
     assert "chars omis" in corps
+
+
+def test_un_lecteur_mcp_dynamique_est_reconnu_et_preserve():
+    from src.reasoning.history_formatter import should_protect_observation
+    from src.reasoning.observation_synthesis import compact_observation_body
+
+    outil = "mcp__studiomcp-d714304e__script_read"
+    contenu = "A" * 5204
+    assert should_protect_observation(outil) is True
+    assert compact_observation_body(outil, contenu, False) is None
+
+
+def test_le_budget_reel_du_modele_empeche_la_compaction_prematuree():
+    from src.reasoning.observation_synthesis import compact_observation_body
+
+    contenu = "A" * 15560
+    assert compact_observation_body(
+        "mcp__studiomcp-d714304e__execute_luau",
+        contenu,
+        False,
+        model_visible_limit=40000,
+    ) is None
+
+
+def test_une_sortie_geante_reste_bornee_au_budget_du_modele():
+    from src.reasoning.observation_synthesis import compact_observation_body
+
+    contenu = "DEBUT" + _long(199990) + "FIN"
+    corps = compact_observation_body(
+        "mcp__studiomcp-d714304e__execute_luau",
+        contenu,
+        False,
+        model_visible_limit=40000,
+    )
+    assert corps is not None
+    assert corps.startswith("DEBUT") and corps.endswith("FIN")
+    assert 40000 <= len(corps) < 41000
 
 
 def test_le_defaut_garde_debut_et_fin_avec_ancre():

@@ -93,13 +93,18 @@ class TurnManager:
     def _interrupt_commands(self, *, hard: bool, reason: str) -> List[VoiceCommand]:
         """Séquence d'annulation. NE coupe PAS l'outil (décision séparée)."""
         cmds = [
-            VoiceCommand("stop_playback"),
-            VoiceCommand("clear_audio_queue"),
+            VoiceCommand("stop_playback", {"reason": reason}),
+            VoiceCommand("clear_audio_queue", {"reason": reason}),
             VoiceCommand("cancel_tts", {"generation_id": self.state.current_generation_id}),
             VoiceCommand("cancel_llm", {"generation_id": self.state.current_generation_id}),
             VoiceCommand("truncate_conversation", {"generation_id": self.state.current_generation_id}),
             VoiceCommand("show_status", {"state": "interrupted", "reason": reason}),
         ]
+        # Un stop explicite ne reprend jamais. Un barge-in potentiel garde la
+        # génération jusqu'au transcript final pour permettre une reprise sûre.
+        self.state.interrupted_generation_id = (
+            None if hard else self.state.current_generation_id
+        )
         # L'outil continue : on coupe la voix, pas l'action.
         self.state.current_generation_id = None
         self.state.pending_barge_in = False
@@ -116,16 +121,38 @@ class TurnManager:
         st = self.state
         st.endpoint_decision = dec
         if dec.state == "turn_complete" and st.final_transcript.strip():
+            st.interrupted_generation_id = None
             st.current_generation_id = self._new_generation_id()
             st.set_mode("thinking")
             return [VoiceCommand("start_llm", {
                 "turn_id": st.current_turn_id,
                 "generation_id": st.current_generation_id,
                 "text": st.final_transcript,
+                "language": st.final_language,
+                "language_probability": st.final_language_probability,
             })]
         # continue_expected / uncertain (ou pas de final) → NE PAS répondre, attendre.
         st.set_mode("user_paused")
         return []
+
+    def _resume_interrupted_after_empty_transcript(self, reason: str) -> List[VoiceCommand]:
+        """Close a proven empty interruption and resume its unheard tail once."""
+        st = self.state
+        generation = st.interrupted_generation_id
+        st.interrupted_generation_id = None
+        st.endpoint_armed = False
+        st.endpoint_armed_turn = None
+        st.endpoint_started_t = None
+        st.transcription_pending = False
+        st.transcription_turn_id = None
+        st.transcription_terminal_reason = reason
+        st.set_mode("tool_running" if st.tool_active else "wake_listening")
+        if not generation:
+            return []
+        return [VoiceCommand("resume_interrupted_speech", {
+            "generation_id": generation,
+            "reason": reason,
+        })]
 
     # ── Reducer : SEUL endroit qui mute l'état ───────────────────────────
     def reduce(self, event: VoiceEvent) -> List[VoiceCommand]:
@@ -151,6 +178,11 @@ class TurnManager:
                     st.current_turn_id = self._new_turn_id()
                     st.partial_transcript = ""
                     st.final_transcript = ""
+                    st.final_language = None
+                    st.final_language_probability = 0.0
+                    st.transcription_pending = False
+                    st.transcription_turn_id = None
+                    st.transcription_terminal_reason = None
                     st.endpoint_decision = None
                     st.pending_barge_in = False
                     cmds.append(VoiceCommand("start_stt", {"turn_id": st.current_turn_id}))
@@ -158,19 +190,34 @@ class TurnManager:
                     # Parole pendant que Lumena parle : barge-in POTENTIEL, on ne coupe
                     # pas encore (anti faux barge-in) — confirmation par transcript.
                     st.pending_barge_in = True
-            elif st.mode == "user_speaking" and st.endpoint_armed:
+            elif st.mode in ("user_speaking", "user_paused") and st.endpoint_armed:
                 # La parole REPREND avant l'expiration du timer de silence : ce n'était
                 # qu'une pause, pas une fin de tour. On désarme l'endpointing, même tour.
                 st.endpoint_armed = False
                 st.endpoint_armed_turn = None
+                if st.endpoint_started_t is not None and event.t is not None:
+                    observed = max(0, int(float(event.t) - float(st.endpoint_started_t)))
+                    if 100 <= observed <= 3000:
+                        previous = st.user_avg_pause_ms
+                        st.user_avg_pause_ms = max(
+                            250, min(1800, round(previous * 0.8 + observed * 0.2))
+                        )
+                        st.observed_pause_count += 1
+                st.endpoint_started_t = None
                 cmds = [VoiceCommand("cancel_endpoint_timer", {"turn_id": st.current_turn_id})]
             elif st.mode in ("idle", "wake_listening", "user_paused"):
                 st.current_turn_id = self._new_turn_id()
                 st.partial_transcript = ""
                 st.final_transcript = ""
+                st.final_language = None
+                st.final_language_probability = 0.0
+                st.transcription_pending = False
+                st.transcription_turn_id = None
+                st.transcription_terminal_reason = None
                 st.endpoint_decision = None
                 st.endpoint_armed = False
                 st.endpoint_armed_turn = None
+                st.endpoint_started_t = None
                 st.set_mode("user_speaking")
                 cmds = [VoiceCommand("start_stt", {"turn_id": st.current_turn_id})]
 
@@ -181,13 +228,23 @@ class TurnManager:
             # une simple pause). Aucun effet hors user_speaking (pas de tour en cours).
             if st.mode == "user_speaking":
                 text = st.final_transcript or st.partial_transcript
-                dec = decide_endpoint(text, is_final=bool(st.final_transcript.strip()))
+                dec = decide_endpoint(
+                    text, is_final=bool(st.final_transcript.strip()),
+                    user_avg_pause_ms=st.user_avg_pause_ms,
+                )
                 st.endpoint_armed = True
                 st.endpoint_armed_turn = st.current_turn_id
+                st.endpoint_started_t = event.t
+                st.endpoint_max_wait_ms = dec.max_wait_ms
                 cmds = [VoiceCommand("arm_endpoint_timer", {
                     "turn_id": st.current_turn_id,
                     "wait_ms": dec.min_wait_ms,
                     "max_wait_ms": dec.max_wait_ms,
+                    "elapsed_ms": 0,
+                    "endpoint_state": dec.state,
+                    "endpoint_reason": dec.reason,
+                    "endpoint_confidence": dec.confidence,
+                    "user_avg_pause_ms": st.user_avg_pause_ms,
                 })]
 
         elif et == "timer.endpoint":
@@ -195,15 +252,50 @@ class TurnManager:
             # Garde anti-stale : on ignore un timer d'un ancien tour / désarmé.
             turn = event.get("turn_id")
             if st.endpoint_armed and turn == st.endpoint_armed_turn == st.current_turn_id:
-                st.endpoint_armed = False
-                st.endpoint_armed_turn = None
                 text = st.final_transcript or st.partial_transcript
-                dec = decide_endpoint(
-                    text,
-                    is_final=bool(st.final_transcript.strip()),
-                    pause_ms=int(event.get("pause_ms", 0)),
-                )
-                cmds = self._apply_endpoint_decision(dec)
+                if st.transcription_pending and st.transcription_turn_id == turn:
+                    # Whisper owns the decision until it emits a terminal final.
+                    # The source guarantees such a final for text, no-speech,
+                    # filtered fragments, timeout and provider errors.
+                    cmds = []
+                elif not text.strip() and st.interrupted_generation_id:
+                    cmds = self._resume_interrupted_after_empty_transcript(
+                        st.transcription_terminal_reason or "empty_transcript"
+                    )
+                else:
+                    dec = decide_endpoint(
+                        text,
+                        is_final=bool(st.final_transcript.strip()),
+                        pause_ms=int(event.get("pause_ms", 0)),
+                        user_avg_pause_ms=st.user_avg_pause_ms,
+                    )
+                    pause_ms = int(event.get("pause_ms", 0))
+                    if (dec.state != "turn_complete" and st.final_transcript.strip()
+                            and pause_ms < st.endpoint_max_wait_ms):
+                        remaining = max(50, st.endpoint_max_wait_ms - pause_ms)
+                        st.set_mode("user_paused")
+                        cmds = [VoiceCommand("arm_endpoint_timer", {
+                            "turn_id": st.current_turn_id,
+                            "wait_ms": remaining,
+                            "max_wait_ms": st.endpoint_max_wait_ms,
+                            "elapsed_ms": pause_ms,
+                            "endpoint_state": dec.state,
+                            "endpoint_reason": dec.reason,
+                            "endpoint_confidence": dec.confidence,
+                            "user_avg_pause_ms": st.user_avg_pause_ms,
+                        })]
+                    else:
+                        st.endpoint_armed = False
+                        st.endpoint_armed_turn = None
+                        st.endpoint_started_t = None
+                        cmds = self._apply_endpoint_decision(dec)
+
+        elif et == "stt.started":
+            turn = event.get("turn_id") or st.current_turn_id
+            if turn == st.current_turn_id:
+                st.transcription_pending = True
+                st.transcription_turn_id = turn
+                st.transcription_terminal_reason = None
 
         elif et == "stt.partial":
             text = event.get("text", "")
@@ -218,18 +310,72 @@ class TurnManager:
 
         elif et == "stt.final":
             # Les finals pilotent le CONTENU. On attend l'endpoint pour agir.
+            turn = event.get("turn_id") or st.current_turn_id
+            if turn != st.current_turn_id:
+                return []
+            st.transcription_pending = False
+            st.transcription_turn_id = None
+            st.transcription_terminal_reason = str(
+                event.get("terminal_reason", "text" if event.get("text", "").strip() else "no_speech")
+            )
             st.final_transcript = event.get("text", "")
-            if st.endpoint_armed and st.final_transcript.strip():
+            st.final_language = event.get("language") or None
+            try:
+                st.final_language_probability = float(
+                    event.get("language_probability", 0.0) or 0.0
+                )
+            except (TypeError, ValueError):
+                st.final_language_probability = 0.0
+            if st.endpoint_armed and not st.final_transcript.strip():
+                cmds = self._resume_interrupted_after_empty_transcript(
+                    st.transcription_terminal_reason or "no_speech"
+                )
+            elif st.endpoint_armed and st.final_transcript.strip():
                 # VAD a déjà détecté la fin de parole et Whisper vient de rendre le
                 # contenu final : conclure immédiatement au lieu d'attendre un timer
                 # déjà devenu redondant. Le timer en retard sera ignoré (désarmé).
                 st.endpoint_armed = False
                 st.endpoint_armed_turn = None
-                dec = decide_endpoint(st.final_transcript, is_final=True, pause_ms=9999)
+                st.endpoint_started_t = None
+                dec = decide_endpoint(
+                    st.final_transcript, is_final=True, pause_ms=9999,
+                    user_avg_pause_ms=st.user_avg_pause_ms,
+                )
                 cmds = self._apply_endpoint_decision(dec)
             elif st.mode == "user_paused" and st.final_transcript.strip():
-                dec = decide_endpoint(st.final_transcript, is_final=True, pause_ms=9999)
+                dec = decide_endpoint(
+                    st.final_transcript, is_final=True, pause_ms=9999,
+                    user_avg_pause_ms=st.user_avg_pause_ms,
+                )
                 cmds = self._apply_endpoint_decision(dec)
+
+        elif et in ("activation.accepted", "activation.rejected"):
+            # A transcript without authorization never reaches start_llm.  VAD may
+            # already have opened a provisional turn, so close it deterministically.
+            turn = st.current_turn_id
+            st.partial_transcript = ""
+            st.final_transcript = ""
+            st.final_language = None
+            st.final_language_probability = 0.0
+            st.transcription_pending = False
+            st.transcription_turn_id = None
+            st.transcription_terminal_reason = et
+            st.endpoint_decision = None
+            st.endpoint_armed = False
+            st.endpoint_armed_turn = None
+            st.endpoint_started_t = None
+            st.current_turn_id = None
+            st.set_mode("tool_running" if st.tool_active else "wake_listening")
+            cmds = [VoiceCommand("cancel_endpoint_timer", {"turn_id": turn})]
+            if et == "activation.accepted":
+                cmds.append(VoiceCommand("show_status", {"state": "activated"}))
+            elif st.interrupted_generation_id:
+                interrupted = st.interrupted_generation_id
+                st.interrupted_generation_id = None
+                cmds.append(VoiceCommand("resume_interrupted_speech", {
+                    "generation_id": interrupted,
+                    "reason": "activation_rejected",
+                }))
 
         elif et == "endpoint.decision":
             # Décision poussée par une source EXTERNE (endpointer dédié).
@@ -240,6 +386,7 @@ class TurnManager:
             )
             st.endpoint_armed = False
             st.endpoint_armed_turn = None
+            st.endpoint_started_t = None
             cmds = self._apply_endpoint_decision(dec)
 
         elif et == "llm.response_started":
@@ -263,7 +410,7 @@ class TurnManager:
 
         elif et == "playback.finished":
             if st.mode == "speaking":
-                st.set_mode("wake_listening")
+                st.set_mode("tool_running" if st.tool_active else "wake_listening")
                 st.current_generation_id = None
 
         elif et == "user.stop_word":

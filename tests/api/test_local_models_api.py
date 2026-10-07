@@ -40,8 +40,11 @@ def app(monkeypatch, *, authenticated=True):
 
 
 def test_routes_require_admin_auth(monkeypatch):
+    monkeypatch.setenv("LUMENA_SETUP_COMPLETE", "1")
+    monkeypatch.setenv("LUMENA_ADMIN_TOKEN", "test-admin-token")
+    monkeypatch.setattr(deps, "setup_only_mode", False)
     response = app(monkeypatch, authenticated=False).get("/api/local-models/status")
-    assert response.status_code in {401, 403, 503}
+    assert response.status_code == 401
 
 
 def test_search_contract_is_bounded_and_authenticated(monkeypatch):

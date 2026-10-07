@@ -162,6 +162,31 @@ class TestAddMcpWithRealOrchestrator:
         assert data["payload"]["recommendation_code"] == "mcp_added"
         assert len(queue.proposed) == 1
 
+    def test_add_mcp_live_direct_executable_keeps_executable_contract(self):
+        """Un chemin .exe trouve par Lumena ne doit jamais devenir local:<nom>."""
+        orch, _, queue = _real_orchestrator()
+        integration = _integration(orch)
+
+        data = _call_handler(
+            integration._make_add_mcp_handler(),
+            target=(
+                r"C:\Users\alice\AppData\Local\Roblox\Versions\v1\StudioMCP.exe"
+            ),
+            live=True,
+            confirmation_phrase=ADD_MCP_CONFIRMATION_PHRASE,
+            caller_kind="react",
+        )
+
+        assert data["decision"] == "ok", data.get("blockers")
+        assert data["payload"]["recommendation_code"] == "mcp_added"
+        assert len(queue.proposed) == 1
+        args = queue.proposed[0]["args"]
+        assert args["server_id"].startswith("studiomcp-")
+        assert args["package_spec"].startswith("exe:C:/Users/alice/")
+        assert args["version"] is None
+        assert args["connection_spec"]["transport"] == "stdio"
+        assert args["connection_spec"]["distribution"]["kind"] == "executable"
+
     def test_add_mcp_live_orchestrator_failure_returns_blocked(self):
         """Si propose_catalog_add lève, le handler retourne mcp_action_failed."""
 

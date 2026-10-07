@@ -69,7 +69,7 @@ def _erreur(code: int, corps: str = "{}") -> httpx.HTTPStatusError:
 
 # -- 1. Les codes definitifs desarment --------------------------------------
 
-@pytest.mark.parametrize("code", [403, 410])
+@pytest.mark.parametrize("code", [402, 403, 410])
 def test_un_refus_definitif_est_reconnu(code):
     assert PQ.ressemble_a_un_acces_definitivement_refuse(str(_erreur(code))) is True
 
@@ -86,6 +86,23 @@ def test_le_desarmement_ne_touche_QUE_le_fournisseur_vise():
     PQ.marquer_quota_epuise("nvidia", "HTTP 410")
     assert PQ.quota_epuise("nvidia") is True
     assert PQ.quota_epuise("moonshot") is False
+
+
+def test_le_402_du_run_du_29_09_est_reconnu():
+    """Mesure du 29/09 a 01 h 39, en pleine session vocale :
+
+        ❌ Erreur deepseek (HTTPStatusError): Client error '402 Payment Required'
+        🔄 Fallback vers mistral/mistral-large-latest...
+
+    Les credits DeepSeek etaient epuises. Un 402 est aussi definitif qu'un 403 pour la
+    session en cours : insister ne fait que payer le round-trip a chaque message.
+
+    « Definitif » s'entend ici au sens de `marquer_quota_epuise` : desarme POUR CETTE
+    SESSION. Recharger le compte et redemarrer rearme le fournisseur — c'est le bon
+    niveau de granularite, et c'est deja le comportement du mecanisme.
+    """
+    message = str(_erreur(402, '{"error":{"message":"Insufficient Balance"}}'))
+    assert PQ.ressemble_a_un_acces_definitivement_refuse(message) is True
 
 
 # -- 2. Ce qui ne doit PAS desarmer -----------------------------------------

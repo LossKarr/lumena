@@ -16,6 +16,12 @@ from loguru import logger
 
 VoiceRunner = Callable[..., Awaitable[None]]
 
+_STT_DEVICES = {"cpu", "cuda"}
+_STT_COMPUTE_TYPES = {
+    "default", "float16", "float32", "int8", "int8_float16",
+    "int8_float32", "int16",
+}
+
 
 def normalize_voice_mode(value: Optional[str]) -> str:
     """Retourne un mode produit officiel. ``direct`` n'est jamais accepté."""
@@ -35,6 +41,70 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
         return max(minimum, float(os.getenv(name, str(default))))
     except (TypeError, ValueError):
         return default
+
+
+def resolve_voice_runtime_options() -> Dict[str, Any]:
+    """Resolve the hardware options handed to the live runner.
+
+    Keeping this in the supervisor makes the effective configuration observable
+    and prevents ``run_voice_v2_live`` defaults from silently overriding the
+    values saved by the setup/configuration panels.
+    """
+    device = os.getenv("LUMENA_STT_DEVICE", "cuda").strip().lower()
+    if device not in _STT_DEVICES:
+        device = "cpu"
+    if device == "cuda":
+        try:
+            from .prewarm import detect_voice_hardware  # noqa: PLC0415
+            if not detect_voice_hardware()["cuda_ready"]:
+                device = "cpu"
+        except Exception:
+            device = "cpu"
+    compute = os.getenv(
+        "LUMENA_STT_COMPUTE", "float16" if device == "cuda" else "int8"
+    ).strip().lower()
+    if compute not in _STT_COMPUTE_TYPES:
+        compute = "float16" if device == "cuda" else "int8"
+    if device == "cpu" and compute in {"float16", "int8_float16"}:
+        compute = "int8"
+    language = os.getenv("LUMENA_STT_LANGUAGE", "fr").strip() or "fr"
+    # LOT VOICE-3 — le modele doit etre resolu ICI, comme le device et la precision.
+    #
+    # `stt.py` l.96 declare `model_size: str = os.getenv("LUMENA_STT_MODEL", "small")`.
+    # Un defaut de parametre est evalue A L'IMPORT : comme `stt.py` est importe avant le
+    # chargement du `.env`, la valeur restait figee a `small` pour toute la vie du
+    # processus. Mesure du 28/09 : le `.env` demandait `large-v3-turbo`, le journal
+    # affichait `modele: small`. `device` et `compute` y echappaient seulement parce que
+    # `live.py` les passait explicitement — le modele, non.
+    model = os.getenv("LUMENA_STT_MODEL", "small").strip() or "small"
+    raw_input = os.getenv("LUMENA_VOICE_INPUT_DEVICE", "").strip()
+    try:
+        input_device_index = int(raw_input) if raw_input else None
+        if input_device_index is not None and input_device_index < 0:
+            input_device_index = None
+    except (TypeError, ValueError):
+        input_device_index = None
+    return {
+        "device": device,
+        "compute": compute,
+        "language": language,
+        "model": model,
+        "input_device_index": input_device_index,
+    }
+
+
+def resolve_activation_status() -> Dict[str, Any]:
+    """Return the effective local activation contract without loading audio."""
+    mode = os.getenv("LUMENA_VOICE_ACTIVATION_MODE", "wake_phrase").strip().lower()
+    if mode not in {"wake_phrase", "push_to_talk", "open_mic"}:
+        mode = "wake_phrase"
+    phrase = os.getenv("LUMENA_VOICE_WAKE_PHRASE", "Lumena").strip() or "Lumena"
+    return {
+        "wake_word": phrase,
+        "wake_word_enabled": mode == "wake_phrase",
+        "activation_mode": mode,
+        "activation_engine": "local_stt_phrase_gate" if mode == "wake_phrase" else mode,
+    }
 
 
 async def _default_runner(core: Any, **kwargs: Any) -> None:
@@ -102,10 +172,12 @@ class VoiceV2Manager:
             while not self._stop_requested:
                 try:
                     self.state = "running"
+                    runtime_options = resolve_voice_runtime_options()
                     await self._runner(
                         core,
                         disable_tools=False,
                         llm_mode="agent" if self.mode == "agent" else "core_chat",
+                        **runtime_options,
                     )
                     if self._stop_requested:
                         break
@@ -158,6 +230,23 @@ class VoiceV2Manager:
             "mode": self.mode,
             "restarts": self.restarts,
             "last_error": self.last_error,
-            "wake_word": "Lumena",
+            "runtime_options": resolve_voice_runtime_options(),
         })
+        status.update(resolve_activation_status())
+        try:
+            from .prewarm import detect_voice_capabilities
+            from .voice_profile import get_voice_profile_status
+            status["capabilities"] = detect_voice_capabilities()
+            status["hardware_profile"] = status["capabilities"].get("hardware", {})
+            status["voice_profile_status"] = get_voice_profile_status()
+        except Exception:
+            status["capabilities"] = {}
+        status["privacy"] = {
+            "cloud_tts_allowed": os.getenv("LUMENA_VOICE_CLOUD_ALLOWED", "0").strip() == "1",
+            "raw_audio_logged": False,
+            "transcript_logged": False,
+            "improvement_data_opt_in": os.getenv(
+                "LUMENA_VOICE_IMPROVEMENT_OPT_IN", "0"
+            ).strip() == "1",
+        }
         return status

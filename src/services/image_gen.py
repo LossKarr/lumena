@@ -567,10 +567,12 @@ _MODEL_CATALOG: Dict[str, ModelInfo] = {
         name="Grok Imagine Quality", provider="xai", quality=8, speed=6,
         cost_per_image=0.05, free=False, max_resolution="2048x2048",
         styles=["photoréaliste", "créatif", "haute qualité"],
-        strengths="Qualité supérieure, peu de restrictions contenu",
-        weaknesses="Plus lent que la version standard",
+        strengths="Ancienne variante qualité xAI conservée pour les configurations existantes",
+        weaknesses="Dépréciée et remplacée par grok-imagine-image-2.0 le 2 novembre 2026",
         capabilities=["text-to-image"],
         best_for="Images haute qualité, illustrations détaillées",
+        lifecycle="deprecated", selectable=False, auto_eligible=False,
+        source_url="https://docs.x.ai/developers/release-notes", verified_on="2026-09-30",
     ),
     # ── Replicate ──
     "seedream-5-lite": ModelInfo(

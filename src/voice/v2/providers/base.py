@@ -32,6 +32,8 @@ class TTSAudioChunk:
     audio_path: Optional[str] = None   # chemin fichier (TTS local fichier-based)
     duration_ms: int = 0
     audio_format: str = "pcm16"
+    sample_rate: int = 0
+    channels: int = 0
     provider: str = ""
     degraded: bool = False
 
@@ -45,6 +47,8 @@ class AudioResult:
     duration_ms: int = 0
     chunk_count: int = 0
     audio_format: str = "pcm16"
+    sample_rate: int = 0
+    channels: int = 0
     provider: str = ""          # moteur effectif (ex. "xtts"/"piper"/"edge-tts"/"pyttsx3")
     degraded: bool = False      # True si fallback dégradé (ex. pyttsx3)
 
@@ -69,7 +73,18 @@ class TTSProvider(ABC):
         """Streaming par défaut : un seul chunk dérivé de `synthesize` (override si vrai streaming)."""
         res = await self.synthesize(text, voice, cancel)
         if res.ok:
-            yield TTSAudioChunk(0, res.text, res.audio, res.duration_ms, res.audio_format)
+            yield TTSAudioChunk(
+                sequence=0,
+                text=res.text,
+                audio=res.audio,
+                audio_path=res.audio_path,
+                duration_ms=res.duration_ms,
+                audio_format=res.audio_format,
+                sample_rate=res.sample_rate,
+                channels=res.channels,
+                provider=res.provider,
+                degraded=res.degraded,
+            )
 
 
 @dataclass

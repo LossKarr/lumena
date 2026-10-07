@@ -10,7 +10,9 @@ absent/illisible, on retombe sur `LUMENA_DEFAULT` (comportement par défaut stab
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import os
+import shutil
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, Optional, Union
 import re
@@ -44,6 +46,16 @@ class VoicePersona:
 class VoiceLocalEngines:
     xtts_reference: str = "models/xtts/lumena_voice.wav"
     piper_model: str = "fr_FR-siwis-medium"
+    piper_models: Dict[str, str] = field(default_factory=lambda: {
+        "fr": "fr_FR-siwis-medium",
+    })
+
+    def piper_model_for(self, language: str) -> Optional[str]:
+        code = str(language or "fr").strip().lower().split("-")[0]
+        configured = self.piper_models.get(code)
+        if configured:
+            return configured
+        return self.piper_model if code == "fr" else None
 
 
 @dataclass
@@ -91,30 +103,116 @@ class VoiceProfile:
     def xtts_reference_exists(self) -> bool:
         return Path(self.local.xtts_reference).exists()
 
+    def for_language(self, language: str) -> "VoiceProfile":
+        """Return an immutable-style per-generation projection."""
+        code = str(language or self.language).strip().lower().split("-")[0]
+        return self if code == self.language else replace(self, language=code)
+
 
 # Profil par défaut — la voix de référence de Lumena.
 LUMENA_DEFAULT = VoiceProfile()
 
+_last_profile_status: Dict[str, object] = {
+    "ok": True,
+    "source": "default",
+    "path": None,
+    "recovered": False,
+    "error": None,
+}
+
+
+def _set_profile_status(**updates: object) -> None:
+    _last_profile_status.update(updates)
+
+
+def get_voice_profile_status() -> Dict[str, object]:
+    """Return a copy of the last profile load/save diagnostic."""
+    return dict(_last_profile_status)
+
+
+def _read_profile_file(path: Path) -> VoiceProfile:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("le profil vocal doit etre un objet JSON")
+    return VoiceProfile.from_dict(payload)
+
 
 def load_profile(path: Union[str, Path, None] = None) -> VoiceProfile:
-    """Charge un profil ; retombe sur LUMENA_DEFAULT si absent/illisible (no-op safe)."""
+    """Load a profile, recovering the last durable backup when possible."""
     if not path:
+        _set_profile_status(ok=True, source="default", path=None, recovered=False, error=None)
         return LUMENA_DEFAULT
     p = Path(path)
     if not p.exists():
+        _set_profile_status(
+            ok=True, source="default_missing", path=str(p), recovered=False, error=None,
+        )
         return LUMENA_DEFAULT
     try:
-        return VoiceProfile.from_dict(json.loads(p.read_text(encoding="utf-8")))
-    except Exception:
+        profile = _read_profile_file(p)
+        _set_profile_status(
+            ok=True, source="primary", path=str(p), recovered=False, error=None,
+        )
+        return profile
+    except Exception as primary_error:
+        backup = p.with_suffix(p.suffix + ".bak")
+        if backup.exists():
+            try:
+                profile = _read_profile_file(backup)
+                _set_profile_status(
+                    ok=True,
+                    source="backup",
+                    path=str(p),
+                    recovered=True,
+                    error=str(primary_error),
+                )
+                return profile
+            except Exception as backup_error:
+                error = f"primary: {primary_error}; backup: {backup_error}"
+        else:
+            error = str(primary_error)
+        _set_profile_status(
+            ok=False, source="default_corrupt", path=str(p), recovered=False, error=error,
+        )
         return LUMENA_DEFAULT
 
 
 def save_profile(profile: VoiceProfile, path: Union[str, Path]) -> None:
+    """Persist a profile atomically and retain the previous valid generation."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(profile.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    backup = p.with_suffix(p.suffix + ".bak")
+    payload = json.dumps(profile.to_dict(), ensure_ascii=False, indent=2) + "\n"
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Verify the temporary generation before replacing the live profile.
+        _read_profile_file(tmp)
+        if p.exists():
+            # Keep only a known-good predecessor. A corrupt live file must not
+            # replace an already valid backup.
+            try:
+                _read_profile_file(p)
+            except Exception:
+                pass
+            else:
+                shutil.copy2(p, backup)
+        os.replace(tmp, p)
+        _set_profile_status(
+            ok=True, source="saved", path=str(p), recovered=False, error=None,
+        )
+    except Exception as exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        _set_profile_status(
+            ok=False, source="save_error", path=str(p), recovered=False, error=str(exc),
+        )
+        raise
 
 
 def classify_dialogue_act(text: str) -> str:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import threading
 from dataclasses import dataclass, field, asdict
@@ -193,7 +194,7 @@ class VideoReflexionStore:
     DEFAULT_PATH = Path("data/learning/video_reflexions.jsonl")
 
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path: Path = Path(path) if path else self.DEFAULT_PATH
+        self.path: Path = Path(path) if path else _default_store_path("video_reflexions.jsonl", self.DEFAULT_PATH)
         self._lock = threading.RLock()
         self._items: Dict[str, VideoReflexion] = {}
         self._load()
@@ -223,6 +224,8 @@ class VideoReflexionStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
+            if self.path.stat().st_size > 2 * 1024 * 1024:
+                self._rewrite()
         except Exception as exc:
             logger.warning(f"[VideoReflexion] append failed: {exc}")
 
@@ -363,7 +366,7 @@ class VideoSuccessStore:
     DEFAULT_PATH = Path("data/learning/video_successes.jsonl")
 
     def __init__(self, path: Optional[Path] = None) -> None:
-        self.path: Path = Path(path) if path else self.DEFAULT_PATH
+        self.path: Path = Path(path) if path else _default_store_path("video_successes.jsonl", self.DEFAULT_PATH)
         self._lock = threading.RLock()
         self._items: Dict[str, VideoSuccess] = {}
         self._load()
@@ -393,6 +396,8 @@ class VideoSuccessStore:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(item.to_dict(), ensure_ascii=False) + "\n")
+            if self.path.stat().st_size > 2 * 1024 * 1024:
+                self._rewrite()
         except Exception as exc:
             logger.warning(f"[VideoSuccess] append failed: {exc}")
 
@@ -511,6 +516,12 @@ _success_store: Optional[VideoSuccessStore] = None
 _lock = threading.Lock()
 
 
+def _default_store_path(filename: str, fallback: Path) -> Path:
+    """Résout le store vidéo, avec une racine isolable pour tests et profils."""
+    configured = os.getenv("LUMENA_VIDEO_MEMORY_DIR", "").strip()
+    return Path(configured) / filename if configured else fallback
+
+
 def get_video_reflexion_store(path: Optional[Path] = None) -> VideoReflexionStore:
     global _reflexion_store
     with _lock:
@@ -532,7 +543,10 @@ def get_video_success_store(path: Optional[Path] = None) -> VideoSuccessStore:
 # ══════════════════════════════════════════════════════════════════════════════
 
 _SMALL_MODELS = {"qwen3-8b", "deepseek-r1-7b", "llama-3.1-8b", "mistral-7b", "phi-3"}
-_LARGE_MODELS = {"claude-opus", "o3", "deepseek-reasoner", "gpt-4", "gemini-pro"}
+_LARGE_MODELS = {
+    "claude-opus", "claude-sonnet", "o3", "deepseek-reasoner", "gpt-4",
+    "gpt-5", "gpt-6", "astra", "gemini-pro", "gemini-3", "grok-4",
+}
 
 
 def classify_model_family(model_name: str) -> str:
@@ -565,6 +579,7 @@ class VideoTelemetry:
     template_type: str = ""
     scenes_count: int = 0
     description: str = ""
+    generation_mode: str = ""
     # Métriques de la boucle
     tsx_generation_attempts: int = 0
     tsx_validation_failures: int = 0

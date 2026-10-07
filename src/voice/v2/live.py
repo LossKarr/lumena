@@ -24,13 +24,20 @@ from .events import VoiceEvent, VoiceCommand
 from .turn_manager import TurnManager
 from .ledger import ConversationAudioLedger
 from .voice_runtime import VoiceRuntime
+from .speech_coordinator import SpeechCoordinator
+from .activity_narrator import PublicActivityNarrator
 from .input_sources import MicConversationSource, EndpointTimerService
 from .providers import LocalAudioPlayer
 from .speech_normalizer import prepare_for_tts as _clean_for_speech
-from .speech_planner import plan_speech
+from .speech_planner import plan_speech, wants_full_voice_detail
+from .dialogue_policy import VoiceDialoguePolicy
 from .session import VoiceSessionRouter
 from .work_registry import ActiveWorkRegistry, WorkNotificationTracker, classify_work_turn
 from .observability import get_voice_telemetry
+from .activation import VoiceActivationGate, activation_gate_from_env
+from .language_guard import check_response_language
+from .language_policy import LanguagePolicy
+from .audio_frontend import AudioFrontend
 
 
 def v2_live_enabled() -> bool:
@@ -47,6 +54,28 @@ def resolve_voice_agent_max_iterations(value: Optional[int] = None) -> int:
         return max(5, min(100, int(raw)))
     except (TypeError, ValueError):
         return 35
+
+
+def resolve_barge_in_speaking_threshold(
+    audio_frontend: AudioFrontend,
+    *,
+    energy_threshold: int,
+    requested_threshold: Optional[int] = None,
+) -> Optional[int]:
+    """Select the echo guard used only while Lumena is speaking.
+
+    A headset already separates playback from capture and an active AEC
+    processor removes the playback reference. Raising the microphone threshold
+    in either case hides real user interruptions. A hands-free session without
+    AEC keeps the conservative guard because speakers can otherwise interrupt
+    Lumena with her own voice.
+    """
+    status = audio_frontend.status
+    if status.profile in {"headset", "push_to_talk"} or status.aec_active:
+        return None
+    if requested_threshold is not None:
+        return max(int(energy_threshold), int(requested_threshold))
+    return max(int(energy_threshold), int(energy_threshold * 2.7))
 
 
 def _extract_text(result: Any) -> str:
@@ -139,33 +168,63 @@ class VoiceV2Live:
                  player: Any = None, language: str = "fr",
                  respond_fn: Optional[Callable[[str], Awaitable[str]]] = None,
                  min_utterance_ms: int = 300,
+                 emit_partials: bool = False,
                  disable_tools: bool = True,
                  llm_mode: str = "core_chat",
                  max_response_tokens: int = 220,
                  agent_max_iterations: int = 6,
                  session_router: Optional[VoiceSessionRouter] = None,
+                 language_policy: Optional[LanguagePolicy] = None,
+                 audio_frontend: Optional[AudioFrontend] = None,
+                 activation_gate: Optional[VoiceActivationGate] = None,
+                 wake_word_provider: Any = None,
                  log: Callable[[str], None] = print):
         self.core = core
         self._log = log
+        self.activation_gate = activation_gate
         self.tm = TurnManager(barge_in_on_vad=True)
         self.ledger = ConversationAudioLedger()
         self.disable_tools = disable_tools
         self.llm_mode = llm_mode
         session_mode = "agent" if llm_mode == "agent" else "chat"
         self.session = session_router or VoiceSessionRouter(core, mode=session_mode)
+        language_path = (
+            self.session.state_path.with_name("languages.json")
+            if self.session.state_path is not None else None
+        )
+        self.language_policy = language_policy or LanguagePolicy(
+            default_language=language,
+            user_id=self.session.identity.user_id,
+            channel="voice",
+            state_path=language_path,
+        )
         self.max_response_tokens = max_response_tokens
         self.agent_max_iterations = agent_max_iterations
-        self.player = player or LocalAudioPlayer(ledger=self.ledger)
+        self.audio_frontend = audio_frontend or AudioFrontend.from_env()
+        self.vad = vad
+        self.player = player or LocalAudioPlayer(
+            ledger=self.ledger, audio_frontend=self.audio_frontend
+        )
+        if getattr(self.player, "audio_frontend", None) is None:
+            self.player.audio_frontend = self.audio_frontend
         self.runtime = VoiceRuntime(self.tm, tts, self.player,
                                     respond_fn=respond_fn or self._llm_respond,
                                     is_muted_fn=self._is_global_muted,
                                     enabled=True)
+        self.speech = SpeechCoordinator(self.runtime, stop_fn=self.player.stop)
+        self.activity_narrator = PublicActivityNarrator(self.speech)
+        self.dialogue = VoiceDialoguePolicy()
+        self.ack_text = self.dialogue.message("working", "fr")
         self.timer = EndpointTimerService(self.tm)
         telemetry = get_voice_telemetry()
         self.mic = MicConversationSource(
             vad, stt, self.tm, language=language,
             min_utterance_ms=min_utterance_ms,
-            suppress_input_fn=telemetry.is_dictation_active,
+            emit_partials=emit_partials,
+            suppress_input_fn=self._suppress_micro_input,
+            activation_gate=activation_gate,
+            audio_frontend=self.audio_frontend,
+            wake_word_provider=wake_word_provider,
         )
         self.tm._dispatcher = self._dispatch
         self.turns = 0
@@ -173,8 +232,20 @@ class VoiceV2Live:
         # ── État task-aware (mode agent) ──
         self._task: Optional[asyncio.Task] = None     # tâche think_and_act en cours (1 à la fois)
         self._task_id: Optional[str] = None           # id côté task_orchestrator (best-effort)
+        # A paired owner may orient their active work across Web, Telegram and
+        # Voice.  An unpaired/guest session remains strictly confined to its own
+        # conversation.  Owner filtering prevents one local profile from seeing
+        # another owner's work.
+        cross_channel_owner = bool(
+            self.session.identity.trusted
+            and self.session.identity.user_role in {"owner", "admin"}
+        )
         self.work_registry = ActiveWorkRegistry(
-            getattr(core, "task_orchestrator", None), self.session.conversation_id,
+            getattr(core, "task_orchestrator", None),
+            None if cross_channel_owner else self.session.conversation_id,
+            owner_user_id=(
+                self.session.identity.owner_user_id if cross_channel_owner else None
+            ),
         )
         self._notification_tracker = WorkNotificationTracker(
             getattr(core, "task_orchestrator", None), self.session.conversation_id,
@@ -183,7 +254,6 @@ class VoiceV2Live:
         self._conversation_tasks: List[asyncio.Task] = []
         self._confirm_announced = False               # annonce de validation déjà faite ce tour
         self.cancellations = 0
-        self.ack_text = "Je m'en occupe."
         # No periodic speech. Useful milestones are event-driven; a fixed heartbeat
         # competes with the real answer and makes the conversation feel mechanical.
         self.heartbeat_s = 0.0
@@ -193,10 +263,28 @@ class VoiceV2Live:
             session_trusted=self.session.identity.trusted,
             conversation_id=self.session.conversation_id,
             cloud_allowed=os.getenv("LUMENA_VOICE_CLOUD_ALLOWED", "0").strip() == "1",
+            barge_in_mode=self._barge_in_mode(),
+            audio_frontend=self.audio_frontend.report(),
+            vad=(vad.status() if callable(getattr(vad, "status", None)) else {
+                "engine": getattr(vad, "name", "unknown")
+            }),
+            wake_word=(
+                wake_word_provider.status()
+                if callable(getattr(wake_word_provider, "status", None))
+                else {"available": False, "engine": "transcript_phrase_fallback"}
+            ),
         )
         telemetry.register_stop_audio(self._stop_audio_now)
         telemetry.register_test_voice(
-            lambda: self.runtime.speak("Bonjour, c'est la voix locale de Lumena.", turn="voice_test")
+            lambda: self.speech.say(
+                "Bonjour, c'est la voix locale de Lumena.",
+                kind="user", turn="voice_test",
+            )
+        )
+        telemetry.register_push_to_talk(
+            activation_gate.arm
+            if activation_gate is not None and activation_gate.mode == "push_to_talk"
+            else None
         )
         self._telemetry_transcriber_owner = object()
         telemetry.register_transcribers(
@@ -207,8 +295,26 @@ class VoiceV2Live:
             owner=self._telemetry_transcriber_owner,
         )
 
+    def _barge_in_mode(self) -> str:
+        status = getattr(self.audio_frontend, "status", None)
+        if (
+            getattr(status, "profile", "hands_free") == "hands_free"
+            and not bool(getattr(status, "aec_active", False))
+        ):
+            return "guarded_no_aec"
+        return "full_duplex"
+
+    def _suppress_micro_input(self) -> bool:
+        """Reserve microphone capture only for explicit browser dictation.
+
+        Hands-free playback without server AEC is guarded by the VAD's higher
+        speaking threshold. Suppressing capture here prevented genuine barge-in.
+        """
+        telemetry = get_voice_telemetry()
+        return telemetry.is_dictation_active()
+
     def _stop_audio_now(self) -> None:
-        self.player.stop()
+        self.speech.stop_audio(clear_queue=True)
         try:
             asyncio.get_running_loop().create_task(
                 self.tm.emit(VoiceEvent("user.stop_word", data={"word": "ui"}))
@@ -222,7 +328,13 @@ class VoiceV2Live:
             return bool(getattr(ctx, "global_mute", False))
         return bool(getattr(self.core, "global_mute", False))
 
-    async def _direct_llm_respond(self, text: str) -> str:
+    @staticmethod
+    def _language_name(language: str) -> str:
+        return {"fr": "français", "en": "anglais", "es": "espagnol"}.get(
+            str(language or "fr").lower(), str(language or "fr")
+        )
+
+    async def _direct_llm_respond(self, text: str, *, language: str = "fr") -> str:
         """Chemin voix court : LLM direct, sans mémoire/hooks/tools/learning d'AgentService."""
         llm = getattr(self.core, "llm", None)
         if llm is None or not hasattr(llm, "chat"):
@@ -232,7 +344,8 @@ class VoiceV2Live:
                 "role": "system",
                 "content": (
                     "Tu es Lumena en conversation vocale live. "
-                    "Réponds en français, naturellement, en une ou deux phrases courtes. "
+                    f"Réponds en {self._language_name(language)}, naturellement, "
+                    "en une ou deux phrases courtes. "
                     "Pas de markdown, pas de liste, pas d'emoji. "
                     f"Date et heure actuelles: {_current_time_context()}. "
                     "Si l'utilisateur demande le jour ou l'heure, utilise uniquement cette valeur. "
@@ -248,23 +361,68 @@ class VoiceV2Live:
             kwargs["no_upgrade"] = True
         return _extract_text(await chat(messages, **kwargs))
 
-    async def _llm_respond(self, text: str) -> str:
+    async def _repair_response_language(self, answer: str, language: str) -> str:
+        llm = getattr(self.core, "llm", None)
+        if llm is None or not hasattr(llm, "chat"):
+            return ""
+        messages = [
+            {"role": "system", "content": (
+                f"Réécris strictement cette réponse en {self._language_name(language)}. "
+                "Conserve les faits, les noms propres et les citations demandées. "
+                "Réponds uniquement avec la version corrigée, sans markdown."
+            )},
+            {"role": "user", "content": answer},
+        ]
+        try:
+            repaired = _extract_text(await llm.chat(
+                messages, temperature=0.1, max_tokens=self.max_response_tokens,
+                no_upgrade=True,
+            ))
+        except TypeError:
+            repaired = _extract_text(await llm.chat(
+                messages, temperature=0.1, max_tokens=self.max_response_tokens,
+            ))
+        except Exception:
+            return ""
+        return repaired if check_response_language(repaired, language).compliant else ""
+
+    async def _guard_response_language(self, answer: str, language: str) -> str:
+        check = check_response_language(answer, language)
+        telemetry = get_voice_telemetry()
+        telemetry.update(
+            response_language=language,
+            generated_language=check.detected,
+            generated_language_confidence=check.confidence,
+            language_guard=check.reason,
+        )
+        if check.compliant:
+            return answer
+        repaired = await self._repair_response_language(answer, language)
+        telemetry.update(
+            language_guard="repaired" if repaired else "blocked",
+            language_guard_repairs=1,
+        )
+        return repaired
+
+    async def _llm_respond(self, text: str, *, language: str = "fr") -> str:
         """Vrai LLM (voie rapide). Toute erreur → réponse vide (non bloquant pour la voix)."""
         try:
             if self.llm_mode == "direct":  # benchmark explicite uniquement
-                result = await self._direct_llm_respond(text)
+                result = await self._direct_llm_respond(text, language=language)
             else:
                 result = await self.session.respond_chat(text)
         except Exception as e:
             self._log(f"[voice] LLM erreur: {e}")
             return ""
+        guarded = await self._guard_response_language(_extract_text(result), language)
+        detailed = wants_full_voice_detail(text)
         answer = plan_speech(
-            _extract_text(result),
+            guarded,
             canonical_verified=False,
-            max_chars=420,
-            max_sentences=4,
+            max_chars=1200 if detailed else 620,
+            max_sentences=12 if detailed else 6,
         ).spoken
-        self._log(f"[voice] réponse  : {answer!r}")
+        self._log(f"[voice] réponse préparée ({len(answer)} caractères)")
         return answer
 
     async def _dispatch(self, commands: List[VoiceCommand]) -> None:
@@ -275,17 +433,32 @@ class VoiceV2Live:
                 self._log(f"[voice] mode=listening (tour {cmd.data.get('turn_id')})")
             elif cmd.name == "start_llm":
                 txt = cmd.data.get("text", "")
-                self._log(f"[voice] transcript: {txt!r}")
+                self._log(f"[voice] transcription reçue ({len(txt)} caractères)")
+                decision = self.language_policy.decide(
+                    txt,
+                    detected_language=cmd.data.get("language"),
+                    detected_confidence=cmd.data.get("language_probability", 0.0),
+                )
+                get_voice_telemetry().update(
+                    input_language=decision.state.detected_input_language,
+                    input_language_confidence=decision.state.detected_confidence,
+                    response_language=decision.response_language,
+                    language_scope=decision.scope,
+                    language_reason=decision.reason,
+                )
+                data = dict(cmd.data)
+                data["language"] = decision.response_language
+                cmd = VoiceCommand(cmd.name, data)
                 mode_ack = self.session.handle_mode_command(txt)
                 if mode_ack is not None:
                     get_voice_telemetry().update(mode=self.session.mode)
-                    await self.runtime.speak(mode_ack)
+                    await self.speech.say(mode_ack, kind="user")
                     continue
                 if self.session.mode == "agent":
                     # Mode task-aware : l'orchestrateur gère le tour HORS de VoiceRuntime
                     # (think_and_act en tâche de fond → acteur jamais bloqué). On NE forward
                     # PAS start_llm au runtime.
-                    await self._handle_agent_turn(txt)
+                    await self._handle_agent_turn(txt, language=decision.response_language)
                     continue
                 if _is_stop_request(txt):
                     self._log("[voice] arrêt demandé par la voix")
@@ -301,6 +474,17 @@ class VoiceV2Live:
                 await self._cancel_current_task()
                 # (pas d'effet runtime/timer pour cette commande)
                 continue
+            elif cmd.name == "arm_endpoint_timer":
+                get_voice_telemetry().update(
+                    endpoint_state=cmd.data.get("endpoint_state"),
+                    endpoint_reason=cmd.data.get("endpoint_reason"),
+                    endpoint_confidence=cmd.data.get("endpoint_confidence"),
+                    endpoint_wait_ms=cmd.data.get("wait_ms"),
+                    user_avg_pause_ms=cmd.data.get("user_avg_pause_ms"),
+                    vad=(self.vad.status()
+                         if callable(getattr(self.vad, "status", None))
+                         else {"engine": getattr(self.vad, "name", "unknown")}),
+                )
             runtime_commands.append(cmd)
             timer_commands.append(cmd)
         # Composite : VoiceRuntime (TTS/playback) + timers d'endpointing.
@@ -308,7 +492,7 @@ class VoiceV2Live:
         await self.timer.dispatch(timer_commands)
 
     # ── Orchestration task-aware (mode agent) ────────────────────────────────
-    async def _handle_agent_turn(self, text: str) -> None:
+    async def _handle_agent_turn(self, text: str, *, language: str = "fr") -> None:
         """Décide quoi faire d'un tour en mode agent : stop voix / annulation / nouvelle tâche."""
         if _is_cancel_request(text):
             # « Annule » → passe par l'événement → reducer → cancel_tool_if_safe.
@@ -322,31 +506,40 @@ class VoiceV2Live:
             return
         work_intent = classify_work_turn(text)
         if work_intent == "status":
-            await self.runtime.speak(self.work_registry.status_text(self._task_id))
+            await self.speech.say(
+                self.work_registry.status_text(self._task_id),
+                kind="status", replace_key="work_status",
+            )
             return
         if work_intent in {"pause", "resume", "steer"}:
             snap, ambiguous = self.work_registry.resolve(self._task_id)
             if ambiguous:
-                await self.runtime.speak(
+                await self.speech.say(
                     f"J'ai {len(ambiguous)} travaux actifs. Precise lequel tu veux modifier."
-                )
+                , kind="user")
                 return
             if snap is None:
-                await self.runtime.speak("Je n'ai aucun travail actif a modifier.")
+                await self.speech.say("Je n'ai aucun travail actif a modifier.", kind="user")
                 return
             if work_intent == "pause":
                 self.work_registry.pause(snap.task_id)
-                await self.runtime.speak("Je le mets en pause au prochain point sur.")
+                await self.speech.say(
+                    self.dialogue.message("pause", language), kind="status", language=language
+                )
             elif work_intent == "resume":
                 self.work_registry.resume(snap.task_id)
-                await self.runtime.speak("Je reprends le travail.")
+                await self.speech.say(
+                    self.dialogue.message("resume", language), kind="status", language=language
+                )
             else:
                 self.work_registry.steer(snap.task_id, text)
-                await self.runtime.speak("J'ai enregistre ta precision pour le prochain checkpoint.")
+                await self.speech.say(
+                    self.dialogue.message("steer", language), kind="status", language=language,
+                )
             return
         if self._task is not None and not self._task.done():
             # Conversation plane stays available while the execution plane works.
-            task = asyncio.create_task(self._run_side_conversation(text))
+            task = asyncio.create_task(self._run_side_conversation(text, language=language))
             self._conversation_tasks.append(task)
             task.add_done_callback(lambda done: self._forget_side_conversation(done))
             return
@@ -356,7 +549,9 @@ class VoiceV2Live:
         get_voice_telemetry().update(task_id=self._task_id, state="tool_running")
         # En mode Agent, toute action passe par ReAct/ToolRegistry. Aucun fast path
         # os.startfile/webbrowser ne peut contourner permissions, leases ou traces.
-        self._task = asyncio.create_task(self._run_agent_task(text))
+        self._task = asyncio.create_task(self._run_agent_task(
+            text, language=language, detailed=wants_full_voice_detail(text)
+        ))
 
     def _start_voice_task_record(self, text: str) -> Optional[str]:
         orchestrator = getattr(self.core, "task_orchestrator", None)
@@ -375,31 +570,41 @@ class VoiceV2Live:
             self._log(f"[voice] task registry indisponible: {exc}")
             return None
 
-    async def _run_side_conversation(self, text: str) -> None:
+    async def _run_side_conversation(self, text: str, *, language: str = "fr") -> None:
         try:
             answer = await self.session.respond_chat(text)
-            plan = plan_speech(_extract_text(answer), canonical_verified=False, max_sentences=3)
+            guarded = await self._guard_response_language(_extract_text(answer), language)
+            plan = plan_speech(guarded, canonical_verified=False, max_sentences=3)
             if plan.spoken:
-                await self.runtime.speak(plan.spoken, turn="conversation")
+                await self.speech.say(
+                    plan.spoken, kind="user", turn="conversation", language=language
+                )
         except asyncio.CancelledError:
             return
         except Exception as exc:
             self._log(f"[voice] conversation parallele erreur: {exc}")
-            await self.runtime.speak("Je n'ai pas pu repondre a cette question.")
+            await self.speech.say("Je n'ai pas pu repondre a cette question.", kind="error")
 
     def _forget_side_conversation(self, task: asyncio.Task) -> None:
         self._conversation_tasks = [t for t in self._conversation_tasks if t is not task]
 
-    async def _run_agent_task(self, text: str) -> None:
+    async def _run_agent_task(
+        self, text: str, *, language: str = "fr", detailed: bool = False
+    ) -> None:
         """Lance le VRAI pipeline (think_and_act) en fond + jalons vocaux + état tâche."""
         await self.tm.emit(VoiceEvent("tool.started"))
-        await self.runtime.speak(self.ack_text)
+        await self.speech.say(
+            self.dialogue.message("working", language), kind="status",
+            replace_key="agent_ack", language=language,
+        )
         hb = asyncio.ensure_future(self._heartbeat()) if self.heartbeat_s > 0 else None
         final_scheduled = {"value": False}
 
         def _on_final_ready(canonical_answer: str):
             final_scheduled["value"] = True
-            return self._speak_agent_result(canonical_answer)
+            return self._speak_agent_result(
+                canonical_answer, language=language, detailed=detailed
+            )
 
         try:
             answer = await self.session.respond_agent(
@@ -417,7 +622,7 @@ class VoiceV2Live:
             if hb is not None:
                 hb.cancel()
             await self.tm.emit(VoiceEvent("tool.finished"))
-            await self.runtime.speak("J'ai arrêté la tâche.")
+            await self.speech.say("J'ai arrêté la tâche.", kind="final")
             get_voice_telemetry().update(state="wake_listening", task_id=None)
             return
         except Exception as e:
@@ -431,14 +636,16 @@ class VoiceV2Live:
                 except Exception:
                     pass
             await self.tm.emit(VoiceEvent("tool.finished"))
-            await self.runtime.speak("Désolée, il y a eu une erreur.")
+            await self.speech.say("Désolée, il y a eu une erreur.", kind="error")
             get_voice_telemetry().update(state="error", task_id=None, last_error=str(e))
             return
         if hb is not None:
             hb.cancel()
         await self.tm.emit(VoiceEvent("tool.finished"))
         if not final_scheduled["value"]:
-            await self._speak_agent_result(_extract_text(answer))
+            await self._speak_agent_result(
+                _extract_text(answer), language=language, detailed=detailed
+            )
         _orch = getattr(self.core, "task_orchestrator", None)
         if self._task_id and _orch is not None:
             try:
@@ -449,18 +656,23 @@ class VoiceV2Live:
                 pass
         get_voice_telemetry().update(state="wake_listening", task_id=None)
 
-    async def _speak_agent_result(self, answer: str) -> None:
+    async def _speak_agent_result(
+        self, answer: str, *, language: str = "fr", detailed: bool = False
+    ) -> None:
+        answer = await self._guard_response_language(answer, language)
         plan = plan_speech(
             answer,
             canonical_verified=True,
-            max_chars=420,
-            max_sentences=4,
+            max_chars=1200 if detailed else 620,
+            max_sentences=12 if detailed else 6,
         )
         if plan.spoken:
-            self._log(f"[voice] résultat : {plan.spoken!r}")
-            await self.runtime.speak(plan.spoken)
+            self._log(f"[voice] résultat vocal préparé ({len(plan.spoken)} caractères)")
+            await self.speech.say(
+                plan.spoken, kind="final", turn="agent_final", language=language
+            )
         else:
-            await self.runtime.speak("C'est fait.")
+            await self.speech.say("C'est fait.", kind="final", turn="agent_final")
 
     async def _heartbeat(self) -> None:
         """Optional compatibility heartbeat; disabled by default."""
@@ -469,7 +681,9 @@ class VoiceV2Live:
         try:
             while True:
                 await asyncio.sleep(self.heartbeat_s)
-                await self.runtime.speak("Je travaille toujours.")
+                await self.speech.say(
+                    "Je travaille toujours.", kind="milestone", replace_key="heartbeat",
+                )
         except asyncio.CancelledError:
             return
 
@@ -479,19 +693,27 @@ class VoiceV2Live:
             while True:
                 await asyncio.sleep(1.0)
                 for notice in self._notification_tracker.collect():
-                    await self.runtime.speak(notice, turn="mission_notification")
+                    await self.speech.say(
+                        notice, kind="status", turn="mission_notification",
+                        replace_key="mission_notification",
+                    )
         except asyncio.CancelledError:
             return
 
-    def _on_step(self, tool_name: str, tool_args: dict) -> None:
+    def _on_step(self, tool_name: str, tool_args: dict, activity_event: Any = None) -> None:
         """Hook ReAct par étape (synchrone). Jalons clés seulement, pas de narration.
 
         Annonce UNE fois si un outil suggère une validation requise (propose-only)."""
         name = (tool_name or "").lower()
         self._log(f"[voice] étape: {tool_name}")
+        if activity_event is not None:
+            self._log(f"[voice] activité publique: {activity_event.trace_digest()}")
+            asyncio.create_task(self.activity_narrator.narrate(activity_event))
         if not self._confirm_announced and any(h in name for h in _CONFIRM_HINTS):
             self._confirm_announced = True
-            asyncio.create_task(self.runtime.speak("Validation requise, regarde l'écran."))
+            asyncio.create_task(self.speech.say(
+                "Validation requise, regarde l'écran.", kind="confirmation",
+            ))
 
     def _running_voice_task_ids(self) -> list:
         to = getattr(self.core, "task_orchestrator", None)
@@ -514,11 +736,11 @@ class VoiceV2Live:
     async def _cancel_current_task(self) -> None:
         """Annulation coopérative best-effort (cf. garde-fous task_id)."""
         if self._task is None or self._task.done():
-            await self.runtime.speak("Il n'y a rien à annuler.")
+            await self.speech.say("Il n'y a rien à annuler.", kind="user")
             return
         to = getattr(self.core, "task_orchestrator", None)
         if to is None or not hasattr(to, "cancel_task"):
-            await self.runtime.speak("Je ne peux pas annuler de manière sûre.")
+            await self.speech.say("Je ne peux pas annuler de manière sûre.", kind="security")
             return
         # 1) task_id explicite si on l'a et qu'il tourne encore.
         target = None
@@ -535,27 +757,32 @@ class VoiceV2Live:
             if len(running) == 1:
                 target = running[0]
             elif len(running) == 0:
-                await self.runtime.speak("Il n'y a rien à annuler.")
+                await self.speech.say("Il n'y a rien à annuler.", kind="user")
                 return
             else:
                 # 3) ambigu → on refuse d'annuler à l'aveugle.
-                await self.runtime.speak("Je ne peux pas annuler de manière sûre.")
+                await self.speech.say("Je ne peux pas annuler de manière sûre.", kind="security")
                 return
         try:
             to.cancel_task(target)
             self.cancellations += 1
             self._log(f"[voice] cancel_task({target})")
-            await self.runtime.speak("J'annule la tâche.")
+            await self.speech.say("J'annule la tâche.", kind="status")
         except Exception as e:
             self._log(f"[voice] cancel erreur: {e}")
-            await self.runtime.speak("Je n'ai pas pu annuler.")
+            await self.speech.say("Je n'ai pas pu annuler.", kind="error")
 
     def _runtime_pending(self) -> bool:
         tasks = list(getattr(self.runtime, "_play_tasks", [])) + \
                 list(getattr(self.runtime, "_producer_tasks", [])) + \
                 list(getattr(self.runtime, "_llm_tasks", {}).values()) + \
                 list(self._conversation_tasks)
-        return any(not t.done() for t in tasks)
+        speech_status = self.speech.status()
+        return (
+            any(not t.done() for t in tasks)
+            or speech_status["queue_depth"] > 0
+            or speech_status["current_kind"] is not None
+        )
 
     async def _settle(self, settle_seconds: float) -> None:
         """Laisse la dernière réponse finir (synthèse + playback) avant l'arrêt."""
@@ -593,11 +820,13 @@ class VoiceV2Live:
             self._conversation_tasks = []
             get_voice_telemetry().register_stop_audio(None)
             get_voice_telemetry().register_test_voice(None)
+            get_voice_telemetry().register_push_to_talk(None)
             get_voice_telemetry().clear_transcribers(
                 owner=self._telemetry_transcriber_owner
             )
             get_voice_telemetry().set_dictation_active(False)
             get_voice_telemetry().update(state="stopped", task_id=None)
+            await self.speech.aclose()
             await self.runtime.aclose()
 
     def stop(self) -> None:
@@ -605,6 +834,7 @@ class VoiceV2Live:
 
 
 async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "int8",
+                            model: str = "small",
                             energy_threshold: int = 300, hangover_ms: int = 700,
                             speaking_threshold: Optional[int] = None,
                             calibrate: bool = True, calibrate_ms: int = 800,
@@ -612,6 +842,7 @@ async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "i
                             disable_tools: bool = True,
                             llm_mode: str = "core_chat",
                             agent_max_iterations: Optional[int] = None,
+                            partial_every_ms: Optional[int] = None,
                             input_device_index: Optional[int] = None,
                             log: Callable[[str], None] = print) -> None:
     """Entrée RÉELLE : construit les providers hardware (lazy) et lance la boucle live.
@@ -621,10 +852,19 @@ async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "i
     micro avec self-voice guard, le TTS local Piper. Aucun branchement legacy/UI.
     """
     # Imports hardware PARESSEUX (jamais au niveau module → isolation préservée).
-    from .providers import RealVADProvider, RealSTTAdapter, LocalTTSAdapter  # noqa: PLC0415
+    from .providers import (  # noqa: PLC0415
+        RealVADProvider, RealSTTAdapter, LocalTTSAdapter,
+        SileroSpeechProbability,
+        LocalWakeWordProvider,
+    )
     from src.voice.stt import LumenaSTT  # noqa: PLC0415
 
-    spk = speaking_threshold if speaking_threshold is not None else int(energy_threshold * 2.7)
+    audio_frontend = AudioFrontend.from_env()
+    spk = resolve_barge_in_speaking_threshold(
+        audio_frontend,
+        energy_threshold=energy_threshold,
+        requested_threshold=speaking_threshold,
+    )
     # is_speaking_fn lié plus tard au TurnManager créé dans VoiceV2Live → placeholder mutable.
     state_ref: dict = {"tm": None}
     if input_device_index is None:
@@ -633,22 +873,59 @@ async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "i
             input_device_index = int(_raw_input_device) if _raw_input_device else None
         except (TypeError, ValueError):
             input_device_index = None
+    if partial_every_ms is None:
+        try:
+            partial_every_ms = int(os.getenv("LUMENA_STT_PARTIAL_EVERY_MS", "0"))
+        except (TypeError, ValueError):
+            partial_every_ms = 0
+    partial_every_ms = max(0, min(5000, partial_every_ms))
+    vad_engine = os.getenv("LUMENA_VOICE_VAD_ENGINE", "auto").strip().lower()
+    if vad_engine not in {"auto", "energy", "silero"}:
+        vad_engine = "auto"
+    probability_fn = None
+    vad_fallback_reason = None
+    if vad_engine in {"auto", "silero"}:
+        probability_fn, silero_status = SileroSpeechProbability.load()
+        vad_fallback_reason = silero_status.reason
+    try:
+        probability_threshold = float(
+            os.getenv("LUMENA_VOICE_VAD_SPEECH_THRESHOLD", "0.5")
+        )
+    except (TypeError, ValueError):
+        probability_threshold = 0.5
     vad = RealVADProvider(energy_threshold=energy_threshold, silence_hangover_ms=hangover_ms,
                           speaking_threshold=spk,
+                          speaking_guard_enabled=spk is not None,
+                          partial_every_ms=partial_every_ms,
                           input_device_index=input_device_index,
+                          speech_probability_fn=probability_fn,
+                          speech_probability_threshold=probability_threshold,
                           is_speaking_fn=lambda: getattr(state_ref["tm"], "state", None)
                           and state_ref["tm"].state.mode == "speaking")
-    stt = RealSTTAdapter(stt=LumenaSTT(device=device, compute_type=compute))
+    if probability_fn is None and vad_engine in {"auto", "silero"}:
+        vad.vad_fallback_reason = vad_fallback_reason
+    # LOT VOICE-3 : `model_size` etait le seul des trois a ne pas etre transmis, si
+    # bien que le STT retombait sur son defaut fige a l'import (`small`) malgre un
+    # `.env` demandant `large-v3-turbo`.
+    stt = RealSTTAdapter(
+        stt=LumenaSTT(device=device, compute_type=compute, model_size=model)
+    )
     tts = LocalTTSAdapter()
+    wake_word = LocalWakeWordProvider.from_env()
 
     initial_mode = "agent" if llm_mode == "agent" else "chat"
     session = VoiceSessionRouter.for_product(core, mode=initial_mode)
     resolved_agent_iterations = resolve_voice_agent_max_iterations(agent_max_iterations)
     live = VoiceV2Live(core, vad=vad, stt=stt, tts=tts, language=language,
                        disable_tools=disable_tools, llm_mode=llm_mode,
+                       emit_partials=partial_every_ms > 0,
                        agent_max_iterations=resolved_agent_iterations,
-                       session_router=session, log=log)
+                       session_router=session,
+                       audio_frontend=audio_frontend,
+                       activation_gate=activation_gate_from_env(),
+                       wake_word_provider=wake_word, log=log)
     state_ref["tm"] = live.tm   # le guard voit maintenant le bon TurnManager
+    get_voice_telemetry().update(vad=vad.status())
 
     if calibrate:
         log(f"[voice] calibration {calibrate_ms} ms (reste silencieux)...")
@@ -657,7 +934,7 @@ async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "i
     if prewarm:
         log("[voice] prewarm STT/TTS...")
         log(f"[voice] STT: {await stt.prewarm()}")
-        log(f"[voice] TTS: {await tts.prewarm()}")
+        log(f"[voice] TTS: {await tts.prewarm(voice=live.runtime.voice_profile)}")
 
     log("[voice] LIVE prêt — parle (Ctrl+C pour arrêter).")
     await live.run()

@@ -110,6 +110,22 @@ class TestExecutionLedger:
         led.append(iteration=2, action="write_file", success=True)
         assert led.has_any_mutation()
 
+    def test_dynamic_mcp_mutations_are_counted_but_readers_are_not(self):
+        led = ExecutionLedger()
+        led.append(
+            iteration=0,
+            action="mcp__studiomcp-d714304e__script_read",
+            success=True,
+        )
+        assert not led.has_any_mutation()
+        led.append(
+            iteration=1,
+            action="mcp__studiomcp-d714304e__execute_luau",
+            success=True,
+        )
+        assert led.has_any_mutation()
+        assert led.successful_mutations()[0].action.endswith("__execute_luau")
+
     def test_successful_mutations(self):
         led = ExecutionLedger()
         led.append(iteration=0, action="read_file", success=True)

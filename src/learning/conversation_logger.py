@@ -108,6 +108,9 @@ def queue_conversation(
     provider: str = "unknown",
     skip_if_negative_feedback: bool = True,
     react_meta: Optional[dict] = None,
+    source_surface: str = "web",
+    mode: str = "chat",
+    conversation_id: str = "",
 ) -> bool:
     """
     Ajoute une conversation au pool de données d'entraînement.
@@ -173,6 +176,8 @@ def queue_conversation(
                 _react_summary["warning"] = str(react_meta["agent_output_warning"])[:120]
             if react_meta.get("agent_output_incomplete"):
                 _react_summary["incomplete"] = True
+                if quality_flag == "ok":
+                    quality_flag = "incomplete"
             plan = react_meta.get("plan")
             if plan and isinstance(plan, dict):
                 _react_summary["plan_total"] = plan.get("total_tasks", 0)
@@ -192,7 +197,7 @@ def queue_conversation(
                 "user_len": len(user_msg),
                 "response_len": len(resp),
                 "content_hash": content_hash,       # Pour déduplication downstream
-                "quality_flag": quality_flag,        # "ok" | "negative_feedback"
+                "quality_flag": quality_flag,        # ok | feedback | incomplete
                 **({"react_meta": _react_summary} if _react_summary else {}),
             },
         }
@@ -230,6 +235,24 @@ def queue_conversation(
 
         status = "⚠️" if quality_flag != "ok" else "✓"
         logger.debug(f"📚 {status} Conversation loguée [{model_used}] [{quality_flag}] → {pool_file.name}")
+        # Canonical personal learning is opt-in and non-blocking.  The legacy
+        # pool remains intact during migration; this bridge never changes the
+        # return value of the established logger.
+        try:
+            from src.training.personal.capture_runtime import get_personal_capture_runtime
+            get_personal_capture_runtime().submit_conversation(
+                user_message=user_msg,
+                response=resp,
+                source_surface=source_surface,
+                mode=mode,
+                model_used=model_used,
+                provider=provider,
+                conversation_id=conversation_id,
+                react_meta=react_meta,
+                quality_flag=quality_flag,
+            )
+        except Exception as capture_error:
+            logger.debug(f"personal_capture silencieux: {capture_error}")
         return True
 
     except Exception as e:
@@ -271,10 +294,14 @@ def update_quality_flag(content_hash: str, flag: str) -> bool:
     """FT-6: Met à jour le quality_flag d'une entrée par son content_hash.
 
     Cherche dans les 30 derniers jours de pool. Flags valides :
-    'positive_explicit', 'negative_explicit', 'ok', 'negative_feedback'.
+    'positive_explicit', 'negative_explicit', 'ok', 'negative_feedback',
+    'incomplete'.
     Retourne True si une entrée a été mise à jour.
     """
-    _VALID_FLAGS = {"positive_explicit", "negative_explicit", "ok", "negative_feedback"}
+    _VALID_FLAGS = {
+        "positive_explicit", "negative_explicit", "ok",
+        "negative_feedback", "incomplete",
+    }
     if flag not in _VALID_FLAGS:
         return False
 

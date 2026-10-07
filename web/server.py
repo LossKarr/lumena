@@ -25,7 +25,7 @@ from src.version import __version__
 from web.routes.lifespan import lifespan  # noqa: E402
 
 # ── Route modules ──
-from web.routes import system, chat, sessions, tasks, config, models, local_models, content, advanced, setup, onboarding, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, missions, steering, document_studio, codex_subscription, updates  # noqa: E402
+from web.routes import system, chat, sessions, tasks, config, models, local_models, personal_models, content, advanced, setup, onboarding, docs, product_docs, stripe_webhook, stripe_dashboard, workspaces, finetuning, whatsapp, emotion, ionos, image_gen, peers, mcp, mcp_oauth, mcp_registry, mcp_schema, missions, steering, document_studio, codex_subscription, updates  # noqa: E402
 
 # ── App creation ──
 _SETUP_DONE = os.getenv("LUMENA_SETUP_COMPLETE", "") == "1"
@@ -236,6 +236,7 @@ app.include_router(tasks.router)
 app.include_router(config.router)
 app.include_router(models.router)
 app.include_router(local_models.router)
+app.include_router(personal_models.router)
 app.include_router(content.router)
 app.include_router(advanced.router)
 app.include_router(setup.router)
@@ -252,6 +253,9 @@ app.include_router(ionos.router)
 app.include_router(image_gen.router)
 app.include_router(peers.router)
 app.include_router(mcp.router)
+app.include_router(mcp_oauth.router)
+app.include_router(mcp_registry.router)
+app.include_router(mcp_schema.router)
 app.include_router(missions.router)
 app.include_router(steering.router)
 app.include_router(document_studio.router)
@@ -288,7 +292,7 @@ if __name__ == "__main__":
             sys.stdin = open(0, "r")
     elif sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    _host = os.getenv("LUMENA_HOST", "0.0.0.0")
+    _host = os.getenv("LUMENA_HOST", "127.0.0.1")
     _port = _LUMENA_PORT
     uvicorn.run(app, host=_host, port=_port, log_level="info", access_log=False)
 # ──────────────────────────────────────────────────────────────────────────────

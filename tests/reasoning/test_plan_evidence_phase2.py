@@ -3,6 +3,8 @@ from src.reasoning.plan_evidence import (
     get_tool_capabilities,
     has_sufficient_proof,
     _NON_PROOF_CAPABILITIES,
+    has_dynamic_mcp_verify_proof,
+    is_dynamic_mcp_readonly_tool,
 )
 
 
@@ -73,6 +75,48 @@ def test_real_mcp_tool_is_not_known_readonly():
     from src.reasoning.plan_evidence import tool_capabilities_are_known_readonly
 
     assert tool_capabilities_are_known_readonly("mcp__github__search", "mcp", "mcp") is False
+
+
+def test_dynamic_mcp_operation_classifies_read_probes_without_changing_category_contract():
+    assert is_dynamic_mcp_readonly_tool(
+        "mcp__studiomcp-d714304e__get_studio_state"
+    )
+    assert is_dynamic_mcp_readonly_tool(
+        "mcp__studiomcp-d714304e__script_read"
+    )
+    assert not is_dynamic_mcp_readonly_tool(
+        "mcp__studiomcp-d714304e__execute_luau"
+    )
+    assert not is_dynamic_mcp_readonly_tool(
+        "mcp__studiomcp-d714304e__multi_edit"
+    )
+
+
+def test_dynamic_mcp_probe_proves_matching_generic_verification():
+    tool = "mcp__studiomcp-d714304e__get_studio_state"
+    observation = (
+        "Current Studio Mode: Edit\n"
+        "Available DataModels: Edit\n"
+        "Focused DataModel in the viewport: Edit"
+    )
+    task = "Vérifier l'état de la session Studio (place connectée)"
+
+    assert has_dynamic_mcp_verify_proof(tool, observation, task)
+    assert has_sufficient_proof(tool, observation, task, "custom", "system")
+
+
+def test_dynamic_mcp_probe_cannot_prove_unrelated_or_failed_verification():
+    tool = "mcp__studiomcp-d714304e__get_studio_state"
+    assert not has_dynamic_mcp_verify_proof(
+        tool,
+        "Current Studio Mode: Edit",
+        "Vérifier le paiement Stripe",
+    )
+    assert not has_dynamic_mcp_verify_proof(
+        tool,
+        "Error: Studio connection not found",
+        "Vérifier l'état de la session Studio",
+    )
 
 
 def test_data_export_is_file_write_proof():

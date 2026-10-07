@@ -761,6 +761,35 @@ async def test_propose_server_not_declared_400(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_legacy_misclassified_executable_is_blocked_before_approval(
+    monkeypatch, tmp_path
+):
+    """Une ancienne entree local:*.exe ne doit plus boucler sur les approvals."""
+    _clear_audit_path(monkeypatch, tmp_path)
+    monkeypatch.setenv("LUMENA_MCP_LIVE", "1")
+    app, catalog, _queue, orch = _make_app(declared_servers=["studiomcp.exe"])
+    catalog.get_server("studiomcp.exe").package_spec = "local:studiomcp.exe"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/mcp/install/propose",
+            json={
+                "confirmed": True,
+                "server_id": "studiomcp.exe",
+                "caller_kind": "admin_ui",
+            },
+        )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error_code"] == (
+        "legacy_executable_target_invalid"
+    )
+    assert orch.propose_calls == []
+
+
+@pytest.mark.asyncio
 async def test_install_execute_queue_singleton_missing_returns_503_and_does_not_take_marker(
     monkeypatch, tmp_path
 ):

@@ -121,14 +121,16 @@ class TestScaffoldProject:
         with patch.dict(os.environ, {"REMOTION_LICENSE_KEY": "test-key-123"}):
             tpl = VIDEO_TEMPLATES["presentation"]
             files = scaffold_remotion_project(tmp_path, tpl)
-            assert "test-key-123" in files["render.mjs"] or "licenseKey" in files["render.mjs"]
+            assert "test-key-123" not in files["render.mjs"]
+            assert "process.env.REMOTION_LICENSE_KEY" in files["render.mjs"]
 
     def test_render_mjs_no_license_when_empty(self, tmp_path):
         from src.tools.remotion_engine import scaffold_remotion_project, VIDEO_TEMPLATES
         with patch.dict(os.environ, {"REMOTION_LICENSE_KEY": ""}, clear=False):
             tpl = VIDEO_TEMPLATES["presentation"]
             files = scaffold_remotion_project(tmp_path, tpl)
-            assert "licenseKey" not in files["render.mjs"]
+            assert "process.env.REMOTION_LICENSE_KEY" in files["render.mjs"]
+            assert "REMOTION_LICENSE_KEY =" not in files["render.mjs"]
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -180,15 +182,37 @@ class TestDockerSandbox:
             call_args = mock_exec.call_args[0]
             assert "docker" in call_args
             assert "run" in call_args
-            assert "node:20-slim" in call_args or os.getenv("LUMENA_VIDEO_DOCKER_IMAGE", "node:20-slim") in call_args
+            from src.tools.remotion_engine import DEFAULT_VIDEO_DOCKER_IMAGE
+            assert os.getenv("LUMENA_VIDEO_DOCKER_IMAGE", DEFAULT_VIDEO_DOCKER_IMAGE) in call_args
+            assert "--cap-drop" in call_args
+            assert "--read-only" in call_args
+            assert "no-new-privileges" in call_args
+            assert "NPM_CONFIG_CACHE=/tmp/npm-cache" in call_args
             assert code == 0
+
+    @pytest.mark.asyncio
+    async def test_docker_forwards_license_without_value_in_command(self):
+        from src.tools.remotion_engine import _run_in_node_sandbox
+
+        with patch.dict(os.environ, {"REMOTION_LICENSE_KEY": "private-license"}):
+            with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+                mock_proc = AsyncMock()
+                mock_proc.communicate.return_value = (b"OK", b"")
+                mock_proc.returncode = 0
+                mock_exec.return_value = mock_proc
+                await _run_in_node_sandbox("node render.mjs", str(Path.cwd()))
+        call_args = mock_exec.call_args[0]
+        assert "REMOTION_LICENSE_KEY" in call_args
+        assert all("private-license" not in str(arg) for arg in call_args)
 
     @pytest.mark.asyncio
     async def test_render_video_fails_without_docker(self, tmp_path):
         from src.tools.remotion_engine import render_video_in_docker
-        with patch("src.tools.remotion_engine.is_docker_available", new_callable=AsyncMock, return_value=False):
-            with pytest.raises(RuntimeError, match="Docker non disponible"):
-                await render_video_in_docker(tmp_path)
+        with patch("src.utils.paths.WORKSPACE_DIR", tmp_path):
+            with patch("src.tools.remotion_engine.is_docker_available", new_callable=AsyncMock, return_value=False):
+                with patch.dict(os.environ, {"LUMENA_VIDEO_ALLOW_HOST_NODE": ""}, clear=False):
+                    with pytest.raises(RuntimeError, match="Docker est requis"):
+                        await render_video_in_docker(tmp_path)
 
     @pytest.mark.asyncio
     async def test_timeout_returns_error(self):
@@ -199,9 +223,22 @@ class TestDockerSandbox:
             mock_proc.communicate.side_effect = asyncio.TimeoutError()
             mock_proc.kill = MagicMock()
             mock_exec.return_value = mock_proc
-            stdout, stderr, code = await _run_in_node_sandbox("slow cmd", "/tmp", timeout_sec=1)
+            with patch(
+                "src.tools.remotion_engine._force_remove_container",
+                new_callable=AsyncMock,
+            ) as cleanup:
+                stdout, stderr, code = await _run_in_node_sandbox(
+                    "slow cmd",
+                    "/tmp",
+                    timeout_sec=1,
+                    container_name="lumena-video-timeout-test",
+                )
             assert code == -1
             assert "Timeout" in stderr
+            cleanup.assert_awaited_once_with("lumena-video-timeout-test")
+            call_args = mock_exec.call_args[0]
+            assert "--name" in call_args
+            assert "lumena-video-timeout-test" in call_args
 
     @pytest.mark.asyncio
     async def test_gpu_flag_adds_gpus_all(self):
@@ -229,6 +266,20 @@ class TestDockerSandbox:
                 await _run_in_node_sandbox("node render.mjs", workdir=str(Path.cwd()), timeout_sec=60)
                 call_args = mock_exec.call_args[0]
                 assert "--gpus" not in call_args
+
+    @pytest.mark.asyncio
+    async def test_local_node_resolves_windows_command_shim(self, tmp_path):
+        from src.tools.remotion_engine import _run_local_node
+
+        npm_cmd = str(tmp_path / "npm.cmd")
+        with patch("src.tools.remotion_engine.shutil.which", return_value=npm_cmd):
+            with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as mock_exec:
+                mock_proc = AsyncMock()
+                mock_proc.communicate.return_value = (b"OK", b"")
+                mock_proc.returncode = 0
+                mock_exec.return_value = mock_proc
+                await _run_local_node(["npm", "--version"], str(tmp_path))
+        assert mock_exec.call_args[0][0] == npm_cmd
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -376,10 +427,13 @@ class TestGenerateVideoHandler:
         fake_video.write_bytes(b"fake mp4 content")
         with patch("src.reasoning.handlers.remotion.render_video_in_docker", new_callable=AsyncMock) as mock_render:
             mock_render.return_value = (fake_video, "LUMENA_RENDER_COMPLETE:output.mp4")
-            with patch("src.utils.paths.WORKSPACE_DIR", tmp_path):
-                result = await generate_video_handler(
-                    ctx, description="vidéo de présentation", duration_sec=30,
-                )
+            quality = MagicMock(passed=True)
+            quality.summary.return_value = "validé"
+            with patch("src.reasoning.handlers.remotion.inspect_rendered_video", new_callable=AsyncMock, return_value=quality):
+                with patch("src.utils.paths.WORKSPACE_DIR", tmp_path):
+                    result = await generate_video_handler(
+                        ctx, description="vidéo de présentation", duration_sec=30,
+                    )
         assert result.success
         assert "output.mp4" in result.output or "✅" in result.output
 
@@ -429,7 +483,11 @@ class TestEditVideoHandler:
         with patch("src.utils.paths.WORKSPACE_DIR", tmp_path / "workspace"):
             with patch("src.agents.sub_agent.delegate_to_agent", new_callable=AsyncMock) as mock_agent:
                 mock_agent.return_value = "Modified successfully"
-                result = await edit_video_handler(ctx, instructions="change the title")
+                validation = MagicMock(valid=True)
+                with patch("src.reasoning.handlers.remotion.validate_project", return_value=validation):
+                    with patch("src.reasoning.handlers.remotion.render_video_in_docker", new_callable=AsyncMock) as mock_render:
+                        mock_render.return_value = (proj_dir / "output.mp4", "ok")
+                        result = await edit_video_handler(ctx, instructions="change the title")
         assert result.success
 
 
@@ -473,10 +531,10 @@ class TestListVideoProjects:
 class TestHandlerDefRegistration:
     """Vérifie que les handlers vidéo sont correctement enregistrés."""
 
-    def test_4_handler_defs_returned(self):
+    def test_7_handler_defs_returned(self):
         from src.reasoning.handlers.remotion import get_video_handler_defs
         defs = get_video_handler_defs()
-        assert len(defs) == 4
+        assert len(defs) == 7
 
     def test_handler_names(self):
         from src.reasoning.handlers.remotion import get_video_handler_defs
@@ -485,6 +543,9 @@ class TestHandlerDefRegistration:
         assert "generate_video" in names
         assert "edit_video" in names
         assert "preview_video" in names
+        assert "retry_video_render" in names
+        assert "get_video_job" in names
+        assert "cancel_video_job" in names
         assert "list_video_projects" in names
 
     def test_all_have_category_video(self):
@@ -588,6 +649,10 @@ class TestConfigSchemaVideo:
         from web.routes.config import _CONFIG_SCHEMA
         keys = [e["key"] for e in _CONFIG_SCHEMA]
         assert "LUMENA_VIDEO_RENDER_TIMEOUT" in keys
+        assert "LUMENA_VIDEO_INSTALL_TIMEOUT" in keys
+        assert "LUMENA_VIDEO_DOCKER_MEMORY" in keys
+        assert "LUMENA_VIDEO_DOCKER_CPUS" in keys
+        assert "LUMENA_VIDEO_DOCKER_PIDS_LIMIT" in keys
 
     def test_remotion_license_is_secret(self):
         from web.routes.config import _CONFIG_SCHEMA

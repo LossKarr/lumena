@@ -27,7 +27,7 @@ from loguru import logger
 from src.utils.project_registry import anchor_root_for_mutation  # L1d-1 : ancre de projet
 from src.reasoning.steering_runtime import apply_steering_checkpoint
 from src.runtime.steering_dispatcher import STEERING_INTERRUPTED, await_interruptible_llm
-
+from src.reasoning.public_activity import notify_step_callback
 # Cancel token registry: thread_id → threading.Event
 # Enregistré depuis chat.py avant le démarrage du thread agent.
 # Vérifié entre chaque itération pour stopper la boucle sans ctypes.
@@ -243,7 +243,7 @@ from .observation_synthesis import (  # noqa: F401
     phantom_channels,
     workspace_path_from_query,
 )
-
+from .iteration_limit_report import build_iteration_limit_report
 # ── RF-3 — guidance documentaire extraite vers `src/prompts/react_prompt.py`
 # Reexport de compatibilite : chacune a un consommateur externe.
 from src.prompts.react_prompt import (  # noqa: F401
@@ -3383,6 +3383,7 @@ class ReActLoop:
             _format_budget_notice=self._format_budget_notice,
             obtenir_identite=_obtenir_identite,
             obtenir_route_document=lambda: ReActLoop._document_route_for_run(self, query),
+            public_updates_enabled=callable(getattr(self, "step_callback", None)),
         ))
 
     def _format_plan_section(self) -> str:
@@ -7374,12 +7375,10 @@ class ReActLoop:
                     action.tool_name = _new_tool
                     action.tool_args = _new_args
 
-                # Notifier le step_callback (ex: voix) avant l'exécution de l'outil
-                if self.step_callback:
-                    try:
-                        self.step_callback(action.tool_name, action.tool_args or {})
-                    except Exception as e:
-                        logger.debug(f"Step callback: {e}")
+                try:
+                    notify_step_callback(getattr(self, "step_callback", None), action.tool_name, action.tool_args or {}, public_update=action.public_update, task_id=self.task_id, turn_id=i)
+                except Exception as exc:
+                    logger.debug("Step callback: {}", exc)
                 # Propager le budget temps restant et le task_id au HandlerContext
                 if hasattr(self, '_loop_start_time') and hasattr(self.tools, '_v2_context'):
                     from time import perf_counter as _pc
@@ -8666,8 +8665,8 @@ class ReActLoop:
                     )
 
             # 6. Compacter les observations volumineuses avant stockage (anti-context-poisoning)
-            # Le modèle a déjà vu l'observation complète — on stocke une version compacte
-            # pour que les futures itérations ne soient pas noyées dans du contenu stale.
+            # Le prochain appel modèle est le premier qui verra cette observation.
+            # La compaction doit donc respecter son budget réel avant stockage.
             # RÈGLE : read_file/grep ont un seuil élevé (8000) — le contenu fichier est précieux.
             #         delegate_task/run_command ont un seuil bas (3000) — ce sont des résumés.
             if step.observation and step.observation.content:
@@ -8682,6 +8681,7 @@ class ReActLoop:
                         "chat_composer", "chat_transcript", "chat_response"
                     ),
                     compact_browser=_compact_browser_observation_payload,
+                    model_visible_limit=self._history_observation_limit(),
                 )
                 if _c_body is not None:
                     _raw_obs_len = len(step.observation.content)
@@ -9696,7 +9696,7 @@ Continue à répondre à la question initiale.{_conclusion_hint}"""
                 error=self._run_meta["agent_output_warning"],
             )
         self._mark_task_failed(self._run_meta["agent_output_warning"])
-        return "J'ai atteint la limite d'itérations. Voici ce que j'ai trouvé jusqu'ici."
+        return build_iteration_limit_report(self.max_iterations, self._task_plan, self.execution_ledger, last_obs)
     
     def clear_history(self):
         """Efface l'historique."""

@@ -43,8 +43,15 @@ src/mcp/data/*
 docs/
 !docs/
 docs/*
+!docs/VOICE_V2.md
+!docs/VOICE_V2_CERTIFICATION_2026-09-28.md
+!docs/VOICE_TTS_PROVENANCE.md
+!docs/VOICE_V3_CERTIFICATION.md
 !docs/LOCAL_MODELS.md
 !docs/WORK_STEERING.md
+!docs/MCP.md
+!docs/PERSONAL_MODEL.md
+!docs/PERSONAL_MODEL_CONVERSATION.md
 docs-plan/
 
 # Runtime Lumena

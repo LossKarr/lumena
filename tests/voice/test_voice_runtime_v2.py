@@ -250,9 +250,60 @@ async def test_runtime_chunking_interruption_truncates_to_heard_segments():
         assert seg in rec.text_played
 
 
-# ── LocalTTSAdapter.stream : un chunk par phrase, avec chemin audio ───────────
 @pytest.mark.asyncio
-async def test_local_tts_adapter_stream_yields_per_sentence(monkeypatch):
+async def test_player_interruption_records_only_elapsed_word_bounded_audio():
+    ledger = ConversationAudioLedger()
+    text = "Cette phrase assez longue est coupée avant sa conclusion finale."
+    ledger.register_generation("turn-1", "gen-1", text)
+
+    async def one_second_play(_target):
+        await asyncio.sleep(1)
+
+    player = LocalAudioPlayer(
+        ledger=ledger, play_fn=one_second_play, stop_fn=lambda: None,
+    )
+    player.set_generation("gen-1")
+    task = asyncio.create_task(player.play(
+        generation_id="gen-1", sequence=0, text=text, duration_ms=1000,
+    ))
+    await asyncio.sleep(0.48)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    record = ledger.truncate("gen-1")
+    assert record is not None
+    assert record.text_played
+    assert record.text_played != text
+    assert record.text_unplayed
+    assert record.text_unplayed != text
+    assert record.partially_played_sequences == [0]
+    assert record.text_played + " " + record.text_unplayed == text
+
+
+@pytest.mark.asyncio
+async def test_false_barge_in_resumes_only_the_unheard_sentence_tail():
+    tm = TurnManager()
+    led = ConversationAudioLedger()
+    player = LocalAudioPlayer(ledger=led, play_fn=lambda x: _noop(), stop_fn=lambda: None)
+    rt = VoiceRuntime(tm, FakeTTSProvider(), player, enabled=True)
+    led.register_generation("u_1", "old", "Première phrase. Deuxième phrase.")
+    led.on_chunk_played("old", "Première phrase.", 500, sequence=0)
+    led.truncate("old")
+
+    await rt.dispatch([VoiceCommand(
+        "resume_interrupted_speech", {"generation_id": "old"},
+    )])
+
+    resumed = led.get("agent_1")
+    assert resumed is not None
+    assert resumed.planned_text == "Deuxième phrase."
+    await rt.aclose()
+
+
+# ── LocalTTSAdapter.stream : chunks bornés et fluides, avec chemin audio ──────
+@pytest.mark.asyncio
+async def test_local_tts_adapter_stream_bundles_short_sentences(monkeypatch):
     monkeypatch.setenv("LUMENA_VOICE_CLOUD_ALLOWED", "0")
     from src.voice.v2.providers.local_tts import LocalTTSAdapter
 
@@ -264,7 +315,8 @@ async def test_local_tts_adapter_stream_yields_per_sentence(monkeypatch):
 
     adapter = LocalTTSAdapter(tts=_FakeEngine())
     chunks = [c async for c in adapter.stream("Bonjour. Comment vas-tu ?", voice=None)]
-    assert [c.sequence for c in chunks] == [0, 1]
+    assert [c.sequence for c in chunks] == [0]
+    assert chunks[0].text == "Bonjour. Comment vas-tu ?"
     assert all(c.audio_path and c.audio_path.endswith(".wav") for c in chunks)
     assert all(c.provider == "piper" and c.degraded is False for c in chunks)
 

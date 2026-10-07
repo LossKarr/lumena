@@ -62,6 +62,7 @@ class CatalogAddCatalogLike(Protocol):
         version: Optional[str] = None,
         trust_score: Optional[int] = None,
         notes: Optional[str] = None,
+        connection_spec: Optional[Dict[str, Any]] = None,
     ) -> Any: ...
 
 
@@ -79,6 +80,7 @@ class CatalogAddProposalInput:
     # Phase I-8 (Fix AC) : tags discriminants de l'intent d'origine,
     # persistés sur l'entrée pour le re-matching des intents futurs.
     capability_tags: Optional[tuple] = None
+    connection_spec: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -216,6 +218,8 @@ class MCPCatalogAddOrchestrator:
             args["capability_tags"] = [
                 t for t in prop_tags if isinstance(t, str) and t
             ]
+        if proposal.connection_spec is not None:
+            args["connection_spec"] = proposal.connection_spec
         json.dumps(args, ensure_ascii=False, sort_keys=True)
         action_id = self._approval_queue.propose(
             tool_name=CATALOG_ADD_TOOL_PREFIX + proposal.server_id,
@@ -247,6 +251,7 @@ class MCPCatalogAddOrchestrator:
         trust_score: Optional[int] = None,
         caller_kind: str = "react",
         ttl_s: Optional[float] = None,
+        connection_spec: Optional[Dict[str, Any]] = None,
     ) -> CatalogAddTicketProposal:
         # Phase I-7 : pont entre ReAct handler add_mcp et propose_catalog_add.
         # Le handler ne connait que (package_spec, source_kind, source_url) +
@@ -276,6 +281,7 @@ class MCPCatalogAddOrchestrator:
             version=version if isinstance(version, str) and version.strip() else None,
             trust_score=trust_score if isinstance(trust_score, int) and not isinstance(trust_score, bool) else None,
             capability_tags=tags,
+            connection_spec=connection_spec,
         )
         return self.propose_catalog_add(
             proposal,
@@ -349,6 +355,7 @@ class MCPCatalogAddOrchestrator:
             version=args.get("version"),
             trust_score=min(effective_trust, 100),
             notes="catalog_add_from_mcp_autonomy",
+            connection_spec=args.get("connection_spec"),
         )
         if redeclare_removed:
             writer = getattr(self._catalog, "redeclare_server", None)
@@ -407,6 +414,12 @@ class MCPCatalogAddOrchestrator:
                 raise CatalogAddError("trust_score_invalid")
             if not (0 <= proposal.trust_score <= 100):
                 raise CatalogAddError("trust_score_invalid")
+        if proposal.connection_spec is not None:
+            try:
+                from src.mcp.connection_spec import MCPConnectionSpec
+                MCPConnectionSpec.from_dict(proposal.connection_spec)
+            except (TypeError, ValueError) as exc:
+                raise CatalogAddError("connection_spec_invalid") from exc
 
     def _validate_approval_result(
         self, approval_result: Any, server_id: str
@@ -450,6 +463,18 @@ class MCPCatalogAddOrchestrator:
                 catalog_status=None,
                 reason="approval_args_invalid",
             )
+        connection_spec = args.get("connection_spec")
+        if connection_spec is not None:
+            try:
+                from src.mcp.connection_spec import MCPConnectionSpec
+                MCPConnectionSpec.from_dict(connection_spec)
+            except (TypeError, ValueError):
+                return CatalogAddExecutionResult(
+                    server_id=server_id,
+                    success=False,
+                    catalog_status=None,
+                    reason="approval_args_invalid",
+                )
         return args
 
     def _safe_get(self, server_id: str) -> Any:
