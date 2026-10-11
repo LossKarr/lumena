@@ -9,7 +9,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from src.runtime.component_store import ComponentStore
-from src.utils.paths import ROOT_DIR
+from src.utils.paths import DATA_DIR
 from src.utils.persistence import atomic_write_json, safe_read_json
 
 
@@ -20,7 +20,10 @@ QWEN_RUNTIME_SCHEMA = 1
 
 def component_root() -> Path:
     configured = os.getenv("LUMENA_COMPONENT_ROOT", "").strip()
-    return Path(configured).expanduser().resolve() if configured else ROOT_DIR.resolve()
+    return (
+        Path(configured).expanduser().resolve()
+        if configured else (DATA_DIR / "components").resolve()
+    )
 
 
 def resolve_qwen_paths(

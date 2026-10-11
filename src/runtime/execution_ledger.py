@@ -104,6 +104,8 @@ MUTATION_TOOLS: frozenset[str] = frozenset({
     "memory_save", "memory_store", "memory_add",
     "schedule_task", "create_task",
     "delegate_task", "delegate_task_bg",
+    # ── Gestion vocale ──────────────────────────────────────────────────────
+    "apply_voice_recommendation", "rollback_voice_configuration",
 })
 
 

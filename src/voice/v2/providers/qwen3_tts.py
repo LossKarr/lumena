@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any, AsyncIterator
 
 from src.utils.paths import DATA_DIR, ROOT_DIR
@@ -12,6 +13,21 @@ from .base import AudioResult, CancelToken, TTSAudioChunk, TTSProvider
 from .local_tts import _audio_metadata, _segments
 from ..qwen_runtime import cached_qwen_runtime_status, resolve_qwen_paths
 from ..qwen_worker_client import QwenWorkerClient
+
+
+QWEN_TARGET_CHARS = 48
+QWEN_MAX_CHARS = 70
+QWEN_FIRST_MAX_CHARS = 32
+
+
+def qwen_segments(text: str) -> list[str]:
+    """Bound file-based Qwen synthesis and release its first audio quickly."""
+    return _segments(
+        text,
+        target_chars=QWEN_TARGET_CHARS,
+        max_chars=QWEN_MAX_CHARS,
+        first_max_chars=QWEN_FIRST_MAX_CHARS,
+    )
 
 
 class Qwen3TTSProvider(TTSProvider):
@@ -108,7 +124,7 @@ class Qwen3TTSProvider(TTSProvider):
     async def stream(
         self, text: str, voice: Any, cancel: CancelToken | None = None,
     ) -> AsyncIterator[TTSAudioChunk]:
-        for sequence, segment in enumerate(_segments(text, target_chars=55, max_chars=90)):
+        for sequence, segment in enumerate(qwen_segments(text)):
             if cancel and cancel.cancelled:
                 return
             result = await self.synthesize(segment, voice, cancel)
@@ -120,6 +136,22 @@ class Qwen3TTSProvider(TTSProvider):
                 sample_rate=result.sample_rate, channels=result.channels,
                 provider=self.name,
             )
+
+    async def prewarm(self, text: str = "Bonjour.", voice: Any = None) -> dict[str, Any]:
+        """Load the isolated model before a turn and report the real cost."""
+        started = time.perf_counter()
+        result = await self.synthesize(text, voice)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        if result.audio_path:
+            Path(result.audio_path).unlink(missing_ok=True)
+        return {
+            "component": "tts",
+            "ok": bool(result.ok),
+            "provider": result.provider or self.name,
+            "latency_ms": latency_ms,
+            "degraded": bool(result.degraded),
+            "detail": "" if result.ok else (self._last_error_code or "qwen_prewarm_failed"),
+        }
 
     async def aclose(self) -> None:
         closer = getattr(self._worker, "aclose", None)

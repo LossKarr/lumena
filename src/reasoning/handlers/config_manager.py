@@ -159,6 +159,21 @@ async def update_config_handler(ctx: HandlerContext, **kwargs) -> HandlerResult:
                 handler_name="update_lumena_config",
             )
 
+        # Les paramètres moteur/profil Voice exigent une transaction dédiée :
+        # état demandé/effectif, redémarrage sûr, preuve et rollback.  La langue,
+        # le micro et les préférences non gérées restent configurables ici.
+        from ...voice.v2.management import VOICE_MANAGED_KEYS, VOICE_PROTECTED_KEYS
+        if key in VOICE_MANAGED_KEYS or key in VOICE_PROTECTED_KEYS:
+            return HandlerResult.fail(
+                "voice_setting_requires_voice_management",
+                output=(
+                    "Ce paramètre Voice doit passer par "
+                    "recommend_voice_configuration puis apply_voice_recommendation."
+                ),
+                handler_name="update_lumena_config",
+                status_code="voice_setting_requires_voice_management",
+            )
+
         # Validation selon le type
         if entry["type"] == "number":
             try:

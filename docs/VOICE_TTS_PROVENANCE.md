@@ -15,12 +15,19 @@ d'environ 4,33 sur CPU et 2,0 sur RTX 3060 CUDA : ce backend par fichiers n'est 
 pas promu automatiquement sur cette machine. Il reste sélectionnable ; le routeur
 `auto` conserve Piper tant qu'un canari local ne prouve pas la fluidité attendue.
 
-Le runtime Qwen qualifié est figé dans un lock, un SBOM et un inventaire de licences,
-puis découpé en assets signés sous la limite GitHub. Le modèle principal et son
-tokenizer vocal sont publiés séparément et réassemblés localement par liens physiques.
-L'installateur vérifie manifeste Ed25519, tailles et SHA-256 avant un vrai canari de
-synthèse. Aucune clé privée, référence non consentie ou poids flottant n'entre dans
-le dépôt ou l'EXE.
+Le runtime Qwen qualifié est figé dans un lock public suivi par Git. L'EXE reste léger :
+le panneau Voice crée un environnement Python isolé, télécharge le modèle officiel à
+une révision immuable, vérifie les tailles et les SHA-256 des deux poids principaux,
+puis exécute un vrai canari de synthèse. Les caches permettent de reprendre une
+installation interrompue. Le chemin historique par archives de release signées reste
+accepté pour les distributions hors ligne ou d'entreprise.
+
+La référence Qwen standard n'est pas un enregistrement utilisateur et n'est pas
+distribuée. Lumena la synthétise sur la machine depuis `fr_FR-siwis-medium`, conserve
+la licence et la provenance de cette source, puis verrouille le WAV par SHA-256. Un
+Voice Pack Qwen signé et juridiquement validé prend toujours priorité lorsqu'il est
+activé. Aucune clé privée, référence enregistrée sans consentement ou poids flottant
+n'entre dans le dépôt ou l'EXE.
 
 Kokoro et sherpa-onnx ne sont pas ajoutés silencieusement aux dépendances de
 production. Leurs runtimes ne sont pas installés dans l'environnement certifié et

@@ -202,11 +202,11 @@ export async function loadVoiceStatus(){
   initVoicePanel();
   try{
     const _vs={};if(ADMIN_TOKEN)_vs['Authorization']=`Bearer ${ADMIN_TOKEN}`;
-    const r=await fetch(`${API_BASE}/api/voice/status`,{headers:_vs});const d=await r.json();updateVoiceUI(d);await Promise.all([loadVoiceSettings(),loadVoicePerformanceProfiles(),loadVoicePacks(),loadQwenInstallStatus()]);
+    const r=await fetch(`${API_BASE}/api/voice/status`,{headers:_vs});const d=await r.json();updateVoiceUI(d);await Promise.all([loadVoiceSettings(),loadVoicePerformanceProfiles(),loadVoiceManagement(),loadVoicePacks(),loadQwenInstallStatus()]);
   }catch(e){}
 }
 
-let _lastVoiceStatus={};
+let _lastVoiceStatus={},_voiceRecommendationId='';
 function _voiceHeaders(json=false){const h={};if(json)h['Content-Type']='application/json';if(ADMIN_TOKEN)h['Authorization']=`Bearer ${ADMIN_TOKEN}`;return h}
 function _setVoiceSettingsMessage(text,type='info'){
   const msg=document.getElementById('voice-settings-message');if(!msg)return;
@@ -225,6 +225,10 @@ export function initVoicePanel(){
   const activate=(name)=>{tabs.forEach(b=>{const on=b.dataset.voiceTab===name;b.classList.toggle('active',on);b.setAttribute('aria-selected',String(on))});root.querySelectorAll('[data-voice-page]').forEach(p=>{const on=p.dataset.voicePage===name;p.classList.toggle('active',on);p.hidden=!on});if(name==='models')Promise.all([loadVoicePacks(),loadQwenInstallStatus()])};
   tabs.forEach((button,index)=>{button.addEventListener('click',()=>activate(button.dataset.voiceTab));button.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();const next=(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;tabs[next].focus();activate(tabs[next].dataset.voiceTab)})});
   document.getElementById('voice-setting-activation')?.addEventListener('change',event=>{if(event.detail?.source!=='config-load')_setVoiceSettingsMessage('')});
+  document.getElementById('voice-advisor-goal')?.addEventListener('change',()=>loadVoiceManagement());
+  document.getElementById('voice-advisor-analyze')?.addEventListener('click',()=>loadVoiceManagement());
+  document.getElementById('voice-advisor-apply')?.addEventListener('click',()=>applyVoiceManagementRecommendation());
+  document.getElementById('voice-advisor-rollback')?.addEventListener('click',()=>rollbackVoiceManagementRecommendation());
 }
 
 export async function loadVoiceSettings(){
@@ -261,6 +265,67 @@ export async function loadVoicePerformanceProfiles(){
   }catch(e){root.innerHTML=`<p class="voice-profile-warning">${esc(e.message)}</p>`}
 }
 
+const _voiceAdvisorLabels={
+  profiles:{essential:'Essentiel',light:'Léger',balanced:'Équilibré',precision:'Précision',studio_gpu:'Studio GPU',custom:'Personnalisé'},
+  confidence:{high:'Élevée',medium:'Moyenne',low:'Faible'},
+  reasons:{
+    piper_low_latency_local:'Piper local réduit le temps avant la parole',
+    qwen_conversation_qualified:'Qwen3-TTS a réussi la qualification conversationnelle',
+    local_only_constraint:'Aucun service vocal réseau ne sera utilisé',
+    explicit_push_to_talk:'Le micro ne s’ouvre qu’à la demande',
+  },
+  limitations:{
+    qwen_not_conversation_qualified:'Qwen3-TTS est installé mais trop lent pour cette conversation',
+    insufficient_runtime_samples:'Pas encore assez de mesures pour une certitude élevée',
+    server_aec_unavailable:'Annulation d’écho serveur indisponible : casque conseillé',
+    insufficient_cpu:'Processeur sous le niveau recommandé',
+    insufficient_ram:'Mémoire sous le niveau recommandé',
+    cuda_unavailable:'Accélération CUDA indisponible',
+    insufficient_vram:'Mémoire GPU insuffisante',
+    voice_runtime_error:'Le pipeline vocal signale une erreur',
+    voice_settings_pending:'Des réglages attendent le prochain redémarrage vocal',
+    tts_fallback_active:'Le moteur demandé utilise actuellement un repli',
+    qwen_installed_not_ready:'Qwen3-TTS est installé mais son runtime n’est pas prêt',
+    qwen_not_conversation_qualified:'Qwen3-TTS est prêt mais sa latence ne convient pas à une conversation fluide',
+    hands_free_without_aec:'Le mode mains libres fonctionne sans annulation d’écho serveur',
+    tts_synthesis_gap_high:'Les pauses de synthèse mesurées sont trop longues',
+    qwen_performance_unknown:'La performance conversationnelle de Qwen3-TTS n’est pas encore mesurée',
+  },
+};
+function _voiceAdvisorMessage(text,type='info'){const node=document.getElementById('voice-advisor-message');if(!node)return;node.textContent=text||'';node.classList.remove('is-info','is-success','is-error');if(text)node.classList.add(`is-${type}`)}
+function _voiceAdvisorText(code,kind){const clean=String(code||'');if(clean.startsWith('goal:'))return `Priorité : ${clean.slice(5)}`;if(clean.startsWith('profile:'))return `Profil calculé : ${_voiceAdvisorLabels.profiles[clean.slice(8)]||clean.slice(8)}`;return _voiceAdvisorLabels[kind]?.[clean]||clean.replaceAll('_',' ')}
+function _renderVoiceManagement(payload){
+  const recommendation=payload?.recommendation||{},snapshot=payload?.snapshot||{},diagnostic=payload?.diagnostic||{},configuration=snapshot.configuration||{},updates=recommendation.updates||{};
+  _voiceRecommendationId=String(recommendation.recommendation_id||'');
+  const set=(id,value)=>{const node=document.getElementById(id);if(node)node.textContent=value};
+  set('voice-advisor-profile',_voiceAdvisorLabels.profiles[recommendation.profile_id]||recommendation.profile_id||'Indisponible');
+  set('voice-advisor-engine',updates.LUMENA_VOICE_TTS_ENGINE||snapshot.engine?.effective||'—');
+  set('voice-advisor-confidence',_voiceAdvisorLabels.confidence[recommendation.confidence]||recommendation.confidence||'—');
+  set('voice-advisor-pending',configuration.settings_pending?'Oui':'Non');
+  const health=document.getElementById('voice-advisor-health');if(health){health.textContent=diagnostic.healthy===true?'Système sain':diagnostic.healthy===false?'Attention requise':'État indisponible';health.classList.toggle('is-healthy',diagnostic.healthy===true);health.classList.toggle('is-degraded',diagnostic.healthy===false)}
+  const evidence=document.getElementById('voice-advisor-evidence');if(evidence){const reasons=(recommendation.reasons||[]).map(code=>`<span>${esc(_voiceAdvisorText(code,'reasons'))}</span>`);const limits=(recommendation.limitations||[]).map(code=>`<span class="is-limitation">${esc(_voiceAdvisorText(code,'limitations'))}</span>`);const issues=(diagnostic.issues||[]).map(issue=>`<span class="is-limitation">${esc(_voiceAdvisorText(issue.code,'limitations'))}</span>`);evidence.innerHTML=[...reasons,...limits,...issues].join('')||'<span>Aucune anomalie mesurée.</span>'}
+  const apply=document.getElementById('voice-advisor-apply');if(apply)apply.disabled=!_voiceRecommendationId||recommendation.compatible===false;
+}
+export async function loadVoiceManagement(){
+  const root=document.querySelector('.voice-advisor-card');if(!root)return;
+  const goal=document.getElementById('voice-advisor-goal')?.value||'balanced';
+  _voiceAdvisorMessage('Analyse locale en cours…');
+  try{const r=await fetch(`${API_BASE}/api/voice/management?goal=${encodeURIComponent(goal)}`,{headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok)throw new Error(d.detail||'Analyse vocale indisponible');_renderVoiceManagement(d);_voiceAdvisorMessage('Recommandation calculée à partir de l’état réel de cette machine.','success')}
+  catch(e){_voiceRecommendationId='';const apply=document.getElementById('voice-advisor-apply');if(apply)apply.disabled=true;_voiceAdvisorMessage(e.message,'error')}
+}
+export async function applyVoiceManagementRecommendation(){
+  if(!_voiceRecommendationId){_voiceAdvisorMessage('Réanalyse nécessaire avant application.','error');return}
+  const button=document.getElementById('voice-advisor-apply');if(button)button.disabled=true;_voiceAdvisorMessage('Application atomique et vérification en cours…');
+  const ticket=_voiceRecommendationId;_voiceRecommendationId='';
+  try{const r=await fetch(`${API_BASE}/api/voice/management/apply/${encodeURIComponent(ticket)}`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:d.detail?.error_code||'Le réglage a été annulé');await Promise.all([_refreshVoiceConfigurationSurfaces(),loadVoiceManagement()]);_voiceAdvisorMessage(d.verified?'Réglage appliqué, redémarré et vérifié.':'Réglage enregistré.','success')}
+  catch(e){await loadVoiceManagement();_voiceAdvisorMessage(`${e.message}. La configuration précédente reste active.`,'error')}
+}
+export async function rollbackVoiceManagementRecommendation(){
+  const button=document.getElementById('voice-advisor-rollback');if(button)button.disabled=true;_voiceAdvisorMessage('Restauration et vérification en cours…');
+  try{const r=await fetch(`${API_BASE}/api/voice/management/rollback`,{method:'POST',headers:_voiceHeaders()});const d=await _voiceResponseJson(r);if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Restauration impossible');await Promise.all([_refreshVoiceConfigurationSurfaces(),loadVoiceManagement()]);_voiceAdvisorMessage('Configuration vocale précédente restaurée et vérifiée.','success')}
+  catch(e){_voiceAdvisorMessage(e.message,'error')}finally{if(button)button.disabled=false}
+}
+
 function _setVoicePackMessage(text,type='info'){
   const node=document.getElementById('voice-pack-message');if(!node)return;node.textContent=text||'';node.classList.remove('is-info','is-success','is-error');if(text)node.classList.add(`is-${type}`);
 }
@@ -270,7 +335,26 @@ let _qwenInstallTimer=null,_qwenInstallRequested=false;
 function _voiceBytes(value){const n=Number(value);if(!Number.isFinite(n)||n<=0)return 'Taille indisponible';const units=['o','Kio','Mio','Gio'];let amount=n,index=0;while(amount>=1024&&index<units.length-1){amount/=1024;index++}return `${amount.toLocaleString('fr-FR',{maximumFractionDigits:index>1?1:0})} ${units[index]}`}
 function _renderQwenInstall(d){
   const card=document.querySelector('.voice-qwen-installer'),button=document.getElementById('voice-qwen-install'),state=document.getElementById('voice-qwen-state'),message=document.getElementById('voice-qwen-message'),progress=document.getElementById('voice-qwen-progress'),bar=progress?.querySelector('span'),size=document.getElementById('voice-qwen-size'),required=document.getElementById('voice-qwen-required'),disk=document.getElementById('voice-qwen-disk');if(!card||!button)return;
-  const active=['preparing','downloading','installing','verifying'].includes(d.state),percent=Math.max(0,Math.min(100,Number(d.progress_percent)||0)),blockers=Array.isArray(d.blockers)?d.blockers:[],releaseMissing=blockers.includes('release_not_published'),diskMissing=blockers.includes('insufficient_disk_space');card.classList.toggle('is-ready',d.state==='ready');card.classList.toggle('is-error',d.state==='failed'||releaseMissing||diskMissing);if(bar)bar.style.width=`${percent}%`;if(progress){progress.setAttribute('aria-valuenow',String(percent));progress.hidden=!active&&d.state!=='ready'};if(size)size.textContent=d.required_download_bytes?`Téléchargement ${_voiceBytes(d.required_download_bytes)}`:releaseMissing?'Composants v1.0.57 non publiés':'Taille indisponible';if(required)required.textContent=`Espace requis ${_voiceBytes(d.required_disk_bytes)}`;if(disk){disk.textContent=`Disque libre ${_voiceBytes(d.free_disk_bytes)}`;disk.classList.toggle('is-error',diskMissing)};if(state)state.textContent=d.state==='ready'?'Installé':active?`${percent} %`:d.state==='failed'?'À reprendre':releaseMissing?'Publication requise':diskMissing?'Espace insuffisant':d.available?'Disponible':'Indisponible';let detail=d.message||'';if(releaseMissing)detail='Les composants signés de cette version doivent être ajoutés à la release avant installation.';if(diskMissing)detail+=`${detail?' ':''}Libérez de l’espace sur le disque de Lumena ou placez les composants lourds sur un autre volume.`;message.textContent=detail;message.className=`voice-setting-message ${d.state==='failed'||releaseMissing||diskMissing?'is-error':d.state==='ready'?'is-success':'is-info'}`;button.disabled=active||d.installed||!d.available||diskMissing;button.innerHTML=d.installed?'<i data-lucide="check"></i> Qwen3-TTS installé':active?'<i data-lucide="loader-circle"></i> Installation en cours':releaseMissing?'<i data-lucide="package-x"></i> En attente de publication':diskMissing?'<i data-lucide="hard-drive"></i> Espace insuffisant':d.state==='failed'?'<i data-lucide="rotate-cw"></i> Reprendre l’installation':'<i data-lucide="download"></i> Installer Qwen3-TTS';if(window.lucide)window.lucide.createIcons();
+  const active=['preparing','downloading','installing','verifying'].includes(d.state);
+  const percent=Math.max(0,Math.min(100,Number(d.progress_percent)||0));
+  const blockers=Array.isArray(d.blockers)?d.blockers:[];
+  const recipeInvalid=blockers.includes('installation_recipe_invalid');
+  const incompatible=blockers.includes('unsupported_platform')||blockers.includes('unsupported_python');
+  const diskMissing=blockers.includes('insufficient_disk_space');
+  const hasError=d.state==='failed'||recipeInvalid||incompatible||diskMissing;
+  card.classList.toggle('is-ready',d.state==='ready');card.classList.toggle('is-error',hasError);
+  if(bar)bar.style.width=`${percent}%`;if(progress){progress.setAttribute('aria-valuenow',String(percent));progress.hidden=!active&&d.state!=='ready'};
+  if(size)size.textContent=d.required_download_bytes?`Téléchargement ${_voiceBytes(d.required_download_bytes)}`:'Taille indisponible';
+  if(required)required.textContent=`Espace requis ${_voiceBytes(d.required_disk_bytes)}`;
+  if(disk){disk.textContent=`Disque libre ${_voiceBytes(d.free_disk_bytes)}`;disk.classList.toggle('is-error',diskMissing)};
+  if(state)state.textContent=d.state==='ready'?'Installé':active?`${percent} %`:d.state==='failed'?'À reprendre':recipeInvalid?'Recette indisponible':incompatible?'PC incompatible':diskMissing?'Espace insuffisant':d.available?'Disponible':'Indisponible';
+  let detail=d.message||'';
+  if(recipeInvalid)detail='La recette officielle Qwen3-TTS livrée avec Lumena est absente ou invalide.';
+  if(incompatible)detail='Qwen3-TTS demande Windows x64 et Python 3.12. Piper reste disponible.';
+  if(diskMissing)detail+=`${detail?' ':''}Libérez de l’espace sur le disque des composants ou choisissez un autre volume.`;
+  message.textContent=detail;message.className=`voice-setting-message ${hasError?'is-error':d.state==='ready'?'is-success':'is-info'}`;
+  button.disabled=active||d.installed||!d.available||diskMissing;
+  button.innerHTML=d.installed?'<i data-lucide="check"></i> Qwen3-TTS installé':active?'<i data-lucide="loader-circle"></i> Installation en cours':recipeInvalid?'<i data-lucide="package-x"></i> Recette indisponible':incompatible?'<i data-lucide="monitor-x"></i> PC incompatible':diskMissing?'<i data-lucide="hard-drive"></i> Espace insuffisant':d.state==='failed'?'<i data-lucide="rotate-cw"></i> Reprendre l’installation':'<i data-lucide="download"></i> Installer Qwen3-TTS';if(window.lucide)window.lucide.createIcons();
   if(active){clearTimeout(_qwenInstallTimer);_qwenInstallTimer=setTimeout(loadQwenInstallStatus,1000)}else if(d.state==='ready'&&_qwenInstallRequested){_qwenInstallRequested=false;_restartVoiceRuntimeIfRunning().finally(()=>loadVoiceStatus())}
 }
 export async function loadQwenInstallStatus(){

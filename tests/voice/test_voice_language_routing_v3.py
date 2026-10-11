@@ -60,6 +60,30 @@ async def test_runtime_passes_requested_language_as_per_generation_profile():
 
 
 @pytest.mark.asyncio
+async def test_runtime_passes_delivery_kind_as_per_generation_profile():
+    seen = []
+
+    class _TTS:
+        supports_streaming = False
+
+        async def synthesize(self, text, voice):
+            seen.append(voice.delivery_kind)
+            from src.voice.v2.providers.base import AudioResult
+            return AudioResult(ok=False, text=text)
+
+    class _TM:
+        async def emit(self, _event): return None
+
+    runtime = VoiceRuntime(
+        _TM(), _TTS(), LocalAudioPlayer(play_fn=lambda _: asyncio.sleep(0)), enabled=True
+    )
+    await runtime.speak("Je vérifie.", kind="milestone")
+    assert seen == ["milestone"]
+    assert runtime.voice_profile.delivery_kind == "final"
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
 async def test_coordinator_forwards_language_without_breaking_default_requests():
     class _Runtime:
         def __init__(self): self.calls = []
@@ -75,3 +99,12 @@ async def test_coordinator_forwards_language_without_breaking_default_requests()
     assert await coordinator.wait_idle(timeout_s=1)
     assert runtime.calls == [("Hola.", "es"), ("Bonjour.", None)]
     await coordinator.aclose()
+
+
+def test_delivery_kind_is_runtime_only_and_does_not_mutate_profile_identity():
+    profile = VoiceProfile(language="fr")
+    transient = profile.for_delivery("status")
+    assert transient.delivery_kind == "status"
+    assert profile.delivery_kind == "final"
+    assert "delivery_kind" not in transient.to_dict()
+    assert VoiceProfile.from_dict(transient.to_dict()).delivery_kind == "final"

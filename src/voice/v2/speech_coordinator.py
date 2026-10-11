@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import inspect
 import time
 import uuid
 from typing import Any, Callable, Optional
@@ -174,12 +175,21 @@ class SpeechCoordinator:
             request.started.set()
             generation = ""
             try:
-                if request.language:
-                    generation = await self.runtime.speak(
-                        request.text, turn=request.turn, language=request.language
-                    )
-                else:
-                    generation = await self.runtime.speak(request.text, turn=request.turn)
+                speak = self.runtime.speak
+                kwargs: dict[str, Any] = {"turn": request.turn}
+                try:
+                    parameters = inspect.signature(speak).parameters
+                except (TypeError, ValueError):
+                    parameters = {}
+                accepts_kwargs = any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                )
+                if request.language and ("language" in parameters or accepts_kwargs):
+                    kwargs["language"] = request.language
+                if "kind" in parameters or accepts_kwargs:
+                    kwargs["kind"] = request.kind
+                generation = await speak(request.text, **kwargs)
                 if not generation:
                     self.dropped += 1
                     self.last_drop_reason = "runtime_rejected"

@@ -377,7 +377,11 @@ class VoicePackService:
     def apply_to_profile(self, profile: VoiceProfile) -> VoiceProfile:
         active = self.active_pack()
         if active is None:
-            return profile
+            # The one-click Qwen installer may create a strictly local reference
+            # from the bundled, licensed Piper voice. A signed product Voice Pack
+            # remains authoritative whenever one is active.
+            from .qwen_identity import apply_local_qwen_identity
+            return apply_local_qwen_identity(profile, self.root)
         projected = deepcopy(profile)
         if active["engine"] == "piper":
             for model in active["models"]:

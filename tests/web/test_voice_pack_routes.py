@@ -134,14 +134,14 @@ async def test_qwen_install_routes_use_one_bounded_authenticated_service(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_qwen_install_route_reports_unpublished_release_without_paths(monkeypatch):
+async def test_qwen_install_route_reports_invalid_public_recipe_without_paths(monkeypatch):
     class _Service:
         def start(self):
-            raise ComponentServiceError("release_assets_missing")
+            raise ComponentServiceError("installation_recipe_invalid")
 
     monkeypatch.setattr(advanced, "_qwen_install_service", lambda: _Service())
     with pytest.raises(HTTPException) as error:
         await advanced.start_qwen_install()
     assert error.value.status_code == 503
-    assert "pas encore publié" in error.value.detail
+    assert "recette d'installation" in error.value.detail
     assert "\\" not in error.value.detail

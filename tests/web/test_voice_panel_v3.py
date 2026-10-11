@@ -53,9 +53,9 @@ def test_voice_panel_assets_are_versioned_and_actions_are_exported():
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     main = (ROOT / "web" / "static" / "js" / "main.js").read_text(encoding="utf-8")
     api = (ROOT / "web" / "static" / "js" / "api.js").read_text(encoding="utf-8")
-    assert "/static/css/voice-panel.css?v=5" in html
+    assert "/static/css/voice-panel.css?v=6" in html
     assert "/static/js/main.js?v=71" in html
-    assert "./api.js?v=9" in main
+    assert "./api.js?v=10" in main
     assert "barge_in_mode" in api
     assert "guarded_no_aec" in api
     assert 'id="voice-settings-save"' in html

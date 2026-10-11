@@ -81,6 +81,9 @@ class VoiceProfile:
     cloud_mapping: VoiceCloudMapping = field(default_factory=VoiceCloudMapping)
     reference_consent_confirmed: bool = False
     reference_rights_note: str = ""
+    # Runtime-only routing hint. It deliberately stays out of to_dict(): a
+    # transient status must never become the persisted identity of the voice.
+    delivery_kind: str = "final"
 
     def to_dict(self) -> Dict:
         return {
@@ -112,6 +115,13 @@ class VoiceProfile:
         """Return an immutable-style per-generation projection."""
         code = str(language or self.language).strip().lower().split("-")[0]
         return self if code == self.language else replace(self, language=code)
+
+    def for_delivery(self, kind: str) -> "VoiceProfile":
+        """Return a per-generation routing projection without mutating identity."""
+        normalized = str(kind or "final").strip().lower() or "final"
+        return self if normalized == self.delivery_kind else replace(
+            self, delivery_kind=normalized,
+        )
 
 
 # Profil par défaut — la voix de référence de Lumena.

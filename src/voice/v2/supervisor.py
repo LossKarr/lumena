@@ -296,6 +296,10 @@ class VoiceV2Manager:
             status.update(get_voice_telemetry().snapshot())
         except Exception:
             pass
+        # Preserve the conversational runtime state before the supervisor's
+        # lifecycle state overwrites ``state`` below.  Management can then
+        # defer a restart until speech really finished.
+        runtime_state = str(status.get("state") or "unknown")[:32]
         # Lifecycle fields are authoritative and cannot be overwritten by a
         # stale runtime snapshot from a previous Voice V2 session.
         saved_runtime_options = resolve_voice_runtime_options()
@@ -322,6 +326,7 @@ class VoiceV2Manager:
             "running": self.running,
             "backend": "v2",
             "state": self.state,
+            "runtime_state": runtime_state,
             "mode": self.mode,
             "restarts": self.restarts,
             "last_error": self.last_error_code,

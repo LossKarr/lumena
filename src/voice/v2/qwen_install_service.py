@@ -1,4 +1,4 @@
-"""Authenticated one-click installation state for the signed Qwen3-TTS release."""
+"""Authenticated one-click installation state for the local Qwen3-TTS runtime."""
 from __future__ import annotations
 
 import logging
@@ -21,6 +21,9 @@ from src.utils.paths import ROOT_DIR, data_dir_for_root
 from src.utils.persistence import atomic_write_json, safe_read_json
 from src.version import __version__
 
+from .qwen_online_installer import install_qwen_from_recipe
+from .qwen_recipe import QwenInstallRecipe, load_qwen_install_recipe
+
 
 logger = logging.getLogger(__name__)
 _ACTIVE_STATES = {"preparing", "downloading", "installing", "verifying"}
@@ -38,18 +41,24 @@ class QwenInstallService:
     """Run the long signed install outside the API request and expose bounded state."""
 
     def __init__(
-        self, *, root: Path = ROOT_DIR, data_dir: Path | None = None,
+        self, *, root: Path | None = None, data_dir: Path | None = None,
         manifest_path: Path | None = None, trusted_keys_path: Path | None = None,
+        recipe_path: Path | None = None,
         release_version: str = __version__,
         installer: Callable[..., dict[str, Any]] = install_release_components,
+        online_installer: Callable[..., dict[str, Any]] = install_qwen_from_recipe,
         finalizer: Callable[[Path], dict[str, Any]] | None = None,
         canary: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
-        app_root = Path(root).resolve()
+        app_root = Path(root or ROOT_DIR).resolve()
+        resolved_data_dir = Path(data_dir or data_dir_for_root(app_root)).resolve()
         configured_component_root = os.getenv("LUMENA_COMPONENT_ROOT", "").strip()
+        self.app_root = app_root
         self.root = Path(configured_component_root).expanduser().resolve() \
-            if configured_component_root else app_root
-        self.data_dir = Path(data_dir or data_dir_for_root(app_root)).resolve()
+            if configured_component_root else (
+                app_root if root is not None else resolved_data_dir / "components"
+            )
+        self.data_dir = resolved_data_dir
         self.manifest_path = Path(
             manifest_path
             or os.getenv("LUMENA_COMPONENT_MANIFEST_PATH", "").strip()
@@ -60,11 +69,18 @@ class QwenInstallService:
             or os.getenv("LUMENA_COMPONENT_TRUSTED_KEYS_PATH", "").strip()
             or app_root / "installer" / "component-trusted-keys.json"
         ).resolve()
+        self.recipe_path = Path(
+            recipe_path
+            or os.getenv("LUMENA_QWEN_RECIPE_PATH", "").strip()
+            or app_root / "config" / "components" / "qwen3_tts_windows_x64.json"
+        ).resolve()
         self.release_version = str(release_version)
         self.installer = installer
+        self.online_installer = online_installer
         self._finalizer = finalizer
         self._canary = canary
         self.state_path = self.data_dir / "voice" / "qwen-install-state.json"
+        self.lock_path = self.root / ".qwen-install.lock"
         self._thread: threading.Thread | None = None
         self._guard = threading.RLock()
         self._downloads: dict[str, tuple[int, int]] = {}
@@ -72,11 +88,14 @@ class QwenInstallService:
         self._last_progress_percent = 0
         previous = safe_read_json(self.state_path, default={})
         if isinstance(previous, Mapping) and previous.get("state") in _ACTIVE_STATES:
-            self._write_state(
-                state="failed", progress_percent=0,
-                message="Installation interrompue. Vous pouvez la reprendre.",
-                error_code="interrupted", retryable=True,
-            )
+            recovery_probe = ProcessFileLock(self.lock_path, "lumena-qwen-install-recovery")
+            if recovery_probe.acquire():
+                recovery_probe.release()
+                self._write_state(
+                    state="failed", progress_percent=0,
+                    message="Installation interrompue. Vous pouvez la reprendre.",
+                    error_code="interrupted", retryable=True,
+                )
 
     def _write_state(self, **changes: Any) -> dict[str, Any]:
         with self._guard:
@@ -121,11 +140,48 @@ class QwenInstallService:
             raise ComponentServiceError("release_components_incomplete")
         return manifest
 
+    def _verified_recipe(self) -> QwenInstallRecipe:
+        try:
+            recipe = load_qwen_install_recipe(self.recipe_path)
+            recipe.assert_host_compatible()
+            return recipe
+        except Exception as exc:
+            code = str(exc)
+            if code not in {"unsupported_platform", "unsupported_python"}:
+                code = "installation_recipe_invalid"
+            raise ComponentServiceError(code) from exc
+
+    def _installation_source(self) -> tuple[str, ComponentManifest | QwenInstallRecipe]:
+        manifest_exists = self.manifest_path.is_file()
+        keys_exist = self.trusted_keys_path.is_file()
+        if manifest_exists or keys_exist:
+            if not (manifest_exists and keys_exist):
+                raise ComponentServiceError("release_assets_incomplete")
+            return "signed_release", self._verified_manifest()
+        return "public_recipe", self._verified_recipe()
+
     def _installed(self) -> bool:
         store = ComponentStore(self.root)
-        return all(store.active(component_id) is not None for component_id in (
-            "qwen-runtime", "qwen-model", "lumena-voice",
+        components_ready = all(store.active(component_id) is not None for component_id in (
+            "qwen-runtime", "qwen-model",
         ))
+        if not components_ready:
+            return False
+        from .qwen_runtime import resolve_qwen_paths
+
+        paths = resolve_qwen_paths(root=self.root, store=store)
+        python = paths.get("python")
+        model_dir = paths.get("model_dir")
+        if not isinstance(python, Path) or not python.is_file() \
+                or not isinstance(model_dir, Path) \
+                or not (model_dir / "config.json").is_file() \
+                or not (model_dir / "model.safetensors").is_file() \
+                or not (model_dir / "speech_tokenizer" / "model.safetensors").is_file():
+            return False
+        if store.active("lumena-voice") is not None:
+            return True
+        from .qwen_identity import local_qwen_identity_ready
+        return local_qwen_identity_ready(self.data_dir / "voice")
 
     def status(self) -> dict[str, Any]:
         with self._guard:
@@ -133,18 +189,27 @@ class QwenInstallService:
             state = dict(raw) if isinstance(raw, Mapping) and raw.get("schema_version") == 1 else {}
             installed = self._installed()
             try:
-                manifest = self._verified_manifest()
+                source, specification = self._installation_source()
                 available = True
-                required_bytes = sum(item.size for item in manifest.components)
-                required_disk_bytes = sum(
-                    item.size + item.unpacked_size for item in manifest.components
-                ) + _INSTALL_HEADROOM_BYTES
+                if isinstance(specification, ComponentManifest):
+                    required_bytes = sum(item.size for item in specification.components)
+                    required_disk_bytes = sum(
+                        item.size + item.unpacked_size for item in specification.components
+                    ) + _INSTALL_HEADROOM_BYTES
+                else:
+                    required_bytes = specification.required_download_bytes
+                    required_disk_bytes = specification.required_disk_bytes
                 unavailable_reason = None
             except Exception as exc:
                 available = False
+                source = None
                 required_bytes = None
                 required_disk_bytes = _UNPUBLISHED_MINIMUM_DISK_BYTES
-                unavailable_reason = "release_not_published" if str(exc) == "release_assets_missing" else "release_invalid"
+                code = str(exc)
+                unavailable_reason = (
+                    code if code in {"unsupported_platform", "unsupported_python"}
+                    else "installation_recipe_invalid"
+                )
             free_disk_bytes = shutil.disk_usage(self.root).free
             disk_ok = free_disk_bytes >= required_disk_bytes
             blockers: list[str] = []
@@ -152,16 +217,21 @@ class QwenInstallService:
                 blockers.append(str(unavailable_reason or "release_invalid"))
             if not disk_ok:
                 blockers.append("insufficient_disk_space")
-            if installed and state.get("state") in {None, "idle", "ready"}:
+            if installed and state.get("state") not in _ACTIVE_STATES:
+                ready_message = (
+                    state.get("message")
+                    if state.get("state") == "ready" and state.get("message")
+                    else "Qwen3-TTS est installé."
+                )
                 state.update({
                     "state": "ready", "progress_percent": 100,
-                    "message": "Qwen3-TTS est installé.", "error_code": None,
+                    "message": ready_message, "error_code": None,
                 })
             elif not installed and not available and not state.get("message"):
                 state["message"] = (
-                    "Le paquet Qwen3-TTS signé n'est pas encore publié pour cette version."
-                    if unavailable_reason == "release_not_published" else
-                    "Les fichiers de release Qwen3-TTS sont invalides."
+                    "Cette machine n'est pas compatible avec le moteur Qwen3-TTS local."
+                    if unavailable_reason in {"unsupported_platform", "unsupported_python"}
+                    else "La recette d'installation Qwen3-TTS est absente ou invalide."
                 )
             return {
                 "schema_version": 1,
@@ -178,6 +248,7 @@ class QwenInstallService:
                 "disk_ok": disk_ok,
                 "blockers": blockers,
                 "unavailable_reason": unavailable_reason,
+                "install_source": source,
                 "updated_at": state.get("updated_at"),
             }
 
@@ -186,34 +257,68 @@ class QwenInstallService:
             if self._thread is not None and self._thread.is_alive():
                 return self.status()
             if self._installed():
+                previous = safe_read_json(self.state_path, default={})
+                previous_message = (
+                    str(previous.get("message", ""))
+                    if isinstance(previous, Mapping) and previous.get("state") == "ready"
+                    else ""
+                )
                 self._write_state(
                     state="ready", progress_percent=100,
-                    message="Qwen3-TTS est installé.", error_code=None, retryable=False,
+                    message=previous_message or "Qwen3-TTS est installé.",
+                    error_code=None, retryable=False,
                 )
                 return self.status()
-            manifest = self._verified_manifest()
-            required = sum(item.size + item.unpacked_size for item in manifest.components)
-            if shutil.disk_usage(self.root).free < required + _INSTALL_HEADROOM_BYTES:
+            source, specification = self._installation_source()
+            if isinstance(specification, ComponentManifest):
+                required = sum(
+                    item.size + item.unpacked_size for item in specification.components
+                ) + _INSTALL_HEADROOM_BYTES
+            else:
+                required = specification.required_disk_bytes
+            if shutil.disk_usage(self.root).free < required:
                 raise ComponentServiceError("insufficient_disk_space")
+            install_lock = ProcessFileLock(self.lock_path, "lumena-qwen-install")
+            if not install_lock.acquire():
+                raise ComponentServiceError("another_installation_running")
             now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._downloads.clear()
             self._last_progress_percent = 0
-            self._download_totals = {
-                item.component_id: int(item.size) for item in manifest.components
-            }
+            if isinstance(specification, ComponentManifest):
+                self._download_totals = {
+                    item.component_id: int(item.size) for item in specification.components
+                }
+            else:
+                self._download_totals = {
+                    f"model:{item.path}": int(item.size)
+                    for item in specification.model_files
+                }
             self._write_state(
                 state="preparing", progress_percent=1,
                 message="Préparation de l'installation sécurisée…",
                 error_code=None, retryable=True, started_at=now, finished_at=None,
             )
-            self._thread = threading.Thread(
-                target=self._run, args=(manifest,), name="qwen-component-install", daemon=True,
-            )
-            self._thread.start()
+            try:
+                self._thread = threading.Thread(
+                    target=self._run, args=(source, specification, install_lock),
+                    name="qwen-component-install", daemon=True,
+                )
+                self._thread.start()
+            except Exception:
+                install_lock.release()
+                raise
             return self.status()
 
     def _on_event(self, event: str) -> None:
-        if event.startswith("component.download:"):
+        if event == "online.runtime.prepare":
+            label, progress, state = "Création du moteur Qwen isolé…", 5, "installing"
+        elif event == "online.runtime.packages":
+            label, progress, state = "Installation vérifiée du moteur local…", 10, "installing"
+        elif event == "online.model.download":
+            label, progress, state = "Téléchargement du modèle officiel Qwen…", 20, "downloading"
+        elif event == "online.activate":
+            label, progress, state = "Activation atomique des composants…", 84, "installing"
+        elif event.startswith("component.download:"):
             label, progress = "Téléchargement des composants…", 4
             state = "downloading"
         elif event.startswith("component.verify:"):
@@ -243,26 +348,43 @@ class QwenInstallService:
             message="Téléchargement sécurisé en cours…",
         )
 
-    def _run(self, _manifest: ComponentManifest) -> None:
-        lock = ProcessFileLock(self.root / ".qwen-install.lock", "lumena-qwen-install")
+    def _run(
+        self, source: str, specification: ComponentManifest | QwenInstallRecipe,
+        lock: ProcessFileLock,
+    ) -> None:
         try:
-            if not lock.acquire():
-                raise ComponentServiceError("another_installation_running")
-            self.installer(
-                root=self.root, manifest_path=self.manifest_path,
-                trusted_keys_path=self.trusted_keys_path,
-                expected_release=self.release_version,
-                progress=self._on_event, byte_progress=self._on_bytes,
-            )
+            if source == "signed_release":
+                self.installer(
+                    root=self.root, manifest_path=self.manifest_path,
+                    trusted_keys_path=self.trusted_keys_path,
+                    expected_release=self.release_version,
+                    progress=self._on_event, byte_progress=self._on_bytes,
+                )
+            else:
+                if not isinstance(specification, QwenInstallRecipe):
+                    raise ComponentServiceError("installation_recipe_invalid")
+                self.online_installer(
+                    root=self.root, recipe=specification,
+                    progress=self._on_event, byte_progress=self._on_bytes,
+                )
             self._write_state(
                 state="verifying", progress_percent=90,
-                message="Activation de la voix Lumena signée…",
+                message="Préparation de l'identité vocale locale…",
             )
-            if self._finalizer is None:
-                from .component_install import activate_installed_voice_pack
-                finalizer = lambda root: activate_installed_voice_pack(root=root)
-            else:
+            if self._finalizer is not None:
                 finalizer = self._finalizer
+            elif source == "signed_release":
+                from .component_install import activate_installed_voice_pack
+
+                def finalizer(root: Path) -> dict[str, Any]:
+                    return activate_installed_voice_pack(root=root)
+            else:
+                from .qwen_identity import ensure_local_qwen_identity
+
+                def finalizer(_root: Path) -> dict[str, Any]:
+                    return ensure_local_qwen_identity(
+                        app_root=self.app_root, voice_dir=self.data_dir / "voice",
+                    )
             finalizer(self.root)
             self._write_state(
                 state="verifying", progress_percent=95,
@@ -287,15 +409,38 @@ class QwenInstallService:
             )
         except Exception as exc:
             logger.exception("Qwen3-TTS one-click installation failed")
-            code = str(exc) if str(exc) in {
+            known_codes = {
                 "release_assets_missing", "release_version_mismatch",
                 "release_components_incomplete", "insufficient_disk_space",
-                "another_installation_running",
-            } else "installation_failed"
+                "release_assets_incomplete", "another_installation_running",
+                "unsupported_platform", "unsupported_python",
+                "installation_recipe_invalid",
+                "python_runtime_missing", "venv_creation_failed",
+                "runtime_install_timeout", "runtime_process_failed",
+                "runtime_command_failed", "runtime_probe_failed",
+                "huggingface_client_missing", "model_download_failed",
+                "model_file_size_mismatch", "model_checksum_mismatch",
+                "model_path_escaped",
+                "bundled_piper_unavailable", "piper_reference_generation_failed",
+                "piper_reference_audio_invalid", "local_identity_verification_failed",
+            }
+            code = str(exc) if str(exc) in known_codes else "installation_failed"
             messages = {
                 "insufficient_disk_space": "Espace disque insuffisant pour Qwen3-TTS.",
                 "another_installation_running": "Une autre installation est déjà en cours.",
                 "release_version_mismatch": "Le paquet Qwen ne correspond pas à cette version de Lumena.",
+                "unsupported_platform": "Qwen3-TTS n'est pas compatible avec cette plateforme.",
+                "unsupported_python": "Qwen3-TTS demande le runtime Python 3.12 de Lumena.",
+                "venv_creation_failed": "Le moteur Python isolé n'a pas pu être créé.",
+                "runtime_install_timeout": "L'installation du moteur local a expiré ; elle peut être reprise.",
+                "runtime_command_failed": "Les dépendances du moteur local n'ont pas pu être installées.",
+                "runtime_probe_failed": "Le moteur Qwen installé n'a pas réussi son contrôle d'intégrité.",
+                "model_download_failed": "Le téléchargement du modèle officiel a échoué ; il peut être repris.",
+                "model_file_size_mismatch": "Un fichier du modèle Qwen est incomplet.",
+                "model_checksum_mismatch": "L'empreinte du modèle Qwen est invalide.",
+                "bundled_piper_unavailable": "La voix locale Piper requise est indisponible.",
+                "piper_reference_generation_failed": "La référence vocale locale n'a pas pu être créée.",
+                "piper_reference_audio_invalid": "La référence vocale locale créée est invalide.",
             }
             self._write_state(
                 state="failed", progress_percent=0,

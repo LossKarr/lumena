@@ -67,6 +67,7 @@ le texte non joué ; elle ne recommence pas la phrase déjà entendue.
 | `LUMENA_STT_TIMEOUT_S` | borne d'une transcription | `45` |
 | `LUMENA_TTS_WORKER_TIMEOUT_S` | borne du worker TTS | `90` |
 | `LUMENA_VOICE_TTS_ENGINE` | `auto`, `qwen3` ou `piper` | `auto` |
+| `LUMENA_VOICE_MANAGEMENT_MODE` | `observe`, `assisted` ou `safe_auto` | `assisted` |
 | `LUMENA_QWEN_TTS_TIMEOUT_S` | borne d'une synthèse Qwen isolée | `90` |
 | `LUMENA_QWEN_TTS_DEVICE` | `auto`, `cuda:0` ou `cpu` | `auto` |
 | `LUMENA_QWEN_TTS_DTYPE` | `auto`, `bfloat16` ou `float32` | `auto` |
@@ -253,6 +254,31 @@ restent signalés comme modifications locales.
 L'état affiché vient du runtime effectif : matériel, device STT, provider, moteur
 demandé, moteur réellement choisi, Qwen installé/prêt/qualifié, fallback, VAD, AEC,
 wake word, langues et percentiles de latence.
+
+### Gestion opérationnelle par Lumena
+
+Le conseiller de la page Conversation utilise le même contrat que les outils du
+chat. Il sépare configuration sauvegardée, état effectif et changements en attente,
+puis croise le matériel, les composants réellement prêts, la qualification Qwen et
+les mesures de latence. Les objectifs proposés sont équilibre, réactivité, qualité,
+local strict, PC modeste, écoute précise, mains libres et push-to-talk.
+
+Une recommandation est inactive tant que l'utilisateur ne l'applique pas. Son
+identifiant expire et ne peut servir qu'une fois. L'application valide uniquement
+les clés Voice autorisées, conserve le reste du `.env`, journalise les codes de
+preuve sans audio ni transcription, redémarre seulement le pipeline vocal et relit
+l'état. Tout échec de redémarrage ou de vérification restaure la configuration
+précédente. Depuis le canal vocal, le changement est planifié sans bloquer la
+conversation et attend la fin du tour parlé avant le redémarrage.
+
+Les mêmes opérations existent sous forme d'outils : inspection, diagnostic,
+recommandation, application, vérification et rollback. Une mission ne peut pas
+transformer une observation en autorisation. Telegram et les autres canaux externes
+doivent être appairés avec un rôle propriétaire ou administrateur pour modifier la
+voix. `observe` interdit les mutations, `assisted` exige une demande humaine
+explicite et `safe_auto` reste limité aux corrections locales réversibles avec délai
+de stabilisation. Aucun mode n'autorise seul le cloud, un partage de données, une
+licence restreinte, un téléchargement lourd, une identité ou un rôle.
 
 ## Confidentialité et effacement
 

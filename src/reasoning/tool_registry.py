@@ -696,6 +696,7 @@ class ToolRegistry:
             (".handlers.codebase",       "get_codebase_handler_defs",      "codebase"),
             (".handlers.ide",            "get_ide_handler_defs",           "ide"),
             (".handlers.config_manager", "get_config_manager_handler_defs","system"),
+            (".handlers.voice_management","get_voice_management_handler_defs","voice"),
             (".handlers.twitter",        "get_twitter_handler_defs",       "social"),
             (".handlers.stripe_api",     "get_stripe_api_handler_defs",    "stripe"),
             (".handlers.n8n",            "get_n8n_handler_defs",           "automation"),

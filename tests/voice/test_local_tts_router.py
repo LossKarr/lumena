@@ -90,3 +90,27 @@ async def test_cancelled_qwen_failure_never_speaks_fallback(tmp_path):
     )
     await router.synthesize("Bonjour", _voice(tmp_path), token)
     assert fallback.calls == []
+
+
+@pytest.mark.asyncio
+async def test_transient_narration_uses_fast_fallback_even_when_qwen_is_forced(tmp_path):
+    qwen, fallback = Provider("qwen3-tts"), Provider("piper")
+    router = LocalTTSRouter(
+        qwen=qwen, fallback=fallback, engine="qwen3", qwen_qualified=False,
+    )
+    voice = _voice(tmp_path).for_delivery("milestone")
+    result = await router.synthesize("Je travaille.", voice)
+    assert result.provider == "piper"
+    assert qwen.calls == []
+    assert router.runtime_status()["tts_fallback_reason"] == "transient_fast_path"
+
+
+@pytest.mark.asyncio
+async def test_final_answer_keeps_forced_qwen(tmp_path):
+    qwen, fallback = Provider("qwen3-tts"), Provider("piper")
+    router = LocalTTSRouter(
+        qwen=qwen, fallback=fallback, engine="qwen3", qwen_qualified=False,
+    )
+    result = await router.synthesize("Voici la réponse.", _voice(tmp_path).for_delivery("final"))
+    assert result.provider == "qwen3-tts"
+    assert fallback.calls == []

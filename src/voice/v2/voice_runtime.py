@@ -228,7 +228,8 @@ class VoiceRuntime:
             return False
 
     async def _emit_answer(self, gen: str, turn: Any, answer: str, *,
-                           status: str = "speaking", language: Optional[str] = None) -> None:
+                           status: str = "speaking", language: Optional[str] = None,
+                           speech_kind: str = "final") -> None:
         """Synthétise + joue un texte sous une génération donnée (cœur commun).
 
         Utilisé par `start_llm` (réponse au tour) ET par `speak()` (parole hors-bande
@@ -237,7 +238,7 @@ class VoiceRuntime:
             return
         generation_profile = self.voice_profile.for_language(
             language or self.voice_profile.language
-        )
+        ).for_delivery(speech_kind)
         answer = prepare_for_tts(apply_pronunciations(answer, generation_profile))
         if not answer:
             return
@@ -279,7 +280,8 @@ class VoiceRuntime:
             await self._maybe_finish(gen)
 
     async def speak(
-        self, text: str, *, turn: Any = "agent", language: Optional[str] = None
+        self, text: str, *, turn: Any = "agent", language: Optional[str] = None,
+        kind: str = "final",
     ) -> str:
         """Fait parler Lumena hors-bande (sans passer par `respond_fn`/start_llm).
 
@@ -293,7 +295,7 @@ class VoiceRuntime:
         self._completion_events[gen] = asyncio.Event()
         self._generation_started_at[gen] = time.perf_counter()
         self._generation_turn[gen] = str(turn or "")
-        await self._emit_answer(gen, turn, text, language=language)
+        await self._emit_answer(gen, turn, text, language=language, speech_kind=kind)
         return gen
 
     async def wait_finished(self, generation_id: str, *, timeout_s: float = 120.0) -> bool:

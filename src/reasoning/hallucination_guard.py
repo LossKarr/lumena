@@ -331,12 +331,15 @@ _HC_TOOLS_READONLY = frozenset({
     "personal_model_status", "personal_learning_health", "personal_experience_stats",
     "personal_training_settings", "personal_training_jobs", "personal_model_versions",
     "personal_model_recommendations", "personal_model_audit_trail",
+    "inspect_voice_runtime", "diagnose_voice", "recommend_voice_configuration",
+    "verify_voice_configuration",
     "get_video_job",
 })
 
 # TOUTE action (341 outils natifs + MCP curatés) — preuve d'une action réelle
 # quelconque (sert aux claims VAGUES « c'est fait » et à l'exonération ledger).
 _HC_TOOLS_ANY_ACTION = frozenset({
+    "apply_voice_recommendation", "rollback_voice_configuration",
     "update_personal_training_settings", "update_personal_learning_policy",
     "prepare_personal_dataset", "queue_personal_training", "control_personal_training",
     "evaluate_personal_model", "request_personal_model_approval",

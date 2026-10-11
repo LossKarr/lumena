@@ -43,7 +43,7 @@ import {
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats
-} from './api.js?v=9';
+} from './api.js?v=10';
 
 // ── Panels ──
 import {

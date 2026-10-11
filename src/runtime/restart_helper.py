@@ -11,8 +11,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
 import time
+
+from src.utils.paths import logs_dir_for_root
 
 
 def _process_exists(pid: int) -> bool:
@@ -48,7 +49,7 @@ def _powershell_literal(value: object) -> str:
 def _audit(root: Path, event: str) -> None:
     """Leave a bounded, secret-free proof when the helper has no console."""
     try:
-        path = root / "data" / "logs" / "restart.log"
+        path = logs_dir_for_root(root) / "restart.log"
         path.parent.mkdir(parents=True, exist_ok=True)
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with path.open("a", encoding="utf-8") as handle:

@@ -3,7 +3,7 @@
 **Assistant IA personnel autonome, local-first, doté d'une mémoire persistante et capable d'agir réellement.**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/version-v1.0.57-F28C28)](#état-des-composants)
+[![Version](https://img.shields.io/badge/version-v1.0.59-F28C28)](#état-des-composants)
 [![Tests](https://img.shields.io/badge/tests-23K%2B_passed-22C55E)](#tests)
 [![License](https://img.shields.io/badge/license-AGPL--3.0_%2F_Commercial-2563EB)](#licence)
 [![Status](https://img.shields.io/badge/status-Beta-F59E0B)](#état-des-composants)
@@ -19,7 +19,7 @@ Elle ne se contente pas de proposer une procédure : en **mode Agent**, elle peu
 planifier une demande, appeler ses outils, produire des fichiers, contrôler les
 résultats obtenus et rendre compte des preuves réellement observées.
 
-> **Version bêta v1.0.57**
+> **Version bêta v1.0.59**
 >
 > Lumena est utilisable au quotidien et poursuit sa phase de stabilisation.
 > Certaines fonctions dépendent d'API, de logiciels locaux, d'identifiants ou
@@ -70,11 +70,13 @@ importés, activés, restaurés ou supprimés depuis le panneau. Les profils de
 performance adaptent les moteurs au matériel et restent synchronisés avec le
 panneau Configuration.
 
-Qwen3-TTS peut aussi incarner une identité Lumena issue d'un Voice Pack signé. Son
-runtime, ses poids et son tokenizer restent séparés du cœur Python, téléchargés par
-l'installateur depuis la release immuable et vérifiés avant activation. Le mode
-automatique ne le choisit qu'après une synthèse locale réussie et une mesure de
-fluidité sur la machine ; Piper reste le repli local immédiat.
+Qwen3-TTS peut aussi incarner l'identité locale de Lumena. Un bouton installe son
+runtime isolé et le modèle officiel épinglé sans terminal ; les téléchargements sont
+reprenables, leurs tailles et empreintes sont vérifiées, puis une référence est créée
+localement depuis la voix Piper livrée avec Lumena. Un Voice Pack signé garde la
+priorité s'il est activé. Le mode automatique ne choisit Qwen qu'après une synthèse
+locale réussie et une mesure de fluidité sur la machine ; Piper reste le repli local
+immédiat pendant l'installation et après tout échec.
 
 Le panneau Voice expose la conversation, la voix, l'écoute, les langues, les
 modèles et un diagnostic expurgé. Les contrôles permettent de démarrer ou arrêter
@@ -83,6 +85,14 @@ appliquer un profil. Les enregistrements audio bruts et les transcriptions ne so
 pas journalisés par défaut. La reconnaissance peut rester locale ; la synthèse
 utilise un moteur local installé ou un fournisseur optionnel explicitement
 autorisé par la configuration.
+
+Lumena peut aussi inspecter sa propre chaîne vocale, distinguer le moteur demandé
+du moteur réellement actif, expliquer un repli ou une limite matérielle et proposer
+un réglage adapté à la priorité de l'utilisateur. Une modification demandée depuis
+le chat, la voix ou un canal appairé passe par une transaction bornée : elle attend
+la fin d'une parole en cours, redémarre uniquement la voix, vérifie l'état effectif
+et restaure le réglage précédent si la preuve échoue. Le panneau présente le même
+diagnostic et demande une action explicite avant application.
 
 La qualité du dialogue mains libres dépend du microphone, des haut-parleurs et de
 la présence d'une annulation d'écho acoustique. Sans AEC, Lumena utilise un mode
@@ -652,4 +662,4 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) avant de proposer une modification.
 
 ---
 
-**Lumena v1.0.57 — architecture ouverte, actions contrôlées.**
+**Lumena v1.0.59 — architecture ouverte, actions contrôlées.**

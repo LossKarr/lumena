@@ -30,7 +30,41 @@ def _restricted_xtts_allowed() -> bool:
     return os.getenv("LUMENA_XTTS_ALLOW_RESTRICTED", "0").strip() == "1"
 
 
-def _segments(text: str, *, target_chars: int = 100, max_chars: int = 180) -> List[str]:
+def _split_oversized(text: str, limit: int) -> List[str]:
+    """Split one speakable clause without ever exceeding ``limit`` characters."""
+    remaining = str(text or "").strip()
+    limit = max(12, int(limit))
+    chunks: List[str] = []
+    while len(remaining) > limit:
+        window = remaining[: limit + 1]
+        candidates = [
+            match.end()
+            for match in re.finditer(r"[,;:—–-](?:\s+|$)", window)
+        ]
+        floor = min(12, max(1, limit // 2))
+        split_at = max((value for value in candidates if value >= floor), default=0)
+        if not split_at:
+            split_at = window.rfind(" ")
+        if split_at < floor:
+            split_at = limit
+        chunk = remaining[:split_at].strip()
+        if not chunk:
+            chunk = remaining[:limit].strip()
+            split_at = limit
+        chunks.append(chunk)
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _segments(
+    text: str,
+    *,
+    target_chars: int = 100,
+    max_chars: int = 180,
+    first_max_chars: Optional[int] = None,
+) -> List[str]:
     """Build speakable chunks long enough to hide synthesis of the next chunk.
 
     A TTS request for every tiny sentence leaves the speaker silent while the
@@ -45,9 +79,14 @@ def _segments(text: str, *, target_chars: int = 100, max_chars: int = 180) -> Li
         p.strip() for p in parts
         if p and p.strip() and any(ch.isalnum() for ch in p)
     ]
+    # A long sentence or a normalized markdown list used to bypass max_chars
+    # entirely.  Qwen would then spend tens of seconds producing a WAV which
+    # could not be played until complete.  Make the advertised bound real while
+    # preferring natural clause and word boundaries.
+    bounded = [piece for part in speakable for piece in _split_oversized(part, max_chars)]
     chunks: List[str] = []
     pending = ""
-    for part in speakable:
+    for part in bounded:
         combined = f"{pending} {part}".strip() if pending else part
         if pending and len(pending) >= target_chars and len(combined) > max_chars:
             chunks.append(pending)
@@ -67,6 +106,18 @@ def _segments(text: str, *, target_chars: int = 100, max_chars: int = 180) -> Li
                 chunks.append(pending)
         else:
             chunks.append(pending)
+    if chunks and first_max_chars is not None:
+        first_limit = max(12, min(int(first_max_chars), int(max_chars)))
+        if len(chunks[0]) > first_limit:
+            head = _split_oversized(chunks[0], first_limit)
+            # Only the first audible unit needs the tighter time-to-first-audio
+            # bound. Re-pack its remainder with the regular provider limit.
+            first = head[0]
+            remainder = " ".join(head[1:]).strip()
+            replacement = [first]
+            if remainder:
+                replacement.extend(_split_oversized(remainder, max_chars))
+            chunks = replacement + chunks[1:]
     return chunks
 
 

@@ -98,6 +98,19 @@ def data_dir_for_root(root: Path | str | None = None) -> Path:
         return DATA_DIR
     return candidate / "data"
 
+
+def logs_dir_for_root(root: Path | str | None = None) -> Path:
+    """Return the configured log directory for the repository ``root``.
+
+    Production callers honour both ``LUMENA_DATA_DIR`` and
+    ``LUMENA_LOGS_DIR``.  Isolated roots used by helpers and tests retain the
+    conventional ``data/logs`` layout without rebuilding it outside this
+    central path module.
+    """
+    if root is None or Path(root).resolve() == ROOT_DIR.resolve():
+        return LOGS_DIR
+    return data_dir_for_root(root) / "logs"
+
 # ── Well-known files ────────────────────────────────────────────────────────
 JOURNAL_JSON: Path = DATA_DIR / "journal.json"
 HEARTBEAT_STATE_JSON: Path = DATA_DIR / "heartbeat_state.json"
@@ -107,6 +120,8 @@ FACTS_JSON: Path = MEMORY_DIR / "facts.json"
 NETWORK_REGISTRY_JSON: Path = DATA_DIR / "network_registry.json"
 SKILLS_MANIFEST_JSON: Path = DATA_DIR / "skills_sync_manifest.json"
 LAST_TEST_RESULT_JSON: Path = DATA_DIR / "last_test_result.json"
+VOICE_MANAGEMENT_STATE_JSON: Path = DATA_DIR / "voice_management_state.json"
+VOICE_MANAGEMENT_AUDIT_JSONL: Path = LOGS_DIR / "voice_management.jsonl"
 TG_MODE_STATE_JSON: Path = DATA_DIR / "tg_mode_state.json"
 OPS_STATE_JSON: Path = OPS_DIR / "ops_state.json"
 APIS_REGISTRY_JSON: Path = DATA_DIR / "apis_registry.json"

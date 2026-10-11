@@ -151,6 +151,24 @@ def test_local_segments_keep_long_answer_in_bounded_interruption_units():
     assert chunks == parts
 
 
+def test_local_segments_enforce_max_on_one_oversized_sentence():
+    from src.voice.v2.providers.local_tts import _segments
+    text = "Une réponse " + ("très détaillée avec plusieurs éléments utiles, " * 12) + "terminée."
+    chunks = _segments(text, target_chars=40, max_chars=70)
+    assert len(chunks) > 1
+    assert all(0 < len(chunk) <= 70 for chunk in chunks)
+    assert " ".join(chunks).replace("  ", " ") == text.replace("  ", " ")
+
+
+def test_local_segments_can_release_a_short_first_audio_unit():
+    from src.voice.v2.providers.local_tts import _segments
+    text = "Voici une première proposition assez longue pour vérifier le démarrage. La suite arrive."
+    chunks = _segments(text, target_chars=48, max_chars=70, first_max_chars=32)
+    assert len(chunks) >= 2
+    assert len(chunks[0]) <= 32
+    assert all(len(chunk) <= 70 for chunk in chunks)
+
+
 # ── LocalTTSAdapter (tts injecté, jamais le moteur réel) ──────────────────────
 @pytest.mark.asyncio
 async def test_local_adapter_synthesizes_without_playing(monkeypatch):

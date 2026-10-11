@@ -273,6 +273,133 @@ async def get_voice_status():
     return deps.VoiceManager.get_instance().get_status()
 
 
+def _voice_management_snapshot() -> dict[str, Any]:
+    """Build the same bounded Voice facts used by Lumena's chat tools."""
+    from src.voice.v2.management import build_voice_operational_snapshot
+    from src.voice.v2.prewarm import detect_voice_hardware
+    from web.routes.config import _read_env_file
+
+    status: dict[str, Any] = {"running": False, "state": "stopped", "backend": "none"}
+    if deps.VoiceManager:
+        status = dict(deps.VoiceManager.get_instance().get_status() or status)
+    return build_voice_operational_snapshot(
+        status,
+        env_values=_read_env_file(),
+        hardware=detect_voice_hardware(),
+    )
+
+
+def _voice_management_bundle(goal: str) -> dict[str, Any]:
+    from src.voice.v2.management import (
+        diagnose_voice_snapshot,
+        get_voice_recommendation_broker,
+        recommend_voice_configuration,
+    )
+
+    snapshot = _voice_management_snapshot()
+    try:
+        recommendation = recommend_voice_configuration(snapshot, goal=goal)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    ticket = get_voice_recommendation_broker().issue(recommendation)
+    return {
+        "snapshot": snapshot,
+        "diagnostic": diagnose_voice_snapshot(snapshot),
+        "recommendation": {**recommendation, **ticket},
+    }
+
+
+async def _restart_voice_management_runtime() -> bool:
+    if not deps.VoiceManager or not deps.lumena:
+        return False
+    manager = deps.VoiceManager.get_instance()
+    if not manager.running:
+        return True
+    backend = str(getattr(manager, "active_backend", "v2") or "v2")
+    if backend not in {"v2", "legacy"}:
+        backend = "v2"
+    await manager.stop()
+    return bool(await manager.start(deps.lumena, backend=backend))
+
+
+@router.get("/api/voice/management", dependencies=[Depends(deps.verify_admin_token)])
+async def get_voice_management(goal: str = "balanced"):
+    """Expose safe facts, diagnostics and a short-lived recommendation ticket."""
+    return _voice_management_bundle(goal)
+
+
+@router.post(
+    "/api/voice/management/apply/{recommendation_id}",
+    dependencies=[Depends(deps.verify_admin_token)],
+)
+async def apply_voice_management(recommendation_id: str):
+    """Apply one previously inspected recommendation and prove the result."""
+    from src.voice.v2.management import get_voice_recommendation_broker
+    from src.voice.v2.management_control import apply_voice_recommendation_transaction
+    from web.routes.config import (
+        _CONFIG_SCHEMA,
+        _read_env_file,
+        _validate_config_updates,
+        _write_env_values,
+    )
+
+    recommendation = get_voice_recommendation_broker().consume(recommendation_id)
+    if recommendation is None:
+        raise HTTPException(status_code=409, detail="Recommandation expirée ou déjà utilisée")
+    schema = {item["key"]: item for item in _CONFIG_SCHEMA}
+    def status_provider() -> dict[str, Any]:
+        if deps.VoiceManager:
+            return deps.VoiceManager.get_instance().get_status()
+        return {"running": False, "state": "stopped"}
+    try:
+        result = await apply_voice_recommendation_transaction(
+            recommendation,
+            read_values=_read_env_file,
+            write_values=_write_env_values,
+            validate_values=lambda values: _validate_config_updates(values, schema),
+            status_provider=status_provider,
+            restart_voice=_restart_voice_management_runtime,
+            explicitly_authorized=True,
+            management_mode=os.getenv("LUMENA_VOICE_MANAGEMENT_MODE", "assisted"),
+        )
+    except RuntimeError as exc:
+        if str(exc) == "voice_configuration_busy":
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (PermissionError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result.get("ok"):
+        raise HTTPException(status_code=503, detail=result)
+    return {**result, "proof": _voice_management_snapshot()}
+
+
+@router.post("/api/voice/management/rollback", dependencies=[Depends(deps.verify_admin_token)])
+async def rollback_voice_management():
+    """Restore the previous Voice configuration from the audited transaction."""
+    from src.voice.v2.management_control import rollback_last_voice_transaction
+    from web.routes.config import _read_env_file, _write_env_values
+
+    def status_provider() -> dict[str, Any]:
+        if deps.VoiceManager:
+            return deps.VoiceManager.get_instance().get_status()
+        return {"running": False, "state": "stopped"}
+    try:
+        result = await rollback_last_voice_transaction(
+            read_values=_read_env_file,
+            write_values=_write_env_values,
+            status_provider=status_provider,
+            restart_voice=_restart_voice_management_runtime,
+            explicitly_authorized=True,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (PermissionError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result.get("ok"):
+        raise HTTPException(status_code=503, detail=result)
+    return {**result, "proof": _voice_management_snapshot()}
+
+
 @router.post("/api/voice/toggle", dependencies=[Depends(deps.verify_admin_token)])
 async def toggle_voice(backend: str = "v2"):
     """Active ou désactive le backend explicitement demandé par le panneau."""
@@ -456,13 +583,13 @@ def _qwen_install_service():
 
 @router.get("/api/voice/qwen-install", dependencies=[Depends(deps.verify_admin_token)])
 async def qwen_install_status():
-    """Expose a bounded, path-free status for the signed Qwen component install."""
+    """Expose a bounded, path-free status for the local Qwen component install."""
     return _qwen_install_service().status()
 
 
 @router.post("/api/voice/qwen-install", dependencies=[Depends(deps.verify_admin_token)])
 async def start_qwen_install():
-    """Start the resumable signed install; the long operation runs in one worker."""
+    """Start the resumable verified install; the long operation runs in one worker."""
     from src.runtime.component_service import ComponentServiceError
 
     try:
@@ -473,14 +600,19 @@ async def start_qwen_install():
             raise HTTPException(status_code=409, detail="Espace disque insuffisant pour Qwen3-TTS") from exc
         if code == "another_installation_running":
             raise HTTPException(status_code=409, detail="Une installation est déjà en cours") from exc
-        if code == "release_assets_missing":
+        if code in {"release_assets_missing", "installation_recipe_invalid"}:
             raise HTTPException(
                 status_code=503,
-                detail="Qwen3-TTS n'est pas encore publié pour cette version de Lumena",
+                detail="La recette d'installation Qwen3-TTS est indisponible ou invalide",
+            ) from exc
+        if code in {"unsupported_platform", "unsupported_python"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Cette machine n'est pas compatible avec le moteur Qwen3-TTS local",
             ) from exc
         raise HTTPException(
             status_code=422,
-            detail="Le paquet Qwen3-TTS signé est invalide ou incompatible",
+            detail="L'installation Qwen3-TTS est invalide ou incompatible",
         ) from exc
 
 

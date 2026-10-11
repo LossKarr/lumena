@@ -333,6 +333,7 @@ _CATEGORY_CAPABILITIES: Dict[str, frozenset] = {
     "website":       frozenset({ProofCapability.FILE_WRITE}),
     "local_models":  frozenset({ProofCapability.GENERIC_MUTATION}),
     "personal_models": frozenset({ProofCapability.GENERIC_MUTATION}),
+    "voice":         frozenset({ProofCapability.GENERIC_MUTATION}),
 }
 
 
@@ -362,6 +363,12 @@ _TOOL_CAPABILITY_OVERRIDES: Dict[str, frozenset] = {
     "personal_model_versions":        frozenset({ProofCapability.GENERIC_READONLY}),
     "personal_model_recommendations": frozenset({ProofCapability.GENERIC_READONLY}),
     "personal_model_audit_trail":     frozenset({ProofCapability.GENERIC_READONLY}),
+    # Gestion de la voix : ces outils observent ou calculent seulement.
+    # Les actions apply/rollback héritent de la mutation de la catégorie.
+    "inspect_voice_runtime":          frozenset({ProofCapability.GENERIC_READONLY}),
+    "diagnose_voice":                 frozenset({ProofCapability.GENERIC_READONLY}),
+    "recommend_voice_configuration": frozenset({ProofCapability.GENERIC_READONLY}),
+    "verify_voice_configuration":     frozenset({ProofCapability.GENERIC_READONLY}),
     # files category — lecture vs écriture
     "read_file":             frozenset({ProofCapability.FILE_READ}),
     "read_files_batch":      frozenset({ProofCapability.FILE_READ}),

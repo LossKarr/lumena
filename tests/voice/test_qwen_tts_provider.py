@@ -80,6 +80,28 @@ async def test_provider_stream_is_segmented_and_truthful(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_provider_stream_releases_short_first_chunk_and_bounds_all_chunks(tmp_path):
+    worker = FakeWorker()
+    provider = Qwen3TTSProvider(worker, cache_dir=tmp_path / "audio")
+    text = "Réponse finale " + ("avec beaucoup de détails importants, " * 12) + "terminée."
+    chunks = [chunk async for chunk in provider.stream(text, _voice(tmp_path))]
+    spoken = [call["text"] for call in worker.calls]
+    assert chunks and len(spoken[0]) <= 32
+    assert all(len(segment) <= 70 for segment in spoken)
+    assert " ".join(spoken).replace("  ", " ") == text.replace("  ", " ")
+
+
+@pytest.mark.asyncio
+async def test_provider_prewarm_reports_real_latency_and_removes_probe_audio(tmp_path):
+    provider = Qwen3TTSProvider(FakeWorker(), cache_dir=tmp_path / "audio")
+    result = await provider.prewarm("Bonjour.", _voice(tmp_path))
+    assert result["ok"] is True
+    assert result["provider"] == "qwen3-tts"
+    assert result["latency_ms"] >= 0
+    assert list((tmp_path / "audio").glob("qwen-*.wav")) == []
+
+
+@pytest.mark.asyncio
 async def test_worker_client_protocol_and_shutdown(tmp_path):
     script = tmp_path / "fake_worker.py"
     script.write_text(

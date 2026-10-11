@@ -102,3 +102,20 @@ async def test_queue_is_bounded_under_stress_and_shutdown_leaves_no_worker():
     assert coordinator.status()["queue_depth"] <= 8
     await coordinator.aclose()
     assert coordinator._worker is None
+
+
+@pytest.mark.asyncio
+async def test_request_kind_is_forwarded_when_runtime_supports_it():
+    class _KindRuntime:
+        def __init__(self): self.calls = []
+        async def speak(self, text, *, turn, kind="final"):
+            self.calls.append((text, turn, kind))
+            return "g1"
+        async def wait_finished(self, _generation, *, timeout_s): return True
+
+    runtime = _KindRuntime()
+    coordinator = SpeechCoordinator(runtime)
+    await coordinator.say("Je vérifie.", kind="milestone", turn="work")
+    assert await coordinator.wait_idle()
+    assert runtime.calls == [("Je vérifie.", "work", "milestone")]
+    await coordinator.aclose()

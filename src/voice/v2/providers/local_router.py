@@ -6,7 +6,7 @@ from typing import Any, AsyncIterator
 
 from .base import AudioResult, CancelToken, TTSAudioChunk, TTSProvider
 from .local_tts import LocalTTSAdapter, _segments
-from .qwen3_tts import Qwen3TTSProvider
+from .qwen3_tts import Qwen3TTSProvider, qwen_segments
 from ..qwen_runtime import qwen_conversation_qualified
 
 
@@ -44,6 +44,13 @@ class LocalTTSRouter(TTSProvider):
         )
 
     def _use_qwen(self, voice: Any) -> bool:
+        # Short-lived narration must never occupy the slow, single-owner Qwen
+        # worker ahead of the user's final answer. Piper speaks these transient
+        # messages while Qwen remains warm and available for valuable speech.
+        if str(getattr(voice, "delivery_kind", "final") or "final") in {
+            "status", "milestone",
+        }:
+            return False
         if self.engine == "piper" or not self._identity_ready(voice):
             return False
         if not self.qwen.is_available():
@@ -64,7 +71,13 @@ class LocalTTSRouter(TTSProvider):
     async def synthesize(
         self, text: str, voice: Any, cancel: CancelToken | None = None,
     ) -> AudioResult:
-        if self._use_qwen(voice):
+        use_qwen = self._use_qwen(voice)
+        transient_fast_path = (
+            self.engine != "piper"
+            and str(getattr(voice, "delivery_kind", "final") or "final")
+            in {"status", "milestone"}
+        )
+        if use_qwen:
             result = await self.qwen.synthesize(text, voice, cancel)
             if result.ok:
                 self.last_effective_provider = result.provider or self.qwen.name
@@ -74,6 +87,8 @@ class LocalTTSRouter(TTSProvider):
                 return result
             self.fallback_count += 1
             self.last_fallback_reason = "qwen_synthesis_failed"
+        elif transient_fast_path:
+            self.last_fallback_reason = "transient_fast_path"
         result = await self.fallback.synthesize(text, voice, cancel)
         self.last_effective_provider = result.provider or self.fallback.name
         return result
@@ -82,7 +97,20 @@ class LocalTTSRouter(TTSProvider):
         self, text: str, voice: Any, cancel: CancelToken | None = None,
     ) -> AsyncIterator[TTSAudioChunk]:
         prefer_qwen = self._use_qwen(voice)
-        for sequence, segment in enumerate(_segments(text, target_chars=55, max_chars=90)):
+        transient_fast_path = (
+            not prefer_qwen
+            and self.engine != "piper"
+            and str(getattr(voice, "delivery_kind", "final") or "final")
+            in {"status", "milestone"}
+        )
+        if transient_fast_path:
+            self.last_fallback_reason = "transient_fast_path"
+        segments = (
+            qwen_segments(text)
+            if prefer_qwen
+            else _segments(text, target_chars=55, max_chars=90)
+        )
+        for sequence, segment in enumerate(segments):
             if cancel and cancel.cancelled:
                 return
             result: AudioResult | None = None
