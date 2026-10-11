@@ -5,7 +5,8 @@ import pytest
 from src.core_services.agent_service import _should_auto_speak
 from src.voice.lifecycle import VoiceLifecycleManager, select_voice_backend
 from src.voice.v2.supervisor import (
-    VoiceV2Manager, normalize_voice_mode, resolve_voice_runtime_options,
+    VoiceV2Manager, normalize_voice_mode, resolve_voice_engine_settings,
+    resolve_voice_runtime_options,
 )
 
 
@@ -117,6 +118,7 @@ async def test_v2_supervision_is_bounded():
     assert mgr.state == "error"
     assert mgr.running is False
     assert "micro down" in mgr.last_error
+    assert mgr.get_status()["last_error"] == "audio_device_error"
 
 
 @pytest.mark.asyncio
@@ -272,3 +274,60 @@ def test_runtime_options_never_use_float16_on_cpu(monkeypatch):
     monkeypatch.setenv("LUMENA_STT_DEVICE", "cpu")
     monkeypatch.setenv("LUMENA_STT_COMPUTE", "float16")
     assert resolve_voice_runtime_options()["compute"] == "int8"
+
+
+def test_engine_settings_are_bounded_and_never_expose_secrets(monkeypatch):
+    monkeypatch.setenv("LUMENA_TTS_MODE", "invalid")
+    monkeypatch.setenv("LUMENA_VOICE_TTS_ENGINE", "invalid")
+    monkeypatch.setenv("LUMENA_VOICE_VAD_ENGINE", "invalid")
+    monkeypatch.setenv("LUMENA_STT_PARTIAL_EVERY_MS", "9000")
+    monkeypatch.setenv("LUMENA_VOICE_ACOUSTIC_PROFILE", "invalid")
+    monkeypatch.setenv("LUMENA_VOICE_CLOUD_ALLOWED", "1")
+    monkeypatch.setenv("LUMENA_XTTS_ALLOW_RESTRICTED", "0")
+
+    settings = resolve_voice_engine_settings()
+
+    assert settings == {
+        "tts_mode": "offline",
+        "tts_engine": "auto",
+        "cloud_tts_allowed": True,
+        "xtts_restricted_allowed": False,
+        "vad_engine": "auto",
+        "partial_every_ms": 5000,
+        "acoustic_profile": "hands_free",
+    }
+    assert all("key" not in key and "token" not in key for key in settings)
+
+
+@pytest.mark.asyncio
+async def test_status_distinguishes_saved_settings_from_running_providers(monkeypatch):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def runner(_core, **_kwargs):
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setenv("LUMENA_STT_MODEL", "small")
+    monkeypatch.setenv("LUMENA_TTS_MODE", "offline")
+    manager = VoiceV2Manager(runner=runner, max_restarts=0)
+    await manager.start(object(), mode="chat")
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    monkeypatch.setenv("LUMENA_STT_MODEL", "medium")
+    monkeypatch.setenv("LUMENA_TTS_MODE", "fast")
+    status = manager.get_status()
+
+    assert status["runtime_options"]["model"] == "small"
+    assert status["effective_runtime_options"]["model"] == "small"
+    assert status["saved_runtime_options"]["model"] == "medium"
+    assert status["effective_voice_settings"]["tts_mode"] == "offline"
+    assert status["saved_voice_settings"]["tts_mode"] == "fast"
+    assert status["settings_pending"] is True
+
+    release.set()
+    await manager.stop()
+    stopped = manager.get_status()
+    assert stopped["runtime_options"]["model"] == "medium"
+    assert stopped["effective_runtime_options"] is None
+    assert stopped["settings_pending"] is False

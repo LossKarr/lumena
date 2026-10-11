@@ -11,26 +11,33 @@ class TestReActLoopGuards:
     """Tests de protection de la boucle ReAct."""
     
     def test_react_loop_has_max_iterations(self):
-        """Vérifie que la boucle ReAct a une limite d'itérations."""
+        """Vérifie que la limite positive respecte la configuration utilisateur."""
+        import os
+        from unittest.mock import patch
+
         from src.reasoning.react import ReActLoop
-        
-        loop = ReActLoop()
-        
-        # Vérifier qu'il y a une limite
+
+        # Une valeur supérieure à l'ancienne borne de 100 reste valide : le panneau
+        # accepte désormais tout entier positif. Le timeout et les gardes
+        # anti-stagnation protègent séparément la boucle.
+        with patch.dict(os.environ, {"LUMENA_MAX_REACT_ITERATIONS": "200"}):
+            loop = ReActLoop()
+
         assert hasattr(loop, 'max_iterations'), "max_iterations non défini"
-        assert loop.max_iterations > 0, "max_iterations doit être > 0"
-        assert loop.max_iterations <= 100, "max_iterations trop élevé (risque de boucle)"
+        assert loop.max_iterations == 200
     
     def test_react_loop_has_timeout(self):
         """Vérifie que la boucle ReAct a un timeout."""
+        import os
+        from unittest.mock import patch
+
         from src.reasoning.react import ReActLoop
-        
-        loop = ReActLoop()
-        
-        # Vérifier qu'il y a un timeout
+
+        with patch.dict(os.environ, {"LUMENA_REACT_TIMEOUT": "3600"}):
+            loop = ReActLoop()
+
         assert hasattr(loop, 'timeout_seconds'), "timeout_seconds non défini"
-        assert loop.timeout_seconds > 0, "timeout doit être > 0"
-        assert loop.timeout_seconds <= 3600, "timeout trop long (1h max)"
+        assert loop.timeout_seconds == 3600
     
     def test_react_loop_default_values(self):
         """Vérifie les valeurs par défaut de la boucle ReAct."""

@@ -24,7 +24,7 @@
 <link rel="stylesheet" href="/static/css/updates.css?v=2">
 <link rel="stylesheet" href="/static/css/onboarding.css?v=3">
 <link rel="stylesheet" href="/static/css/local-models.css?v=3">
-<link rel="stylesheet" href="/static/css/voice-panel.css?v=3">
+<link rel="stylesheet" href="/static/css/voice-panel.css?v=5">
 <link rel="stylesheet" href="/static/css/personal-models.css?v=1">
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 </head>
@@ -375,7 +375,8 @@
         </div>
 
         <button class="btn" id="agent-toggle" data-action="toggleAgent" data-onboarding-target="agent-mode"><i data-lucide="plug"></i> Agent OFF</button>
-        <button class="btn" id="shutdown-btn" data-action="_shutdownLumena" title="Arreter Lumena proprement" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:4px 10px;font-size:11px"><i data-lucide="power"></i></button>
+        <button class="btn" id="restart-btn" data-action="_restartLumena" title="Redémarrer Lumena" aria-label="Redémarrer Lumena" style="background:transparent;border:1px solid var(--border);color:var(--text);padding:4px 10px;font-size:11px"><i data-lucide="rotate-cw"></i></button>
+        <button class="btn" id="shutdown-btn" data-action="_shutdownLumena" title="Arreter Lumena proprement" aria-label="Arrêter Lumena" style="background:transparent;border:1px solid var(--danger);color:var(--danger);padding:4px 10px;font-size:11px"><i data-lucide="power"></i></button>
         <div class="theme-orb" data-action="toggleTheme" title="Changer le theme" id="theme-orb" role="button" aria-label="Basculer theme clair/sombre"><i data-lucide="moon"></i></div>
       </div>
     </div>
@@ -657,7 +658,22 @@
         <div class="card"><div class="card-title"><i data-lucide="ear"></i> Écoute et acoustique</div><div class="voice-facts"><div><span>Micro</span><strong id="voice-micro">—</strong></div><div><span>VAD</span><strong id="voice-vad">—</strong></div><div><span>AEC</span><strong id="voice-aec">—</strong></div><div><span>Wake word</span><strong id="voice-wake-engine">—</strong></div></div><button class="btn" data-action="testVoiceMicro"><i data-lucide="mic"></i> Tester le micro</button><span id="voice-micro-result" aria-live="polite"></span></div>
       </div>
       <div class="voice-page" data-voice-page="languages" role="tabpanel" hidden><div class="card"><div class="card-title"><i data-lucide="languages"></i> Langues</div><p class="voice-help">Lumena garde la langue de session. Une traduction ponctuelle ne modifie pas ce choix.</p><div class="voice-facts"><div><span>Entrée détectée</span><strong id="voice-input-language">—</strong></div><div><span>Réponse</span><strong id="voice-response-language">—</strong></div><div><span>Portée</span><strong id="voice-language-scope">—</strong></div><div><span>Garde</span><strong id="voice-language-guard">—</strong></div></div></div></div>
-      <div class="voice-page" data-voice-page="models" role="tabpanel" hidden><div class="card"><div class="card-title"><i data-lucide="package-check"></i> Modèles vocaux</div><div id="voice-models-list" class="voice-models-list"><p>Chargement…</p></div><p class="voice-help">Les Voice Packs doivent être signés, hashés et accompagnés de leurs licences et consentements.</p></div></div>
+      <div class="voice-page" data-voice-page="models" role="tabpanel" hidden>
+        <div class="card"><div class="card-title"><i data-lucide="cpu"></i> Moteurs effectifs</div><div id="voice-models-list" class="voice-models-list"><p>Chargement…</p></div></div>
+        <div class="card voice-qwen-installer">
+          <div class="voice-qwen-copy"><div class="card-title"><i data-lucide="sparkles"></i> Voix locale haute fidélité</div><p class="voice-help">Lumena télécharge, vérifie et configure Qwen3-TTS automatiquement. Le téléchargement peut être repris et Piper reste disponible pendant toute l'installation.</p><div class="voice-qwen-meta"><span id="voice-qwen-size">Taille en cours d’évaluation</span><span id="voice-qwen-required">Espace requis en cours d’évaluation</span><span id="voice-qwen-disk">Disque en cours d’évaluation</span></div></div>
+          <div class="voice-qwen-action"><button class="btn primary" id="voice-qwen-install" data-action="installQwenTTS"><i data-lucide="download"></i> Installer Qwen3-TTS</button><strong id="voice-qwen-state">Vérification…</strong></div>
+          <div class="voice-qwen-progress" id="voice-qwen-progress" role="progressbar" aria-label="Installation Qwen3-TTS" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+          <p id="voice-qwen-message" class="voice-setting-message" role="status" aria-live="polite"></p>
+        </div>
+        <div class="card voice-pack-manager">
+          <div class="card-title"><i data-lucide="package-check"></i> Voice Packs locaux</div>
+          <p class="voice-help">Import hors ligne uniquement. Lumena vérifie la signature Ed25519, chaque empreinte, les licences et la preuve de consentement avant activation.</p>
+          <div class="voice-pack-toolbar"><input id="voice-pack-file" type="file" accept=".zip,application/zip"><button class="btn primary" id="voice-pack-import" data-action="importVoicePack"><i data-lucide="package-plus"></i> Vérifier et installer</button><button class="btn" data-action="rollbackVoicePack"><i data-lucide="undo-2"></i> Revenir au pack précédent</button></div>
+          <p id="voice-pack-message" class="voice-setting-message" role="status" aria-live="polite"></p>
+          <div id="voice-packs-list" class="voice-pack-list" aria-live="polite"><p>Chargement…</p></div>
+        </div>
+      </div>
       <div class="voice-page" data-voice-page="diagnostic" role="tabpanel" hidden><div class="card"><div class="card-title"><i data-lucide="activity"></i> Diagnostic expurgé</div><div class="voice-facts"><div><span>Profil matériel</span><strong id="voice-hardware-profile">—</strong></div><div><span>STT effectif</span><strong id="voice-stt-effective">—</strong></div><div><span>Endpoint p95</span><strong id="voice-endpoint-p95">—</strong></div><div><span>Trou audio p95</span><strong id="voice-gap-p95">—</strong></div></div><pre id="voice-diagnostic-json" class="voice-diagnostic">—</pre><div class="voice-diagnostic-actions"><button class="btn" data-action="exportVoiceDiagnostic"><i data-lucide="download"></i> Exporter le diagnostic</button><button class="btn voice-danger" data-action="deleteVoiceData"><i data-lucide="trash-2"></i> Effacer les données vocales</button></div><p id="voice-delete-message" class="voice-setting-message" aria-live="polite"></p></div></div>
     </div>
 
@@ -1795,7 +1811,7 @@
 window.hideNewTaskForm=function(){var f=document.getElementById('new-task-form');if(f)f.style.display='none';};
 window.toggleStripeQuickLink=function(){var f=document.getElementById('stripe-quick-link-form');if(f)f.classList.toggle('hidden');};
 </script>
-  <script type="module" src="/static/js/main.js?v=68"></script>
+  <script type="module" src="/static/js/main.js?v=71"></script>
 <script type="module" src="/static/js/updates.js?v=2"></script>
 <script type="module">
 import { initSetupWizard } from '/static/js/setup.js?v=22';

@@ -33,8 +33,9 @@ from src.subagents.registry_factory import create_mission_registry
 #                     principale morte, 4xx/5xx same-origin…), verdict déjà
 #                     persisté par `_set_web_runtime_verification_state`
 #                     (cause AUD-013 : pytest vert, `/` en 404, mission `done`).
-# La mission reste `done` dans les deux cas — le travail existe et doit rester
-# consultable. C'est l'ÉTAT qui devient fidèle, pas le verdict qui devient punitif.
+# La mission reste `done` pour ces deux défauts historiques — le travail existe et
+# reste consultable. E4 ajoute plus bas une exception stricte : un livrable web dont
+# la vérification n'a jamais été tentée n'est pas une mission terminée.
 _CLOSURE_CLEAN = (
     "completed",
     "toutes les portes de cloture ont autorise le resultat",
@@ -60,6 +61,25 @@ _CLOSURE_EFFECTS_UNPROVEN = (
     "completed_effects_unproven",
     "livrable rendu, mais au moins un EFFET contractuel n'a pas de porteur "
     "arrive a terme (action non prouvee realisee)",
+)
+
+# LOT E4 (2026-10-08) — le TROISIEME etat de la verification web.
+#
+# Decision de Charles du 07/10 : « toujours terminé, testé et vérifié ; jamais de
+# travail partiel ». La cloture savait dire « la verification a ECHOUE », jamais
+# « aucune verification n'a EU LIEU » — `_web_failed` vaut False par defaut, donc une
+# mission web que PERSONNE n'a verifiee sortait `completed`.
+# Mesure du 02/09 : 2 leads sur 35 servent et ouvrent le navigateur ; les 33 autres
+# n'etaient signales nulle part.
+#
+# Meme motif que la Verification Gate (Z40c) et le lot 8(a) : ni `echec`, ni `propre`,
+# mais `non tente`. Le fait existait deja — `browser_runtime` pose
+# `web_runtime_verified` ET `web_runtime_failed` : leur ABSENCE commune est le signal,
+# et personne ne la lisait.
+_CLOSURE_WEB_UNATTEMPTED = (
+    "completed_web_unattempted",
+    "livrable web rendu, mais aucune verification runtime n'a jamais ete tentee "
+    "(ni succes ni echec enregistre)",
 )
 
 
@@ -263,7 +283,7 @@ def annotate_unproven_effects(text: Any, owners: Any) -> str:
 
 def closure_decision(
     *, overclaim: bool, web_failed: bool, web_http_failed: bool = False,
-    effects_unproven: bool = False,
+    effects_unproven: bool = False, web_unattempted: bool = False,
 ) -> tuple:
     """Retourne `(terminal_reason_code, terminal_reason_detail)` pour une mission
     arrivée au bout de son run sans annulation ni échec déclaré.
@@ -287,6 +307,13 @@ def closure_decision(
         return _CLOSURE_WEB_UNVERIFIED
     if overclaim:
         return _CLOSURE_UNPROVEN_CLAIM
+    # E4 — « jamais tenté ». Priorité SOUS les faits ci-dessus, qui nomment un défaut
+    # plus précis (une vérification qui a échoué est une information plus dure), et
+    # AU-DESSUS de `effects_unproven`, qui est le rattrapage générique.
+    # Ne s'arme que si le contrat porte un livrable web : une mission sans web n'a rien
+    # à vérifier, et l'inquiéter saturerait les gardes (AUD-017).
+    if web_unattempted:
+        return _CLOSURE_WEB_UNATTEMPTED
     # H4 — un effet contractuel dont le porteur n'a jamais terminé ne peut pas
     # être prouvé réalisé. Priorité BASSE : les faits ci-dessus sont plus précis
     # (ils nomment le défaut), celui-ci rattrape le cas non-code où aucun d'eux
@@ -752,19 +779,39 @@ async def run_mission(
         # une porte de sortie vers la clôture sur parole, exactement ce que tout
         # ce chantier ferme.
         _eff_unproven: list = []
+        # E4 — « jamais tenté » : le contrat annonce une page web ET aucun verdict
+        # (ni succès ni échec) n'a été enregistré pendant le run.
+        _web_unattempted = False
         try:
             _mw = (_meta_now or {}).get("mission_workspace")
             if _mw:
                 from src.utils.paths import WORKSPACE_DIR as _WS_H4
                 _cj = _WS_H4 / _mw / "contract.json"
                 if _cj.exists():
-                    from src.subagents.mission_contract import unproven_effect_owners
+                    from src.subagents.mission_contract import (
+                        porte_un_livrable_web,
+                        unproven_effect_owners,
+                    )
+                    _contrat = json.loads(_cj.read_text(encoding="utf-8"))
                     _eff_unproven = unproven_effect_owners(
-                        json.loads(_cj.read_text(encoding="utf-8")),
-                        orch.get_children(mission_id) or [],
+                        _contrat, orch.get_children(mission_id) or [],
+                    )
+                    # L'ABSENCE des deux marqueurs est le signal : `web_runtime_verified`
+                    # et `web_runtime_failed` sont tous deux posés par browser_runtime.
+                    _web_vu = bool(_meta_now.get("web_runtime_verified"))
+                    _web_unattempted = bool(
+                        porte_un_livrable_web(_contrat)
+                        and not _web_vu
+                        and not _web_failed
+                        and not _web_http_failed
                     )
         except Exception as _e_h4:
             logger.debug("[mission {}] effets non evalues : {}", mission_id, _e_h4)
+        if _web_unattempted:
+            logger.warning(
+                "[mission {}] livrable web JAMAIS verifie au navigateur "
+                "(ni succes ni echec enregistre)", mission_id,
+            )
         if _eff_unproven:
             logger.warning(
                 "[mission {}] effets contractuels sans porteur termine : {}",
@@ -774,6 +821,7 @@ async def run_mission(
             overclaim=_overclaim, web_failed=_web_failed,
             web_http_failed=_web_http_failed,
             effects_unproven=bool(_eff_unproven),
+            web_unattempted=_web_unattempted,
         )
         if _code != "completed":
             logger.warning(
@@ -855,6 +903,29 @@ async def run_mission(
                 _fermer_pw()
             except Exception:
                 pass
+        # E4 — une vérification JAMAIS TENTÉE est une étape manquante, pas une
+        # livraison terminée avec réserve. Le run est fini, donc `waiting_io`
+        # laisserait un faux travail actif sans processus pour le reprendre. On le
+        # clôt en échec récupérable, en conservant le livrable dans result_summary et
+        # un motif structuré pour qu'une reprise sache exactement quoi exécuter.
+        if _web_unattempted:
+            orch.set_task_metadata(
+                mission_id,
+                verification_required=True,
+                verification_reason="web_runtime_unattempted",
+            )
+            orch.update_state(
+                mission_id,
+                "failed",
+                error=_detail,
+                result_summary=str(result),
+            )
+            return {
+                "mission_id": mission_id,
+                "status": "failed",
+                "result": str(result),
+                "artifacts": list(artifacts),
+            }
         orch.mark_done(mission_id, result_summary=str(result))
     return {"mission_id": mission_id, "status": "done", "result": str(result),
             "artifacts": list(artifacts)}

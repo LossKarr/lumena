@@ -442,7 +442,8 @@ class TestGenerateVideoHandler:
         from src.reasoning.handlers.remotion import generate_video_handler
         ctx = MagicMock()
         ctx.lumena = None
-        result = await generate_video_handler(ctx, description="test")
+        with patch("src.utils.paths.WORKSPACE_DIR", tmp_path):
+            result = await generate_video_handler(ctx, description="test")
         assert not result.success
 
 

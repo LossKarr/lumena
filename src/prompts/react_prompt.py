@@ -335,8 +335,12 @@ REGLES STRICTES:
                     + "\n\nRegle : utilise `mail_send` avec `account_alias` parmi ceux ci-dessus. "
                         "N'appelle JAMAIS `mail_account_upsert` si un compte pret existe deja.\n"
                 )
-        except Exception as e:
-            logger.debug(f"Mail config injection: {e}")
+        except Exception as _mail_exc:
+            # Ne pas masquer le parametre `e` (EntreePromptReAct). En Python 3,
+            # la variable d'un `except ... as` est supprimee a la fin du bloc :
+            # reutiliser le meme nom rendait tout le reste du prompt inaccessible
+            # quand le hub mail etait indisponible.
+            logger.debug(f"Mail config injection: {_mail_exc}")
 
     # --- Peer Awareness (Lot A Phase 10) ---
     peer_awareness_section = ""

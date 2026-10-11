@@ -333,3 +333,58 @@ class TestAfterDelegateSuccessIntegration:
             assert not loop._after_delegate_success, (
                 f"Flag non consommé (has_verify={has_verify})"
             )
+
+
+@pytest.mark.asyncio
+async def test_react_reprend_apres_codeagent_si_une_tache_metier_reste():
+    """Le succès CodeAgent rend bien la main à ReAct avant toute conclusion."""
+    from src.reasoning.react import Observation, ReActLoop
+
+    class _Tools:
+        def __init__(self):
+            self.tools = {"delegate_task": {"handler": None}}
+            self.ide_context = {}
+
+        def get_tools_description(self):
+            return "- delegate_task(description)"
+
+        def _get_mail_hub(self):
+            raise RuntimeError("mail indisponible dans ce test hermétique")
+
+        async def execute(self, tool_name, tool_args, **kwargs):
+            assert tool_name == "delegate_task"
+            return Observation(
+                content="✅ CodeAgent terminé (1.0s, 3 it)\nFichier app.py créé.",
+                success=True,
+            )
+
+    appels = []
+    reponses = [
+        (
+            "THOUGHT: Je délègue la création.\n"
+            "ACTION: delegate_task\n"
+            'ACTION_INPUT: {"description":"Créer app.py"}'
+        ),
+        "THOUGHT: Je poursuis.\nACTION: FINAL\nACTION_INPUT: suite",
+    ]
+
+    async def _llm(messages, **kwargs):
+        appels.append(messages)
+        if reponses:
+            return reponses.pop(0)
+        return "THOUGHT: Fin.\nACTION: FINAL\nACTION_INPUT: fin"
+
+    loop = ReActLoop(llm_chat_func=_llm, tools=_Tools())
+    loop.max_iterations = 4
+    loop._task_plan = [
+        TaskItem(description="Créer app.py"),
+        TaskItem(description="Envoyer le résultat par email"),
+    ]
+    loop._plan_emitted = True
+
+    await loop.run("Créer app.py puis envoyer le résultat par email")
+
+    assert len(appels) >= 2, "ReAct ne reprend pas la main après le CodeAgent"
+    second_prompt = str(appels[1])
+    assert "Ne finalise pas encore" in second_prompt
+    assert "Envoyer le résultat par email" in second_prompt

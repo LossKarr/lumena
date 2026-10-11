@@ -721,6 +721,71 @@ async def handler_runtime_health() -> Dict[str, Any]:
 #  HANDLER 2 : provider_probe (toutes les 15 min)
 # ═══════════════════════════════════════════════════════════════════════
 
+
+def _select_probe_models(available_models: Dict[str, Any]) -> Dict[str, str]:
+    """Choisit un modèle réellement utilisable par provider, au coût connu minimal."""
+    candidats: Dict[str, Tuple[Tuple[int, float, str], str]] = {}
+    for name, cfg in available_models.items():
+        try:
+            if not cfg.is_selectable() or not cfg.is_fallback_eligible():
+                continue
+            provider = str(cfg.provider.value)
+            cout = float(getattr(cfg, "input_cost_per_million", cfg.cost_per_million_tokens))
+            # Un prix inconnu (-1) vient après tout prix connu, y compris zéro.
+            rang = (1 if cout < 0 else 0, cout if cout >= 0 else float("inf"), str(name))
+            courant = candidats.get(provider)
+            if courant is None or rang < courant[0]:
+                candidats[provider] = (rang, str(cfg.model_id))
+        except Exception:
+            continue
+    return {provider: choix[1] for provider, choix in candidats.items()}
+
+
+def _provider_status_error_code(status_code: Any) -> str:
+    try:
+        code = int(status_code)
+    except (TypeError, ValueError):
+        return "provider_error"
+    return {
+        400: "bad_request",
+        401: "authentication_failed",
+        402: "payment_required",
+        403: "permission_denied",
+        404: "model_not_found",
+        408: "provider_timeout",
+        410: "model_retired",
+        429: "quota_or_rate_limit",
+    }.get(code, "provider_server_error" if code >= 500 else "provider_http_error")
+
+
+def _provider_probe_exception_code(exc: BaseException) -> str:
+    if isinstance(exc, asyncio.TimeoutError):
+        return "timeout"
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if status_code is not None:
+        return _provider_status_error_code(status_code)
+    return "connection_or_provider_error"
+
+
+def _provider_probe_payload_error(payload: Any) -> Optional[str]:
+    """Retourne None uniquement pour une réponse de chat exploitable."""
+    if not isinstance(payload, dict):
+        return "invalid_response"
+    status_code = payload.get("status_code")
+    if status_code is not None:
+        try:
+            if int(status_code) >= 400:
+                return _provider_status_error_code(status_code)
+        except (TypeError, ValueError):
+            return "invalid_response"
+    if payload.get("error") or payload.get("success") is False:
+        return str(payload.get("error_code") or "provider_error")[:80]
+    texte = payload.get("text")
+    if not isinstance(texte, str) or not texte.strip():
+        return "empty_response"
+    return None
+
 async def handler_provider_probe() -> Dict[str, Any]:
     """
     Sonde TOUS les providers LLM configurés : latence, état cooldown.
@@ -743,22 +808,14 @@ async def handler_provider_probe() -> Dict[str, Any]:
         except Exception:
             llm = MultiProviderLLM()
 
-        # Snapshot health status (pas d'action, juste lecture)
+        # Snapshot antérieur utilisé uniquement pour le cooldown et le compteur.
+        # L'état publié plus bas vient exclusivement des probes de CE cycle.
         health = llm.get_health_status()
-        result["providers"] = health
         active_prov = llm.provider.value if hasattr(llm, "provider") else "unknown"
         result["active_provider"] = active_prov
 
-        # ── Identifier les providers configurés avec un modèle probe léger ──
-        # Préférer les modèles les moins chers / avec les meilleurs rate limits
-        _PROBE_MODELS: Dict[str, str] = {}
-        _PROBE_COSTS: Dict[str, float] = {}
-        for name, cfg in AVAILABLE_MODELS.items():
-            prov = cfg.provider.value
-            cost = getattr(cfg, "cost_per_million_tokens", 999) or 999
-            if prov not in _PROBE_MODELS or cost < _PROBE_COSTS.get(prov, 999):
-                _PROBE_MODELS[prov] = cfg.model_id
-                _PROBE_COSTS[prov] = cost
+        # Modèles retirés/limités exclus ; zéro reste bien moins cher qu'un modèle payant.
+        _PROBE_MODELS = _select_probe_models(AVAILABLE_MODELS)
 
         _probe_messages = [{"role": "user", "content": "[INTERNAL_PROBE] Réponds uniquement OK."}]
 
@@ -776,8 +833,13 @@ async def handler_provider_probe() -> Dict[str, Any]:
             ptype = ProviderType(pname)
             model_id = _PROBE_MODELS.get(pname)
             t0 = time.time()
+            if not model_id:
+                return {
+                    "provider": pname, "success": False, "latency": 0.0,
+                    "model": None, "error_code": "no_probe_model",
+                }
             try:
-                await asyncio.wait_for(
+                payload = await asyncio.wait_for(
                     llm._chat_provider_result(
                         ptype, _probe_messages,
                         temperature=0.0, max_tokens=5,
@@ -786,12 +848,17 @@ async def handler_provider_probe() -> Dict[str, Any]:
                     timeout=15,
                 )
                 lat = round(time.time() - t0, 3)
-                return {"provider": pname, "success": True, "latency": lat}
-            except asyncio.TimeoutError:
-                return {"provider": pname, "success": False, "latency": 15.0, "error": "timeout"}
+                erreur = _provider_probe_payload_error(payload)
+                return {
+                    "provider": pname, "success": erreur is None, "latency": lat,
+                    "model": model_id, **({"error_code": erreur} if erreur else {}),
+                }
             except Exception as e:
                 lat = round(time.time() - t0, 3)
-                return {"provider": pname, "success": False, "latency": lat, "error": str(e)[:200]}
+                return {
+                    "provider": pname, "success": False, "latency": lat,
+                    "model": model_id, "error_code": _provider_probe_exception_code(e),
+                }
 
         probe_results = await asyncio.gather(
             *[_probe_one(p) for p in providers_to_probe],
@@ -801,15 +868,26 @@ async def handler_provider_probe() -> Dict[str, Any]:
         # ── Enregistrer les stats pour chaque provider sondé ──
         state = await _aload_state()
         state = _reset_daily_counters_if_needed(state)
-        fallback_used = False
+        provider_results: Dict[str, Dict[str, Any]] = {}
 
         for pr in probe_results:
             if isinstance(pr, Exception):
                 continue
             pname = pr["provider"]
-            if pname not in state.get("provider_stats_daily", {}):
-                state["provider_stats_daily"][pname] = {"probes": 0, "successes": 0, "latencies": []}
-            pstats = state["provider_stats_daily"][pname]
+            ancien = health.get(pname, {}) if isinstance(health, dict) else {}
+            provider_results[pname] = {
+                "healthy": bool(pr.get("success")),
+                "failures": int(ancien.get("failures", 0)) if isinstance(ancien, dict) else 0,
+                "in_cooldown": bool(ancien.get("in_cooldown", False)) if isinstance(ancien, dict) else False,
+                "probed": True,
+                "latency_s": pr.get("latency", 0),
+                "model": pr.get("model"),
+                **({"error_code": pr["error_code"]} if pr.get("error_code") else {}),
+            }
+            provider_stats = state.setdefault("provider_stats_daily", {})
+            if pname not in provider_stats:
+                provider_stats[pname] = {"probes": 0, "successes": 0, "latencies": []}
+            pstats = provider_stats[pname]
             pstats["probes"] += 1
             if pr.get("success"):
                 pstats["successes"] += 1
@@ -822,23 +900,15 @@ async def handler_provider_probe() -> Dict[str, Any]:
                 result["probe_latency_s"] = pr.get("latency", 0)
                 result["primary_ok"] = pr.get("success", False)
                 if not pr.get("success"):
-                    result["probe_error"] = pr.get("error", "unknown")
+                    result["probe_error"] = pr.get("error_code", "unknown")
 
-        # Détecter si un fallback a été utilisé (sur le provider actif)
-        if hasattr(llm, "_last_response_meta"):
-            meta = llm._last_response_meta
-            if isinstance(meta, dict) and meta.get("fallback_used"):
-                fallback_used = True
-                result["fallback_used"] = True
-                result["fallback_reason"] = meta.get("fallback_reason", "unknown")
-                result["primary_ok"] = False
-
-        if fallback_used:
-            dc = state.get("daily_counters", {})
-            dc["fallback_count"] = dc.get("fallback_count", 0) + 1
-            state["daily_counters"] = dc
-
+        result["providers"] = provider_results
+        result["fallback_used"] = False  # appels directs : aucun fallback n'est autorisé pendant une sonde
         result["probed_providers"] = providers_to_probe
+        if active_prov not in provider_results:
+            result["probe_success"] = False
+            result["primary_ok"] = False
+            result["probe_error"] = "active_provider_not_probed"
         await _asave_state(state)
 
     except Exception as e:
@@ -2497,10 +2567,29 @@ async def handler_personal_learning_cycle() -> Dict[str, Any]:
     try:
         from src.training.personal.learning_cycle import PersonalLearningCycle
         report = await asyncio.to_thread(PersonalLearningCycle(_DATA / "personal_model").run)
-        result = {"status": "completed", **report.to_dict()}
+        report_data = report.to_dict()
+        if report.failed and report.completed_judgments == 0:
+            reason = max(
+                report.failure_codes,
+                key=report.failure_codes.get,
+                default="judge_failed",
+            )
+            result = {
+                "status": "degraded",
+                "success": False,
+                "reason": reason,
+                **report_data,
+            }
+        elif report.failed:
+            result = {"status": "completed_with_failures", "success": True, **report_data}
+        else:
+            result = {"status": "completed", "success": True, **report_data}
     except Exception as exc:
-        result = {"status": "error", "error_code": type(exc).__name__}
-        logger.warning("Personal learning cycle failed: {}", type(exc).__name__)
+        from src.training.personal.judge_policy import judge_failure_code
+
+        error_code = judge_failure_code(exc)
+        result = {"status": "error", "error_code": error_code}
+        logger.warning("Personal learning cycle failed: {}", error_code)
     await _aappend_metric("personal_learning_cycle", result)
     return result
 

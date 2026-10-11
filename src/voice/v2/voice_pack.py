@@ -31,6 +31,13 @@ class VoicePackError(RuntimeError):
     pass
 
 
+def _safe_identifier(value: str, *, field: str) -> str:
+    identifier = str(value or "").strip()
+    if not _SAFE_ID.fullmatch(identifier):
+        raise VoicePackError(f"champ {field} invalide")
+    return identifier
+
+
 def canonical_manifest_bytes(manifest: Mapping[str, Any]) -> bytes:
     payload = dict(manifest)
     payload.pop("signature", None)
@@ -283,6 +290,8 @@ class VoicePackManager:
             return {}
 
     def activate(self, pack_id: str, version: str) -> None:
+        pack_id = _safe_identifier(pack_id, field="pack_id")
+        version = _safe_identifier(version, field="version")
         target = self.packs_dir / pack_id / version
         if not target.is_dir():
             raise VoicePackError("Voice Pack non installé")
@@ -307,7 +316,20 @@ class VoicePackManager:
             raise VoicePackError("aucun Voice Pack précédent")
         self.activate(str(previous.get("pack_id", "")), str(previous.get("version", "")))
 
+    def clear_active(self) -> None:
+        """Atomically remove the active selection while preserving all packs."""
+        if not self.active_file.exists():
+            return
+        tombstone = self.active_file.with_suffix(".cleared")
+        try:
+            os.replace(self.active_file, tombstone)
+            tombstone.unlink(missing_ok=True)
+        except FileNotFoundError:
+            pass
+
     def uninstall(self, pack_id: str, version: str) -> None:
+        pack_id = _safe_identifier(pack_id, field="pack_id")
+        version = _safe_identifier(version, field="version")
         current = self._active_payload()
         if current.get("pack_id") == pack_id and current.get("version") == version:
             raise VoicePackError("impossible de supprimer le Voice Pack actif")
@@ -316,3 +338,83 @@ class VoicePackManager:
         target = self.packs_dir / pack_id / version
         if target.exists():
             shutil.rmtree(target)
+
+    def list_installed(self) -> list[Dict[str, Any]]:
+        """Return bounded metadata for installed packs, never model payloads."""
+        active = self._active_payload()
+        entries: list[Dict[str, Any]] = []
+        if not self.packs_dir.is_dir():
+            return entries
+        for pack_dir in sorted(self.packs_dir.iterdir(), key=lambda item: item.name.lower()):
+            if not pack_dir.is_dir() or not _SAFE_ID.fullmatch(pack_dir.name):
+                continue
+            for version_dir in sorted(pack_dir.iterdir(), key=lambda item: item.name.lower()):
+                if not version_dir.is_dir() or not _SAFE_ID.fullmatch(version_dir.name):
+                    continue
+                try:
+                    manifest = json.loads(
+                        (version_dir / "manifest.json").read_text(encoding="utf-8")
+                    )
+                    _validate_manifest(manifest)
+                except Exception:
+                    # A partial/corrupt directory is observable without becoming
+                    # activatable or leaking its contents to the product surface.
+                    entries.append({
+                        "pack_id": pack_dir.name,
+                        "version": version_dir.name,
+                        "valid": False,
+                        "active": False,
+                        "engine": "unknown",
+                        "languages": [],
+                    })
+                    continue
+                entries.append({
+                    "pack_id": str(manifest["pack_id"]),
+                    "version": str(manifest["version"]),
+                    "valid": True,
+                    "active": (
+                        active.get("pack_id") == manifest["pack_id"]
+                        and active.get("version") == manifest["version"]
+                    ),
+                    "engine": str(manifest["engine"]),
+                    "languages": [str(value) for value in manifest.get("languages", [])],
+                    "label": str(manifest.get("label") or manifest["pack_id"])[:120],
+                    "models": len(manifest.get("models") or []),
+                })
+        return entries
+
+    def inspect_installed(self, pack_id: str, version: str) -> Dict[str, Any]:
+        """Re-verify one installed generation before it becomes executable."""
+        pack_id = _safe_identifier(pack_id, field="pack_id")
+        version = _safe_identifier(version, field="version")
+        target = self.packs_dir / pack_id / version
+        try:
+            manifest = json.loads(
+                (target / "manifest.json").read_text(encoding="utf-8")
+            )
+        except Exception as exc:
+            raise VoicePackError("Voice Pack installé illisible") from exc
+        _validate_manifest(manifest)
+        self._verify_signature(manifest)
+        if manifest["pack_id"] != pack_id or manifest["version"] != version:
+            raise VoicePackError("identité du Voice Pack installé incohérente")
+        for item in manifest["files"]:
+            rel = _safe_relative_path(str(item["path"]))
+            path = target.joinpath(*rel.parts)
+            if path.is_symlink() or not path.is_file():
+                raise VoicePackError(f"fichier Voice Pack absent: {rel}")
+            if path.stat().st_size != int(item["size"]):
+                raise VoicePackError(f"taille Voice Pack incorrecte: {rel}")
+            if _path_digest(path) != item["sha256"]:
+                raise VoicePackError(f"empreinte Voice Pack incorrecte: {rel}")
+        return manifest
+
+    def active(self) -> Optional[Dict[str, Any]]:
+        """Return the active installed manifest, or ``None`` if it is invalid."""
+        current = self._active_payload()
+        try:
+            pack_id = _safe_identifier(current.get("pack_id", ""), field="pack_id")
+            version = _safe_identifier(current.get("version", ""), field="version")
+            return self.inspect_installed(pack_id, version)
+        except Exception:
+            return None

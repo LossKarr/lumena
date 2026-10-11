@@ -66,6 +66,10 @@ le texte non joué ; elle ne recommence pas la phrase déjà entendue.
 | `LUMENA_STT_PARTIAL_EVERY_MS` | intervalle des partiels | `0` |
 | `LUMENA_STT_TIMEOUT_S` | borne d'une transcription | `45` |
 | `LUMENA_TTS_WORKER_TIMEOUT_S` | borne du worker TTS | `90` |
+| `LUMENA_VOICE_TTS_ENGINE` | `auto`, `qwen3` ou `piper` | `auto` |
+| `LUMENA_QWEN_TTS_TIMEOUT_S` | borne d'une synthèse Qwen isolée | `90` |
+| `LUMENA_QWEN_TTS_DEVICE` | `auto`, `cuda:0` ou `cpu` | `auto` |
+| `LUMENA_QWEN_TTS_DTYPE` | `auto`, `bfloat16` ou `float32` | `auto` |
 | `LUMENA_VOICE_CLOUD_ALLOWED` | autorise Edge-TTS | `0` |
 | `LUMENA_XTTS_ALLOW_RESTRICTED` | autorise les poids XTTS CPML | `0` |
 
@@ -79,13 +83,13 @@ Le panneau Conversation propose cinq profils ordonnés. Ils modifient uniquement
 le STT, le TTS et le VAD. La langue, le périphérique micro, le mode Chat/Agent,
 l'activation et l'identité restent inchangés.
 
-| Profil | STT | Cible | Réseau TTS |
+| Profil | STT | TTS local | Réseau TTS |
 |---|---|---|---|
-| Essentiel | tiny CPU int8 | PC modeste | non |
-| Léger | base CPU int8 | PC léger | non |
-| Équilibré | small CPU int8 | usage quotidien | non |
-| Précision | medium CPU int8 | priorité à la transcription | non |
-| Studio GPU | large-v3-turbo CUDA float16 | GPU CUDA prêt | non |
+| Essentiel | tiny CPU int8 | Piper | non |
+| Léger | base CPU int8 | Piper | non |
+| Équilibré | small CPU int8 | Piper | non |
+| Précision | medium CPU int8 | Piper | non |
+| Studio GPU | large-v3-turbo CUDA float16 | auto, Qwen seulement si qualifié | non |
 
 Chaque profil désactive les transcriptions partielles bloquantes. Le serveur sonde
 les capacités réelles avant d'autoriser Studio GPU : voir une carte NVIDIA ne
@@ -113,11 +117,60 @@ disque, installe dans un dossier temporaire puis bascule atomiquement. Le pack
 précédent reste disponible pour rollback et un pack actif ou utilisé ne peut pas
 être supprimé.
 
-Lumena ne distribue pas encore un pack « Lumena Voice v1 » : il manque un corpus
-consenti, la sélection humaine et les droits de distribution signés. Piper reste
-donc le moteur local générique ; XTTS reste désactivé par défaut car ses poids sont
-soumis à la Coqui Public Model License et ne permettent pas un usage commercial
-général.
+Le panneau **Voice > Modèles** expose désormais ce cycle complet : sélection d'une
+archive locale, vérification, installation, activation, retour à la génération
+précédente et suppression d'un pack inactif. Toutes les routes exigent le jeton
+administrateur. L'upload est diffusé par blocs dans `data/voice/.uploads`, borné par
+`LUMENA_VOICE_PACK_MAX_MB`, puis effacé dans tous les cas. Une activation redémarre
+Voice V2 ; si le redémarrage échoue ou bascule vers le backend historique, Lumena
+restaure la sélection précédente avant de rendre l'erreur.
+
+Un pack Piper doit déclarer `engine: piper` et une liste `models`. Chaque entrée
+contient `language`, `model_name`, `model_path` et `config_path`; les deux chemins
+doivent désigner des fichiers déclarés et hashés dans le manifeste. L'activation
+recalcule les empreintes installées, rejette une configuration JSON illisible, puis
+projette les langues du pack dans le profil vocal sans modifier le profil source.
+Le worker TTS résout ensuite les poids depuis le pack actif ; le français intégré
+reste le repli si le pack est absent ou corrompu.
+
+Un pack Qwen déclare `engine: qwen3`, le modèle Base 0.6B et sa révision immuable,
+une référence WAV, sa transcription exacte, une configuration et une provenance.
+Les droits de distribution doivent être confirmés dans cette provenance et dans le
+consentement signé. Le pack projette cette preuve dans le profil runtime ; il ne
+permet ni référence vocale libre ni révision `latest`.
+
+Qwen tourne dans un Python séparé. Le provider communique avec un worker JSONL
+local, borne les textes, les délais et la durée audio, puis publie un WAV atomique.
+Le mode `auto` exige simultanément les composants prêts, un pack actif et un canari
+de performance qualifié. Un échec de synthèse bascule par segment sur Piper ; une
+annulation ne déclenche jamais de parole de repli tardive.
+
+Le panneau **Voice > Modèles** propose une installation Qwen en un clic lorsque la
+release contient son manifeste et ses clés publiques. L'opération tourne hors de la
+requête web, affiche une progression bornée, reprend les archives partielles et ne
+bascule la voix qu'après vérification des signatures, activation atomique du pack et
+canari audio réel. Une fermeture pendant le téléchargement laisse l'installation
+reprenable. Une édition de développement sans manifeste signé affiche honnêtement
+« non publié » et ne télécharge rien depuis une source libre ou mutable.
+
+Les clés publiques approuvées sont lues depuis
+`LUMENA_VOICE_PACK_TRUSTED_KEYS_JSON` sous la forme
+`{"release":"<clé Ed25519 brute en base64>"}`. Une valeur vide désactive
+honnêtement l'import. Aucune clé privée de signature ne doit être stockée dans le
+dépôt, le `.env`, le panneau ou les données runtime.
+
+Le code ne fabrique jamais le pack « Lumena Voice » ni son consentement. Une release
+publique Qwen ne peut être construite que lorsque le responsable fournit la référence
+finale, la sélection humaine, la provenance et les droits signés. En leur absence,
+Piper reste le moteur local générique et le build public échoue au lieu d'inventer
+une identité. XTTS reste désactivé par défaut car ses poids sont soumis à la Coqui
+Public Model License et ne permettent pas un usage commercial général.
+
+La chaîne de publication est décrite dans `docs/VOICE_PACK_RELEASE.md`. Le script
+`tools/release/build_voice_pack.py` crée une clé Ed25519 chiffrée hors dépôt, construit
+une archive déterministe par blocs et la vérifie avec le même `VoicePackManager`
+que le produit. Il exige que la preuve de consentement soit incluse dans le payload
+signé et ne génère jamais de consentement ou de licence à la place du responsable.
 
 ## Frontal acoustique local
 
@@ -177,6 +230,13 @@ l'ancien audio ; un fragment vide, un rejet d'activation, un timeout ou une erre
 peut reprendre une seule fois depuis la partie estimée non entendue. Les finals
 tardifs d'un ancien tour sont ignorés.
 
+Le lecteur audio publie aussi son état physique au chemin VAD. Une parole détectée
+pendant qu'un fichier est réellement audible déclenche donc l'interruption même si
+un événement de fin ancien a momentanément désynchronisé le mode logique. Les fins
+de lecture portent leur `generation_id` : une fin périmée ne peut plus rendre la main
+à l'écoute ni effacer la génération courante. Lorsqu'une nouvelle génération prend
+le contrôle, elle arrête explicitement l'ancienne sortie avant de jouer son audio.
+
 ## Panneau Voix
 
 Le panneau sépare Conversation, Voix, Écoute, Langues, Modèles et Diagnostic. Il
@@ -190,7 +250,8 @@ possède déjà le périphérique afin d'éviter une seconde ouverture PyAudio c
 L'application d'un profil rafraîchit aussi les champs Voix du panneau Configuration
 depuis `/api/config`. Les brouillons non sauvegardés de ce panneau sont conservés et
 restent signalés comme modifications locales.
-L'état affiché vient du runtime effectif : matériel, device STT, provider, VAD, AEC,
+L'état affiché vient du runtime effectif : matériel, device STT, provider, moteur
+demandé, moteur réellement choisi, Qwen installé/prêt/qualifié, fallback, VAD, AEC,
 wake word, langues et percentiles de latence.
 
 ## Confidentialité et effacement
@@ -215,5 +276,8 @@ un profil externe configuré hors de ce dossier.
    casque jusqu'à certification d'un AEC serveur sur cette machine.
 4. Si un pack de voix échoue, conserver la version active et utiliser le rollback ;
    ne jamais contourner la signature, l'empreinte ou la licence.
-5. Si le runtime reste dégradé, désactiver Voice V2/V3. Le chat texte et le travail
+5. Le préchauffage d'Edge TTS effectue une sonde réseau réelle lorsque le cloud a été
+   autorisé : un MP3 encore présent dans le cache ne masque donc plus un refus 403.
+   Le disjoncteur ouvre alors le repli local Piper et expose cet état dans le diagnostic.
+6. Si le runtime reste dégradé, désactiver Voice V2/V3. Le chat texte et le travail
    Agent restent autoritatifs et le backend historique demeure disponible.

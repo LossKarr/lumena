@@ -54,12 +54,24 @@ class VoiceRuntime:
         self.voice_profile = voice_profile or load_profile(
             os.getenv("LUMENA_VOICE_PROFILE_PATH", "").strip() or None
         )
+        if voice_profile is None:
+            try:
+                from .voice_pack_service import get_voice_pack_service
+                self.voice_profile = get_voice_pack_service().apply_to_profile(
+                    self.voice_profile
+                )
+            except Exception:
+                # Packs are optional. A corrupt active marker cannot remove the
+                # bundled French profile or prevent Voice from starting.
+                pass
         # enabled None => lit le flag ; bool explicite => force (tests).
         self._enabled = v2_tts_enabled() if enabled is None else bool(enabled)
         self.status = "idle"
         self.degraded = False
         self.last_provider = ""
-        self._seg_audio: Dict[tuple, Optional[str]] = {}  # (generation_id, sequence) -> chemin audio
+        # (generation_id, sequence) -> transport audio complet. Les providers
+        # fichier et les futurs providers PCM partagent ainsi le même pipeline.
+        self._seg_audio: Dict[tuple, Dict[str, Any]] = {}
         self._play_tasks: List[asyncio.Task] = []         # playbacks en cours (jamais awaités dans l'acteur)
         self._producer_tasks: List[asyncio.Task] = []     # producteurs de stream TTS (chunking)
         self._llm_tasks: Dict[str, asyncio.Task] = {}     # réponses LLM annulables, hors acteur
@@ -129,8 +141,8 @@ class VoiceRuntime:
             # bloqué sur un playback long, sinon stop_word/barge-in ne seraient pas traités.
             gen = d.get("generation_id"); seq = d.get("sequence", 0)
             text = d.get("text", ""); dur = d.get("duration_ms", 0)
-            path = self._seg_audio.get((gen, seq))
-            task = asyncio.ensure_future(self._play_and_report(gen, seq, text, dur, path))
+            payload = self._seg_audio.get((gen, seq), {})
+            task = asyncio.ensure_future(self._play_and_report(gen, seq, text, dur, payload))
             self._play_tasks.append(task)
             self._play_tasks = [t for t in self._play_tasks if not t.done()]
 
@@ -253,7 +265,11 @@ class VoiceRuntime:
             self.last_provider = res.provider
             if res.degraded:
                 self.degraded = True
-            self._seg_audio[(gen, 0)] = res.audio_path
+            self._seg_audio[(gen, 0)] = {
+                "path": res.audio_path, "audio": res.audio,
+                "audio_format": res.audio_format, "sample_rate": res.sample_rate,
+                "channels": res.channels,
+            }
             self._gen_expected[gen] = 1 if res.ok else 0
             if res.ok:
                 await self.tm.emit(VoiceEvent("tts.chunk_ready", data={
@@ -313,7 +329,11 @@ class VoiceRuntime:
                 self.last_provider = ch.provider or self.last_provider
                 if ch.degraded:
                     self.degraded = True
-                self._seg_audio[(gen, ch.sequence)] = ch.audio_path
+                self._seg_audio[(gen, ch.sequence)] = {
+                    "path": ch.audio_path, "audio": ch.audio,
+                    "audio_format": ch.audio_format, "sample_rate": ch.sample_rate,
+                    "channels": ch.channels,
+                }
                 self._record_timing(
                     "tts.segment_ready", generation_id=gen, sequence=ch.sequence,
                     turn_id=self._generation_turn.get(gen, ""),
@@ -336,6 +356,30 @@ class VoiceRuntime:
                 )
         except asyncio.CancelledError:
             return  # interruption : aucun finished, le reducer gère la troncature
+        except Exception:
+            # A native worker can fail after earlier segments have already been
+            # played.  Never leak its exception through an unobserved task and
+            # never leave the TurnManager stuck in ``speaking``.  The provider
+            # exposes a bounded code for diagnostics; the canonical text stays
+            # available on screen.
+            provider_status = getattr(self.tts, "runtime_status", None)
+            worker_error = "synthesis_failed"
+            if callable(provider_status):
+                try:
+                    worker_error = str(
+                        provider_status().get("tts_worker_error") or worker_error
+                    )[:48]
+                except Exception:
+                    pass
+            self.degraded = True
+            self.status = "degraded"
+            try:
+                from .observability import get_voice_telemetry
+                get_voice_telemetry().update(
+                    state="degraded", tts_error_code=worker_error,
+                )
+            except Exception:
+                pass
         # Synthèse terminée : on connaît le nombre exact de segments attendus.
         self._gen_expected[gen] = count
         await self._maybe_finish(gen)
@@ -356,8 +400,11 @@ class VoiceRuntime:
         if completion is not None:
             completion.set()
         await self.tm.emit(VoiceEvent("playback.finished", data={"generation_id": gen}))
+        self.status = "wake_listening" if not self.degraded else "degraded"
 
-    async def _play_and_report(self, gen: str, seq: int, text: str, dur: int, path: Any) -> None:
+    async def _play_and_report(
+        self, gen: str, seq: int, text: str, dur: int, payload: Dict[str, Any],
+    ) -> None:
         """Joue UN chunk en tâche de fond ; comptabilise et tente finished à la fin."""
         try:
             async with self._play_lock:
@@ -370,8 +417,19 @@ class VoiceRuntime:
                     "playback.started", generation_id=gen, sequence=seq,
                     turn_id=self._generation_turn.get(gen, ""),
                 )
-                r = await self.player.play(generation_id=gen, sequence=seq, text=text,
-                                           duration_ms=dur, path=path)
+                r = await self.player.play(
+                    generation_id=gen, sequence=seq, text=text, duration_ms=dur,
+                    path=payload.get("path"),
+                    audio=(
+                        payload.get("audio", b"")
+                        if int(payload.get("sample_rate", 0) or 0) > 0
+                        and int(payload.get("channels", 0) or 0) in {1, 2}
+                        else b""
+                    ),
+                    audio_format=payload.get("audio_format", "pcm16"),
+                    sample_rate=int(payload.get("sample_rate", 0) or 0),
+                    channels=int(payload.get("channels", 0) or 0),
+                )
         except asyncio.CancelledError:
             return  # interrompu → on n'émet rien (interruption gérée par le reducer)
         # Ne comptabilise QUE si la génération est toujours active et non stoppée.

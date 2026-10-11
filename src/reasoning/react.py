@@ -50,7 +50,7 @@ from src.reasoning.delegate_strategy import (  # noqa: F401
 
 # ── Imports depuis react_config (constantes, enums, flags) ─────────
 from .react_config import (
-    ActionType, Thought, Action, Observation, observation_lisible, ReActStep, TaskItem,
+    ActionType, Thought, Action, Observation, observation_lisible, ReActStep, TaskItem, bloc_presence,
     IS_WINDOWS, OS_NAME,
     ADVANCED_TOOLS_AVAILABLE, apply_patch, edit_file, parse_patch,
     ContextCompactor, get_token_stats, format_token_stats, estimate_tokens,
@@ -3341,7 +3341,7 @@ class ReActLoop:
             "- Tu ne dis JAMAIS « je n'ai pas accès à internet » — tu AS accès au web.\n"
         )
 
-        return "\n\n".join(parts)
+        return "\n\n".join(p for p in (*parts, bloc_presence(self)) if p)  # PHASE PRESENCE : blocs frais en queue, vides filtres
 
     # v2: _INTENT_CATEGORY_MAP et _expand_tools_by_intent supprimés
     # La logique est désormais dans _CONTEXT_RULES (tool_registry.py) qui couvre

@@ -1675,9 +1675,10 @@ async def write_mission_contract_handler(
             parts.append(_ui_warn)
     except Exception as _e_l2:  # guidance additive : ne casse JAMAIS la pose du contrat
         logger.debug("[L2] avertissement UI ignoré: {}", _e_l2)
-    # LOT P1 — le lead décide son découpage sans savoir ce qu'il coûte : le
-    # CodeAgent est un singleton sérialisé, donc les workers CODENT chacun leur
-    # tour. On lui donne le chiffre au moment où il peut encore regrouper.
+    # LOT P1 — le lead décide son découpage sans savoir ce qu'il coûte.
+    # LOT A6 (2026-10-08) — et ce coût a CHANGÉ : A4 a supprimé la file du
+    # CodeAgent. Le goulot est désormais le créneau LLM. On résout ICI les trois
+    # plafonds (le module de note reste pur : il les REÇOIT, il ne les lit pas).
     try:
         from src.subagents.delegation_cost import delegation_cost_note
 
@@ -1687,7 +1688,34 @@ async def write_mission_contract_handler(
             for f in _files_p1
             if str(f.get("owner") or "").strip()
         }
-        _cost_note = delegation_cost_note(len(_owners_p1), len(_files_p1))
+        # Les trois plafonds, chacun best-effort : un plafond illisible ne doit
+        # jamais priver le lead du reste de la note.
+        _pool_a6 = _llm_a6 = 0
+        try:
+            # ⚠️ Depuis `subagents.queue`, JAMAIS depuis `sub_agent` : la frontiere
+            # « missions n'importe pas le CodeAgent » est figee par
+            # `tests/fragmentation/test_handlers_missions.py::test_no_codeagent_link`,
+            # et ce gel m'a attrape au full run de signature A6.
+            from src.subagents.queue import get_codeagent_pool_size
+            _pool_a6 = int(get_codeagent_pool_size())
+        except Exception:
+            pass
+        try:
+            from src.telemetry.provider_wait import plafond_provider
+            _llm_a6 = int(plafond_provider())
+        except Exception:
+            pass
+        # Parallélisme RÉEL = le plus petit des trois. Par la règle « un seul
+        # modèle par mission » (2026-10-07), tous les workers tapent sur le MÊME
+        # provider : ce plafond ne se contourne pas en variant les métiers.
+        _para_a6 = min(x for x in (len(_owners_p1), _pool_a6, _llm_a6) if x > 0) \
+            if (_pool_a6 > 0 and _llm_a6 > 0) else 0
+        _cost_note = delegation_cost_note(
+            len(_owners_p1), len(_files_p1),
+            parallelisme_reel=_para_a6 or None,
+            plafond_llm=_llm_a6 or None,
+            pool=_pool_a6 or None,
+        )
         if _cost_note:
             parts.append(_cost_note)
     except Exception as _e_p1:  # guidance additive : ne casse JAMAIS le contrat

@@ -18,6 +18,12 @@ async def test_worker_health_synthesis_and_clean_shutdown():
         assert path is not None and path.exists()
         assert worker._last_provider == "test-local"
         assert worker.alive is True
+        status = worker.status()
+        assert status["alive"] is True
+        assert status["engine"] == "test"
+        assert status["last_provider"] == "test-local"
+        assert status["last_error_code"] == ""
+        assert isinstance(status["last_success_at"], float)
     finally:
         await worker.aclose()
     assert worker.alive is False
@@ -88,5 +94,21 @@ async def test_local_adapter_propagates_worker_format_and_provider():
         assert result.audio_format == "pcm16"
         assert result.sample_rate == 16000
         assert result.channels == 1
+        status = adapter.runtime_status()
+        assert status["tts_worker"]["alive"] is True
+        assert status["tts_worker_error"] == ""
     finally:
         await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_worker_timeout_is_publicly_reported_as_bounded_code():
+    worker = IsolatedTTSWorker(engine_kind="test", timeout_s=1, max_restarts=0)
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await worker._synthesize("__sleep__")
+        status = worker.status()
+        assert status["last_error_code"] == "worker_timeout"
+        assert "__sleep__" not in str(status)
+    finally:
+        await worker.aclose()

@@ -996,6 +996,25 @@ def validate_contract(data: Dict[str, Any]) -> List[str]:
     return errors
 
 
+def porte_un_livrable_web(data: Dict[str, Any]) -> bool:
+    """LOT E4 — le contrat annonce-t-il une page web a verifier ? PUR.
+
+    Sert a armer le troisieme etat de la cloture (`web_unattempted`). La portee est
+    volontairement ETROITE : seuls `.html`/`.htm` comptent. Une mission sans page n'a
+    rien a ouvrir au navigateur, et l'inquieter saturerait les gardes (AUD-017).
+
+    Meme lecture que `web_root_route_warning` ci-dessous, isolee pour etre reutilisable
+    et testable sans runtime.
+    """
+    if not isinstance(data, dict):
+        return False
+    return any(
+        str((f or {}).get("path") or "").lower().endswith((".html", ".htm"))
+        for f in (data.get("files") or [])
+        if isinstance(f, dict)
+    )
+
+
 def web_root_route_warning(data: Dict[str, Any]) -> str:
     """LOT 2.2 (run MotDuJour 2026-07-06) — GUIDANCE (jamais un refus) : un contrat
     web (html + backend .py) dont aucun export/desc backend ne sert la racine `/`

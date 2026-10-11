@@ -23,6 +23,12 @@ def test_voice_panel_exposes_truthful_runtime_fields_and_redacted_export():
     assert "server_aec_available" not in module or "voice-aec" in module
     assert "_safeVoiceDiagnostic" in module
     assert "last_error" in module
+    assert "tts_worker" in module
+    assert "edge_tts" in module
+    assert "Repli local" in module
+    assert "tts_engine_configured" in module
+    assert "tts_provider_effective" in module
+    assert "qualified" in module
     assert "task_id" not in module[module.index("function _safeVoiceDiagnostic"):module.index("export function exportVoiceDiagnostic")]
 
 
@@ -36,14 +42,20 @@ def test_voice_settings_are_in_canonical_validated_schema():
     assert schema["LUMENA_VOICE_V2_MODE"]["restart"] is True
     assert schema["LUMENA_VOICE_ACOUSTIC_PROFILE"]["restart"] is True
     assert schema["LUMENA_VOICE_IMPROVEMENT_OPT_IN"]["default"] == "0"
+    assert schema["LUMENA_VOICE_PACK_TRUSTED_KEYS_JSON"]["default"] == ""
+    assert schema["LUMENA_VOICE_PACK_MAX_MB"]["max"] == 4096
+    assert schema["LUMENA_VOICE_TTS_ENGINE"]["options"] == ["auto", "qwen3", "piper"]
+    assert schema["LUMENA_COMPONENT_ROOT"]["restart"] is True
+    assert schema["LUMENA_QWEN_TTS_TIMEOUT_S"]["max"] == 600
 
 
 def test_voice_panel_assets_are_versioned_and_actions_are_exported():
     html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     main = (ROOT / "web" / "static" / "js" / "main.js").read_text(encoding="utf-8")
     api = (ROOT / "web" / "static" / "js" / "api.js").read_text(encoding="utf-8")
-    assert "/static/css/voice-panel.css?v=3" in html
-    assert "/static/js/main.js?v=68" in html
+    assert "/static/css/voice-panel.css?v=5" in html
+    assert "/static/js/main.js?v=71" in html
+    assert "./api.js?v=9" in main
     assert "barge_in_mode" in api
     assert "guarded_no_aec" in api
     assert 'id="voice-settings-save"' in html
@@ -55,5 +67,36 @@ def test_voice_panel_assets_are_versioned_and_actions_are_exported():
     assert "_lastVoiceStatus.activation_mode!=='push_to_talk'" in api
     assert "Micro armé : parle maintenant." in api
     assert "/api/voice/restart" in api
+
+
+def test_voice_pack_panel_is_wired_to_authenticated_product_routes():
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    main = (ROOT / "web" / "static" / "js" / "main.js").read_text(encoding="utf-8")
+    api = (ROOT / "web" / "static" / "js" / "api.js").read_text(encoding="utf-8")
+    routes = (ROOT / "web" / "routes" / "advanced.py").read_text(encoding="utf-8")
+    assert 'id="voice-pack-file"' in html
+    assert 'id="voice-packs-list"' in html
+    for action in (
+        "loadVoicePacks", "importVoicePack", "activateVoicePack",
+        "rollbackVoicePack", "uninstallVoicePack",
+    ):
+        assert action in main
+    assert "/api/voice/packs/import?activate=true" in api
+    assert 'router.get("/api/voice/packs"' in routes
+    assert "Depends(deps.verify_admin_token)" in routes
     assert "method:'DELETE'" in api
+
+
+def test_qwen_one_click_installer_is_observable_and_uses_product_routes():
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    main = (ROOT / "web" / "static" / "js" / "main.js").read_text(encoding="utf-8")
+    api = (ROOT / "web" / "static" / "js" / "api.js").read_text(encoding="utf-8")
+    routes = (ROOT / "web" / "routes" / "advanced.py").read_text(encoding="utf-8")
+    assert 'id="voice-qwen-install"' in html
+    assert 'id="voice-qwen-required"' in html
+    assert 'role="progressbar"' in html
+    assert "installQwenTTS" in main and "loadQwenInstallStatus" in main
+    assert "/api/voice/qwen-install" in api
+    assert 'router.post("/api/voice/qwen-install"' in routes
+    assert "Depends(deps.verify_admin_token)" in routes
 

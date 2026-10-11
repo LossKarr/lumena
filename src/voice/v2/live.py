@@ -222,6 +222,7 @@ class VoiceV2Live:
             min_utterance_ms=min_utterance_ms,
             emit_partials=emit_partials,
             suppress_input_fn=self._suppress_micro_input,
+            playback_active_fn=lambda: self.player.is_playing,
             activation_gate=activation_gate,
             audio_frontend=self.audio_frontend,
             wake_word_provider=wake_word_provider,
@@ -853,7 +854,7 @@ async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "i
     """
     # Imports hardware PARESSEUX (jamais au niveau module → isolation préservée).
     from .providers import (  # noqa: PLC0415
-        RealVADProvider, RealSTTAdapter, LocalTTSAdapter,
+        RealVADProvider, RealSTTAdapter, build_local_tts_provider,
         SileroSpeechProbability,
         LocalWakeWordProvider,
     )
@@ -910,7 +911,7 @@ async def run_voice_v2_live(core: Any, *, device: str = "cpu", compute: str = "i
     stt = RealSTTAdapter(
         stt=LumenaSTT(device=device, compute_type=compute, model_size=model)
     )
-    tts = LocalTTSAdapter()
+    tts = build_local_tts_provider()
     wake_word = LocalWakeWordProvider.from_env()
 
     initial_mode = "agent" if llm_mode == "agent" else "chat"

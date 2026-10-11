@@ -68,6 +68,22 @@ class TTSProvider(ABC):
     async def synthesize(self, text: str, voice: Any, cancel: Optional[CancelToken] = None) -> AudioResult:
         ...
 
+    def capabilities(self) -> dict[str, Any]:
+        """Stable non-secret contract shared by every current/future engine."""
+        return {
+            "name": str(self.name),
+            "locality": str(self.locality),
+            "streaming": bool(self.supports_streaming),
+            "voice_clone": bool(self.supports_voice_clone),
+        }
+
+    def runtime_status(self) -> dict[str, Any]:
+        """Bounded health facts; concrete providers may add worker metadata."""
+        return {
+            "tts_capabilities": self.capabilities(),
+            "tts_available": bool(self.is_available()),
+        }
+
     async def stream(self, text: str, voice: Any,
                      cancel: Optional[CancelToken] = None) -> AsyncIterator[TTSAudioChunk]:
         """Streaming par défaut : un seul chunk dérivé de `synthesize` (override si vrai streaming)."""

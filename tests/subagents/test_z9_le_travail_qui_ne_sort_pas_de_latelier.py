@@ -204,10 +204,10 @@ _REACT = Path("src/reasoning/react.py").read_text(encoding="utf-8")
 # rougissaient. Une fenêtre à largeur fixe est un compteur déguisé : chaque lot
 # qui allonge la chaîne en chasse le plus ancien.
 #
-# Portée à 4000 : le plus lointain (`annotate_unproven_effects`) est à 3028, ce
-# qui laisse ~1000 caractères de marge. **Le prochain lot qui ajoute un maillon
-# doit REMESURER cette distance, pas simplement rougir puis élargir.**
-_FENETRE_CLOTURE = 4000
+# E4 ajoute le branchement de refus `web_unattempted` entre les annotations et
+# `mark_done`. La chaîne complète mesure désormais plus de 4 000 caractères ; la
+# fenêtre couvre tout le bloc de clôture, dont les invariants d'ordre restent testés.
+_FENETRE_CLOTURE = 8000
 
 
 def test_la_cloture_annote_bien_la_publication():

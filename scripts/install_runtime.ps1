@@ -9,6 +9,12 @@ param(
 
     [string]$BundledVCRedistInstaller = "",
 
+    [string]$ComponentManifest = "",
+
+    [string]$ComponentTrustedKeys = "",
+
+    [string]$ReleaseVersion = "",
+
     [string]$LogFile = "",
 
     [switch]$PreflightOnly
@@ -463,8 +469,41 @@ try {
         Invoke-LoggedCommand -FilePath $venvPython -Arguments @(
             "-c", "import fastapi, httpx, playwright, webview, chromadb_rust_bindings; print('Runtime Lumena verifie')"
         )
+        Write-InstallLog "Scellement du runtime Lumena sur le lock certifie..."
+        Invoke-LoggedCommand -FilePath $venvPython -Arguments @(
+            (Join-Path $AppDir "scripts\runtime_guard.py"),
+            "--app-dir", $AppDir, "--repair"
+        )
     } finally {
         Pop-Location
+    }
+
+    $componentArgumentsPresent = @($ComponentManifest, $ComponentTrustedKeys, $ReleaseVersion) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    if ($componentArgumentsPresent.Count -gt 0) {
+        if ($componentArgumentsPresent.Count -ne 3) {
+            throw "La configuration des composants de release est incomplete."
+        }
+        if (-not (Test-Path -LiteralPath $ComponentManifest -PathType Leaf)) {
+            throw "Le manifeste signe des composants est absent."
+        }
+        if (-not (Test-Path -LiteralPath $ComponentTrustedKeys -PathType Leaf)) {
+            throw "Les cles publiques des composants sont absentes."
+        }
+        Write-InstallLog "Installation et verification des composants vocaux locaux..."
+        Push-Location $AppDir
+        try {
+            Invoke-LoggedCommand -FilePath $venvPython -Arguments @(
+                (Join-Path $AppDir "scripts\install_components.py"),
+                "--app-dir", $AppDir,
+                "--manifest", $ComponentManifest,
+                "--trusted-keys", $ComponentTrustedKeys,
+                "--release-version", $ReleaseVersion
+            )
+        } finally {
+            Pop-Location
+        }
+        Write-InstallLog "Composants vocaux locaux installes et prouves."
     }
 
     Write-InstallLog "Installation Lumena terminee avec succes."

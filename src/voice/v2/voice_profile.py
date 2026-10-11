@@ -45,6 +45,11 @@ class VoicePersona:
 @dataclass
 class VoiceLocalEngines:
     xtts_reference: str = "models/xtts/lumena_voice.wav"
+    qwen_reference: str = ""
+    qwen_reference_text: str = ""
+    qwen_model_id: str = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+    qwen_model_revision: str = ""
+    qwen_voice_version: str = ""
     piper_model: str = "fr_FR-siwis-medium"
     piper_models: Dict[str, str] = field(default_factory=lambda: {
         "fr": "fr_FR-siwis-medium",

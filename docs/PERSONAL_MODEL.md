@@ -22,6 +22,8 @@ La collecte est désactivée par défaut. Les messages sont redacted avant leur 
 
 Le juge utilise un client neuf et un contexte dédié. Il ne reçoit ni historique actif, ni mémoire, ni humeur, ni workspace, ni outils. Un modèle personnel ne peut pas être son unique preuve de validation.
 
+Le transport du juge accepte les modèles texte, locaux et de raisonnement par un même contrat JSON strict. Il appelle directement le fournisseur choisi, sans changement silencieux de modèle, adapte le budget de sortie, puis effectue au plus une nouvelle tentative si la réponse est vide ou invalide. Le raisonnement caché n'est jamais publié : seul un objet contenant exactement `score` et `reason_codes` peut être extrait et validé. Après deux incompatibilités identiques dans un lot, Lumena arrête les appels, conserve les candidats non tentés pour un cycle ultérieur et expose un état dégradé au lieu d'annoncer un faux succès.
+
 ## Priorité au travail interactif
 
 Le scheduler vérifie CPU, RAM, VRAM, disque, batterie, inactivité et activité Voice/Agent/Mission/CodeAgent/vidéo. Il peut mettre un run en attente ou demander une pause au prochain checkpoint. La reprise recharge le checkpoint enregistré. Le processus d'entraînement a une priorité système basse.

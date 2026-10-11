@@ -14,8 +14,13 @@ import statistics
 import tempfile
 import time
 import wave
+import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from src.voice.providers.piper_provider import PiperProvider
 

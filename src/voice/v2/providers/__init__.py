@@ -12,6 +12,8 @@ from .fake_tts import FakeTTSProvider
 from .fake_vad import FakeVADProvider
 from .fake_stt import FakeSTTProvider
 from .local_tts import LocalTTSAdapter
+from .qwen3_tts import Qwen3TTSProvider
+from .local_router import LocalTTSRouter, build_local_tts_provider
 from .local_player import LocalAudioPlayer
 from .real_stt import RealSTTAdapter
 from .real_vad import RealVADProvider, measure_noise_floor, calibrate_thresholds
@@ -22,7 +24,8 @@ __all__ = [
     "CancelToken", "TTSAudioChunk", "AudioResult", "VADEvent", "STTResult",
     "TTSProvider", "STTProvider", "VADProvider", "RealtimeVoiceProvider",
     "FakeTTSProvider", "FakeVADProvider", "FakeSTTProvider",
-    "LocalTTSAdapter", "LocalAudioPlayer",
+    "LocalTTSAdapter", "Qwen3TTSProvider", "LocalTTSRouter", "build_local_tts_provider",
+    "LocalAudioPlayer",
     "RealSTTAdapter", "RealVADProvider", "measure_noise_floor", "calibrate_thresholds",
     "SileroSpeechProbability", "SileroVADStatus",
     "LocalWakeWordProvider", "WakeWordDetection",

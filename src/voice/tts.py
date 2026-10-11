@@ -102,6 +102,11 @@ except ImportError:
     EDGE_TTS_AVAILABLE = False
     logger.warning("edge-tts non installé. pip install edge-tts")
 
+try:
+    from .edge_circuit import get_edge_tts_circuit
+except ImportError:  # pragma: no cover - direct script compatibility
+    from src.voice.edge_circuit import get_edge_tts_circuit
+
 # Fallback: pyttsx3 (offline)
 try:
     import pyttsx3
@@ -305,6 +310,7 @@ class LumenaTTS:
     async def _synthesize(
         self, text: str, *, local_only: bool = False, allow_xtts: bool = False,
         piper_model: Optional[str] = None, prosody: Optional[dict] = None,
+        bypass_cache: bool = False,
     ) -> Optional[Path]:
         """Phase SYNTHÈSE seule (V2) — cascade de providers → fichier audio, SANS playback.
 
@@ -396,10 +402,10 @@ class LumenaTTS:
         if not success and EDGE_TTS_AVAILABLE and self._tts_mode != "offline" and not local_only:
             provider = "edge-tts"
             audio_file = self.cache_dir / f"lumena_edge_v3_{edge_key}.mp3"
-            try:
-                if _valid_mp3_file(audio_file):
-                    success = True
-                else:
+            if not bypass_cache and _valid_mp3_file(audio_file):
+                success = True
+            elif get_edge_tts_circuit().allow_request():
+                try:
                     audio_file.unlink(missing_ok=True)
                     communicate = edge_tts.Communicate(
                         text,
@@ -410,16 +416,16 @@ class LumenaTTS:
                     )
                     await _save_edge_audio_atomic(communicate, audio_file)
                     success = True
-                
-                if success:
+                    get_edge_tts_circuit().record_success()
                     latency_ms = (time.time() - start_time) * 1000
                     self.metrics.record_success(provider, latency_ms)
                     logger.debug(f"Audio généré ({provider}): {audio_file}")
-                
-            except Exception as e:
-                error_msg = str(e)
-                logger.warning(f"edge-tts échoué: {error_msg}")
-                self.metrics.record_failure(provider, error_msg)
+                except Exception as e:
+                    reason = get_edge_tts_circuit().record_failure(e)
+                    logger.warning(f"edge-tts indisponible ({reason}); repli local")
+                    self.metrics.record_failure(provider, reason)
+            else:
+                logger.debug("edge-tts ignoré: disjoncteur ouvert")
         
         # 2b. XTTS v2 (fallback offline en mode fast si edge-tts indisponible)
         if (allow_xtts and not success and self._tts_mode == "fast"
@@ -584,12 +590,16 @@ class LumenaTTS:
                 audio_file = self.cache_dir / f"lumena_edge_v3_{h}.mp3"
                 try:
                     if not _valid_mp3_file(audio_file):
+                        if not get_edge_tts_circuit().allow_request():
+                            logger.debug("_speak_sentences: disjoncteur edge-tts ouvert")
+                            return False
                         audio_file.unlink(missing_ok=True)
                         communicate = edge_tts.Communicate(
                             sentence, self.voice, rate=self.rate,
                             volume=self.volume, pitch=self.pitch,
                         )
                         await _save_edge_audio_atomic(communicate, audio_file)
+                        get_edge_tts_circuit().record_success()
 
                     if self._stop_speaking:
                         return False
@@ -605,7 +615,8 @@ class LumenaTTS:
                         await asyncio.sleep(0.01)
 
                 except Exception as e:
-                    logger.warning(f"_speak_sentences: {e}")
+                    reason = get_edge_tts_circuit().record_failure(e)
+                    logger.warning(f"_speak_sentences: edge-tts indisponible ({reason})")
                     return False
             return True
         finally:
@@ -619,6 +630,9 @@ class LumenaTTS:
             text: Texte à prononcer
         """
         if not EDGE_TTS_AVAILABLE:
+            return
+        if not get_edge_tts_circuit().allow_request():
+            logger.debug("TTS streaming ignoré: disjoncteur edge-tts ouvert")
             return
         
         text = self._clean_text(text)
@@ -640,12 +654,14 @@ class LumenaTTS:
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
                         f.write(chunk["data"])
+            get_edge_tts_circuit().record_success()
             
             # Jouer
             await self._play_audio(audio_file)
             
         except Exception as e:
-            logger.error(f"Erreur TTS streaming: {e}")
+            reason = get_edge_tts_circuit().record_failure(e)
+            logger.warning(f"Erreur TTS streaming ({reason}); repli requis")
         finally:
             # Nettoyer
             if audio_file.exists():
@@ -826,6 +842,10 @@ class LumenaTTS:
         Utile pour diagnostiquer les problèmes de voix.
         """
         return self.metrics.to_dict()
+
+    def get_edge_health(self) -> Dict[str, Any]:
+        """Expose only bounded circuit metadata, never the remote error body."""
+        return get_edge_tts_circuit().snapshot()
     
     def get_status(self) -> Dict[str, Any]:
         """
@@ -848,6 +868,7 @@ class LumenaTTS:
             },
             "mode": self._tts_mode,
             "fallback_enabled": self.enable_fallback,
+            "edge_health": self.get_edge_health(),
             "metrics": self.get_metrics()
         }
 

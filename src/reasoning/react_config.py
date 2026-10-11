@@ -38,6 +38,22 @@ except ImportError:
     estimate_tokens = None
 
 from ..tools.file_guardrails import WorkspaceFileGuardrails
+
+# PHASE PRESENCE (2026-10-09) — point de passage des blocs de presence vers le prompt.
+#
+# La logique vit dans `src/telemetry/` (modules purs, testes a part). `bloc_presence`
+# compose S1 (etat systeme) et S2 (activite en cours) sous un budget de 500 car.
+# Elle transite par ICI, et non par un import ajoute dans `react.py`, parce que trois
+# gels (CONN-4d `only_shrink`, CONN-5a, CONN-7a) plafonnent `react.py` a 9 718 lignes :
+# ce fichier est deja importe la-bas, le nom voyage donc sur une ligne existante et
+# l'injection coute ZERO ligne. Meme voie que `observation_lisible` au lot CONN-7a.
+#
+# Repli silencieux : si le module manque, le prompt perd l'etat, il ne casse pas.
+try:
+    from ..telemetry.presence import bloc_presence
+except Exception:  # pragma: no cover - defense, le module est stdlib pur
+    def bloc_presence(boucle=None) -> str:  # type: ignore[misc]
+        return ""
 try:
     from ..runtime.context import get_current_runtime_context
 except Exception:

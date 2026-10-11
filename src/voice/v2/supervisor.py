@@ -43,6 +43,28 @@ def _env_float(name: str, default: float, minimum: float = 0.0) -> float:
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _bounded_pipeline_error(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if "micro" in text or "audio" in text or "device" in text:
+        return "audio_device_error"
+    if "model" in text or "whisper" in text or "piper" in text:
+        return "model_unavailable"
+    if "stopped" in text or "arrêt" in text:
+        return "pipeline_stopped"
+    if "timeout" in text:
+        return "pipeline_timeout"
+    return "pipeline_error"
+
+
 def resolve_voice_runtime_options() -> Dict[str, Any]:
     """Resolve the hardware options handed to the live runner.
 
@@ -107,6 +129,44 @@ def resolve_activation_status() -> Dict[str, Any]:
     }
 
 
+def resolve_voice_engine_settings() -> Dict[str, Any]:
+    """Return the non-secret engine settings consumed while building Voice V2."""
+    tts_mode = os.getenv("LUMENA_TTS_MODE", "offline").strip().lower()
+    if tts_mode not in {"fast", "premium", "offline"}:
+        tts_mode = "offline"
+    tts_engine = os.getenv("LUMENA_VOICE_TTS_ENGINE", "auto").strip().lower()
+    tts_engine = {"qwen": "qwen3", "qwen3-tts": "qwen3", "local": "piper"}.get(
+        tts_engine, tts_engine
+    )
+    if tts_engine not in {"auto", "qwen3", "piper"}:
+        tts_engine = "auto"
+    vad_engine = os.getenv("LUMENA_VOICE_VAD_ENGINE", "auto").strip().lower()
+    if vad_engine not in {"auto", "silero", "energy"}:
+        vad_engine = "auto"
+    acoustic_profile = os.getenv(
+        "LUMENA_VOICE_ACOUSTIC_PROFILE", "hands_free"
+    ).strip().lower()
+    if acoustic_profile not in {"hands_free", "headset", "push_to_talk"}:
+        acoustic_profile = "hands_free"
+    try:
+        partial_every_ms = max(0, min(
+            5000, int(os.getenv("LUMENA_STT_PARTIAL_EVERY_MS", "0"))
+        ))
+    except (TypeError, ValueError):
+        partial_every_ms = 0
+    return {
+        "tts_mode": tts_mode,
+        "tts_engine": tts_engine,
+        "cloud_tts_allowed": _env_flag("LUMENA_VOICE_CLOUD_ALLOWED", False),
+        "xtts_restricted_allowed": _env_flag(
+            "LUMENA_XTTS_ALLOW_RESTRICTED", False
+        ),
+        "vad_engine": vad_engine,
+        "partial_every_ms": partial_every_ms,
+        "acoustic_profile": acoustic_profile,
+    }
+
+
 async def _default_runner(core: Any, **kwargs: Any) -> None:
     # Import paresseux obligatoire : Voice OFF ne charge aucun provider audio.
     from .live import run_voice_v2_live  # noqa: PLC0415
@@ -144,7 +204,11 @@ class VoiceV2Manager:
         self.mode = "chat"
         self.restarts = 0
         self.last_error: Optional[str] = None
+        self.last_error_code: Optional[str] = None
         self._stop_requested = False
+        self._effective_runtime_options: Optional[Dict[str, Any]] = None
+        self._effective_activation_status: Optional[Dict[str, Any]] = None
+        self._effective_voice_settings: Optional[Dict[str, Any]] = None
 
     @classmethod
     def get_instance(cls) -> "VoiceV2Manager":
@@ -160,7 +224,11 @@ class VoiceV2Manager:
         self.mode = normalize_voice_mode(mode or os.getenv("LUMENA_VOICE_V2_MODE", "chat"))
         self.restarts = 0
         self.last_error = None
+        self.last_error_code = None
         self._stop_requested = False
+        self._effective_runtime_options = None
+        self._effective_activation_status = None
+        self._effective_voice_settings = None
         self.running = True
         self.state = "starting"
         self.task = asyncio.create_task(self._supervise(core), name="lumena-voice-v2")
@@ -173,6 +241,12 @@ class VoiceV2Manager:
                 try:
                     self.state = "running"
                     runtime_options = resolve_voice_runtime_options()
+                    # Freeze what the providers are about to consume. The panel
+                    # must never report newly saved values as active while the
+                    # existing STT/TTS process still runs with its old setup.
+                    self._effective_runtime_options = dict(runtime_options)
+                    self._effective_activation_status = resolve_activation_status()
+                    self._effective_voice_settings = resolve_voice_engine_settings()
                     await self._runner(
                         core,
                         disable_tools=False,
@@ -186,6 +260,7 @@ class VoiceV2Manager:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     self.last_error = str(exc)
+                    self.last_error_code = _bounded_pipeline_error(exc)
                     logger.warning("Voice V2 pipeline error: {}", exc)
                     if self.restarts >= self.max_restarts:
                         self.state = "error"
@@ -223,16 +298,43 @@ class VoiceV2Manager:
             pass
         # Lifecycle fields are authoritative and cannot be overwritten by a
         # stale runtime snapshot from a previous Voice V2 session.
+        saved_runtime_options = resolve_voice_runtime_options()
+        saved_activation_status = resolve_activation_status()
+        saved_voice_settings = resolve_voice_engine_settings()
+        effective_runtime_options = (
+            dict(self._effective_runtime_options)
+            if self.running and self._effective_runtime_options is not None else None
+        )
+        effective_activation_status = (
+            dict(self._effective_activation_status)
+            if self.running and self._effective_activation_status is not None else None
+        )
+        effective_voice_settings = (
+            dict(self._effective_voice_settings)
+            if self.running and self._effective_voice_settings is not None else None
+        )
+        settings_pending = bool(self.running and (
+            effective_runtime_options != saved_runtime_options
+            or effective_activation_status != saved_activation_status
+            or effective_voice_settings != saved_voice_settings
+        ))
         status.update({
             "running": self.running,
             "backend": "v2",
             "state": self.state,
             "mode": self.mode,
             "restarts": self.restarts,
-            "last_error": self.last_error,
-            "runtime_options": resolve_voice_runtime_options(),
+            "last_error": self.last_error_code,
+            "runtime_options": effective_runtime_options or saved_runtime_options,
+            "saved_runtime_options": saved_runtime_options,
+            "effective_runtime_options": effective_runtime_options,
+            "saved_voice_settings": saved_voice_settings,
+            "effective_voice_settings": effective_voice_settings,
+            "settings_pending": settings_pending,
         })
-        status.update(resolve_activation_status())
+        status.update(effective_activation_status or saved_activation_status)
+        status["saved_activation_status"] = saved_activation_status
+        status["effective_activation_status"] = effective_activation_status
         try:
             from .prewarm import detect_voice_capabilities
             from .voice_profile import get_voice_profile_status
@@ -241,8 +343,17 @@ class VoiceV2Manager:
             status["voice_profile_status"] = get_voice_profile_status()
         except Exception:
             status["capabilities"] = {}
+        try:
+            from .voice_pack_service import get_voice_pack_service
+            status["voice_packs"] = get_voice_pack_service().status()
+        except Exception:
+            status["voice_packs"] = {
+                "schema_version": 1, "trusted_signers": 0,
+                "can_import": False, "active": None, "installed": [],
+            }
+        active_voice_settings = effective_voice_settings or saved_voice_settings
         status["privacy"] = {
-            "cloud_tts_allowed": os.getenv("LUMENA_VOICE_CLOUD_ALLOWED", "0").strip() == "1",
+            "cloud_tts_allowed": bool(active_voice_settings["cloud_tts_allowed"]),
             "raw_audio_logged": False,
             "transcript_logged": False,
             "improvement_data_opt_in": os.getenv(

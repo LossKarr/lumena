@@ -168,7 +168,11 @@ class TurnManager:
             st.speech_muted = False
 
         elif et == "vad.speech_started":
-            if st.mode == "speaking":
+            # The physical playback signal is authoritative.  A late completion
+            # from an older generation must never make a currently audible answer
+            # non-interruptible merely because the logical mode was desynchronised.
+            playback_active = bool(event.get("playback_active", False))
+            if st.mode == "speaking" or playback_active:
                 if self.barge_in_on_vad:
                     # Barge-in IMMÉDIAT sur VAD : on coupe la voix dès la parole détectée,
                     # sans attendre le STT final (latence minimale). La VAD est le signal,
@@ -390,6 +394,9 @@ class TurnManager:
             cmds = self._apply_endpoint_decision(dec)
 
         elif et == "llm.response_started":
+            generation = event.get("generation_id")
+            if generation:
+                st.current_generation_id = str(generation)
             st.set_mode("speaking")
 
         elif et == "tts.chunk_ready":
@@ -409,7 +416,12 @@ class TurnManager:
             st.set_mode("idle")
 
         elif et == "playback.finished":
-            if st.mode == "speaking":
+            finished_generation = event.get("generation_id")
+            generation_is_current = (
+                not finished_generation
+                or str(finished_generation) == st.current_generation_id
+            )
+            if st.mode == "speaking" and generation_is_current:
                 st.set_mode("tool_running" if st.tool_active else "wake_listening")
                 st.current_generation_id = None
 

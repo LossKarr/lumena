@@ -64,6 +64,38 @@ def test_stop_word_during_tts():
     assert tm.state.mode == "wake_listening"
 
 
+def test_stale_playback_finished_cannot_end_the_current_generation():
+    """A late completion from an acknowledgement must not unlock a newer answer."""
+    tm = TurnManager(barge_in_on_vad=True)
+    _drive_to_speaking(tm)
+    current = tm.state.current_generation_id
+    assert current is not None
+
+    tm.feed(VoiceEvent(
+        "playback.finished", t=250, data={"generation_id": "older-ack"},
+    ))
+
+    assert tm.state.mode == "speaking"
+    assert tm.state.current_generation_id == current
+
+
+def test_real_playback_signal_forces_barge_in_even_if_state_was_desynchronized():
+    """The physical player is authoritative when a stale event changed the mode."""
+    tm = TurnManager(barge_in_on_vad=True)
+    tm.state.mode = "wake_listening"
+    tm.state.current_generation_id = "answer-active"
+
+    commands = tm.feed(VoiceEvent(
+        "vad.speech_started", t=300, data={"playback_active": True},
+    ))
+
+    names = _names(commands)
+    assert "stop_playback" in names
+    assert "clear_audio_queue" in names
+    assert "start_stt" in names
+    assert tm.state.mode == "user_speaking"
+
+
 # ── 3. Barge-in transcript vide -> reprendre ──────────────────────────────────
 def test_false_barge_in_resumes():
     tm = TurnManager()

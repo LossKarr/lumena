@@ -412,6 +412,178 @@ async def delete_voice_data(confirm: str = ""):
     return result
 
 
+def _voice_pack_service():
+    from src.voice.v2.voice_pack_service import get_voice_pack_service
+    return get_voice_pack_service()
+
+
+def _voice_pack_error(exc: BaseException) -> HTTPException:
+    text = str(exc).replace("\r", " ").replace("\n", " ").strip()
+    return HTTPException(status_code=422, detail=(text or "Voice Pack invalide")[:240])
+
+
+async def _restart_voice_for_pack(previous: Dict[str, Any] | None, service: Any) -> bool:
+    """Restart V2 after activation and rollback the selection on failure."""
+    manager = deps.VoiceManager.get_instance() if deps.VoiceManager else None
+    if manager is None or not manager.running or getattr(manager, "active_backend", "") != "v2":
+        return False
+    await manager.stop()
+    if (
+        deps.lumena
+        and await manager.start(deps.lumena, backend="v2")
+        and getattr(manager, "active_backend", "") == "v2"
+    ):
+        return True
+    service.restore_selection(previous)
+    if deps.lumena:
+        await manager.start(deps.lumena, backend="v2")
+    raise HTTPException(
+        status_code=503,
+        detail="Activation annulée : le runtime vocal n'a pas redémarré",
+    )
+
+
+@router.get("/api/voice/packs", dependencies=[Depends(deps.verify_admin_token)])
+async def list_voice_packs():
+    """List signed local packs with bounded provenance state."""
+    return _voice_pack_service().status()
+
+
+def _qwen_install_service():
+    from src.voice.v2.qwen_install_service import get_qwen_install_service
+    return get_qwen_install_service()
+
+
+@router.get("/api/voice/qwen-install", dependencies=[Depends(deps.verify_admin_token)])
+async def qwen_install_status():
+    """Expose a bounded, path-free status for the signed Qwen component install."""
+    return _qwen_install_service().status()
+
+
+@router.post("/api/voice/qwen-install", dependencies=[Depends(deps.verify_admin_token)])
+async def start_qwen_install():
+    """Start the resumable signed install; the long operation runs in one worker."""
+    from src.runtime.component_service import ComponentServiceError
+
+    try:
+        return _qwen_install_service().start()
+    except ComponentServiceError as exc:
+        code = str(exc)
+        if code == "insufficient_disk_space":
+            raise HTTPException(status_code=409, detail="Espace disque insuffisant pour Qwen3-TTS") from exc
+        if code == "another_installation_running":
+            raise HTTPException(status_code=409, detail="Une installation est déjà en cours") from exc
+        if code == "release_assets_missing":
+            raise HTTPException(
+                status_code=503,
+                detail="Qwen3-TTS n'est pas encore publié pour cette version de Lumena",
+            ) from exc
+        raise HTTPException(
+            status_code=422,
+            detail="Le paquet Qwen3-TTS signé est invalide ou incompatible",
+        ) from exc
+
+
+@router.post("/api/voice/packs/import", dependencies=[Depends(deps.verify_admin_token)])
+async def import_voice_pack(archive: UploadFile = File(...), activate: bool = True):
+    """Stream, verify and atomically install one signed offline Voice Pack."""
+    from src.voice.v2.voice_pack import VoicePackError
+
+    service = _voice_pack_service()
+    try:
+        max_mb = max(1, min(4096, int(os.getenv("LUMENA_VOICE_PACK_MAX_MB", "2048"))))
+    except (TypeError, ValueError):
+        max_mb = 2048
+    upload_dir = DATA_DIR / "voice" / ".uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    fd, raw_path = tempfile.mkstemp(prefix="voice-pack-", suffix=".zip", dir=upload_dir)
+    os.close(fd)
+    path = Path(raw_path)
+    written = 0
+    try:
+        with path.open("wb") as output:
+            while True:
+                chunk = await archive.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_mb * 1024 * 1024:
+                    raise VoicePackError("Voice Pack trop volumineux")
+                output.write(chunk)
+        if written == 0:
+            raise VoicePackError("archive Voice Pack vide")
+        result = service.install(path, activate=False)
+        result["restarted"] = False
+        if activate:
+            previous = service.status().get("active")
+            result.update(service.activate(result["pack_id"], result["version"]))
+            result["restarted"] = await _restart_voice_for_pack(previous, service)
+        result["status"] = service.status()
+        return result
+    except HTTPException:
+        raise
+    except (VoicePackError, OSError) as exc:
+        raise _voice_pack_error(exc) from exc
+    finally:
+        path.unlink(missing_ok=True)
+        try:
+            upload_dir.rmdir()
+        except OSError:
+            pass
+
+
+@router.post(
+    "/api/voice/packs/{pack_id}/{version}/activate",
+    dependencies=[Depends(deps.verify_admin_token)],
+)
+async def activate_voice_pack(pack_id: str, version: str):
+    from src.voice.v2.voice_pack import VoicePackError
+
+    service = _voice_pack_service()
+    previous = service.status().get("active")
+    try:
+        result = service.activate(pack_id, version)
+        result["restarted"] = await _restart_voice_for_pack(previous, service)
+        result["status"] = service.status()
+        return result
+    except HTTPException:
+        raise
+    except (VoicePackError, OSError) as exc:
+        raise _voice_pack_error(exc) from exc
+
+
+@router.post("/api/voice/packs/rollback", dependencies=[Depends(deps.verify_admin_token)])
+async def rollback_voice_pack():
+    from src.voice.v2.voice_pack import VoicePackError
+
+    service = _voice_pack_service()
+    previous = service.status().get("active")
+    try:
+        result = service.rollback()
+        result["restarted"] = await _restart_voice_for_pack(previous, service)
+        result["status"] = service.status()
+        return result
+    except HTTPException:
+        raise
+    except (VoicePackError, OSError) as exc:
+        raise _voice_pack_error(exc) from exc
+
+
+@router.delete(
+    "/api/voice/packs/{pack_id}/{version}",
+    dependencies=[Depends(deps.verify_admin_token)],
+)
+async def uninstall_voice_pack(pack_id: str, version: str):
+    from src.voice.v2.voice_pack import VoicePackError
+
+    service = _voice_pack_service()
+    try:
+        service.uninstall(pack_id, version)
+        return {"deleted": True, "status": service.status()}
+    except (VoicePackError, OSError) as exc:
+        raise _voice_pack_error(exc) from exc
+
+
 @router.post("/api/voice/dictation-state", dependencies=[Depends(deps.verify_admin_token)])
 async def set_voice_dictation_state(active: bool):
     """Suspend l'écoute autonome pendant une dictée explicite du compositeur."""

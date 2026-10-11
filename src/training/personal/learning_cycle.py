@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .contracts import ExperienceState
 from .curation import PersonalCurationService
 from .experience_store import ExperienceStore
-from .judge_policy import JudgeCache, JudgeEngine, JudgeMode, JudgePolicy, PersonalJudgeService
+from .judge_policy import (
+    JudgeCache,
+    JudgeEngine,
+    JudgeMode,
+    JudgePolicy,
+    PersonalJudgeService,
+    judge_failure_code,
+)
 from .lineage_store import LineageStore
 from .policy import PersonalLearningPolicyStore
 from .provider_judge import DedicatedJudgeAdapter
@@ -24,6 +31,10 @@ class LearningCycleReport:
     rejected: int
     quarantined: int
     skipped: int
+    failed: int = 0
+    failure_codes: dict[str, int] = field(default_factory=dict)
+    completed_judgments: int = 0
+    deferred: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,9 +83,33 @@ class PersonalLearningCycle:
             experience_id for experience_id, record in sorted(index["records"].items())
             if record.get("state") == ExperienceState.CANDIDATE.value
         ][:max(0, min(int(max_judgments), 100))]
-        accepted = rejected = quarantined = 0
-        for experience_id in candidate_ids:
-            verdict = service.judge_experience(self.owner_scope, experience_id, policy)
+        accepted = rejected = quarantined = failed = completed_judgments = deferred = 0
+        failure_codes: dict[str, int] = {}
+        previous_failure = ""
+        consecutive_failures = 0
+        for position, experience_id in enumerate(candidate_ids):
+            try:
+                verdict = service.judge_experience(self.owner_scope, experience_id, policy)
+            except Exception as exc:
+                code = judge_failure_code(exc)
+                failure_codes[code] = failure_codes.get(code, 0) + 1
+                quarantined += 1
+                failed += 1
+                if code == previous_failure:
+                    consecutive_failures += 1
+                else:
+                    previous_failure = code
+                    consecutive_failures = 1
+                # Deux échecs identiques prouvent que le modèle/protocole est
+                # momentanément incompatible. Les autres candidats restent à
+                # l'état candidate et seront repris par un cycle ultérieur.
+                if consecutive_failures >= 2:
+                    deferred = len(candidate_ids) - position - 1
+                    break
+                continue
+            previous_failure = ""
+            consecutive_failures = 0
+            completed_judgments += 1
             accepted += verdict.decision == "accept"
             rejected += verdict.decision == "reject"
             quarantined += verdict.decision == "quarantine"
@@ -85,4 +120,8 @@ class PersonalLearningCycle:
             rejected=curated.rejected + rejected,
             quarantined=curated.quarantined + quarantined,
             skipped=curated.skipped,
+            failed=failed,
+            failure_codes=failure_codes,
+            completed_judgments=completed_judgments,
+            deferred=deferred,
         )

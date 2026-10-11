@@ -285,8 +285,9 @@ async def test_keys_status_no_raw_key_value_leaked():
     blob = json.dumps(d, ensure_ascii=False)
     # Aucun champ "value", "key_material", "fernet_key", "hmac_key" exposé.
     for forb in ("value", "key_material", "fernet_key", "hmac_key"):
-        # Sauf comme nom de slot : on cherche `"value":`
-        assert f'"{forb}":' not in blob or forb in ("fernet_key", "hmac_key") is False
+        # Les noms de slots publics (`auto_approve_fernet`, etc.) restent admis ;
+        # aucun de ces noms de CHAMP secret ne doit apparaître comme clé JSON.
+        assert f'"{forb}":' not in blob
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -31,20 +31,41 @@ from src.subagents.delegation_cost import (
 )
 
 
+# ⚠️ MISE A JOUR DU 2026-10-08 — ces deux tests figeaient un fait que le lot A4
+# (pool de CodeAgent, signé ce jour) a rendu FAUX. Ce n'est pas un contournement :
+# c'est le monde qui a changé, et la preuve est dans le run réel du 07/10 à 23:29:02,
+# où Lumena a lu « 27 min de file d'attente » pour une mission bouclée en 5 minutes.
+#
+# L'ESPRIT des deux tests est conservé : le lead doit connaître le coût de son
+# découpage, et le fait qu'il ignore doit lui être dit. Seul le FAIT change — le
+# goulot n'est plus le CodeAgent sérialisé, c'est le créneau LLM.
+# Couverture complète du nouveau comportement : tests/subagents/test_a6_les_faits_pour_decider.py
+
+
 def test_the_estimate_matches_the_real_huffpack_run():
-    """3 workers → l'estimation doit tomber près des 23 min réellement mesurées."""
-    note = delegation_cost_note(3, 4)
+    """Le découpage est toujours chiffré au lead — en vagues, plus en file.
+
+    L'ancienne assertion exigeait 18-25 min de file pour 3 workers. A4 a supprimé
+    la file : ce qui reste vrai, c'est que le nombre de workers est annoncé et que
+    le coût est chiffré.
+    """
+    note = delegation_cost_note(3, 4, parallelisme_reel=2)
     assert "3 workers" in note
-    minutes = round(3 * CODEAGENT_MEAN_SECONDS / 60)
-    assert 18 <= minutes <= 25, minutes
-    assert f"{minutes} min" in note
+    assert "token" in note.lower()          # le coût est chiffré
+    assert "2" in note                      # le parallélisme réel est dit
 
 
 def test_it_says_the_codeagent_is_serialised():
-    """C'est LE fait que le lead ignore : il croit paralléliser."""
-    note = delegation_cost_note(3, 5)
-    assert "sérialisé" in note
-    assert "chacun leur tour" in note
+    """Le fait que le lead ignore — ce n'est PLUS la sérialisation du CodeAgent.
+
+    Avant A4 : « le CodeAgent est unique et sérialisé, ils coderont chacun leur tour ».
+    Depuis A4 : le goulot est le créneau LLM, et c'est LUI qu'il faut nommer pour
+    que le lead puisse le desserrer.
+    """
+    note = delegation_cost_note(3, 5, parallelisme_reel=2, plafond_llm=2, pool=10)
+    bas = note.lower()
+    assert "chacun leur tour" not in bas, "A4 a supprimé la file du CodeAgent"
+    assert "llm" in bas or "créneau" in bas, "le vrai goulot doit être NOMMÉ"
 
 
 def test_one_worker_per_file_is_called_out():

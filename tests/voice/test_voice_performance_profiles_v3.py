@@ -37,6 +37,13 @@ def test_every_product_profile_keeps_speech_local_by_default():
         assert "local" in profile.privacy.lower()
 
 
+def test_profiles_use_piper_except_gpu_auto_policy():
+    by_id = {profile.id: profile for profile in VOICE_PERFORMANCE_PROFILES}
+    for profile_id in ("essential", "light", "balanced", "precision"):
+        assert by_id[profile_id].settings["LUMENA_VOICE_TTS_ENGINE"] == "piper"
+    assert by_id["studio_gpu"].settings["LUMENA_VOICE_TTS_ENGINE"] == "auto"
+
+
 def test_gpu_profile_is_rejected_without_real_cuda_runtime():
     profile = get_voice_performance_profile("studio_gpu")
     compatible, reasons = profile_compatibility(profile, _hardware(cuda_ready=False))

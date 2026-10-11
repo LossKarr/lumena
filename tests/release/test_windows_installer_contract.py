@@ -20,6 +20,22 @@ def test_runtime_installer_is_path_deterministic_and_offline() -> None:
     assert "Programs\\Python\\Python312\\python.exe" in script
     assert "Invoke-LoggedCommand -FilePath $python" in script
     assert "python -m venv" not in script
+    assert "scripts\\runtime_guard.py" in script
+    assert "scripts\\install_components.py" in script
+    assert "ComponentManifest" in script
+    assert "ComponentTrustedKeys" in script
+    assert "ReleaseVersion" in script
+
+
+def test_private_installer_builder_prefers_modern_powershell_when_available() -> None:
+    # The private installer directory is intentionally absent from public CI.
+    # Validate it only in the local product worktree where it exists.
+    build = ROOT / "installer" / "build.bat"
+    if not build.is_file():
+        return
+    text = build.read_text(encoding="utf-8")
+    assert "where pwsh.exe" in text
+    assert "LUMENA_BUILD_POWERSHELL" in text
 
 
 def test_runtime_installer_provisions_and_proves_native_chromadb_runtime() -> None:
@@ -64,6 +80,12 @@ def test_inno_uses_runtime_installer_and_blocks_false_successes() -> None:
     assert "WindowVisible=" not in script
     assert "RunOnceId:" in script
     assert 'Source: "..\\src\\*"' in script
+    assert 'Source: "component-manifest.json"' in script
+    assert 'Source: "component-trusted-keys.json"' in script
+    assert 'DestName: "voice_pack_trusted_keys.json"' in script
+    assert "-ComponentManifest" in script
+    assert "-ComponentTrustedKeys" in script
+    assert "-ReleaseVersion" in script
     assert (ROOT / "src" / "tools" / "remotion_runtime" / "Dockerfile").is_file()
 
 
@@ -76,6 +98,9 @@ def test_installer_build_fetches_a_signed_microsoft_vc_runtime() -> None:
     assert "https://aka.ms/vc14/vc_redist.x64.exe" in script
     assert "vc_redist.x64.exe" in script
     assert '-SignerPattern "Microsoft"' in script
+    assert "verify_component_manifest.py" in script
+    assert "component-manifest.json" in script
+    assert "component-trusted-keys.json" in script
 
 
 def test_installer_version_is_supplied_by_canonical_build() -> None:

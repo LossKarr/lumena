@@ -87,6 +87,11 @@ async def test_fake_tts_synthesize_and_stream():
     res = await tts.synthesize("Un. Deux. Trois.", LUMENA_DEFAULT)
     assert res.ok and res.chunk_count == 3 and res.duration_ms == 300
     chunks = [c async for c in tts.stream("Un. Deux. Trois.", LUMENA_DEFAULT)]
+    assert tts.capabilities() == {
+        "name": "fake", "locality": "local",
+        "streaming": True, "voice_clone": False,
+    }
+    assert tts.runtime_status()["tts_available"] is True
     assert [c.text for c in chunks] == ["Un", "Deux", "Trois"]
     assert [c.sequence for c in chunks] == [0, 1, 2]
 
@@ -181,6 +186,34 @@ async def test_local_adapter_allows_cloud_when_enabled(monkeypatch):
     await adapter.synthesize("Bonjour", LUMENA_DEFAULT)
     _, kwargs = fake_tts._synthesize.call_args
     assert kwargs.get("local_only") is False
+
+
+@pytest.mark.asyncio
+async def test_cloud_prewarm_bypasses_cached_edge_probe(monkeypatch):
+    monkeypatch.setenv("LUMENA_VOICE_CLOUD_ALLOWED", "1")
+
+    class _ProbeEngine:
+        _last_provider = "edge-tts"
+
+        def __init__(self):
+            self.calls = []
+
+        async def _synthesize(self, text, *, local_only=False, bypass_cache=False):
+            self.calls.append({
+                "text": text,
+                "local_only": local_only,
+                "bypass_cache": bypass_cache,
+            })
+            return Path("edge-probe.mp3")
+
+    engine = _ProbeEngine()
+    result = await LocalTTSAdapter(tts=engine).prewarm()
+
+    assert result["ok"] is True
+    assert result["provider"] == "edge-tts"
+    assert engine.calls == [{
+        "text": "Bonjour.", "local_only": False, "bypass_cache": True,
+    }]
 
 
 @pytest.mark.asyncio

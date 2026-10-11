@@ -68,6 +68,7 @@ class MicConversationSource:
                  partial_fast: bool = True, final_fast: bool = False,
                  save_utterances_dir: Optional[str | Path] = None,
                  suppress_input_fn: Optional[Callable[[], bool]] = None,
+                 playback_active_fn: Optional[Callable[[], bool]] = None,
                  activation_gate: Optional[VoiceActivationGate] = None,
                  audio_frontend: Any = None,
                  wake_word_provider: Any = None,
@@ -93,6 +94,7 @@ class MicConversationSource:
         self.save_utterances_dir = Path(save_utterances_dir) if save_utterances_dir else None
         self.saved_utterances: List[Path] = []
         self._suppress_input_fn = suppress_input_fn or (lambda: False)
+        self._playback_active_fn = playback_active_fn or (lambda: False)
         self._utterance_suppressed = False
         self.activation_gate = activation_gate
         self.last_transcription_detail: dict = {}
@@ -108,6 +110,12 @@ class MicConversationSource:
     def _input_suppressed(self) -> bool:
         try:
             return bool(self._suppress_input_fn())
+        except Exception:
+            return False
+
+    def _playback_active(self) -> bool:
+        try:
+            return bool(self._playback_active_fn())
         except Exception:
             return False
 
@@ -217,7 +225,11 @@ class MicConversationSource:
                 begin_capture = getattr(self.audio_frontend, "begin_capture", None)
                 if callable(begin_capture):
                     begin_capture()
-            await self.tm.emit(VoiceEvent(et, t=ev.t))
+            event_data = (
+                {"playback_active": self._playback_active()}
+                if ev.kind == "speech_started" else {}
+            )
+            await self.tm.emit(VoiceEvent(et, t=ev.t, data=event_data))
             if ev.kind == "speech_ended":
                 # Énoncé clos : transcrire l'audio capturé → contenu.
                 turn_id = self._current_turn_id()

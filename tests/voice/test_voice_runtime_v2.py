@@ -15,6 +15,7 @@ from src.voice.v2 import (
     LocalAudioPlayer, ConversationAudioLedger, VoiceRuntime, v2_tts_enabled,
     FakeTTSProvider, TTSProvider, AudioResult,
 )
+from src.voice.v2.providers.base import TTSAudioChunk
 
 
 # ── LocalAudioPlayer ──────────────────────────────────────────────────────────
@@ -36,6 +37,34 @@ async def test_player_drops_stale_generation():
     p.set_generation("a_2")
     r = await p.play(generation_id="a_1", text="vieux")
     assert r == "dropped_stale" and p.played == []
+
+
+@pytest.mark.asyncio
+async def test_new_generation_preempts_audio_already_playing():
+    started = asyncio.Event()
+    released = asyncio.Event()
+    stops = []
+
+    async def blocking_play(_target):
+        started.set()
+        await released.wait()
+
+    def stop_playback():
+        stops.append("stop")
+        released.set()
+
+    p = LocalAudioPlayer(play_fn=blocking_play, stop_fn=stop_playback)
+    p.set_generation("old")
+    old = asyncio.create_task(p.play(generation_id="old", text="ancienne réponse"))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    p.set_generation("new")
+    result = await asyncio.wait_for(old, timeout=1.0)
+
+    assert stops == ["stop"]
+    assert result == "dropped_stale"
+    assert p.current_generation_id == "new"
+    assert p.played == []
 
 
 @pytest.mark.asyncio
@@ -160,6 +189,45 @@ async def test_runtime_chunking_emits_single_finished_after_all_segments():
     await asyncio.wait_for(task, timeout=1.0)
     assert played == ["Un", "Deux", "Trois"]
     assert finished["n"] == 1          # finished émis UNE fois, pas par chunk
+
+
+@pytest.mark.asyncio
+async def test_runtime_contains_stream_failure_and_returns_to_listening():
+    class _FailingStream(TTSProvider):
+        name = "failing"; locality = "local"; supports_streaming = True
+        def is_available(self): return True
+        async def synthesize(self, text, voice, cancel=None):
+            return AudioResult(ok=False, text=text)
+        async def stream(self, text, voice, cancel=None):
+            yield TTSAudioChunk(sequence=0, text="Début", provider="local")
+            raise RuntimeError("private C:/secret/provider payload")
+        def runtime_status(self):
+            return {"tts_worker_error": "synthesis_failed"}
+
+    tm = TurnManager()
+    played = []
+    player = LocalAudioPlayer(
+        play_fn=lambda x: _async_append(played, x), stop_fn=lambda: None,
+    )
+    rt = VoiceRuntime(
+        tm, _FailingStream(), player,
+        respond_fn=lambda _text: "Début. Fin.", enabled=True,
+    )
+    tm._dispatcher = rt.dispatch
+    actor = asyncio.create_task(tm.run())
+    await tm.emit(VoiceEvent("vad.speech_started"))
+    await tm.emit(VoiceEvent("stt.final", data={"text": "salut"}))
+    await tm.emit(VoiceEvent("endpoint.decision", data={"state": "turn_complete"}))
+    for _ in range(100):
+        if tm.state.mode == "wake_listening" and played:
+            break
+        await asyncio.sleep(0.01)
+    await tm.shutdown()
+    await asyncio.wait_for(actor, timeout=1.0)
+    assert played == ["Début"]
+    assert rt.status_report()["degraded"] is True
+    assert rt.status_report()["state"] in {"degraded", "wake_listening"}
+    await rt.aclose()
 
 
 @pytest.mark.asyncio
@@ -502,3 +570,29 @@ def test_local_player_no_top_level_audio_import():
         elif isinstance(node, ast.ImportFrom):
             top.append(node.module or "")
     assert not any("voice.tts" in (m or "") for m in top), top
+
+
+@pytest.mark.asyncio
+async def test_player_materializes_pcm_bytes_and_removes_temporary_file():
+    observed = {}
+
+    async def play(path):
+        import wave
+        observed["path"] = Path(path)
+        with wave.open(str(path), "rb") as source:
+            observed["rate"] = source.getframerate()
+            observed["channels"] = source.getnchannels()
+            observed["frames"] = source.getnframes()
+
+    player = LocalAudioPlayer(play_fn=play, stop_fn=lambda: None)
+    player.set_generation("pcm")
+    result = await player.play(
+        generation_id="pcm", text="audio", duration_ms=10,
+        audio=b"\x00\x01" * 160, audio_format="pcm16",
+        sample_rate=16000, channels=1,
+    )
+    assert result == "played"
+    assert observed == {
+        "path": observed["path"], "rate": 16000, "channels": 1, "frames": 160,
+    }
+    assert not observed["path"].exists()

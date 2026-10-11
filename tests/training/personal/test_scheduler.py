@@ -17,10 +17,25 @@ def _job(root, state=TrainingRunState.QUEUED):
     return run
 
 
+def _ready_settings():
+    """Profil hermétique : ces tests portent sur le scheduler, pas la charge du PC hôte."""
+    return TrainingSettings(
+        enabled=True,
+        automatic=True,
+        trigger="idle",
+        min_idle_minutes=0,
+        min_free_disk_gb=0,
+        max_cpu_percent=100,
+        max_ram_percent=100,
+        max_vram_percent=100,
+        allow_on_battery=True,
+    )
+
+
 def test_scheduler_waits_while_interactive_work_is_active(tmp_path):
     run = _job(tmp_path)
     scheduler = PersonalTrainingScheduler(tmp_path, activity_probe=lambda: {"agent": True})
-    scheduler.plane.settings_store.save(TrainingSettings(enabled=True, automatic=True, trigger="auto", min_idle_minutes=0))
+    scheduler.plane.settings_store.save(TrainingSettings(enabled=True, automatic=True, trigger="idle", min_idle_minutes=0))
     result = scheduler.tick()
     assert result["status"] == "waiting_idle"
     assert "interactive_work_active" in result["reason_codes"]
@@ -30,7 +45,7 @@ def test_scheduler_waits_while_interactive_work_is_active(tmp_path):
 def test_scheduler_launches_waiting_job_when_machine_is_ready(tmp_path, monkeypatch):
     run = _job(tmp_path, TrainingRunState.WAITING_IDLE)
     scheduler = PersonalTrainingScheduler(tmp_path, activity_probe=lambda: {})
-    scheduler.plane.settings_store.save(TrainingSettings(enabled=True, automatic=True, trigger="auto", min_idle_minutes=0, min_free_disk_gb=0))
+    scheduler.plane.settings_store.save(_ready_settings())
     launched = {}
     monkeypatch.setattr(scheduler.plane, "launch_training", lambda run_id, **kw: launched.update(run_id=run_id, **kw) or {"launched": True})
     result = scheduler.tick()
@@ -42,7 +57,7 @@ def test_scheduler_launches_waiting_job_when_machine_is_ready(tmp_path, monkeypa
 def test_scheduler_reports_dependency_block_instead_of_false_launch(tmp_path, monkeypatch):
     run = _job(tmp_path, TrainingRunState.WAITING_IDLE)
     scheduler = PersonalTrainingScheduler(tmp_path, activity_probe=lambda: {})
-    scheduler.plane.settings_store.save(TrainingSettings(enabled=True, automatic=True, trigger="auto", min_idle_minutes=0, min_free_disk_gb=0))
+    scheduler.plane.settings_store.save(_ready_settings())
     monkeypatch.setattr(
         scheduler.plane,
         "launch_training",

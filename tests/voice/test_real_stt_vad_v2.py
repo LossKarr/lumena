@@ -459,6 +459,25 @@ async def test_mic_source_emits_vad_boundaries_and_stt_final():
     assert tm.state.final_transcript == "depuis la memoire"
 
 
+@pytest.mark.asyncio
+async def test_mic_source_marks_speech_started_when_audio_is_really_playing():
+    short = b"\x00" * 1600
+    tm = TurnManager(barge_in_on_vad=True)
+    tm.state.mode = "wake_listening"
+    tm.state.current_generation_id = "audible-answer"
+    source = MicConversationSource(
+        _ScriptedVAD(short), _CountingSTT(), tm,
+        min_utterance_ms=300, playback_active_fn=lambda: True,
+    )
+
+    await source.run()
+    events = _drain(tm)
+
+    started = next(event for event in events if event.type == "vad.speech_started")
+    assert started.data["playback_active"] is True
+    assert any(command.name == "stop_playback" for command in tm.emitted)
+
+
 def _drain(tm: TurnManager):
     out = []
     while not tm.queue.empty():

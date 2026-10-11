@@ -635,6 +635,31 @@ async def shutdown_server(request: Request, _auth=Depends(deps.verify_admin_toke
     return {"status": "shutting_down", "message": "Lumena s'arrête..."}
 
 
+@router.post("/api/restart")
+async def restart_server(request: Request, _auth=Depends(deps.verify_admin_token)):
+    """Restart the complete Lumena desktop process — localhost and admin only."""
+    client_host = request.client.host if request.client else ""
+    if client_host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Redémarrage uniquement depuis localhost.")
+
+    from src.runtime.restart_service import RestartError, schedule_desktop_restart
+
+    try:
+        schedule_desktop_restart(
+            root=_PROJECT_ROOT, current_pid=os.getpid(), argv=sys.argv[1:],
+        )
+    except RestartError as exc:
+        logger.error("Impossible de préparer le redémarrage Lumena: {}", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Le redémarrage n'a pas pu être préparé. Lumena reste active.",
+        ) from exc
+
+    # The detached helper waits for this PID. Reuse the proven shutdown path
+    # only after it is confirmed running, so a preparation failure is harmless.
+    return await shutdown_server(request, _auth)
+
+
 @router.get("/api/preflight", dependencies=[Depends(deps.verify_admin_token)])
 async def preflight(request: Request):
     """Diagnostic système complet (wizard premier lancement). Localhost only."""

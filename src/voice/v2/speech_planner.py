@@ -143,9 +143,11 @@ def plan_speech(
             spoken = " ".join(part for part in (opening, conclusion) if part)
             suppressed.add("abridged")
     if len(spoken) > max_chars:
-        cut = spoken[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:")
-        spoken = (cut or spoken[:max_chars]).rstrip(". ") + "."
-        suppressed.add("abridged")
+        # ``max_chars`` is a density budget, never permission to manufacture a
+        # sentence ending.  If the only remaining canonical sentence exceeds
+        # the budget, keep it whole.  Cutting at an arbitrary word made Lumena
+        # sound as if playback had failed and could change the answer's meaning.
+        suppressed.add("soft_budget_exceeded")
     return SpeechPlan(spoken, suppressed, canonical_verified)
 
 

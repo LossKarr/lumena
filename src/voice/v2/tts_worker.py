@@ -13,6 +13,20 @@ import wave
 from typing import Any, Dict, Optional
 
 
+def _bounded_worker_error(exc: BaseException) -> str:
+    """Return a stable public code; never expose paths or provider payloads."""
+    text = str(exc).lower()
+    if isinstance(exc, asyncio.TimeoutError) or "timeout" in text:
+        return "worker_timeout"
+    if "stopped" in text or "terminated" in text:
+        return "worker_stopped"
+    if "queue" in text or isinstance(exc, queue.Full):
+        return "worker_queue_unavailable"
+    if "synth" in text or "failure" in text:
+        return "synthesis_failed"
+    return "worker_error"
+
+
 def _write_test_wav(text: str) -> str:
     """Small deterministic fixture used by process lifecycle tests."""
     path = Path(tempfile.gettempdir()) / f"lumena_tts_worker_{uuid.uuid4().hex}.wav"
@@ -57,6 +71,7 @@ def _worker_main(requests: Any, responses: Any, engine_kind: str) -> None:
                     allow_xtts=bool(request.get("allow_xtts", False)),
                     piper_model=request.get("piper_model"),
                     prosody=request.get("prosody") or {},
+                    bypass_cache=bool(request.get("bypass_cache", False)),
                 ))
                 path = str(path_obj) if path_obj else ""
                 provider = str(getattr(engine, "_last_provider", "") or "")
@@ -65,6 +80,12 @@ def _worker_main(requests: Any, responses: Any, engine_kind: str) -> None:
                 "ok": bool(path),
                 "path": path,
                 "provider": provider,
+                "edge_health": (
+                    engine.get_edge_health()
+                    if engine_kind == "lumena" and callable(
+                        getattr(engine, "get_edge_health", None)
+                    ) else {}
+                ),
             })
         except BaseException as exc:  # process boundary: return a bounded diagnostic
             responses.put({
@@ -98,6 +119,9 @@ class IsolatedTTSWorker:
         self._restarts = 0
         self._last_provider = ""
         self.last_error = ""
+        self.last_error_code = ""
+        self.last_success_at: Optional[float] = None
+        self._edge_health: Dict[str, Any] = {}
         atexit.register(self.close_now)
 
     @property
@@ -163,7 +187,10 @@ class IsolatedTTSWorker:
                     if not result.get("ok"):
                         raise RuntimeError(str(result.get("error", "TTS worker failure")))
                     self._last_provider = str(result.get("provider", "") or "")
+                    self._edge_health = dict(result.get("edge_health") or {})
                     self.last_error = ""
+                    self.last_error_code = ""
+                    self.last_success_at = time.time()
                     return result
                 except asyncio.CancelledError:
                     # Cancellation of the caller is authoritative. A native model
@@ -181,6 +208,7 @@ class IsolatedTTSWorker:
                         response_task.cancel()
                         await asyncio.gather(response_task, return_exceptions=True)
                     self.last_error = str(exc)[:300]
+                    self.last_error_code = _bounded_worker_error(exc)
                     self._terminate()
                     if attempt + 1 < attempts:
                         self._restarts += 1
@@ -196,6 +224,7 @@ class IsolatedTTSWorker:
         allow_xtts: bool = False,
         piper_model: Optional[str] = None,
         prosody: Optional[dict] = None,
+        bypass_cache: bool = False,
         _cancel_token: Any = None,
     ) -> Optional[Path]:
         result = await self._request({
@@ -205,6 +234,7 @@ class IsolatedTTSWorker:
             "allow_xtts": allow_xtts,
             "piper_model": piper_model,
             "prosody": dict(prosody or {}),
+            "bypass_cache": bool(bypass_cache),
         }, cancel_token=_cancel_token)
         path = str(result.get("path", "") or "")
         return Path(path) if path else None
@@ -246,3 +276,17 @@ class IsolatedTTSWorker:
 
     def close_now(self) -> None:
         self._terminate()
+
+    def status(self) -> Dict[str, Any]:
+        """Bounded, text-free health facts safe for the product diagnostic."""
+        return {
+            "alive": self.alive,
+            "engine": self.engine_kind,
+            "restarts": int(self._restarts),
+            "max_restarts": int(self.max_restarts),
+            "timeout_s": float(self.timeout_s),
+            "queue_size": int(self.queue_size),
+            "last_provider": str(self._last_provider or "")[:48],
+            "last_error_code": str(self.last_error_code or "")[:48],
+            "last_success_at": self.last_success_at,
+        }

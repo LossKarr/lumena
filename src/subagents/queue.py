@@ -26,6 +26,7 @@ from typing import Dict, Optional
 
 _DEFAULT_CONCURRENCY = 1
 _DEFAULT_WORKER_CONCURRENCY = 2
+_DEFAULT_CODEAGENT_POOL = 10   # LOT A4 — décision de Charles du 2026-10-07
 
 # Pools PAR PROFONDEUR (créés à la demande).
 _semaphores: Dict[int, asyncio.Semaphore] = {}
@@ -38,6 +39,24 @@ def _env_int(name: str, default: int) -> int:
         return max(1, min(64, int(os.getenv(name, str(default)))))
     except (ValueError, TypeError):
         return default
+
+
+def get_codeagent_pool_size() -> int:
+    """LOT A4/A6 — instances de CodeAgent interchangeables (`LUMENA_CODEAGENT_POOL`).
+
+    Défaut **10** (décision de Charles du 2026-10-07) : c'est une CAPACITÉ, pas un
+    quota. **1 rend le comportement d'avant le pool**, instance canonique comprise.
+
+    Vit ICI, avec ses frères `MISSION_CONCURRENCY` et `MISSION_WORKER_CONCURRENCY` :
+    `handlers/missions.py` doit pouvoir lire ce plafond pour calculer le parallélisme
+    réel (lot A6) **sans importer `sub_agent`** — frontière d'architecture figée par
+    `tests/fragmentation/test_handlers_missions.py::test_no_codeagent_link`.
+
+    ⚠️ Plafond pratique : avec un seul modèle par mission (règle du 2026-10-07), une
+    instance sans créneau LLM attend de toute façon — au-delà de
+    `LUMENA_PROVIDER_CONCURRENCY`, agrandir ce pool ne sert à rien.
+    """
+    return _env_int("LUMENA_CODEAGENT_POOL", _DEFAULT_CODEAGENT_POOL)
 
 
 def get_subagent_concurrency() -> int:

@@ -216,7 +216,11 @@ class TestSetupComplete:
             "config": {"LUMENA_DEFAULT_MODEL": "gpt-5.4"},
         })
 
-        with patch.dict(os.environ, {"LUMENA_SETUP_COMPLETE": "1"}):
+        # Le mode de récupération peut avoir été activé par un test précédent ou
+        # par une machine sans clé API. Ce test porte sur le chemin nominal déjà
+        # configuré : il doit donc fixer explicitement cet état global.
+        with patch.dict(os.environ, {"LUMENA_SETUP_COMPLETE": "1"}), \
+             patch("web.routes.setup.deps.setup_only_mode", False):
             result = await setup_complete(request)
 
         assert result["success"] is False

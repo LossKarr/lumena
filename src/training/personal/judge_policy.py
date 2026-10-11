@@ -58,6 +58,33 @@ class JudgeVerdict:
 JudgeCallable = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
+_PUBLIC_JUDGE_ERROR_CODES = frozenset({
+    "judge_response_invalid_json",
+    "judge_response_not_object",
+    "judge_score_invalid",
+    "judge_score_out_of_range",
+    "judge_reason_codes_invalid",
+    "judge_request_contains_sensitive_data",
+    "judge_model_unknown",
+    "cloud_judge_not_consented",
+    "judge_must_run_in_dedicated_worker",
+})
+
+
+def judge_failure_code(exc: BaseException) -> str:
+    """Transforme une exception en code observable sans texte fournisseur ni secret."""
+    message = str(exc).strip()
+    if message in _PUBLIC_JUDGE_ERROR_CODES:
+        return message
+    if isinstance(exc, TimeoutError):
+        return "judge_timeout"
+    if isinstance(exc, PermissionError):
+        return "judge_permission_denied"
+    if isinstance(exc, (TypeError, ValueError)):
+        return "judge_invalid_response"
+    return "judge_provider_or_internal_error"
+
+
 class JudgeCache:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -142,7 +169,10 @@ class JudgeEngine:
     def _parse(model: str, raw: dict[str, Any], threshold: float) -> tuple[float, str, tuple[str, ...]]:
         if not isinstance(raw, dict):
             raise ValueError("judge_response_not_object")
-        score = float(raw.get("score"))
+        try:
+            score = float(raw.get("score"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("judge_score_invalid") from exc
         if not 0 <= score <= 10:
             raise ValueError("judge_score_out_of_range")
         reasons_raw = raw.get("reason_codes", [])
@@ -166,9 +196,10 @@ class JudgeEngine:
             raw = self.cache.get(cache_key) if self.cache else None
             if raw is None:
                 raw = self.judge_call(model, json.loads(canonical_json(request)))
-                if self.cache:
-                    self.cache.put(cache_key, raw)
             score, decision, reasons = self._parse(model, raw, policy.accept_threshold)
+            # Un verdict n'entre dans le cache qu'après validation complète.
+            if self.cache and self.cache.get(cache_key) is None:
+                self.cache.put(cache_key, raw)
             verdicts.append((model, score, decision, reasons))
 
         self_judged = len(verdicts) == 1 and verdicts[0][0] in {experience.teacher_model, policy.personal_model} and verdicts[0][0]
@@ -202,8 +233,20 @@ class PersonalJudgeService:
         self.store.transition(owner_scope, experience_id, ExperienceState.JUDGING, reason_code="judge_started")
         try:
             verdict = self.engine.judge(experience, policy)
-        except Exception:
-            self.store.transition(owner_scope, experience_id, ExperienceState.QUARANTINED, reason_code="judge_failed")
+        except Exception as exc:
+            error_code = judge_failure_code(exc)
+            self.store.append_annotation(
+                owner_scope,
+                experience_id,
+                kind="judge_error",
+                payload={"error_code": error_code},
+            )
+            self.store.transition(
+                owner_scope,
+                experience_id,
+                ExperienceState.QUARANTINED,
+                reason_code=error_code,
+            )
             raise
         target = {
             "accept": ExperienceState.ACCEPTED,

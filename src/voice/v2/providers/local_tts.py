@@ -122,7 +122,8 @@ class LocalTTSAdapter(TTSProvider):
             return False
 
     async def _synthesize_for_profile(self, tts: Any, text: str, voice: Any, *, local_only: bool,
-                                      cancel: Optional[CancelToken] = None):
+                                      cancel: Optional[CancelToken] = None,
+                                      bypass_cache: bool = False):
         kwargs = {"local_only": local_only}
         try:
             parameters = inspect.signature(tts._synthesize).parameters
@@ -152,6 +153,8 @@ class LocalTTSAdapter(TTSProvider):
                 )
             if "_cancel_token" in parameters:
                 kwargs["_cancel_token"] = cancel
+            if "bypass_cache" in parameters:
+                kwargs["bypass_cache"] = bool(bypass_cache)
         except (TypeError, ValueError):
             pass
         return await tts._synthesize(text, **kwargs)
@@ -229,7 +232,8 @@ class LocalTTSAdapter(TTSProvider):
                     "provider": "", "degraded": False, "detail": str(e)}
         try:
             path = await self._synthesize_for_profile(
-                tts, text, voice, local_only=not _cloud_allowed()
+                tts, text, voice, local_only=not _cloud_allowed(),
+                bypass_cache=_cloud_allowed(),
             )
         except Exception as e:
             return {"component": "tts", "ok": False,
@@ -263,10 +267,26 @@ class LocalTTSAdapter(TTSProvider):
 
     def runtime_status(self) -> dict:
         tts = self._tts
+        status_fn = getattr(tts, "status", None) if tts is not None else None
+        if callable(status_fn):
+            try:
+                worker = dict(status_fn())
+            except Exception:
+                worker = {"alive": bool(getattr(tts, "alive", False))}
+        else:
+            worker = {
+                "alive": bool(getattr(tts, "alive", False)) if tts is not None else False,
+                "restarts": int(getattr(tts, "_restarts", 0)) if tts is not None else 0,
+                "last_error_code": "",
+            }
         return {
+            **super().runtime_status(),
             "tts_isolated": bool(self._isolated),
-            "tts_worker_alive": bool(getattr(tts, "alive", False)) if tts is not None else False,
-            "tts_worker_restarts": int(getattr(tts, "_restarts", 0)) if tts is not None else 0,
-            "tts_worker_error": str(getattr(tts, "last_error", "") or "")[:240],
+            "tts_worker": worker,
+            # Compatibility fields used by existing diagnostics.
+            "tts_worker_alive": bool(worker.get("alive", False)),
+            "tts_worker_restarts": int(worker.get("restarts", 0) or 0),
+            "tts_worker_error": str(worker.get("last_error_code", "") or "")[:48],
             "tts_locality": "local" if not _cloud_allowed() else "local_or_opt_in_cloud",
+            "edge_tts": dict(getattr(tts, "_edge_health", {}) or {}),
         }

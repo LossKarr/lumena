@@ -58,6 +58,19 @@ def test_character_budget_keeps_conclusion_on_sentence_boundary():
     assert len(plan.spoken) <= 75
 
 
+def test_character_budget_never_cuts_the_only_complete_sentence():
+    sentence = (
+        "Cette conclusion canonique est volontairement très longue afin de vérifier "
+        "que Lumena la prononce entièrement et ne fabrique jamais un faux point final "
+        "au milieu de la réponse validée par le modèle."
+    )
+    plan = plan_speech(
+        sentence, canonical_verified=True, max_sentences=1, max_chars=70,
+    )
+    assert plan.spoken == sentence
+    assert "soft_budget_exceeded" in plan.suppressed
+
+
 def test_sentence_committer_waits_for_complete_sentence():
     c = SentenceCommitter()
     assert c.feed("Bonjour, je term") == []

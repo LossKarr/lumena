@@ -61,10 +61,20 @@ une question ou orienter le travail actif sans effacer l'objectif initial.
 
 Le pipeline réunit reconnaissance et détection de parole locales, activation par
 « Lumena », micro ouvert, push-to-talk, synthèse progressive et lecture annulable.
-Il sait conduire une conversation en français, anglais ou espagnol, choisir la
-voix correspondant à la langue disponible et empêcher la lecture des métadonnées
-techniques ou des changements d'humeur. Les profils de performance adaptent les
-moteurs au matériel et restent synchronisés avec le panneau Configuration.
+Il sait conduire une conversation en français, anglais ou espagnol et empêcher la
+lecture des métadonnées techniques ou des changements d'humeur. La synthèse locale
+utilise uniquement une voix réellement disponible pour la langue ; si elle manque,
+Lumena le signale au lieu d'imiter la langue avec la voix française. Des Voice Packs
+Piper signés, hashés et accompagnés de leurs licences et consentements peuvent être
+importés, activés, restaurés ou supprimés depuis le panneau. Les profils de
+performance adaptent les moteurs au matériel et restent synchronisés avec le
+panneau Configuration.
+
+Qwen3-TTS peut aussi incarner une identité Lumena issue d'un Voice Pack signé. Son
+runtime, ses poids et son tokenizer restent séparés du cœur Python, téléchargés par
+l'installateur depuis la release immuable et vérifiés avant activation. Le mode
+automatique ne le choisit qu'après une synthèse locale réussie et une mesure de
+fluidité sur la machine ; Piper reste le repli local immédiat.
 
 Le panneau Voice expose la conversation, la voix, l'écoute, les langues, les
 modèles et un diagnostic expurgé. Les contrôles permettent de démarrer ou arrêter

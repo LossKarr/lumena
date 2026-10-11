@@ -14,6 +14,7 @@ from pathlib import Path
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from loguru import logger
 from ..utils.persistence import atomic_write_text
 
@@ -613,6 +614,33 @@ def _note_redirection(agent, chemin_demande: str) -> str:
     )
 
 
+def _taille_pool_agents() -> int:
+    """LOT A4 — nombre d'instances interchangeables par agent (`LUMENA_CODEAGENT_POOL`).
+
+    Defaut **10** : decision de Charles du 2026-10-07, « 10 CodeAgent en meme temps
+    d'origine ». C'est une CAPACITE, pas un quota — Lumena mobilise ce qu'elle juge
+    utile (lots A6/A7), et une instance ne coute presque rien (`__init__` ne cree ni
+    LLM ni fichier).
+
+    **1 rend le comportement d'avant le lot**, instance canonique comprise.
+
+    ⚠️ Plafond pratique : avec un seul modele par mission (regle du 07/10), une instance
+    sans creneau LLM attend de toute facon — `POOL` au-dela de
+    `LUMENA_PROVIDER_CONCURRENCY` ne sert a rien.
+
+    LOT A6 — la VALEUR vit dans `src/subagents/queue.py`, avec ses freres
+    `MISSION_CONCURRENCY` et `MISSION_WORKER_CONCURRENCY`. Raison : `handlers/missions.py`
+    doit lire ce plafond pour calculer le parallelisme reel **sans importer `sub_agent`**,
+    frontiere d'architecture figee par `test_no_codeagent_link`. Cette fonction reste le
+    point d'entree historique du module.
+    """
+    try:
+        from src.subagents.queue import get_codeagent_pool_size
+        return get_codeagent_pool_size()
+    except Exception:          # un plafond illisible ne casse jamais une tache
+        return 10
+
+
 class SubAgent:
     """
     Agent spécialisé de base.
@@ -879,6 +907,26 @@ class SubAgent:
         # pour du travail reellement verifie. Le defaut etait dans mon propre
         # correctif : j'avais ajoute l'ecriture sans l'expiration.
         self._gate_indetermine = ""
+        # LOT A2 (2026-10-08) — MEME invariant, applique a la CLASSE entiere au lieu
+        # du cas par cas. L'inventaire A1 a mesure 38 etats task-scoped : 35 sont deja
+        # rearmes dans `_single_code_attempt` (donc par TENTATIVE, plus strict encore),
+        # et ces TROIS-LA ne l'etaient nulle part.
+        #
+        # Chaque valeur ci-dessous est le DEFAUT deja utilise par le `getattr` qui lit
+        # l'attribut — les rearmer ainsi est indiscernable d'un agent neuf :
+        #   l.3923  int(getattr(self, "_z36_refusals", 0) or 0)
+        #   l.2818  getattr(self, "_last_reflexion_ts", 0.0)
+        #   l.4430  set(getattr(self, "_out_of_scope_created", []) or []) | ...
+        #
+        # Pourquoi c'est utile MEME sans parallelisme : le CodeAgent est un singleton
+        # partage par tous les workers ET par le chat, donc ces etats survivent
+        # aujourd'hui d'une tache a la suivante — un worker « use » le quota de refus
+        # d'un autre, une tache ne peut pas generer de reflexion parce qu'une AUTRE
+        # vient d'en generer une, et une tache herite des fichiers hors perimetre de
+        # la precedente (cet etat-la est ACCUMULE, pas ecrase).
+        self._z36_refusals = 0
+        self._last_reflexion_ts = 0.0
+        self._out_of_scope_created = []
 
     async def execute(self, task: AgentTask) -> AgentResult:
         """Exécute une tâche — SÉRIALISÉE par instance (LOT 2.12.A).
@@ -1649,7 +1697,55 @@ class LoopDetector:
 
 
 # ── P3 Supreme: Estimation tokens + seuils compaction ──
-_CONTEXT_WINDOW_TOKENS = int(os.environ.get("LUMENA_CODE_AGENT_CONTEXT_WINDOW", "65536"))
+# LOT CTX-1 (2026-10-09) — la compaction suit la fenetre du MODELE ACTIF.
+#
+# Avant : constante figee a 65 536, lue A L'IMPORT. Or aucun modele actif n'a cette
+# fenetre — `deepseek-flash` (le defaut) en a 1 000 000, `deepseek-v3` 128 000. Le
+# 65 536 venait de la SORTIE max de `deepseek-reasoner`.
+# Consequence : en mode `modify` (toutes les missions a stubs), la compaction se
+# declenchait a 65 536 x 0,60 = 39 322 tokens, soit **3,9 % de la capacite du modele**,
+# et jetait l'historique en ne gardant que head[:2] + tail[-6:].
+#
+# L'incoherence qui prouve l'oubli : 3 000 lignes plus bas (l. ~4749), ce MEME agent
+# calibre deja la troncature de ses observations sur `llm.context_window`.
+#
+# ⚠️ Et la variable VIDE faisait `int("")` → ValueError AU NIVEAU MODULE : Lumena ne
+# demarrait plus. C'est corrige ici — une bride illisible est ignoree, jamais fatale.
+_CONTEXT_WINDOW_TOKENS_DEFAUT = 65536      # repli quand le modele ne declare rien
+_FENETRE_PLANCHER = 4096                   # sous ce seuil, le CodeAgent compacterait sans cesse
+
+
+def _fenetre_contexte_codeagent(llm: Any = None) -> int:
+    """Fenetre de contexte (tokens) qui decide du seuil de compaction.
+
+    Ordre de priorite :
+      1. `LUMENA_CODE_AGENT_CONTEXT_WINDOW` — **bride VOLONTAIRE** (borner le cout,
+         tester) ; une valeur illisible est IGNOREE, jamais fatale ;
+      2. `llm.context_window` — le modele reellement actif ;
+      3. `_CONTEXT_WINDOW_TOKENS_DEFAUT` — repli historique.
+    """
+    bride = str(os.environ.get("LUMENA_CODE_AGENT_CONTEXT_WINDOW", "") or "").strip()
+    if bride:
+        try:
+            valeur = int(bride)
+            # Une bride est un entier POSITIF. Zero ou negatif n'est pas un choix
+            # de bornage, c'est une saisie fautive : on l'ignore comme un texte
+            # illisible plutot que de la plancher silencieusement.
+            if valeur > 0:
+                return max(_FENETRE_PLANCHER, valeur)
+        except (TypeError, ValueError):
+            pass          # bride illisible → on laisse le modele decider
+    try:
+        fenetre = int(getattr(llm, "context_window", 0) or 0)
+        if fenetre > 0:
+            return max(_FENETRE_PLANCHER, fenetre)
+    except (TypeError, ValueError):
+        pass
+    return _CONTEXT_WINDOW_TOKENS_DEFAUT
+
+
+# Compat : des appelants historiques peuvent encore lire cette constante.
+_CONTEXT_WINDOW_TOKENS = _CONTEXT_WINDOW_TOKENS_DEFAUT
 _COMPACTION_RATIO = 0.85
 _MIN_COMPACTION_MESSAGES = 8
 
@@ -5675,8 +5771,10 @@ class CodeAgent(SubAgent):
         """
         _mode_compact = getattr(self, '_resolved_intent', 'auto')
         _compact_ratio = 0.60 if _mode_compact == "modify" else _COMPACTION_RATIO
+        # LOT CTX-1 — la fenetre vient du MODELE, plus d'une constante figee.
+        _fenetre = _fenetre_contexte_codeagent(llm)
         _est_tokens = _estimate_tokens(messages)
-        if len(messages) > _MIN_COMPACTION_MESSAGES and _est_tokens > _CONTEXT_WINDOW_TOKENS * _compact_ratio:
+        if len(messages) > _MIN_COMPACTION_MESSAGES and _est_tokens > _fenetre * _compact_ratio:
             # ── P2 Plan Suprême : pruning progressif des observations anciennes ──
             # Pass 1 (cheap) : truncate old tool outputs head+tail. Si ça suffit, on évite le LLM summary.
             try:
@@ -5684,7 +5782,7 @@ class CodeAgent(SubAgent):
                 pruned_messages, pruned_n = prune_large_observations(messages)
                 if pruned_n > 0:
                     new_est = _estimate_tokens(pruned_messages)
-                    if new_est <= _CONTEXT_WINDOW_TOKENS * _compact_ratio:
+                    if new_est <= _fenetre * _compact_ratio:
                         report.append(f"[compact] {pruned_n} observation(s) pruned ({_est_tokens}→{new_est} tokens)")
                         return pruned_messages
                     # Pruning pas suffisant — continuer sur le LLM summary avec les messages pruned
@@ -7567,6 +7665,26 @@ class SubAgentOrchestrator:
         self.task_queue: asyncio.Queue = asyncio.Queue()
         self.results: Dict[str, AgentResult] = {}
         self.task_counter = 0
+        # LOT A3 (2026-10-08) — historique AGREGE par nom d'agent.
+        #
+        # `get_status` derive `tasks_completed` et `last_result` de `agent.history`,
+        # donc de l'INSTANCE. C'est exact tant qu'il n'y a qu'un CodeAgent partage ;
+        # avec le pool (lot A4) N instances interchangeables se partageraient les
+        # taches et l'orchestrateur n'en verrait qu'une.
+        #
+        # L'agregat vit ici, sur l'orchestrateur, qui lui reste unique. Il est
+        # alimente au point ou chaque resultat est DEJA enregistre, et `get_status`
+        # retombe sur `agent.history` quand il est vide : sans A4, rien ne change.
+        self._historique_par_nom: Dict[str, List[AgentResult]] = {}
+        # LOT A4 — pools d'instances interchangeables, par nom d'agent. Cree a la
+        # demande (jamais au boot : a `POOL=1` il n'existe simplement pas).
+        # `_pools_boucle_id` : une `asyncio.Queue` appartient a SA boucle d'evenements.
+        self._pools_agents: Dict[str, "asyncio.Queue[SubAgent]"] = {}
+        self._pools_boucle_id: Optional[int] = None
+        # Observabilite du pool : l'instance canonique ne suffit plus pour savoir si
+        # un clone travaille. Ces compteurs ne contiennent ni prompt ni resultat.
+        self._instances_actives_par_nom: Dict[str, int] = {}
+        self._capacites_pool_par_nom: Dict[str, int] = {}
         
         # Persistance du registre de sous-agents
         from src.utils.paths import DATA_DIR
@@ -7713,8 +7831,107 @@ class SubAgentOrchestrator:
         if to_remove:
             self._save_to_disk()
     
+    @asynccontextmanager
+    async def instance_pour(self, agent: SubAgent):
+        """LOT A4 — emprunte une instance LIBRE du même agent, et la rend toujours.
+
+        ```
+        AVANT :  1 instance x 1 verrou          =  1 tache a la fois
+        APRES :  N instances x 1 verrou chacune =  N taches a la fois
+        ```
+
+        Chaque instance garde son `_exec_lock` et reste donc STRICTEMENT sequentielle :
+        aucune des 38 fuites d'etat inventoriees en A1 ne peut se produire entre deux
+        workers simultanes, puisqu'une instance ne traite jamais deux taches a la fois.
+        **On ne corrige pas l'isolation, on l'evite.**
+
+        A 1, l'agent canonique lui-meme est rendu : le comportement est alors identique
+        a celui d'avant le lot, instance comprise.
+        """
+        # Le reglage et le contrat portent explicitement sur CodeAgent. Cloner un
+        # autre agent avec `type(agent)()` perdrait ses options de construction et
+        # appliquerait par surprise un plafond nomme CODEAGENT_POOL.
+        if getattr(agent, "agent_type", None) != AgentType.CODE:
+            yield agent
+            return
+
+        taille = _taille_pool_agents()
+        nom = getattr(agent, "name", "") or "CodeAgent"
+        actifs = getattr(self, "_instances_actives_par_nom", None)
+        if actifs is None:
+            actifs = {}
+            self._instances_actives_par_nom = actifs
+        capacites = getattr(self, "_capacites_pool_par_nom", None)
+        if capacites is None:
+            capacites = {}
+            self._capacites_pool_par_nom = capacites
+
+        if taille <= 1:
+            capacites[nom] = 1
+            actifs[nom] = actifs.get(nom, 0) + 1
+            try:
+                yield agent
+            finally:
+                actifs[nom] = max(0, actifs.get(nom, 1) - 1)
+            return
+
+        boucle = id(asyncio.get_running_loop())
+        # ⚠️ Acces DEFENSIF, et ce n'est pas du zele : un orchestrateur peut etre
+        # construit par `SubAgentOrchestrator.__new__(...)` SANS `__init__` — c'est ce
+        # que fait `tests/llm/test_codex_codeagent_brain.py`, qui ne pose que les 4
+        # attributs dont il a besoin. Le run de signature A4 l'a trouve : sans ce
+        # `getattr`, `AttributeError: '_pools_boucle_id'`. Tout ce fichier est deja
+        # defensif pour la meme raison (85 `getattr(self, ...)`).
+        pools = getattr(self, "_pools_agents", None)
+        # Une `asyncio.Queue` est liee a SA boucle : si la boucle a change (tests,
+        # redemarrage), les files precedentes sont inutilisables. Meme parade que
+        # `multi_provider._provider_semaphores`.
+        if pools is None or getattr(self, "_pools_boucle_id", None) != boucle:
+            pools = {}
+            self._pools_agents = pools
+            self._pools_boucle_id = boucle
+            self._instances_actives_par_nom = {}
+            self._capacites_pool_par_nom = {}
+            actifs = self._instances_actives_par_nom
+            capacites = self._capacites_pool_par_nom
+
+        file = pools.get(nom)
+        if file is None:
+            file = asyncio.Queue()
+            file.put_nowait(agent)              # le canonique est la 1re instance
+            for _ in range(taille - 1):
+                try:
+                    file.put_nowait(type(agent)())
+                except Exception as exc:        # un clone rate ne casse pas la tache
+                    logger.debug("[pool {}] clone impossible: {}", nom, exc)
+                    break
+            pools[nom] = file
+            capacites[nom] = file.qsize()
+            logger.info("[pool {}] {} instance(s) prêtes", nom, file.qsize())
+
+        # Le run reel du 07/10 a montre le manque : sans cette trace, impossible de
+        # savoir QUELLE instance a servi quand une delegation se comporte mal.
+        _libres = file.qsize()
+        instance = await file.get()
+        actifs[nom] = actifs.get(nom, 0) + 1
+        logger.debug(
+            "[pool {}] emprunt #{} ({} libre(s) avant)", nom, id(instance) % 10000, _libres,
+        )
+        try:
+            yield instance
+        finally:
+            # Sans ce `finally`, une tache qui plante ou qui est annulee epuiserait
+            # le pool en silence, jusqu'au blocage complet des missions.
+            actifs[nom] = max(0, actifs.get(nom, 1) - 1)
+            file.put_nowait(instance)
+
     def register_agent(self, agent: SubAgent):
         """Enregistre un agent."""
+        # Une nouvelle instance canonique ne doit jamais reutiliser le pool de
+        # l'ancienne instance qui portait le meme nom.
+        getattr(self, "_pools_agents", {}).pop(agent.name, None)
+        getattr(self, "_instances_actives_par_nom", {}).pop(agent.name, None)
+        getattr(self, "_capacites_pool_par_nom", {}).pop(agent.name, None)
         self.agents[agent.name] = agent
         logger.debug(f"🤖 Agent enregistré: {agent.name}")
     
@@ -7895,7 +8112,13 @@ class SubAgentOrchestrator:
                 _attempt,
             )
 
-        result = await agent.execute(task)
+        # LOT A4 — emprunte une instance LIBRE du meme agent le temps de l'execution.
+        # A `POOL=1` c'est `agent` lui-meme, donc strictement le code d'avant.
+        # Au-dela, N taches s'executent de front, chaque instance restant sequentielle.
+        # `agent.name` reste la reference pour les logs et l'historique agrege (A3) :
+        # toutes les instances d'un pool portent le MEME nom.
+        async with self.instance_pour(agent) as _instance:
+            result = await _instance.execute(task)
 
         # --- Retry logic ---
         should_retry = (
@@ -7927,6 +8150,8 @@ class SubAgentOrchestrator:
 
         # --- Résultat final ---
         self.results[task.task_id] = result
+        # LOT A3 — meme fait, indexe par AGENT : survit a la mort d'une instance.
+        self.enregistrer_historique(agent.name, result)
 
         # Log structuré pour diagnostic
         if result.status_code != StatusCode.SUCCESS:
@@ -8191,6 +8416,32 @@ class SubAgentOrchestrator:
 
         return results
     
+    def enregistrer_historique(self, nom_agent: str, resultat: AgentResult) -> None:
+        """LOT A3 — ajoute un résultat à l'historique agrégé de cet agent.
+
+        Borné à `_history_max` (défaut 100), comme l'historique porté par l'instance :
+        Lumena tourne en démon 24/7, un historique non borné serait une fuite mémoire.
+        """
+        try:
+            historique = self._historique_par_nom.setdefault(str(nom_agent), [])
+            historique.append(resultat)
+            agent = self.agents.get(str(nom_agent))
+            borne = int(getattr(agent, "_history_max", 100) or 100)
+            if len(historique) > borne:
+                self._historique_par_nom[str(nom_agent)] = historique[-borne:]
+        except Exception:  # un historique d'affichage ne casse jamais une tâche
+            pass
+
+    def _historique_affiche(self, agent: SubAgent) -> List[AgentResult]:
+        """L'historique qui fait foi pour `get_status`.
+
+        L'agrégat de l'orchestrateur d'abord (il survit aux instances du pool), avec
+        REPLI sur celui de l'instance tant qu'il est vide — donc, sans le lot A4, le
+        comportement est exactement celui d'avant.
+        """
+        agrege = self._historique_par_nom.get(getattr(agent, "name", "")) or []
+        return agrege if agrege else (getattr(agent, "history", None) or [])
+
     def get_status(self) -> Dict[str, Any]:
         """Retourne le statut de tous les agents avec métriques enrichies."""
         core_agents = {"CodeAgent", "ResearchAgent", "FileAgent"}
@@ -8202,25 +8453,36 @@ class SubAgentOrchestrator:
             sc = r.status_code if hasattr(r, 'status_code') else "unknown"
             status_counts[sc] = status_counts.get(sc, 0) + 1
 
+        def _ligne_agent(agent: SubAgent) -> Dict[str, Any]:
+            historique = self._historique_affiche(agent)
+            actifs = int(
+                getattr(self, "_instances_actives_par_nom", {}).get(agent.name, 0) or 0
+            )
+            capacite = int(
+                getattr(self, "_capacites_pool_par_nom", {}).get(agent.name, 1) or 1
+            )
+            return {
+                "name": agent.name,
+                "type": agent.agent_type.value,
+                # Un clone actif rend le groupe actif meme si l'instance canonique
+                # est idle. C'est l'etat que le panneau et le LLM doivent voir.
+                "status": AgentStatus.RUNNING.value if actifs else agent.status.value,
+                "active_instances": actifs,
+                "pool_capacity": capacite,
+                "tasks_completed": len(historique),
+                "last_result": (
+                    {
+                        "status_code": historique[-1].status_code,
+                        "duration_ms": historique[-1].duration_ms,
+                    }
+                    if historique else None
+                ),
+            }
+
         return {
             "total_agents": legacy_total,
             "total_agents_all": len(self.agents),
-            "agents": [
-                {
-                    "name": agent.name,
-                    "type": agent.agent_type.value,
-                    "status": agent.status.value,
-                    "tasks_completed": len(agent.history),
-                    "last_result": (
-                        {
-                            "status_code": agent.history[-1].status_code,
-                            "duration_ms": agent.history[-1].duration_ms,
-                        }
-                        if agent.history else None
-                    ),
-                }
-                for agent in self.agents.values()
-            ],
+            "agents": [_ligne_agent(agent) for agent in self.agents.values()],
             "pending_tasks": len(self.pending_tasks),
             "completed_tasks": len(self.results),
             "status_breakdown": status_counts,
@@ -8262,8 +8524,9 @@ class SubAgentOrchestrator:
         # Grouper par agent
         by_agent: Dict[str, List[AgentResult]] = {}
         for agent in self.agents.values():
-            if agent.history:
-                by_agent[agent.name] = list(agent.history)
+            historique = self._historique_affiche(agent)
+            if historique:
+                by_agent[agent.name] = list(historique)
 
         return {
             "total_tasks": len(self.results),

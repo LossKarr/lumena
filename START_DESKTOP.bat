@@ -41,20 +41,19 @@ if not exist "venv\" (
     echo [ERREUR] venv/ introuvable. Lancez d'abord INSTALL.bat
     pause & exit /b 1
 )
-call venv\Scripts\activate.bat
 
-REM === Verifier pywebview ===
-python -c "import webview" >nul 2>&1
+REM === Verifier/reparer le runtime certifie (strictement hors ligne) ===
+venv\Scripts\python.exe scripts\runtime_guard.py --app-dir "%CD%" --repair
 if errorlevel 1 (
-    echo [..] Installation de pywebview...
-    pip install pywebview >nul 2>&1
-    if errorlevel 1 (
-        echo [ERREUR] Impossible d'installer pywebview.
-        echo          Lancez START.bat pour le mode navigateur classique.
-        pause & exit /b 1
+    if "%~1"=="_RUNNING_HIDDEN" (
+        powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Le runtime Lumena ne peut pas etre repare hors ligne. Consultez data\logs\runtime-repair.log.', 'Lumena', 'OK', 'Error') | Out-Null"
+    ) else (
+        echo [ERREUR] Runtime Lumena incomplet. Consultez data\logs\runtime-repair.log
+        pause
     )
-    echo [OK] pywebview installe
+    exit /b 1
 )
+call venv\Scripts\activate.bat
 
 REM === Verifier WebView2 Runtime (requis pour ES modules) ===
 reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" >nul 2>&1

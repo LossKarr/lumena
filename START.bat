@@ -28,6 +28,13 @@ if not exist "venv\" (
     echo [ERREUR] venv/ introuvable. Lancez d'abord INSTALL.bat
     pause & exit /b 1
 )
+
+REM === Verifier/reparer le runtime certifie (strictement hors ligne) ===
+venv\Scripts\python.exe scripts\runtime_guard.py --app-dir "%CD%" --repair
+if errorlevel 1 (
+    echo [ERREUR] Runtime Lumena incomplet. Consultez data\logs\runtime-repair.log
+    pause & exit /b 1
+)
 call venv\Scripts\activate.bat
 
 REM === Single instance guard ===

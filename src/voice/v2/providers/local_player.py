@@ -9,9 +9,12 @@ Enveloppe `LumenaTTS._play_audio` (import PARESSEUX) :
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+import tempfile
 import time
 from typing import Any, Callable, List, Optional
+import wave
 
 from ..ledger import ConversationAudioLedger
 
@@ -32,8 +35,22 @@ class LocalAudioPlayer:
         self.audio_frontend = audio_frontend
 
     def set_generation(self, generation_id: str) -> None:
+        if (
+            self.current_generation_id is not None
+            and generation_id != self.current_generation_id
+            and self._playback_started
+            and not self._stopped
+        ):
+            # One physical output, one owner: a newer generation preempts audio
+            # that is still audible from the previous acknowledgement/answer.
+            self.stop()
         self.current_generation_id = generation_id
         self._stopped = False
+
+    @property
+    def is_playing(self) -> bool:
+        """Return the physical playback state used by full-duplex barge-in."""
+        return bool(self._playback_started and not self._stopped)
 
     def stop(self) -> None:
         self._stopped = True
@@ -53,7 +70,9 @@ class LocalAudioPlayer:
                 pass
 
     async def play(self, *, generation_id: str, sequence: int = 0, text: str = "",
-                   duration_ms: int = 0, path: Any = None, cancel: Any = None) -> str:
+                   duration_ms: int = 0, path: Any = None, audio: bytes = b"",
+                   audio_format: str = "pcm16", sample_rate: int = 0,
+                   channels: int = 0, cancel: Any = None) -> str:
         """'played' | 'cancelled' | 'stopped' | 'dropped_stale'.
 
         Sérialisé par `_play_lock` : les segments d'un même tour jouent dans l'ordre,
@@ -71,15 +90,21 @@ class LocalAudioPlayer:
                 self.dropped.append({"generation_id": generation_id, "sequence": sequence})
                 return "dropped_stale"
             pf = self._resolve_play_fn()
+            temporary: Optional[Path] = None
+            target = self._playback_target(path, text)
+            if audio:
+                temporary = self._materialize_audio(
+                    audio, audio_format=audio_format,
+                    sample_rate=sample_rate, channels=channels,
+                )
+                target = temporary
+            started_at = time.perf_counter()
             if pf is not None:
-                if self.audio_frontend is not None:
-                    self.audio_frontend.register_playback_reference(
-                        self._playback_target(path, text)
-                    )
                 self._playback_started = True
-                started_at = time.perf_counter()
                 try:
-                    await pf(self._playback_target(path, text))   # playback réel (ou fake en test)
+                    if self.audio_frontend is not None:
+                        self.audio_frontend.register_playback_reference(target)
+                    await pf(target)   # playback réel (ou fake en test)
                 except asyncio.CancelledError:
                     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
                     self.ledger.on_chunk_interrupted(
@@ -88,12 +113,29 @@ class LocalAudioPlayer:
                     )
                     raise
                 finally:
+                    self._playback_started = False
                     if self.audio_frontend is not None:
                         end_reference = getattr(
                             self.audio_frontend, "end_playback_reference", None
                         )
                         if callable(end_reference):
                             end_reference()
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
+            elif temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if generation_id != self.current_generation_id or self._stopped:
+                elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+                self.ledger.on_chunk_interrupted(
+                    generation_id, text, elapsed_ms, duration_ms,
+                    sequence=sequence,
+                )
+                if generation_id != self.current_generation_id:
+                    self.dropped.append({
+                        "generation_id": generation_id, "sequence": sequence,
+                    })
+                    return "dropped_stale"
+                return "stopped"
             self.ledger.on_chunk_played(
                 generation_id, text, duration_ms, sequence=sequence,
             )
@@ -105,6 +147,32 @@ class LocalAudioPlayer:
         if isinstance(path, str):
             return Path(path)
         return path or text
+
+    @staticmethod
+    def _materialize_audio(
+        audio: bytes, *, audio_format: str, sample_rate: int, channels: int,
+    ) -> Path:
+        """Materialise bounded provider bytes for the existing cancellable player."""
+        if len(audio) > 64 * 1024 * 1024:
+            raise ValueError("audio chunk too large")
+        descriptor, name = tempfile.mkstemp(prefix="lumena-pcm-", suffix=".wav")
+        os.close(descriptor)
+        path = Path(name)
+        try:
+            if str(audio_format).lower() == "wav":
+                path.write_bytes(audio)
+            elif str(audio_format).lower() == "pcm16" and sample_rate > 0 and channels in {1, 2}:
+                with wave.open(str(path), "wb") as output:
+                    output.setnchannels(channels)
+                    output.setsampwidth(2)
+                    output.setframerate(sample_rate)
+                    output.writeframes(audio)
+            else:
+                raise ValueError("unsupported in-memory audio format")
+            return path
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
 
     # ── Résolution paresseuse de la stack audio (jamais à l'import) ──
     def _resolve_play_fn(self) -> Optional[Callable]:

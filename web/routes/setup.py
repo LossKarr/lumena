@@ -666,7 +666,7 @@ async def setup_schema(_: None = Depends(deps.verify_setup_local_request)):
     })
 
     # Step 7: Voice
-    voice_keys = {"LUMENA_TTS_AUTO", "LUMENA_TTS_MODE", "LUMENA_STT_MODEL",
+    voice_keys = {"LUMENA_TTS_AUTO", "LUMENA_TTS_MODE", "LUMENA_VOICE_TTS_ENGINE", "LUMENA_STT_MODEL",
                   "LUMENA_VOICE_AUTO", "LUMENA_VOICE_V2_AUTO", "LUMENA_VOICE_V2_MODE",
                   "LUMENA_VOICE_V2_FALLBACK_LEGACY", "LUMENA_VOICE_V2_MAX_RESTARTS",
                   "LUMENA_VOICE_V2_RESTART_BACKOFF_S", "LUMENA_VOICE_SESSION_TRUSTED",
@@ -682,8 +682,8 @@ async def setup_schema(_: None = Depends(deps.verify_setup_local_request)):
         "subtitle": "Veux-tu que je puisse te parler et t'écouter ?",
         "icon": "mic",
         "help": "La voix permet de dicter tes messages et d'entendre mes réponses. "
-                "Mode 'premium' utilise Edge TTS (gratuit, nécessite Internet). "
-                "Mode 'offline' utilise Piper (100% local, qualité moindre).",
+                "Le moteur local automatique sélectionne Qwen3-TTS seulement si "
+                "le pack vocal et le matériel sont prêts, avec Piper en repli local.",
         "fields": voice_fields,
         "optional": True,
         "tip": "Tu peux activer la voix plus tard dans les paramètres.",

@@ -67,6 +67,22 @@ def test_judge_cache_avoids_duplicate_provider_call(tmp_path) -> None:
     assert calls == ["external"]
 
 
+def test_un_verdict_invalide_n_empoisonne_pas_le_cache(tmp_path) -> None:
+    cache_path = tmp_path / "cache.json"
+    engine = JudgeEngine(
+        lambda _model, _request: {"score": "invalide", "reason_codes": []},
+        JudgeCache(cache_path),
+    )
+
+    with pytest.raises(ValueError, match="judge_score_invalid"):
+        engine.judge(
+            _candidate(),
+            JudgePolicy(mode=JudgeMode.DEFAULT, default_model="external"),
+        )
+
+    assert not cache_path.exists()
+
+
 def test_service_updates_store_and_cloud_requires_separate_consent(tmp_path) -> None:
     store = ExperienceStore(tmp_path)
     exp = _candidate()

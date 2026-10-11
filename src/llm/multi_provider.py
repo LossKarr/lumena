@@ -2895,6 +2895,11 @@ class MultiProviderLLM:
 
         choice = data["choices"][0]
         message = choice.get("message") or {}
+        reasoning_content = (
+            (message.get("reasoning_content", "") or "")
+            if isinstance(message, dict)
+            else ""
+        )
         # content prioritaire ; si vide → extraction THOUGHT/ACTION (borné) ou dernier
         # JSON d'action depuis reasoning_content ; sinon "". Jamais de prose brute (fuite).
         content = _resolve_assistant_text(
@@ -2922,7 +2927,7 @@ class MultiProviderLLM:
                     logger.error("💡 SOLUTION: Utilisez 'deepseek-reasoner' pour la génération de code (64K tokens)")
 
         _usage = data.get("usage") or {}
-        return {
+        result = {
             "text": content,
             "finish_reason": finish_reason,
             "provider_used": ProviderType.DEEPSEEK.value,
@@ -2931,6 +2936,11 @@ class MultiProviderLLM:
             "prompt_tokens": _usage.get("prompt_tokens"),
             "completion_tokens": _usage.get("completion_tokens"),
         }
+        # Champ strictement interne. `chat()` ne le retourne jamais. Les flux
+        # structurés isolés peuvent uniquement en extraire un objet validé.
+        if reasoning_content:
+            result["reasoning_content"] = reasoning_content
+        return result
 
     async def _chat_minimax_result(
         self,

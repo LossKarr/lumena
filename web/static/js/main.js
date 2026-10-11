@@ -39,11 +39,11 @@ import { initChatSteering } from './chat-steering.js?v=7';
 import {
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
-  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput, initVoicePanel, loadVoiceSettings, loadVoicePerformanceProfiles, applyVoicePerformanceProfile, saveVoiceSettings, armVoicePushToTalk, testVoiceMicro, exportVoiceDiagnostic, deleteVoiceData,
+  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput, initVoicePanel, loadVoiceSettings, loadVoicePerformanceProfiles, applyVoicePerformanceProfile, saveVoiceSettings, armVoicePushToTalk, testVoiceMicro, exportVoiceDiagnostic, deleteVoiceData, loadVoicePacks, importVoicePack, activateVoicePack, rollbackVoicePack, uninstallVoicePack, loadQwenInstallStatus, installQwenTTS,
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats
-} from './api.js?v=6';
+} from './api.js?v=9';
 
 // ── Panels ──
 import {
@@ -140,7 +140,7 @@ Object.assign(window, {
   // api
   loadStatus, loadRepoMap, loadRules, loadInstincts, loadTools,
   renderTools, filterTools, loadEmotions, loadHooks,
-  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput, initVoicePanel, loadVoiceSettings, loadVoicePerformanceProfiles, applyVoicePerformanceProfile, saveVoiceSettings, armVoicePushToTalk, testVoiceMicro, exportVoiceDiagnostic, deleteVoiceData,
+  loadVoiceStatus, toggleVoiceAssistant, updateVoiceUI, stopVoiceAudio, toggleVoiceMute, testVoiceOutput, initVoicePanel, loadVoiceSettings, loadVoicePerformanceProfiles, applyVoicePerformanceProfile, saveVoiceSettings, armVoicePushToTalk, testVoiceMicro, exportVoiceDiagnostic, deleteVoiceData, loadVoicePacks, importVoicePack, activateVoicePack, rollbackVoicePack, uninstallVoicePack, loadQwenInstallStatus, installQwenTTS,
   searchCode, loadRecentMemories, searchMemory,
   initTraceStream, loadTraceRecent, renderTraceEvent,
   checkHealth, filterTrace, clearTraceList, updateTraceStats,
@@ -208,6 +208,29 @@ window._shutdownLumena = async function() {
   } catch (e) {
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
     alert('Erreur shutdown: ' + e.message);
+  }
+};
+
+// ── Restart Lumena ──
+window._restartLumena = async function() {
+  if (!confirm('Redémarrer Lumena maintenant ? Les services seront relancés automatiquement.')) return;
+  const btn = document.getElementById('restart-btn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  try {
+    const resp = await fetch(`${API_BASE || ''}/api/restart`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${ADMIN_TOKEN || ''}` },
+    });
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column;background:var(--bg,#0a0f14);color:var(--text,#d4d4d8);font-family:sans-serif"><i data-lucide="loader-circle" style="width:28px;height:28px;color:var(--accent,#f59e42);margin-bottom:14px"></i><h2 style="margin-bottom:12px">Lumena redémarre…</h2><p style="color:var(--muted,#8b8b96);font-size:14px">La fenêtre va se rouvrir automatiquement.</p></div>';
+    if (window.lucide) window.lucide.createIcons();
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    alert('Erreur redémarrage : ' + e.message);
   }
 };
 

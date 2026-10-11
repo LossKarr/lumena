@@ -39,6 +39,14 @@ class PiperProvider:
 
     def model_paths(self, model_name: Optional[str] = None) -> tuple[Path, Path]:
         name = self._safe_model_name(model_name or self.model_name)
+        try:
+            from src.voice.v2.voice_pack_service import get_voice_pack_service
+            resolved = get_voice_pack_service().resolve_piper_model(name)
+            if resolved is not None:
+                return resolved
+        except Exception:
+            # A corrupt optional pack must not disable the bundled safe voice.
+            pass
         return self.models_dir / f"{name}.onnx", self.models_dir / f"{name}.onnx.json"
         
     def _find_piper_exe(self) -> Optional[str]:
